@@ -2,12 +2,12 @@ name: Backend
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - 'backend/**'
       - '.github/workflows/backend.yml'
   pull_request:
-    branches: [main]
+    branches: [main, master]
     paths:
       - 'backend/**'
       - '.github/workflows/backend.yml'
@@ -36,7 +36,7 @@ jobs:
         working-directory: backend
 
       - name: Deploy to Cloudflare Workers
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
