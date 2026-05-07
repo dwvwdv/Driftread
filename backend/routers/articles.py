@@ -4,8 +4,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 
-from backend.database import get_client
-from backend.models import Article, ArticleSummary, PaginatedArticles
+from database import get_client
+from models import Article, ArticleSummary, PaginatedArticles
 
 router = APIRouter(tags=["articles"])
 

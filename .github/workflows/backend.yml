@@ -14,7 +14,7 @@ on:
 
 jobs:
   test:
-    name: Test & Deploy
+    name: Test
     runs-on: ubuntu-latest
 
     steps:
@@ -34,13 +34,3 @@ jobs:
       - name: Run tests
         run: pytest --tb=short
         working-directory: backend
-
-      - name: Deploy to Cloudflare Workers
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: backend
-          wranglerVersion: '4'
-          command: deploy

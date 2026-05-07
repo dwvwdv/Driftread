@@ -6,9 +6,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException
 from supabase import Client
 
-from backend.database import get_client
-from backend.models import Feed, FeedCreate, ImportFeedsRequest
-from backend.rss_parser import fetch_and_parse
+from database import get_client
+from models import Feed, FeedCreate, ImportFeedsRequest
+from rss_parser import fetch_and_parse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 

@@ -18,7 +18,7 @@ def mock_db():
 
 @pytest.fixture
 def client(mock_db):
-    with patch("backend.database.get_client", return_value=mock_db):
-        from backend.main import app
+    with patch("database.get_client", return_value=mock_db):
+        from main import app
         with TestClient(app) as c:
             yield c, mock_db
