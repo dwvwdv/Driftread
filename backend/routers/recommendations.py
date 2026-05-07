@@ -4,8 +4,8 @@ import random
 from fastapi import APIRouter, Depends, Query
 from supabase import Client
 
-from backend.database import get_client
-from backend.models import Feed
+from database import get_client
+from models import Feed
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 

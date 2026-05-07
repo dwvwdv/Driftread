@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routers import admin, articles, feeds, recommendations
+from routers import admin, articles, feeds, recommendations
 
 app = FastAPI(
     title="Driftread API",

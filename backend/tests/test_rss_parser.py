@@ -1,5 +1,5 @@
 from __future__ import annotations
-from backend.rss_parser import parse_feed
+from rss_parser import parse_feed
 
 RSS_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">

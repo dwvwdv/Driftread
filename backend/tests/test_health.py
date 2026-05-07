@@ -12,8 +12,8 @@ os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 
 def test_health():
     mock_db = MagicMock()
-    with patch("backend.database.get_client", return_value=mock_db):
-        from backend.main import app
+    with patch("database.get_client", return_value=mock_db):
+        from main import app
         with TestClient(app) as client:
             resp = client.get("/api/health")
     assert resp.status_code == 200
