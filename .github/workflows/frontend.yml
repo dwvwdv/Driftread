@@ -41,4 +41,6 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy frontend/dist/driftread/browser --project-name=driftread
+          workingDirectory: frontend
+          wranglerVersion: '4'
+          command: pages deploy
