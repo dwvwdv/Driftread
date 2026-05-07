@@ -14,7 +14,7 @@ on:
 
 jobs:
   build:
-    name: Build & Deploy
+    name: Build
     runs-on: ubuntu-latest
 
     steps:
@@ -34,13 +34,3 @@ jobs:
       - name: Build
         run: npm run build
         working-directory: frontend
-
-      - name: Deploy to Cloudflare Pages
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: frontend
-          wranglerVersion: '4'
-          command: pages deploy
