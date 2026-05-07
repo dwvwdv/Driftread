@@ -36,12 +36,27 @@ jobs:
         working-directory: backend
 
   docker:
-    name: Docker Build
+    name: Docker Build & Push
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t driftread-api ./backend
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: ${{ github.event_name == 'push' }}
+          tags: ghcr.io/dwvwdv/driftread-api:latest

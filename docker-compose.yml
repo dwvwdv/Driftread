@@ -1,6 +1,6 @@
 services:
   api:
-    build: ./backend
+    image: ghcr.io/dwvwdv/driftread-api:latest
     env_file:
       - ./backend/.env
     restart: unless-stopped
@@ -11,7 +11,7 @@ services:
       retries: 3
 
   frontend:
-    build: ./frontend
+    image: ghcr.io/dwvwdv/driftread-frontend:latest
     ports:
       - "80:80"
     depends_on:
