@@ -1,0 +1,53 @@
+<div class="rec-header">
+  <h1>猜你喜歡</h1>
+  <p>已收藏 {{ likedCount }} 個信息源。</p>
+</div>
+
+@if (loading()) {
+  <div class="center"><mat-spinner /></div>
+}
+
+@if (error()) {
+  <p class="error">{{ error() }}</p>
+}
+
+@if (!loading() && current; as feed) {
+  <div class="card-wrapper">
+    <mat-card class="rec-card">
+      <mat-card-header>
+        <mat-card-title>{{ feed.title }}</mat-card-title>
+        @if (feed.category) {
+          <mat-card-subtitle>{{ feed.category }}</mat-card-subtitle>
+        }
+      </mat-card-header>
+      <mat-card-content>
+        @if (feed.description) {
+          <p class="desc">{{ feed.description }}</p>
+        }
+        <mat-chip-set>
+          @for (tag of feed.tags; track tag) {
+            <mat-chip>{{ tag }}</mat-chip>
+          }
+        </mat-chip-set>
+      </mat-card-content>
+      <mat-card-actions align="end">
+        <button mat-stroked-button color="warn" (click)="skip(feed)">
+          <mat-icon>close</mat-icon> 跳過
+        </button>
+        <a mat-stroked-button [routerLink]="['/feeds', feed.id]">詳細</a>
+        <button mat-flat-button color="primary" (click)="like(feed)">
+          <mat-icon>favorite</mat-icon> 喜歡
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+}
+
+@if (!loading() && !current && !error()) {
+  <div class="center">
+    <div>
+      <p>已探索所有推薦！</p>
+      <button mat-flat-button color="primary" (click)="loadMore()">再推薦一批</button>
+    </div>
+  </div>
+}

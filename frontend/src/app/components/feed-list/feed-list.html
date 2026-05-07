@@ -1,0 +1,63 @@
+<div class="controls">
+  <mat-form-field appearance="outline" class="search-field">
+    <mat-label>搜尋信息源</mat-label>
+    <input matInput [(ngModel)]="search" (keyup.enter)="onSearch()" placeholder="標題或描述...">
+  </mat-form-field>
+
+  <mat-form-field appearance="outline" class="category-field">
+    <mat-label>分類</mat-label>
+    <mat-select [(ngModel)]="category" (selectionChange)="onSearch()">
+      <mat-option value="">全部</mat-option>
+      @for (c of categories(); track c) {
+        <mat-option [value]="c">{{ c }}</mat-option>
+      }
+    </mat-select>
+  </mat-form-field>
+
+  <button mat-flat-button color="primary" (click)="onSearch()">搜尋</button>
+</div>
+
+@if (loading()) {
+  <div class="center"><mat-spinner /></div>
+}
+
+@if (error()) {
+  <p class="error">{{ error() }}</p>
+}
+
+<div class="feed-grid">
+  @for (feed of feeds(); track feed.id) {
+    <mat-card class="feed-card" [routerLink]="['/feeds', feed.id]">
+      <mat-card-header>
+        <mat-card-title>{{ feed.title }}</mat-card-title>
+        @if (feed.category) {
+          <mat-card-subtitle>{{ feed.category }}</mat-card-subtitle>
+        }
+      </mat-card-header>
+      <mat-card-content>
+        @if (feed.description) {
+          <p class="desc">{{ feed.description }}</p>
+        }
+        <mat-chip-set>
+          @for (tag of feed.tags; track tag) {
+            <mat-chip>{{ tag }}</mat-chip>
+          }
+        </mat-chip-set>
+      </mat-card-content>
+      <mat-card-footer>
+        <span class="article-count">{{ feed.article_count }} 篇文章</span>
+      </mat-card-footer>
+    </mat-card>
+  }
+</div>
+
+@if (!loading() && feeds().length === 0 && !error()) {
+  <p class="empty">找不到信息源。</p>
+}
+
+<mat-paginator
+  [length]="total()"
+  [pageSize]="pageSize()"
+  [pageSizeOptions]="[10, 20, 50]"
+  (page)="onPage($event)"
+  showFirstLastButtons />

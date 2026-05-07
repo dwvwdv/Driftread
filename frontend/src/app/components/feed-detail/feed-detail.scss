@@ -1,0 +1,7 @@
+.header { margin-bottom: 16px; }
+.feed-card { margin-bottom: 24px; }
+.articles-title { font-size: 1.25rem; margin: 16px 0 8px; }
+.article-item { cursor: pointer; &:hover { background: rgba(0,0,0,0.04); } }
+.center { display: flex; justify-content: center; padding: 40px; }
+.error { color: red; }
+.empty { color: rgba(0,0,0,0.5); padding: 16px; }

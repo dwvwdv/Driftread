@@ -1,0 +1,36 @@
+@if (loading()) {
+  <div class="center"><mat-spinner /></div>
+}
+
+@if (error()) {
+  <p class="error">{{ error() }}</p>
+}
+
+@if (article(); as a) {
+  <div class="header">
+    <a mat-button [routerLink]="['/feeds', a.feed_id]">← 返回信息源</a>
+  </div>
+
+  <mat-card class="article-card">
+    <mat-card-header>
+      <mat-card-title>{{ a.title }}</mat-card-title>
+      <mat-card-subtitle>
+        @if (a.author) { {{ a.author }} · }
+        {{ a.published_at | date:'yyyy年MM月dd日' }}
+      </mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      @if (a.content) {
+        <div class="article-body" [innerHTML]="a.content"></div>
+      } @else if (a.summary) {
+        <p>{{ a.summary }}</p>
+        <p class="read-more">
+          <a [href]="a.url" target="_blank" rel="noopener">前往原文閱讀 →</a>
+        </p>
+      } @else {
+        <p class="empty">無文章內容，請前往原文閱讀。</p>
+        <p><a [href]="a.url" target="_blank" rel="noopener">{{ a.url }}</a></p>
+      }
+    </mat-card-content>
+  </mat-card>
+}
