@@ -1,0 +1,61 @@
+@if (loading()) {
+  <div class="center"><mat-spinner /></div>
+}
+
+@if (error()) {
+  <p class="error">{{ error() }}</p>
+}
+
+@if (feed(); as f) {
+  <div class="header">
+    <a mat-button routerLink="/">← 返回列表</a>
+  </div>
+
+  <mat-card class="feed-card">
+    <mat-card-header>
+      <mat-card-title>{{ f.title }}</mat-card-title>
+      @if (f.category) {
+        <mat-card-subtitle>{{ f.category }}</mat-card-subtitle>
+      }
+    </mat-card-header>
+    <mat-card-content>
+      @if (f.description) {
+        <p>{{ f.description }}</p>
+      }
+      @if (f.website_url) {
+        <p><a [href]="f.website_url" target="_blank" rel="noopener">{{ f.website_url }}</a></p>
+      }
+      <mat-chip-set>
+        @for (tag of f.tags; track tag) {
+          <mat-chip>{{ tag }}</mat-chip>
+        }
+      </mat-chip-set>
+    </mat-card-content>
+    <mat-card-actions>
+      <button mat-button [color]="isLiked ? 'primary' : ''" (click)="like()">
+        <mat-icon>thumb_up</mat-icon> 喜歡
+      </button>
+      <button mat-button [color]="isDisliked ? 'warn' : ''" (click)="dislike()">
+        <mat-icon>thumb_down</mat-icon> 不喜歡
+      </button>
+    </mat-card-actions>
+  </mat-card>
+
+  <h2 class="articles-title">最新文章</h2>
+
+  <mat-list>
+    @for (article of f.articles; track article.id) {
+      <mat-list-item [routerLink]="['/articles', article.id]" class="article-item">
+        <span matListItemTitle>{{ article.title }}</span>
+        <span matListItemLine>
+          @if (article.author) { {{ article.author }} · }
+          {{ article.published_at | date:'yyyy-MM-dd' }}
+        </span>
+      </mat-list-item>
+      <mat-divider />
+    }
+    @empty {
+      <p class="empty">尚無文章。</p>
+    }
+  </mat-list>
+}
