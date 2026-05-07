@@ -1,0 +1,11 @@
+# Supabase CLI project config — used for local tooling (migration management,
+# supabase migration new, supabase db diff, etc.)
+# The running stack is managed by docker-compose.yml, not this file.
+
+[project]
+id = "driftread"
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
