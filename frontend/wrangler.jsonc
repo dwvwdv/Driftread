@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "driftread",
+  "account_id": "YOUR_ACCOUNT_ID",
   "compatibility_date": "2026-05-07",
   "pages_build_output_dir": "dist/driftread/browser"
 }
