@@ -4,7 +4,7 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
-    "build": "ng build",
+    "build": "node -e \"require('fs').writeFileSync('public/version.json', JSON.stringify({version: Date.now().toString()}))\" && ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test"
   },
