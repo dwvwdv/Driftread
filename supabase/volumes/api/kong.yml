@@ -5,10 +5,8 @@ _format_version: "1.1"
 #
 # Routes:
 #   /rest/v1/  → PostgREST (data API)
-#   /auth/v1/  → GoTrue    (authentication)
 #
-# ANON_KEY and SERVICE_ROLE_KEY are injected via Kong environment variables
-# using the ${{ENV_VAR}} syntax (Kong 2.8+).
+# ANON_KEY and SERVICE_ROLE_KEY 透過 Kong 環境變數注入（Kong 2.8+ ${{ENV_VAR}} 語法）
 ###############################################################################
 
 services:
@@ -30,16 +28,6 @@ services:
           allow:
             - anon
             - service_role
-
-  - name: gotrue
-    url: http://auth:9999/
-    routes:
-      - name: gotrue-all
-        strip_path: true
-        paths:
-          - /auth/v1/
-    plugins:
-      - name: cors
 
 consumers:
   - username: anon

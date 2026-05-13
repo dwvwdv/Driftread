@@ -17,8 +17,10 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 ### 啟動
 
 ```bash
-cp .env.example .env
-# 編輯 .env — 至少設定 POSTGRES_PASSWORD 和 ADMIN_API_KEY
+# 1. 生成所有 secret，自動寫入 .env
+python3 scripts/gen_keys.py
+
+# 2. 啟動
 docker compose up --build
 ```
 
@@ -44,7 +46,7 @@ docker compose down -v       # 清除資料（重置資料庫）
 
 ```bash
 # 先啟動資料庫層（或用上面的 docker compose）
-docker compose up db rest auth meta kong -d
+docker compose up db rest meta kong -d
 
 # Frontend
 cd frontend && npm install && ng serve
