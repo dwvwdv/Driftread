@@ -1,0 +1,11 @@
+# Supabase CLI generated directories
+supabase/.branches/
+supabase/.temp/
+
+# Secret files — never commit these
+.env
+*.env.local
+
+# OS
+.DS_Store
+Thumbs.db
