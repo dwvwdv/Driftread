@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Generate secrets and write them to .env.
+"""Generate .env with all required secrets.
 
 Usage:
-    python3 scripts/gen_keys.py
+    python3 scripts/gen_env.py
 
 Behaviour:
 - If .env does not exist, create it with all generated values.

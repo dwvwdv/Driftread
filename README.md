@@ -18,7 +18,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 
 ```bash
 # 1. 生成所有 secret，自動寫入 .env
-python3 scripts/gen_keys.py
+python3 scripts/gen_env.py
 
 # 2. 啟動
 docker compose up --build
