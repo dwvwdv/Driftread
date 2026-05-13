@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./supabase/migrations:/docker-entrypoint-initdb.d
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: postgres
@@ -17,7 +17,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 15
 
   rest:
     image: postgrest/postgrest:v12.2.0
@@ -57,16 +57,12 @@ services:
       KONG_DECLARATIVE_CONFIG: /var/lib/kong/kong.yml
       KONG_DNS_ORDER: LAST,A,CNAME
       KONG_PLUGINS: request-transformer,cors,key-auth,acl
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
     volumes:
       - ./supabase/volumes/api/kong.yml:/var/lib/kong/kong.yml:ro
 
   studio:
     image: supabase/studio:20241028-a265374
     restart: unless-stopped
-    ports:
-      - "54323:3000"
     depends_on:
       kong:
         condition: service_started
@@ -76,9 +72,12 @@ services:
       DEFAULT_ORGANIZATION_NAME: Driftread
       DEFAULT_PROJECT_NAME: Driftread
       SUPABASE_URL: http://kong:8000
-      SUPABASE_PUBLIC_URL: http://localhost
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL:-http://localhost:8000}
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+    networks:
+      - default
+      - web_network
 
   ###########################################################################
   # Driftread application
@@ -103,12 +102,18 @@ services:
 
   frontend:
     image: ghcr.io/dwvwdv/driftread-frontend:latest
-    ports:
-      - "80:80"
+    restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - default
+      - web_network
 
 volumes:
   db_data:
+
+networks:
+  default:
+  web_network:
+    external: true

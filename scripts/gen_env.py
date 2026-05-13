@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate .env with all required secrets.
+"""Generate .env and supabase/volumes/api/kong.yml with all required secrets.
 
 Usage:
     python3 scripts/gen_env.py
@@ -8,6 +8,7 @@ Behaviour:
 - If .env does not exist, create it with all generated values.
 - If .env exists, only fill in variables that are missing or empty.
   Existing non-empty values are preserved unchanged.
+- Always renders kong.yml from kong.yml.template using the final key values.
 
 Requires no extra packages — uses Python standard library only.
 """
@@ -32,7 +33,10 @@ def make_jwt(payload: dict, secret: str) -> str:
     return f"{signing_input}.{_b64url(sig)}"
 
 
-ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
+REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
+ENV_FILE = os.path.join(REPO_ROOT, ".env")
+KONG_TEMPLATE = os.path.join(REPO_ROOT, "supabase", "volumes", "api", "kong.yml.template")
+KONG_OUTPUT = os.path.join(REPO_ROOT, "supabase", "volumes", "api", "kong.yml")
 
 
 def read_env(path: str) -> dict[str, str]:
@@ -47,6 +51,19 @@ def read_env(path: str) -> dict[str, str]:
                 key, _, val = line.partition("=")
                 result[key.strip()] = val.strip()
     return result
+
+
+def render_kong(anon_key: str, service_role_key: str) -> None:
+    with open(KONG_TEMPLATE) as f:
+        template = f.read()
+    rendered = (
+        template
+        .replace("${SUPABASE_ANON_KEY}", anon_key)
+        .replace("${SUPABASE_SERVICE_KEY}", service_role_key)
+    )
+    with open(KONG_OUTPUT, "w") as f:
+        f.write(rendered)
+    print(f"  rendered supabase/volumes/api/kong.yml")
 
 
 def main():
@@ -117,6 +134,8 @@ def main():
         with open(ENV_FILE, "w") as f:
             f.write(content)
         print(f".env created ({os.path.abspath(ENV_FILE)})")
+
+    render_kong(filled["ANON_KEY"], filled["SERVICE_ROLE_KEY"])
 
 
 if __name__ == "__main__":
