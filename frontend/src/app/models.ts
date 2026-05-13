@@ -46,3 +46,29 @@ export interface PaginatedArticles {
   page: number;
   page_size: number;
 }
+
+export interface DiscoveredFeed {
+  feed_url: string;
+  title: string | null;
+  website_url: string | null;
+  already_exists: boolean;
+  existing_feed_id: string | null;
+}
+
+export interface DiscoverResponse {
+  source_url: string;
+  candidates: DiscoveredFeed[];
+}
+
+export type BookmarkType = 'favorite' | 'read_later';
+
+export interface UserPreferences {
+  preferred_categories: string[];
+  preferred_languages: string[];
+}
+
+export interface OpmlImportResult {
+  imported: number;
+  subscribed: number;
+  failed: string[];
+}

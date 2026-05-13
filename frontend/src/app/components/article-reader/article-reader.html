@@ -9,6 +9,16 @@
 @if (article(); as a) {
   <div class="header">
     <a mat-button [routerLink]="['/feeds', a.feed_id]">← 返回信息源</a>
+    @if (auth.session()) {
+      <button mat-button (click)="toggle('favorite')">
+        <mat-icon>{{ favorited() ? 'star' : 'star_border' }}</mat-icon>
+        收藏
+      </button>
+      <button mat-button (click)="toggle('read_later')">
+        <mat-icon>{{ readLater() ? 'bookmark' : 'bookmark_border' }}</mat-icon>
+        稍後讀
+      </button>
+    }
   </div>
 
   <mat-card class="article-card">

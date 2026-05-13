@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import admin, articles, feeds, recommendations
+from routers import admin, articles, discover, feeds, me, opml, recommendations
 
 app = FastAPI(
     title="Driftread API",
@@ -27,6 +27,9 @@ app.include_router(feeds.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(me.router, prefix="/api")
+app.include_router(opml.router, prefix="/api")
+app.include_router(discover.router, prefix="/api")
 
 
 @app.get("/api/health")

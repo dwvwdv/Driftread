@@ -89,3 +89,57 @@ class PaginatedArticles(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class BookmarkCreate(BaseModel):
+    article_id: UUID
+    bookmark_type: str  # 'favorite' | 'read_later'
+
+
+class Bookmark(BaseModel):
+    article_id: UUID
+    bookmark_type: str
+    created_at: datetime
+
+
+class UserPreferences(BaseModel):
+    preferred_categories: list[str] = []
+    preferred_languages: list[str] = []
+
+
+class DiscoverRequest(BaseModel):
+    url: str
+
+
+class DiscoveredFeed(BaseModel):
+    feed_url: str
+    title: str | None = None
+    website_url: str | None = None
+    already_exists: bool = False
+    existing_feed_id: UUID | None = None
+
+
+class DiscoverResponse(BaseModel):
+    source_url: str
+    candidates: list[DiscoveredFeed]
+
+
+class DiscoverImportRequest(BaseModel):
+    feed_url: str
+
+
+class OpmlImportResult(BaseModel):
+    imported: int
+    subscribed: int
+    failed: list[str] = []
+
+
+class FeedHealthSummary(BaseModel):
+    id: UUID
+    title: str
+    url: str
+    health_score: int
+    consecutive_failures: int
+    last_failure_at: datetime | None = None
+    last_failure_reason: str | None = None
+    last_fetched_at: datetime | None = None
