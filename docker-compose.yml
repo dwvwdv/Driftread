@@ -95,7 +95,7 @@ services:
       SUPABASE_URL: http://kong:8000
       SUPABASE_KEY: ${ANON_KEY}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s

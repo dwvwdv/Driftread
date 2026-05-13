@@ -69,7 +69,6 @@ def main():
             {"role": "service_role", "iss": "supabase", "iat": now, "exp": exp}, jwt_secret
         ),
         "ADMIN_API_KEY": lambda: secrets.token_urlsafe(24),
-        "CORS_ORIGINS": lambda: "http://localhost",
     }
 
     filled = {}

@@ -12,10 +12,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS_ORIGINS defaults to "*" (open) — restrict to specific origins in production.
+# Note: credentials (cookies) cannot be used with wildcard origins per the CORS spec.
+_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "https://driftread.pages.dev").split(","),
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
