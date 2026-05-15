@@ -6,9 +6,6 @@ supabase/.temp/
 .env
 *.env.local
 
-# Generated Kong config contains real API keys
-supabase/volumes/api/kong.yml
-
 # OS
 .DS_Store
 Thumbs.db
