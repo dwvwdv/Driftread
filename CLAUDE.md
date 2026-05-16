@@ -21,21 +21,19 @@ RSS 推薦平台，核心功能為「猜你喜歡」，幫助用戶挖掘心儀�
 | Frontend | Angular (latest) |
 | Backend | Python (FastAPI) |
 | Database | Supabase |
-| Frontend 部署 | Cloudflare Pages |
-| Backend 部署 | Cloudflare Workers (Python Workers) |
+| 部署 | Docker（image 推至 GHCR，docker-compose 運行）|
 
 ## 專案結構
 
 ```
 driftread/
-├── frontend/          # Angular 應用
-│   └── wrangler.jsonc   # Cloudflare Pages 設定
-├── backend/           # Python FastAPI
-│   └── wrangler.jsonc   # Cloudflare Workers 設定
+├── frontend/          # Angular 應用（Dockerfile → GHCR）
+├── backend/           # Python FastAPI（Dockerfile → GHCR）
+├── docker-compose.yml # 正式環境部署
 ├── .github/
 │   └── workflows/
-│       ├── frontend.yml   # Angular build + Pages 部署
-│       └── backend.yml    # Python 測試 + Workers 部署
+│       ├── frontend.yml   # Angular build + Docker push
+│       └── backend.yml    # Python 測試 + Docker push
 ├── CLAUDE.md
 └── README.md
 ```
@@ -50,8 +48,7 @@ driftread/
 
 | Secret | 說明 |
 |--------|------|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token（需有 Pages + Workers 權限）|
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
+| `GITHUB_TOKEN` | 自動提供，用於推送 Docker image 至 GHCR |
 
 ## 開發規則
 
