@@ -1,42 +1,22 @@
 #!/usr/bin/env python3
-"""Generate .env with all required secrets.
+"""Generate .env with required secrets.
 
 Usage:
     python3 scripts/gen_env.py
 
-Behaviour:
-- If .env does not exist, create it with all generated values.
-- If .env exists, only fill in variables that are missing or empty.
-  Existing non-empty values are preserved unchanged.
-
-Requires no extra packages — uses Python standard library only.
+Fills in any empty variables in .env (or creates it from .env.example).
+SUPABASE_URL and SUPABASE_KEY must be filled in manually from the Supabase Dashboard.
 """
-import base64
-import hashlib
-import hmac
-import json
 import os
 import secrets
-import time
 
 
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def make_jwt(payload: dict, secret: str) -> str:
-    header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
-    body = _b64url(json.dumps(payload, separators=(",", ":")).encode())
-    signing_input = f"{header}.{body}"
-    sig = hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest()
-    return f"{signing_input}.{_b64url(sig)}"
-
-
-ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
+REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
+ENV_FILE = os.path.join(REPO_ROOT, ".env")
+ENV_EXAMPLE = os.path.join(REPO_ROOT, ".env.example")
 
 
 def read_env(path: str) -> dict[str, str]:
-    """Parse key=value pairs from an .env file, ignoring comments and blanks."""
     result = {}
     with open(path) as f:
         for line in f:
@@ -50,73 +30,48 @@ def read_env(path: str) -> dict[str, str]:
 
 
 def main():
-    now = int(time.time())
-    exp = now + 10 * 365 * 24 * 3600  # 10 years
+    if not os.path.exists(ENV_FILE):
+        import shutil
+        shutil.copy(ENV_EXAMPLE, ENV_FILE)
+        print(f".env created from .env.example — fill in SUPABASE_URL and SUPABASE_KEY")
 
-    existing = read_env(ENV_FILE) if os.path.exists(ENV_FILE) else {}
+    existing = read_env(ENV_FILE)
 
-    # Generate JWT_SECRET first — ANON_KEY and SERVICE_ROLE_KEY must share it.
-    # If JWT_SECRET already exists, reuse it so all three stay in sync.
-    jwt_secret = existing.get("JWT_SECRET") or secrets.token_urlsafe(40)
-
-    candidates = {
-        "POSTGRES_PASSWORD": lambda: secrets.token_urlsafe(24),
-        "JWT_SECRET": lambda: jwt_secret,
-        "ANON_KEY": lambda: make_jwt(
-            {"role": "anon", "iss": "supabase", "iat": now, "exp": exp}, jwt_secret
-        ),
-        "SERVICE_ROLE_KEY": lambda: make_jwt(
-            {"role": "service_role", "iss": "supabase", "iat": now, "exp": exp}, jwt_secret
-        ),
+    generated = {
         "ADMIN_API_KEY": lambda: secrets.token_urlsafe(24),
     }
 
-    filled = {}
-    for key, generator in candidates.items():
-        if existing.get(key):
-            filled[key] = existing[key]
-        else:
-            filled[key] = generator()
-
-    # Rebuild .env: preserve all original lines, replace/append changed keys.
-    if os.path.exists(ENV_FILE):
-        lines = open(ENV_FILE).readlines()
-        written_keys: set[str] = set()
-        new_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#") and "=" in stripped:
-                key = stripped.partition("=")[0].strip()
-                if key in filled:
-                    if not existing.get(key):
-                        new_lines.append(f"{key}={filled[key]}\n")
-                        print(f"  filled  {key}")
-                    else:
-                        new_lines.append(line)
-                        print(f"  kept    {key}")
-                    written_keys.add(key)
-                else:
-                    new_lines.append(line)
+    lines = open(ENV_FILE).readlines()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key, _, val = stripped.partition("=")
+            key = key.strip()
+            if key in generated and not val.strip():
+                value = generated[key]()
+                new_lines.append(f"{key}={value}\n")
+                print(f"  generated {key}")
             else:
                 new_lines.append(line)
+        else:
+            new_lines.append(line)
 
-        # Append any brand-new keys that weren't in the file at all.
-        new_keys = [k for k in candidates if k not in written_keys]
-        if new_keys:
-            new_lines.append("\n")
-            for key in new_keys:
-                new_lines.append(f"{key}={filled[key]}\n")
-                print(f"  added   {key}")
+    with open(ENV_FILE, "w") as f:
+        f.writelines(new_lines)
 
-        with open(ENV_FILE, "w") as f:
-            f.writelines(new_lines)
-        print(f"\n.env updated ({ENV_FILE})")
-    else:
-        content = "# Generated by scripts/gen_keys.py — do not commit this file.\n\n"
-        content += "".join(f"{k}={v}\n" for k, v in filled.items())
-        with open(ENV_FILE, "w") as f:
-            f.write(content)
-        print(f".env created ({os.path.abspath(ENV_FILE)})")
+    missing_api = [k for k in ("SUPABASE_URL", "SUPABASE_KEY") if not existing.get(k)]
+    if missing_api:
+        print(f"\n⚠ 請手動填入 .env 中的：{', '.join(missing_api)}")
+        print("  Supabase Dashboard → Settings → API")
+
+    if not existing.get("DATABASE_URL"):
+        print("\n⚠ 請手動填入 .env 中的：DATABASE_URL")
+        print("  Supabase Dashboard → Settings → Database → Connection string (URI)")
+
+    if not existing.get("SUPABASE_JWT_SECRET"):
+        print("\n⚠ 請手動填入 .env 中的：SUPABASE_JWT_SECRET")
+        print("  Supabase Dashboard → Settings → API → JWT Settings → JWT Secret")
 
 
 if __name__ == "__main__":

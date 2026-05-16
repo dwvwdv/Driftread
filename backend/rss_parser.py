@@ -164,7 +164,7 @@ def parse_feed(xml_text: str) -> ParsedFeed:
 
 
 async def fetch_and_parse(url: str, timeout: float = 15.0) -> ParsedFeed:
-    headers = {"User-Agent": "Driftread/1.0 (+https://driftread.pages.dev)"}
+    headers = {"User-Agent": "Driftread/1.0"}
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
         resp = await client.get(url, headers=headers)
         resp.raise_for_status()

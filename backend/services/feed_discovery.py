@@ -38,7 +38,7 @@ class DiscoveryError(Exception):
 
 
 def _user_agent() -> str:
-    return os.getenv("DISCOVERY_USER_AGENT", "Driftread/1.0 (+https://driftread.pages.dev)")
+    return os.getenv("DISCOVERY_USER_AGENT", "Driftread/1.0")
 
 
 def _is_safe_host(host: str) -> bool:

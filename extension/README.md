@@ -8,7 +8,7 @@
 2. 啟用右上角「開發人員模式」
 3. 點「載入未封裝項目」，選擇本資料夾 (`extension/`)
 4. 圖示出現在工具列後，點右鍵 → 「選項」設定：
-   - **API URL**：你的 Driftread 後端，例如 `https://driftread-api.workers.dev/api`
+   - **API URL**：你的 Driftread 後端，例如 `https://driftread.example.com/api`
    - **Admin API Key**：與後端 `ADMIN_API_KEY` 環境變數相同的值
 
 ## 使用

@@ -1,15 +1,28 @@
 from __future__ import annotations
+import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from migrate import run_migrations
 from routers import admin, articles, discover, feeds, me, opml, recommendations
+
+logging.basicConfig(level=logging.INFO)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    run_migrations()
+    yield
+
 
 app = FastAPI(
     title="Driftread API",
     description="RSS 推薦平台 API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS_ORIGINS defaults to "*" (open) — restrict to specific origins in production.
