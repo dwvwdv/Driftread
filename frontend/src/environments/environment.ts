@@ -1,3 +1,5 @@
 export const environment = {
   apiUrl: '/api',
+  supabaseUrl: '',
+  supabaseAnonKey: '',
 };
