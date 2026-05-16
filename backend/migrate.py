@@ -16,7 +16,17 @@ def run_migrations() -> None:
         logger.warning("DATABASE_URL not set — skipping auto-migration")
         return
 
-    conn = psycopg2.connect(db_url)
+    try:
+        conn = psycopg2.connect(db_url)
+    except psycopg2.OperationalError as e:
+        logger.error(
+            "Migration skipped — could not connect to database: %s\n"
+            "Ensure DATABASE_URL uses the Session Pooler URL (IPv4) from\n"
+            "Supabase Dashboard → Settings → Database → Connection pooling → Session mode",
+            e,
+        )
+        return
+
     try:
         conn.autocommit = False
         with conn.cursor() as cur:
