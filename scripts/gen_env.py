@@ -5,7 +5,8 @@ Usage:
     python3 scripts/gen_env.py
 
 Fills in any empty variables in .env (or creates it from .env.example).
-SUPABASE_URL and SUPABASE_KEY must be filled in manually from the Supabase Dashboard.
+SUPABASE_URL / SUPABASE_KEY (service_role) / DATABASE_URL / SUPABASE_JWT_SECRET
+must be filled in manually from the Supabase Dashboard.
 """
 import os
 import secrets
@@ -60,16 +61,29 @@ def main():
     with open(ENV_FILE, "w") as f:
         f.writelines(new_lines)
 
-    missing_api = [k for k in ("SUPABASE_URL", "SUPABASE_KEY") if not existing.get(k)]
-    if missing_api:
-        print(f"\n⚠ 請手動填入 .env 中的：{', '.join(missing_api)}")
-        print("  Supabase Dashboard → Settings → API")
+    PLACEHOLDERS = {
+        "SUPABASE_URL": "https://your-project-id.supabase.co",
+        "SUPABASE_KEY": "your-service-role-key",
+        "DATABASE_URL": "postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres",
+    }
 
-    if not existing.get("DATABASE_URL"):
+    def is_unset(key: str) -> bool:
+        val = existing.get(key, "").strip()
+        return not val or val == PLACEHOLDERS.get(key)
+
+    if is_unset("SUPABASE_URL") or is_unset("SUPABASE_KEY"):
+        missing = [k for k in ("SUPABASE_URL", "SUPABASE_KEY") if is_unset(k)]
+        print(f"\n⚠ 請手動填入 .env 中的：{', '.join(missing)}")
+        print("  Supabase Dashboard → Settings → API")
+        if "SUPABASE_KEY" in missing:
+            print("  ↳ SUPABASE_KEY 必須是 service_role key（不是 anon key），")
+            print("    backend 需要繞過 RLS 進行 admin 寫入。")
+
+    if is_unset("DATABASE_URL"):
         print("\n⚠ 請手動填入 .env 中的：DATABASE_URL")
         print("  Supabase Dashboard → Settings → Database → Connection string (URI)")
 
-    if not existing.get("SUPABASE_JWT_SECRET"):
+    if is_unset("SUPABASE_JWT_SECRET"):
         print("\n⚠ 請手動填入 .env 中的：SUPABASE_JWT_SECRET")
         print("  Supabase Dashboard → Settings → API → JWT Settings → JWT Secret")
 
