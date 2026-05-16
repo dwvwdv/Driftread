@@ -8,6 +8,7 @@ services:
       SUPABASE_KEY: ${SUPABASE_KEY}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      DATABASE_URL: ${DATABASE_URL}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
