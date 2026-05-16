@@ -53,7 +53,15 @@ driftread/
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API Token（需有 Pages + Workers 權限）|
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
 
-## 開發權限
+## 開發規則
 
 - 開發分支命名規則：`claude/<task>-<id>`
 - 所有變更先開 PR，不直接推送 `main`
+
+### 環境變數維護
+
+**每次新增、移除或修改環境變數時，必須同步更新以下三個地方：**
+
+1. `.env.example` — 範本與說明
+2. `docker-compose.yml` — `environment:` 區塊
+3. `scripts/gen_env.py` — missing 檢查或自動產生邏輯

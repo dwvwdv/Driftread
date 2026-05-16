@@ -60,10 +60,14 @@ def main():
     with open(ENV_FILE, "w") as f:
         f.writelines(new_lines)
 
-    missing = [k for k in ("SUPABASE_URL", "SUPABASE_KEY") if not existing.get(k)]
-    if missing:
-        print(f"\n⚠ 請手動填入 .env 中的：{', '.join(missing)}")
+    missing_api = [k for k in ("SUPABASE_URL", "SUPABASE_KEY") if not existing.get(k)]
+    if missing_api:
+        print(f"\n⚠ 請手動填入 .env 中的：{', '.join(missing_api)}")
         print("  Supabase Dashboard → Settings → API")
+
+    if not existing.get("DATABASE_URL"):
+        print("\n⚠ 請手動填入 .env 中的：DATABASE_URL")
+        print("  Supabase Dashboard → Settings → Database → Connection string (URI)")
 
 
 if __name__ == "__main__":
