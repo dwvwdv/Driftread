@@ -5,7 +5,9 @@ import os
 def test_admin_endpoint_rejects_missing_key(client):
     c, _ = client
     resp = c.post("/api/admin/feeds/from-url", json={"feed_url": "https://example.com/rss"})
-    assert resp.status_code == 403
+    # x_api_key is a required Header(...), so FastAPI's request validation
+    # rejects a missing header (422) before _require_api_key ever runs.
+    assert resp.status_code == 422
 
 
 def test_admin_endpoint_rejects_wrong_key(client):
