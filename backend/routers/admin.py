@@ -15,6 +15,7 @@ from models import (
     ImportFeedsRequest,
 )
 from rss_parser import fetch_and_parse
+from services.articles import upsert_articles
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -109,23 +110,7 @@ async def refresh_feed(
         raise HTTPException(status_code=502, detail=f"Failed to fetch feed: {e}")
 
     now = datetime.now(timezone.utc).isoformat()
-
-    inserted = 0
-    for article in parsed.articles:
-        if not article.url:
-            continue
-        data = {
-            "feed_id": str(feed_id),
-            "title": article.title,
-            "url": article.url,
-            "summary": article.summary,
-            "content": article.content,
-            "author": article.author,
-            "published_at": article.published_at.isoformat() if article.published_at else None,
-        }
-        result = db.table("articles").upsert(data, on_conflict="url").execute()
-        if result.data:
-            inserted += 1
+    inserted = upsert_articles(db, str(feed_id), parsed.articles)
 
     db.table("feeds").update({
         "last_fetched_at": now,

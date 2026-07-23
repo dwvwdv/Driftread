@@ -14,6 +14,7 @@ from models import (
     Feed,
 )
 from rss_parser import fetch_and_parse
+from services.articles import upsert_articles
 from services.feed_discovery import DiscoveryError, discover_feeds
 
 router = APIRouter(prefix="/discover", tags=["discover"])
@@ -78,24 +79,7 @@ async def discover_and_import(
         ).execute()
 
     now = datetime.now(timezone.utc).isoformat()
-    inserted = 0
-    for article in parsed.articles:
-        if not article.url:
-            continue
-        article_data = {
-            "feed_id": str(feed.id),
-            "title": article.title,
-            "url": article.url,
-            "summary": article.summary,
-            "content": article.content,
-            "author": article.author,
-            "published_at": article.published_at.isoformat()
-            if article.published_at
-            else None,
-        }
-        res = db.table("articles").upsert(article_data, on_conflict="url").execute()
-        if res.data:
-            inserted += 1
+    inserted = upsert_articles(db, str(feed.id), parsed.articles)
     db.table("feeds").update(
         {"last_fetched_at": now, "article_count": inserted}
     ).eq("id", str(feed.id)).execute()

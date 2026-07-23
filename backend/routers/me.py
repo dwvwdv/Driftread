@@ -12,6 +12,7 @@ from models import (
     BookmarkCreate,
     Feed,
     UserPreferences,
+    UserPreferencesUpdate,
 )
 
 router = APIRouter(prefix="/me", tags=["me"])
@@ -159,7 +160,7 @@ async def get_preferences(
 
 @router.put("/preferences", response_model=UserPreferences)
 async def update_preferences(
-    prefs: UserPreferences,
+    prefs: UserPreferencesUpdate,
     user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
 ) -> UserPreferences:
@@ -171,4 +172,4 @@ async def update_preferences(
         },
         on_conflict="user_id",
     ).execute()
-    return prefs
+    return UserPreferences(**prefs.model_dump())

@@ -6,6 +6,7 @@ from supabase import Client
 
 from database import get_client
 from models import Feed, FeedWithArticles, PaginatedFeeds
+from utils import escape_postgrest_literal
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
 
@@ -16,7 +17,7 @@ async def list_feeds(
     page_size: int = Query(20, ge=1, le=100),
     category: str | None = None,
     tag: str | None = None,
-    search: str | None = None,
+    search: str | None = Query(default=None, max_length=200),
     db: Client = Depends(get_client),
 ) -> PaginatedFeeds:
     offset = (page - 1) * page_size
@@ -28,7 +29,8 @@ async def list_feeds(
     if tag:
         query = query.contains("tags", [tag])
     if search:
-        query = query.or_(f"title.ilike.%{search}%,description.ilike.%{search}%")
+        pattern = escape_postgrest_literal(f"%{search}%")
+        query = query.or_(f"title.ilike.{pattern},description.ilike.{pattern}")
 
     result = query.range(offset, offset + page_size - 1).order("created_at", desc=True).execute()
 

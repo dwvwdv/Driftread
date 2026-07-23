@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field
 
 
 class Feed(BaseModel):
@@ -103,8 +103,15 @@ class Bookmark(BaseModel):
 
 
 class UserPreferences(BaseModel):
+    """Response shape — unconstrained so rows saved before the 50-item cap
+    (see UserPreferencesUpdate) don't turn GET /me/preferences into a 500."""
     preferred_categories: list[str] = []
     preferred_languages: list[str] = []
+
+
+class UserPreferencesUpdate(BaseModel):
+    preferred_categories: list[str] = Field(default=[], max_length=50)
+    preferred_languages: list[str] = Field(default=[], max_length=50)
 
 
 class DiscoverRequest(BaseModel):
