@@ -69,8 +69,8 @@ def _signals_from_subscriptions(
 
 @router.get("", response_model=list[Feed])
 async def get_recommendations(
-    liked: list[str] = Query(default=[]),
-    disliked: list[str] = Query(default=[]),
+    liked: list[str] = Query(default=[], max_length=50),
+    disliked: list[str] = Query(default=[], max_length=50),
     limit: int = Query(10, ge=1, le=50),
     user: AuthUser | None = Depends(get_optional_user),
     db: Client = Depends(get_client),

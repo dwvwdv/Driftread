@@ -59,7 +59,12 @@ def _is_safe_host(host: str) -> bool:
     return True
 
 
-def _normalize_url(url: str) -> str:
+def validate_fetch_url(url: str) -> str:
+    """Normalize a user-supplied URL and reject private/loopback/link-local
+    hosts. Any code path that fetches an arbitrary URL supplied by a client
+    (feed discovery, manual import, OPML import, admin refresh) must call
+    this before making the request — otherwise it's an SSRF vector.
+    """
     if not url:
         raise DiscoveryError("Empty URL")
     if not url.startswith(("http://", "https://")):
@@ -139,7 +144,7 @@ async def _validate_feed(
 
 async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandidate]:
     """Discover candidate feeds for a URL. Returns list (possibly empty)."""
-    safe_url = _normalize_url(url)
+    safe_url = validate_fetch_url(url)
     headers = {"User-Agent": _user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
     async with httpx.AsyncClient(

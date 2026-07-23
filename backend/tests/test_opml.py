@@ -47,3 +47,39 @@ def test_import_opml_invalid_xml(client):
         files={"file": ("bad.opml", b"<not xml", "text/x-opml")},
     )
     assert resp.status_code == 400
+
+
+def test_import_opml_rejects_private_outline_url(client):
+    c, mock_db = client
+    opml = b"""<opml version="2.0"><body>
+      <outline text="internal" xmlUrl="http://127.0.0.1:8000/admin"/>
+    </body></opml>"""
+    resp = c.post(
+        "/api/me/import/opml",
+        headers={"Authorization": f"Bearer {_token()}"},
+        files={"file": ("feeds.opml", opml, "text/x-opml")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["imported"] == 0
+    assert len(body["failed"]) == 1
+    assert "127.0.0.1" in body["failed"][0]
+    # The unsafe URL must never reach the feeds table.
+    mock_db.table.assert_not_called()
+
+
+def test_import_opml_caps_outline_count(client):
+    c, _ = client
+    outlines = "".join(
+        f'<outline text="f{i}" xmlUrl="http://127.0.0.1/{i}"/>' for i in range(250)
+    )
+    opml = f'<opml version="2.0"><body>{outlines}</body></opml>'.encode()
+    resp = c.post(
+        "/api/me/import/opml",
+        headers={"Authorization": f"Bearer {_token()}"},
+        files={"file": ("feeds.opml", opml, "text/x-opml")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # All rejected (private IP), but capped at MAX_OPML_OUTLINES regardless.
+    assert len(body["failed"]) == 200
