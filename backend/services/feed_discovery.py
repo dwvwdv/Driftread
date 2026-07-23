@@ -46,7 +46,9 @@ def _is_safe_host(host: str) -> bool:
         return False
     try:
         infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError):
+        # UnicodeError: a malformed host (e.g. a DNS label > 63 bytes) fails
+        # idna encoding before any lookup is attempted — not a gaierror.
         return False
     for info in infos:
         ip_str = info[4][0]
@@ -67,7 +69,11 @@ def validate_fetch_url(url: str) -> str:
     """
     if not url:
         raise DiscoveryError("Empty URL")
-    if not url.startswith(("http://", "https://")):
+    # Case-insensitive per RFC 3986 (schemes aren't case-sensitive) — a
+    # mixed-case scheme like "HTTP://" must not fall through to the
+    # https:// prepend below, which would corrupt it into a bogus URL
+    # whose "hostname" is the literal string "http".
+    if not url.lower().startswith(("http://", "https://")):
         url = "https://" + url
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):

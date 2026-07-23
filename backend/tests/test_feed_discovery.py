@@ -60,6 +60,22 @@ def test_normalize_url_rejects_metadata_ip():
         validate_fetch_url("http://169.254.169.254/latest/meta-data/")
 
 
+def test_normalize_url_accepts_mixed_case_scheme():
+    # URI schemes are case-insensitive (RFC 3986); "HTTP://" must not fall
+    # through to the https:// prepend, which would corrupt the URL into one
+    # whose "hostname" is the literal string "http".
+    with patch("services.feed_discovery._is_safe_host", return_value=True):
+        assert validate_fetch_url("HTTP://Example.com/feed") == "HTTP://Example.com/feed"
+
+
+def test_is_safe_host_rejects_oversized_label_without_crashing():
+    # socket.getaddrinfo raises UnicodeError (not gaierror) for a host that
+    # fails idna encoding, e.g. a DNS label over 63 bytes — must be treated
+    # as unsafe, not propagate as an unhandled exception.
+    with pytest.raises(DiscoveryError):
+        validate_fetch_url("https://" + "a" * 64 + ".com")
+
+
 _RealAsyncClient = httpx.AsyncClient
 
 
