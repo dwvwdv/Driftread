@@ -20,6 +20,18 @@ def test_admin_endpoint_rejects_wrong_key(client):
     assert resp.status_code == 403
 
 
+def test_admin_endpoint_rejects_non_ascii_key(client):
+    # secrets.compare_digest() raises TypeError on non-ASCII str operands;
+    # a malformed header must still 403, not 500.
+    c, _ = client
+    resp = c.post(
+        "/api/admin/feeds/from-url",
+        json={"feed_url": "https://example.com/rss"},
+        headers={"x-api-key": "wrong-ké"},
+    )
+    assert resp.status_code == 403
+
+
 def test_admin_import_from_url_rejects_private_ip(client):
     c, mock_db = client
     resp = c.post(

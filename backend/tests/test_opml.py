@@ -81,5 +81,6 @@ def test_import_opml_caps_outline_count(client):
     )
     assert resp.status_code == 200
     body = resp.json()
-    # All rejected (private IP), but capped at MAX_OPML_OUTLINES regardless.
-    assert len(body["failed"]) == 200
+    # 200 processed (all rejected: private IP) + 1 notice about the 50 skipped.
+    assert len(body["failed"]) == 201
+    assert any("50 outline(s) skipped" in msg for msg in body["failed"])

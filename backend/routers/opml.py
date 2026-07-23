@@ -45,11 +45,17 @@ async def import_opml(
     if body is None:
         raise HTTPException(status_code=400, detail="OPML missing <body>")
 
-    outlines = _collect_outlines(body)[:MAX_OPML_OUTLINES]
+    all_outlines = _collect_outlines(body)
+    outlines = all_outlines[:MAX_OPML_OUTLINES]
 
     imported = 0
     subscribed = 0
     failed: list[str] = []
+    skipped = len(all_outlines) - len(outlines)
+    if skipped:
+        failed.append(
+            f"{skipped} outline(s) skipped: import is limited to {MAX_OPML_OUTLINES} feeds per file"
+        )
 
     for outline in outlines:
         raw_url = outline.get("xmlUrl")

@@ -26,7 +26,11 @@ AUTO_ARCHIVE_FAILURE_THRESHOLD = 10
 
 def _require_api_key(x_api_key: str = Header(...)) -> None:
     expected = os.getenv("ADMIN_API_KEY", "")
-    if not expected or not secrets.compare_digest(x_api_key, expected):
+    # compare_digest() requires ASCII-only str (raises TypeError otherwise);
+    # comparing as UTF-8 bytes accepts any header value instead of 500ing.
+    if not expected or not secrets.compare_digest(
+        x_api_key.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
