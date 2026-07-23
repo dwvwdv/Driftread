@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field
 
 
 class Feed(BaseModel):
@@ -103,8 +103,8 @@ class Bookmark(BaseModel):
 
 
 class UserPreferences(BaseModel):
-    preferred_categories: list[str] = []
-    preferred_languages: list[str] = []
+    preferred_categories: list[str] = Field(default=[], max_length=50)
+    preferred_languages: list[str] = Field(default=[], max_length=50)
 
 
 class DiscoverRequest(BaseModel):
