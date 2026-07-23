@@ -163,9 +163,28 @@ def parse_feed(xml_text: str) -> ParsedFeed:
     raise ValueError(f"Unknown feed format: {root.tag}")
 
 
-async def fetch_and_parse(url: str, timeout: float = 15.0) -> ParsedFeed:
+async def fetch_and_parse(url: str, timeout: float = 15.0, max_redirects: int = 5) -> ParsedFeed:
+    # Local import: services.feed_discovery imports ParsedFeed/parse_feed from
+    # this module at load time, so importing it back at module level here
+    # would be circular. Redirects must be followed manually (rather than via
+    # httpx's follow_redirects=True) and each hop re-validated — otherwise a
+    # public URL that 302s to e.g. http://169.254.169.254/ would bypass the
+    # SSRF guard entirely.
+    from services.feed_discovery import DiscoveryError, validate_fetch_url
+
     headers = {"User-Agent": "Driftread/1.0"}
-    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
-        resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
-    return parse_feed(resp.text)
+    current_url = validate_fetch_url(url)
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+        for _ in range(max_redirects + 1):
+            resp = await client.get(current_url, headers=headers)
+            if resp.is_redirect:
+                location = resp.headers.get("location")
+                if not location:
+                    raise DiscoveryError(f"Redirect ({resp.status_code}) missing Location header")
+                current_url = validate_fetch_url(
+                    str(httpx.URL(current_url).join(location))
+                )
+                continue
+            resp.raise_for_status()
+            return parse_feed(resp.text)
+    raise DiscoveryError(f"Too many redirects (> {max_redirects})")

@@ -1,11 +1,13 @@
 from __future__ import annotations
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from services.feed_discovery import (
     DiscoveryError,
     _extract_feed_links,
+    discover_feeds,
     validate_fetch_url,
 )
 
@@ -56,3 +58,38 @@ def test_normalize_url_rejects_metadata_ip():
     # blocked the same way loopback/private ranges are (SSRF guard).
     with pytest.raises(DiscoveryError):
         validate_fetch_url("http://169.254.169.254/latest/meta-data/")
+
+
+_RealAsyncClient = httpx.AsyncClient
+
+
+def _mock_client_factory(handler):
+    def factory(*args, **kwargs):
+        kwargs.pop("follow_redirects", None)
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return _RealAsyncClient(*args, **kwargs)
+
+    return factory
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_rejects_redirect_to_private_ip():
+    """A redirect must be re-validated, not just the initial URL — otherwise
+    a safe-looking host can hand off to an internal target via a 3xx."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302, headers={"location": "http://169.254.169.254/latest/meta-data/"}
+        )
+
+    def fake_is_safe_host(host: str) -> bool:
+        return host != "169.254.169.254"
+
+    with (
+        patch("services.feed_discovery._is_safe_host", side_effect=fake_is_safe_host),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        # The redirect is rejected inside _fetch; discover_feeds treats that
+        # the same as any other fetch failure and returns no candidates,
+        # rather than propagating the internal target anywhere.
+        assert await discover_feeds("https://start.example.com/") == []

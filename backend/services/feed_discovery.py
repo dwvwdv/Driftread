@@ -80,26 +80,44 @@ def validate_fetch_url(url: str) -> str:
 
 
 async def _fetch(
-    client: httpx.AsyncClient, url: str, max_bytes: int
+    client: httpx.AsyncClient, url: str, max_bytes: int, max_redirects: int = 5
 ) -> tuple[str, str]:
-    """Return (text, content_type). Caps bytes read."""
-    async with client.stream("GET", url) as resp:
-        resp.raise_for_status()
-        ctype = resp.headers.get("content-type", "")
-        chunks: list[bytes] = []
-        size = 0
-        async for chunk in resp.aiter_bytes():
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > max_bytes:
-                raise DiscoveryError(f"Response exceeds {max_bytes} bytes")
-        body = b"".join(chunks)
-    encoding = resp.encoding or "utf-8"
-    try:
-        text = body.decode(encoding, errors="replace")
-    except LookupError:
-        text = body.decode("utf-8", errors="replace")
-    return text, ctype
+    """Return (text, content_type). Caps bytes read.
+
+    `client` must be constructed with follow_redirects=False — redirects are
+    followed manually here, re-validating each hop's host, so a public URL
+    can't use a redirect to reach a private/internal target (a safe initial
+    host is not enough on its own, since the SSRF guard only ever inspects
+    the URL that's about to be fetched).
+    """
+    current_url = url
+    for _ in range(max_redirects + 1):
+        async with client.stream("GET", current_url) as resp:
+            if resp.is_redirect:
+                location = resp.headers.get("location")
+                if not location:
+                    raise DiscoveryError(f"Redirect ({resp.status_code}) missing Location header")
+                current_url = validate_fetch_url(
+                    str(httpx.URL(current_url).join(location))
+                )
+                continue
+            resp.raise_for_status()
+            ctype = resp.headers.get("content-type", "")
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in resp.aiter_bytes():
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > max_bytes:
+                    raise DiscoveryError(f"Response exceeds {max_bytes} bytes")
+            body = b"".join(chunks)
+            encoding = resp.encoding or "utf-8"
+            try:
+                text = body.decode(encoding, errors="replace")
+            except LookupError:
+                text = body.decode("utf-8", errors="replace")
+            return text, ctype
+    raise DiscoveryError(f"Too many redirects (> {max_redirects})")
 
 
 def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:
@@ -148,7 +166,7 @@ async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandi
     headers = {"User-Agent": _user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
     async with httpx.AsyncClient(
-        follow_redirects=True, timeout=timeout, headers=headers
+        follow_redirects=False, timeout=timeout, headers=headers
     ) as client:
         # 1. Maybe the URL itself is already a feed.
         try:
