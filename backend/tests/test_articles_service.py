@@ -55,18 +55,20 @@ def test_upsert_articles_skips_missing_url():
     assert len(db.articles.calls[0]) == 1
 
 
-def test_upsert_articles_dedupes_by_url():
+def test_upsert_articles_dedupes_by_url_keeping_last_write():
     db = _FakeDB()
     articles = [
         _FakeArticle(url="https://a", title="first"),
-        _FakeArticle(url="https://a", title="duplicate"),
+        _FakeArticle(url="https://a", title="corrected"),
         _FakeArticle(url="https://b"),
     ]
     count = upsert_articles(db, "feed-1", articles)
     assert count == 2
     assert len(db.articles.calls) == 1
-    urls = [row["url"] for row in db.articles.calls[0]]
+    rows = db.articles.calls[0]
+    urls = [row["url"] for row in rows]
     assert urls == ["https://a", "https://b"]
+    assert next(r for r in rows if r["url"] == "https://a")["title"] == "corrected"
 
 
 def test_upsert_articles_chunks_large_batches():
