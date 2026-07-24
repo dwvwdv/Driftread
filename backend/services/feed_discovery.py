@@ -46,7 +46,9 @@ def _is_safe_host(host: str) -> bool:
         return False
     try:
         infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError):
+        # UnicodeError: a malformed host (e.g. a DNS label > 63 bytes) fails
+        # idna encoding before any lookup is attempted — not a gaierror.
         return False
     for info in infos:
         ip_str = info[4][0]
@@ -59,10 +61,19 @@ def _is_safe_host(host: str) -> bool:
     return True
 
 
-def _normalize_url(url: str) -> str:
+def validate_fetch_url(url: str) -> str:
+    """Normalize a user-supplied URL and reject private/loopback/link-local
+    hosts. Any code path that fetches an arbitrary URL supplied by a client
+    (feed discovery, manual import, OPML import, admin refresh) must call
+    this before making the request — otherwise it's an SSRF vector.
+    """
     if not url:
         raise DiscoveryError("Empty URL")
-    if not url.startswith(("http://", "https://")):
+    # Case-insensitive per RFC 3986 (schemes aren't case-sensitive) — a
+    # mixed-case scheme like "HTTP://" must not fall through to the
+    # https:// prepend below, which would corrupt it into a bogus URL
+    # whose "hostname" is the literal string "http".
+    if not url.lower().startswith(("http://", "https://")):
         url = "https://" + url
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -75,26 +86,44 @@ def _normalize_url(url: str) -> str:
 
 
 async def _fetch(
-    client: httpx.AsyncClient, url: str, max_bytes: int
+    client: httpx.AsyncClient, url: str, max_bytes: int, max_redirects: int = 5
 ) -> tuple[str, str]:
-    """Return (text, content_type). Caps bytes read."""
-    async with client.stream("GET", url) as resp:
-        resp.raise_for_status()
-        ctype = resp.headers.get("content-type", "")
-        chunks: list[bytes] = []
-        size = 0
-        async for chunk in resp.aiter_bytes():
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > max_bytes:
-                raise DiscoveryError(f"Response exceeds {max_bytes} bytes")
-        body = b"".join(chunks)
-    encoding = resp.encoding or "utf-8"
-    try:
-        text = body.decode(encoding, errors="replace")
-    except LookupError:
-        text = body.decode("utf-8", errors="replace")
-    return text, ctype
+    """Return (text, content_type). Caps bytes read.
+
+    `client` must be constructed with follow_redirects=False — redirects are
+    followed manually here, re-validating each hop's host, so a public URL
+    can't use a redirect to reach a private/internal target (a safe initial
+    host is not enough on its own, since the SSRF guard only ever inspects
+    the URL that's about to be fetched).
+    """
+    current_url = url
+    for _ in range(max_redirects + 1):
+        async with client.stream("GET", current_url) as resp:
+            if resp.is_redirect:
+                location = resp.headers.get("location")
+                if not location:
+                    raise DiscoveryError(f"Redirect ({resp.status_code}) missing Location header")
+                current_url = validate_fetch_url(
+                    str(httpx.URL(current_url).join(location))
+                )
+                continue
+            resp.raise_for_status()
+            ctype = resp.headers.get("content-type", "")
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in resp.aiter_bytes():
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > max_bytes:
+                    raise DiscoveryError(f"Response exceeds {max_bytes} bytes")
+            body = b"".join(chunks)
+            encoding = resp.encoding or "utf-8"
+            try:
+                text = body.decode(encoding, errors="replace")
+            except LookupError:
+                text = body.decode("utf-8", errors="replace")
+            return text, ctype
+    raise DiscoveryError(f"Too many redirects (> {max_redirects})")
 
 
 def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:
@@ -139,11 +168,11 @@ async def _validate_feed(
 
 async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandidate]:
     """Discover candidate feeds for a URL. Returns list (possibly empty)."""
-    safe_url = _normalize_url(url)
+    safe_url = validate_fetch_url(url)
     headers = {"User-Agent": _user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
     async with httpx.AsyncClient(
-        follow_redirects=True, timeout=timeout, headers=headers
+        follow_redirects=False, timeout=timeout, headers=headers
     ) as client:
         # 1. Maybe the URL itself is already a feed.
         try:

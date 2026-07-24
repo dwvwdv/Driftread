@@ -15,7 +15,7 @@ from models import (
 )
 from rss_parser import fetch_and_parse
 from services.articles import upsert_articles
-from services.feed_discovery import DiscoveryError, discover_feeds
+from services.feed_discovery import DiscoveryError, discover_feeds, validate_fetch_url
 
 router = APIRouter(prefix="/discover", tags=["discover"])
 
@@ -56,13 +56,17 @@ async def discover_and_import(
     db: Client = Depends(get_client),
 ) -> Feed:
     try:
-        parsed = await fetch_and_parse(body.feed_url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to fetch feed: {e}")
+        safe_url = validate_fetch_url(body.feed_url)
+    except DiscoveryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        parsed = await fetch_and_parse(safe_url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to fetch feed")
 
     feed_data = {
         "title": parsed.title,
-        "url": body.feed_url,
+        "url": safe_url,
         "description": parsed.description,
         "website_url": parsed.website_url,
         "language": parsed.language,

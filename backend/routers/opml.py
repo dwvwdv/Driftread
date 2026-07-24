@@ -9,10 +9,12 @@ from auth import AuthUser, get_current_user
 from database import get_client
 from models import OpmlImportResult
 from rss_parser import fetch_and_parse
+from services.feed_discovery import DiscoveryError, validate_fetch_url
 
 router = APIRouter(prefix="/me", tags=["me"])
 
 MAX_OPML_BYTES = 5 * 1024 * 1024
+MAX_OPML_OUTLINES = 200
 
 
 def _collect_outlines(node: ET.Element) -> list[ET.Element]:
@@ -43,20 +45,30 @@ async def import_opml(
     if body is None:
         raise HTTPException(status_code=400, detail="OPML missing <body>")
 
-    outlines = _collect_outlines(body)
+    all_outlines = _collect_outlines(body)
+    outlines = all_outlines[:MAX_OPML_OUTLINES]
 
     imported = 0
     subscribed = 0
     failed: list[str] = []
+    skipped = len(all_outlines) - len(outlines)
+    if skipped:
+        failed.append(
+            f"{skipped} outline(s) skipped: import is limited to {MAX_OPML_OUTLINES} feeds per file"
+        )
 
     for outline in outlines:
-        feed_url = outline.get("xmlUrl")
-        if not feed_url:
+        raw_url = outline.get("xmlUrl")
+        if not raw_url:
             continue
         try:
+            feed_url = validate_fetch_url(raw_url)
             parsed = await fetch_and_parse(feed_url)
-        except Exception as e:
-            failed.append(f"{feed_url}: {e}")
+        except DiscoveryError as e:
+            failed.append(f"{raw_url}: {e}")
+            continue
+        except Exception:
+            failed.append(f"{raw_url}: failed to fetch")
             continue
 
         title = outline.get("title") or outline.get("text") or parsed.title

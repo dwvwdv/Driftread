@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import secrets
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from models import (
 )
 from rss_parser import fetch_and_parse
 from services.articles import upsert_articles
+from services.feed_discovery import DiscoveryError, validate_fetch_url
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -24,7 +26,11 @@ AUTO_ARCHIVE_FAILURE_THRESHOLD = 10
 
 def _require_api_key(x_api_key: str = Header(...)) -> None:
     expected = os.getenv("ADMIN_API_KEY", "")
-    if not expected or x_api_key != expected:
+    # compare_digest() requires ASCII-only str (raises TypeError otherwise);
+    # comparing as UTF-8 bytes accepts any header value instead of 500ing.
+    if not expected or not secrets.compare_digest(
+        x_api_key.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
@@ -95,7 +101,8 @@ async def refresh_feed(
     feed_url: str = feed_result.data["url"]
     current_failures: int = feed_result.data.get("consecutive_failures") or 0
     try:
-        parsed = await fetch_and_parse(feed_url)
+        safe_url = validate_fetch_url(feed_url)
+        parsed = await fetch_and_parse(safe_url)
     except Exception as e:
         failures = current_failures + 1
         update = {
@@ -107,7 +114,7 @@ async def refresh_feed(
         if failures >= AUTO_ARCHIVE_FAILURE_THRESHOLD:
             update["archived_at"] = datetime.now(timezone.utc).isoformat()
         db.table("feeds").update(update).eq("id", str(feed_id)).execute()
-        raise HTTPException(status_code=502, detail=f"Failed to fetch feed: {e}")
+        raise HTTPException(status_code=502, detail="Failed to fetch feed")
 
     now = datetime.now(timezone.utc).isoformat()
     inserted = upsert_articles(db, str(feed_id), parsed.articles)
@@ -130,13 +137,17 @@ async def import_feed_from_url(
 ) -> Feed:
     """API-key gated alternative to /discover/import: import a single feed by URL."""
     try:
-        parsed = await fetch_and_parse(body.feed_url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to fetch feed: {e}")
+        safe_url = validate_fetch_url(body.feed_url)
+    except DiscoveryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        parsed = await fetch_and_parse(safe_url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to fetch feed")
 
     feed_data = {
         "title": parsed.title,
-        "url": body.feed_url,
+        "url": safe_url,
         "description": parsed.description,
         "website_url": parsed.website_url,
         "language": parsed.language,
