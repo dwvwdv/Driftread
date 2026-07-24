@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from supabase import Client
 
 from database import get_client
@@ -165,6 +165,7 @@ async def import_feed_from_url(
 )
 async def list_unhealthy_feeds(
     threshold: int = 50,
+    limit: int = Query(200, ge=1, le=1000),
     db: Client = Depends(get_client),
 ) -> list[FeedHealthSummary]:
     """List feeds with health_score below threshold, ordered worst-first."""
@@ -177,18 +178,23 @@ async def list_unhealthy_feeds(
         .lte("health_score", threshold)
         .is_("archived_at", "null")
         .order("health_score")
+        .limit(limit)
         .execute()
     )
     return [FeedHealthSummary(**row) for row in rows.data]
 
 
 @router.get("/feeds/archived", response_model=list[Feed], dependencies=[Depends(_require_api_key)])
-async def list_archived_feeds(db: Client = Depends(get_client)) -> list[Feed]:
+async def list_archived_feeds(
+    limit: int = Query(200, ge=1, le=1000),
+    db: Client = Depends(get_client),
+) -> list[Feed]:
     result = (
         db.table("feeds")
         .select("*")
         .not_.is_("archived_at", "null")
         .order("archived_at", desc=True)
+        .limit(limit)
         .execute()
     )
     return [Feed(**row) for row in result.data]

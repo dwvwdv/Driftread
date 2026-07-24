@@ -115,7 +115,7 @@ class UserPreferencesUpdate(BaseModel):
 
 
 class DiscoverRequest(BaseModel):
-    url: str
+    url: str = Field(max_length=2048)
 
 
 class DiscoveredFeed(BaseModel):
@@ -132,7 +132,7 @@ class DiscoverResponse(BaseModel):
 
 
 class DiscoverImportRequest(BaseModel):
-    feed_url: str
+    feed_url: str = Field(max_length=2048)
 
 
 class OpmlImportResult(BaseModel):
