@@ -85,7 +85,7 @@ def validate_fetch_url(url: str) -> str:
     return url
 
 
-async def _fetch(
+async def fetch_with_cap(
     client: httpx.AsyncClient, url: str, max_bytes: int, max_redirects: int = 5
 ) -> tuple[str, str]:
     """Return (text, content_type). Caps bytes read.
@@ -95,6 +95,10 @@ async def _fetch(
     can't use a redirect to reach a private/internal target (a safe initial
     host is not enough on its own, since the SSRF guard only ever inspects
     the URL that's about to be fetched).
+
+    Public (not a leading-underscore name) because rss_parser.fetch_and_parse
+    calls this too, for the same streaming byte cap — a bare httpx client.get()
+    buffers the entire response in memory with no limit.
     """
     current_url = url
     for _ in range(max_redirects + 1):
@@ -160,7 +164,7 @@ async def _validate_feed(
     client: httpx.AsyncClient, feed_url: str
 ) -> ParsedFeed | None:
     try:
-        text, ctype = await _fetch(client, feed_url, MAX_FEED_BYTES)
+        text, ctype = await fetch_with_cap(client, feed_url, MAX_FEED_BYTES)
         return parse_feed(text)
     except (httpx.HTTPError, DiscoveryError, ValueError):
         return None
@@ -176,7 +180,7 @@ async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandi
     ) as client:
         # 1. Maybe the URL itself is already a feed.
         try:
-            text, ctype = await _fetch(client, safe_url, MAX_FEED_BYTES)
+            text, ctype = await fetch_with_cap(client, safe_url, MAX_FEED_BYTES)
         except (httpx.HTTPError, DiscoveryError):
             return []
 

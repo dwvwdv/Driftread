@@ -105,7 +105,7 @@ async def test_discover_feeds_rejects_redirect_to_private_ip():
         patch("services.feed_discovery._is_safe_host", side_effect=fake_is_safe_host),
         patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
     ):
-        # The redirect is rejected inside _fetch; discover_feeds treats that
-        # the same as any other fetch failure and returns no candidates,
+        # The redirect is rejected inside fetch_with_cap; discover_feeds treats
+        # that the same as any other fetch failure and returns no candidates,
         # rather than propagating the internal target anywhere.
         assert await discover_feeds("https://start.example.com/") == []

@@ -166,25 +166,15 @@ def parse_feed(xml_text: str) -> ParsedFeed:
 async def fetch_and_parse(url: str, timeout: float = 15.0, max_redirects: int = 5) -> ParsedFeed:
     # Local import: services.feed_discovery imports ParsedFeed/parse_feed from
     # this module at load time, so importing it back at module level here
-    # would be circular. Redirects must be followed manually (rather than via
-    # httpx's follow_redirects=True) and each hop re-validated — otherwise a
-    # public URL that 302s to e.g. http://169.254.169.254/ would bypass the
-    # SSRF guard entirely.
-    from services.feed_discovery import DiscoveryError, validate_fetch_url
+    # would be circular. Delegates the actual HTTP fetch to fetch_with_cap,
+    # which follows redirects manually and re-validates each hop (a public
+    # URL that 302s to e.g. http://169.254.169.254/ must not bypass the SSRF
+    # guard) and caps response bytes read — a bare client.get() has no size
+    # limit and would let a validated host exhaust memory via a huge body.
+    from services.feed_discovery import MAX_FEED_BYTES, fetch_with_cap, validate_fetch_url
 
     headers = {"User-Agent": "Driftread/1.0"}
     current_url = validate_fetch_url(url)
-    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
-        for _ in range(max_redirects + 1):
-            resp = await client.get(current_url, headers=headers)
-            if resp.is_redirect:
-                location = resp.headers.get("location")
-                if not location:
-                    raise DiscoveryError(f"Redirect ({resp.status_code}) missing Location header")
-                current_url = validate_fetch_url(
-                    str(httpx.URL(current_url).join(location))
-                )
-                continue
-            resp.raise_for_status()
-            return parse_feed(resp.text)
-    raise DiscoveryError(f"Too many redirects (> {max_redirects})")
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers=headers) as client:
+        text, _ctype = await fetch_with_cap(client, current_url, MAX_FEED_BYTES, max_redirects=max_redirects)
+    return parse_feed(text)

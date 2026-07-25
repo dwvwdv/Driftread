@@ -140,3 +140,22 @@ async def test_fetch_and_parse_rejects_too_many_redirects():
     ):
         with pytest.raises(Exception):
             await rss_parser.fetch_and_parse("https://start.example.com/0", max_redirects=3)
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_parse_rejects_oversized_response():
+    from services.feed_discovery import MAX_FEED_BYTES
+
+    oversized_body = b"<rss>" + b"a" * (MAX_FEED_BYTES + 1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=oversized_body, headers={"content-type": "application/rss+xml"}
+        )
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        with pytest.raises(Exception):
+            await rss_parser.fetch_and_parse("https://start.example.com/")
