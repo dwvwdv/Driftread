@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from migrate import run_migrations
 from routers import admin, articles, discover, feeds, me, opml, recommendations
@@ -78,6 +79,17 @@ app.add_middleware(
 # most-recently-added middleware first), rejecting oversized requests before
 # CORS or routing does any work.
 app.add_middleware(MaxBodySizeMiddleware, max_body_size=MAX_REQUEST_BODY_BYTES)
+
+# docker-compose.yml never publishes a port for this service — the only way
+# to reach it at all is through the frontend nginx container, which sets
+# X-Forwarded-For/X-Real-IP (frontend/nginx.conf). Without this, every
+# request's scope["client"] is the nginx container's own address (uvicorn
+# doesn't trust proxy headers by default), so anything keyed on request.client
+# — e.g. rate_limit.py's per-IP limiter — sees one shared "client" for every
+# real user behind the proxy instead of distinguishing them. trusted_hosts="*"
+# is safe specifically because nginx is the only possible peer here; it would
+# NOT be safe if this API were ever also reachable directly from the internet.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 app.include_router(feeds.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
