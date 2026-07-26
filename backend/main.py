@@ -5,11 +5,50 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import PlainTextResponse
 
 from migrate import run_migrations
 from routers import admin, articles, discover, feeds, me, opml, recommendations
 
 logging.basicConfig(level=logging.INFO)
+
+# Comfortably above the largest legitimate body (the 5 MiB OPML upload cap in
+# routers/opml.py) plus multipart overhead. FastAPI/Starlette buffer a
+# request's body fully in memory before any route or pydantic validation
+# runs, so without this, any JSON POST endpoint — including the public,
+# unauthenticated /api/discover routes — has no limit on payload size and is
+# a memory-exhaustion vector.
+MAX_REQUEST_BODY_BYTES = 6 * 1024 * 1024
+
+
+class MaxBodySizeMiddleware:
+    """Rejects a request whose declared Content-Length exceeds the cap, before
+    its body is read. Only catches requests that send a Content-Length header
+    (which covers normal JSON/multipart clients, including httpx and
+    browsers); a request streamed via chunked transfer-encoding with no
+    Content-Length isn't covered by this check.
+    """
+
+    def __init__(self, app, max_body_size: int) -> None:
+        self.app = app
+        self.max_body_size = max_body_size
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            for name, value in scope.get("headers", ()):
+                if name == b"content-length":
+                    try:
+                        too_large = int(value) > self.max_body_size
+                    except ValueError:
+                        too_large = False
+                    if too_large:
+                        response = PlainTextResponse(
+                            "Request body too large", status_code=413
+                        )
+                        await response(scope, receive, send)
+                        return
+                    break
+        await self.app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -35,6 +74,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added after CORSMiddleware so it runs outermost (Starlette executes the
+# most-recently-added middleware first), rejecting oversized requests before
+# CORS or routing does any work.
+app.add_middleware(MaxBodySizeMiddleware, max_body_size=MAX_REQUEST_BODY_BYTES)
 
 app.include_router(feeds.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
