@@ -13,14 +13,25 @@ docker-compose.yml), so a process-local limiter is sufficient.
 """
 from __future__ import annotations
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 
 from fastapi import HTTPException, Request, status
 
 DEFAULT_MAX_REQUESTS = 20
 DEFAULT_WINDOW_SECONDS = 60.0
 
-_hits: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+# Caps total memory use. A bucket is created per distinct (endpoint, client
+# IP) pair; expiration only drops timestamps *inside* a bucket, so without a
+# cap on the number of buckets themselves, a long-running process serving
+# enough unique clients — ordinary traffic churn, not just abuse — grows
+# this dict without bound. When full, the least-recently-touched bucket is
+# evicted to make room; at this project's scale that only means a client's
+# history resets a little early, not a new way to bypass the limiter (the
+# thing being guarded against is request *volume*, not perfect long-term
+# memory of every past caller).
+MAX_TRACKED_CLIENTS = 10_000
+
+_hits: "OrderedDict[tuple[str, str], deque[float]]" = OrderedDict()
 
 
 def _client_ip(request: Request) -> str:
@@ -40,7 +51,14 @@ def rate_limit(
     def dependency(request: Request) -> None:
         key = (name, _client_ip(request))
         now = time.monotonic()
-        hits = _hits[key]
+        hits = _hits.get(key)
+        if hits is None:
+            hits = deque()
+            _hits[key] = hits
+            if len(_hits) > MAX_TRACKED_CLIENTS:
+                _hits.popitem(last=False)
+        else:
+            _hits.move_to_end(key)
         while hits and now - hits[0] > window_seconds:
             hits.popleft()
         if len(hits) >= max_requests:
