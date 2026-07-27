@@ -68,6 +68,27 @@ def test_import_opml_rejects_private_outline_url(client):
     mock_db.table.assert_not_called()
 
 
+def test_import_opml_rejects_entity_expansion(client):
+    """A billion-laughs / XXE payload must be rejected as bad input (400),
+    not blow up memory/CPU or crash the request with an unhandled error."""
+    c, mock_db = client
+    opml = b"""<?xml version="1.0"?>
+    <!DOCTYPE opml [
+      <!ENTITY a "spam">
+      <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+    ]>
+    <opml version="2.0"><body>
+      <outline text="&b;" xmlUrl="http://example.com/rss"/>
+    </body></opml>"""
+    resp = c.post(
+        "/api/me/import/opml",
+        headers={"Authorization": f"Bearer {_token()}"},
+        files={"file": ("feeds.opml", opml, "text/x-opml")},
+    )
+    assert resp.status_code == 400
+    mock_db.table.assert_not_called()
+
+
 def test_import_opml_caps_outline_count(client):
     c, _ = client
     outlines = "".join(
