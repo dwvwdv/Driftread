@@ -16,6 +16,18 @@ def mock_db():
     return MagicMock()
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """rate_limit._hits is process-global state shared across every test via
+    the single imported module — without clearing it, an earlier test's
+    requests count toward a later test's quota (they share TestClient's fixed
+    fake client IP), making rate-limit assertions order-dependent."""
+    from rate_limit import _hits
+
+    _hits.clear()
+    yield
+
+
 @pytest.fixture
 def client(mock_db):
     """TestClient with database.get_client overridden via FastAPI's

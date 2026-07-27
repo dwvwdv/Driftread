@@ -13,6 +13,7 @@ from models import (
     DiscoverResponse,
     Feed,
 )
+from rate_limit import rate_limit
 from rss_parser import fetch_and_parse
 from services.articles import upsert_articles
 from services.feed_discovery import DiscoveryError, discover_feeds, validate_fetch_url
@@ -20,7 +21,11 @@ from services.feed_discovery import DiscoveryError, discover_feeds, validate_fet
 router = APIRouter(prefix="/discover", tags=["discover"])
 
 
-@router.post("", response_model=DiscoverResponse)
+@router.post(
+    "",
+    response_model=DiscoverResponse,
+    dependencies=[Depends(rate_limit("discover"))],
+)
 async def discover(
     body: DiscoverRequest,
     db: Client = Depends(get_client),
@@ -49,7 +54,11 @@ async def discover(
     return DiscoverResponse(source_url=body.url, candidates=result)
 
 
-@router.post("/import", response_model=Feed)
+@router.post(
+    "/import",
+    response_model=Feed,
+    dependencies=[Depends(rate_limit("discover_import"))],
+)
 async def discover_and_import(
     body: DiscoverImportRequest,
     user: AuthUser | None = Depends(get_optional_user),
