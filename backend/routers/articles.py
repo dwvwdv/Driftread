@@ -42,7 +42,7 @@ async def get_article(article_id: UUID, db: Client = Depends(get_client)) -> Art
         db.table("articles")
         .select("*")
         .eq("id", str(article_id))
-        .single()
+        .maybe_single()
         .execute()
     )
     if not result.data:

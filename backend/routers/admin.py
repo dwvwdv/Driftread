@@ -57,7 +57,7 @@ async def archive_feed(
     feed_id: UUID,
     db: Client = Depends(get_client),
 ) -> Feed:
-    result = db.table("feeds").select("*").eq("id", str(feed_id)).single().execute()
+    result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
@@ -76,7 +76,7 @@ async def unarchive_feed(
     feed_id: UUID,
     db: Client = Depends(get_client),
 ) -> Feed:
-    result = db.table("feeds").select("*").eq("id", str(feed_id)).single().execute()
+    result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
@@ -94,7 +94,7 @@ async def refresh_feed(
     feed_id: UUID,
     db: Client = Depends(get_client),
 ) -> dict:
-    feed_result = db.table("feeds").select("*").eq("id", str(feed_id)).single().execute()
+    feed_result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
     if not feed_result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 

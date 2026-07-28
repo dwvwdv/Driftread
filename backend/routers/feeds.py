@@ -51,7 +51,7 @@ async def list_categories(db: Client = Depends(get_client)) -> list[str]:
 
 @router.get("/{feed_id}", response_model=FeedWithArticles)
 async def get_feed(feed_id: UUID, db: Client = Depends(get_client)) -> FeedWithArticles:
-    result = db.table("feeds").select("*").eq("id", str(feed_id)).single().execute()
+    result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
