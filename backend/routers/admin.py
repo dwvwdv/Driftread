@@ -58,7 +58,10 @@ async def archive_feed(
     db: Client = Depends(get_client),
 ) -> Feed:
     result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
-    if not result.data:
+    # postgrest-py has shipped versions where maybe_single().execute() returns
+    # bare None on 0 rows instead of a response object with data=None; guard
+    # both shapes rather than relying on result.data alone.
+    if not result or not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
     now = datetime.now(timezone.utc).isoformat()
@@ -77,7 +80,7 @@ async def unarchive_feed(
     db: Client = Depends(get_client),
 ) -> Feed:
     result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
-    if not result.data:
+    if not result or not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
     updated = (
@@ -95,7 +98,7 @@ async def refresh_feed(
     db: Client = Depends(get_client),
 ) -> dict:
     feed_result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
-    if not feed_result.data:
+    if not feed_result or not feed_result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
     feed_url: str = feed_result.data["url"]

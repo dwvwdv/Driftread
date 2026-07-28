@@ -45,6 +45,9 @@ async def get_article(article_id: UUID, db: Client = Depends(get_client)) -> Art
         .maybe_single()
         .execute()
     )
-    if not result.data:
+    # postgrest-py has shipped versions where maybe_single().execute() returns
+    # bare None on 0 rows instead of a response object with data=None; guard
+    # both shapes rather than relying on result.data alone.
+    if not result or not result.data:
         raise HTTPException(status_code=404, detail="Article not found")
     return Article(**result.data)
