@@ -1,6 +1,8 @@
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring as safe_fromstring
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import Response
 from supabase import Client
@@ -37,8 +39,12 @@ async def import_opml(
     if len(raw) > MAX_OPML_BYTES:
         raise HTTPException(status_code=413, detail="OPML file too large")
     try:
-        root = ET.fromstring(raw)
-    except ET.ParseError as e:
+        # defusedxml rejects DTD entity declarations and external references,
+        # closing the billion-laughs / quadratic-blowup and XXE holes that
+        # plain xml.etree.ElementTree.fromstring leaves open for this
+        # authenticated-but-untrusted upload.
+        root = safe_fromstring(raw)
+    except (ET.ParseError, DefusedXmlException) as e:
         raise HTTPException(status_code=400, detail=f"Invalid OPML: {e}")
 
     body = root.find("body")
