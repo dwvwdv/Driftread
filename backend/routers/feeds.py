@@ -51,8 +51,11 @@ async def list_categories(db: Client = Depends(get_client)) -> list[str]:
 
 @router.get("/{feed_id}", response_model=FeedWithArticles)
 async def get_feed(feed_id: UUID, db: Client = Depends(get_client)) -> FeedWithArticles:
-    result = db.table("feeds").select("*").eq("id", str(feed_id)).single().execute()
-    if not result.data:
+    result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
+    # postgrest-py has shipped versions where maybe_single().execute() returns
+    # bare None on 0 rows instead of a response object with data=None; guard
+    # both shapes rather than relying on result.data alone.
+    if not result or not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
     articles_result = (
