@@ -16,6 +16,18 @@ REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
 ENV_FILE = os.path.join(REPO_ROOT, ".env")
 ENV_EXAMPLE = os.path.join(REPO_ROOT, ".env.example")
 
+# Feed refresh scheduler knobs. Optional — backend/services/feed_refresh.py
+# supplies these same defaults when the variables are absent, so they're
+# reported rather than required.
+OPTIONAL_REFRESH_DEFAULTS = {
+    "FEED_REFRESH_ENABLED": "true",
+    "FEED_REFRESH_TICK_SECONDS": "300",
+    "FEED_REFRESH_BATCH_SIZE": "50",
+    "FEED_REFRESH_CONCURRENCY": "5",
+    "FEED_REFRESH_MIN_INTERVAL_MINUTES": "15",
+    "FEED_REFRESH_MAX_INTERVAL_MINUTES": "1440",
+}
+
 
 def read_env(path: str) -> dict[str, str]:
     result = {}
@@ -86,6 +98,15 @@ def main():
     if is_unset("SUPABASE_JWT_SECRET"):
         print("\n⚠ 請手動填入 .env 中的：SUPABASE_JWT_SECRET")
         print("  Supabase Dashboard → Settings → API → JWT Settings → JWT Secret")
+
+    # Feed refresh scheduler settings. All have code-level defaults (see
+    # backend/services/feed_refresh.py), so they're deliberately not part of the
+    # missing check above — an unset .env still runs. Just report the effective
+    # values so it's clear the scheduler is on and at what cadence.
+    if all(k not in existing for k in OPTIONAL_REFRESH_DEFAULTS):
+        print("\nℹ 自動抓取排程使用預設值（可在 .env 覆寫，見 .env.example）：")
+        for key, default in OPTIONAL_REFRESH_DEFAULTS.items():
+            print(f"    {key}={default}")
 
 
 if __name__ == "__main__":

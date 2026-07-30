@@ -25,7 +25,10 @@ class _FakeTable:
         self.calls: list[list[dict]] = []
 
     def upsert(self, rows, on_conflict=None):
-        assert on_conflict == "url"
+        # Must target articles_feed_id_url_key (migration 005) — the old
+        # global-unique "url" constraint no longer exists, so an upsert naming
+        # it would fail against a migrated database.
+        assert on_conflict == "feed_id,url"
         self.calls.append(rows)
         return self
 

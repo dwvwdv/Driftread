@@ -21,6 +21,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 - **用戶系統**：Supabase Auth 註冊 / 登入；訂閱、已讀、收藏、稍後讀
 - **Auto-discover**：貼任意網址，自動找出 RSS / Atom feed
 - **OPML 匯入 / 匯出**：與 Feedly / Inoreader 互通
+- **自動定期抓取**：獨立 `worker` 容器輪詢到期佇列，抓取間隔依實際更新狀況自適應（有新文章就縮短、沒動靜就拉長），並以 ETag / Last-Modified 避免重複下載
 - **Feed 健康度監測**：連續失敗計數與原因，達 10 次自動封存
 - **瀏覽器擴充**：`extension/` 目錄，安裝後可在任何網站一鍵加入 feed
 - **開放 API**：`POST /api/admin/feeds/from-url` 供外部腳本匯入
@@ -63,8 +64,19 @@ docker network create web_network
 docker compose up -d
 ```
 
-`api` 服務不發布 port，只能透過 `frontend` 的 nginx 容器存取（`/api/` 反向代理到 `api:8000`）。
+Compose 有三個服務：
+
+| 服務 | 內容 |
+|------|------|
+| `api` | FastAPI。不發布 port，只能透過 `frontend` 的 nginx 容器存取（`/api/` 反向代理到 `api:8000`）|
+| `worker` | 自動抓取排程器。與 `api` 共用同一個 image，只換 `command` 跑 `worker.py`。不對外服務，只接 `default` network。restart policy 是 `on-failure`（不是 `unless-stopped`），這樣 `FEED_REFRESH_ENABLED=false` 時乾淨退出就會保持停止，崩潰時仍會自動重啟 |
+| `frontend` | Angular build 產物 + nginx。接 `web_network` 供外部反向代理 |
+
 資料庫 migration 由後端啟動時的 `backend/migrate.py` 自動套用 `backend/migrations/*.sql`。
+`worker` 以 `depends_on: api: service_healthy` 等 migration 落地後才開始輪詢，自己不跑 migration。
+
+不想跑 `worker` 的話，設 `FEED_REFRESH_ENABLED=false` 並改由外部排程器定期呼叫
+`POST /api/admin/feeds/refresh-due`（需 `X-API-Key`）即可，抓取邏輯完全相同。
 
 ### 停止
 
@@ -83,6 +95,12 @@ docker compose down
 | `ADMIN_API_KEY` | ✅ | 後台 / 開放 API 的 `X-API-Key` 標頭，由 `gen_env.py` 自動產生 |
 | `CORS_ORIGINS` | | 逗號分隔的允許來源，預設 `*` |
 | `DISCOVERY_USER_AGENT` | | 所有對外抓取（discover 與 feed 匯入 / refresh）的 User-Agent，預設 `Driftread/1.0` |
+| `FEED_REFRESH_ENABLED` | | 是否啟用自動抓取，預設 `true`。設 `false` 時 `worker` 記一行 log 後退出（`api` 不受影響）|
+| `FEED_REFRESH_TICK_SECONDS` | | 多久掃一次到期佇列，預設 `300`。**這不是抓取頻率** —— 個別 feed 的間隔由 `feeds.fetch_interval_minutes` 自適應決定 |
+| `FEED_REFRESH_BATCH_SIZE` | | 單輪最多處理幾個到期 feed，預設 `50` |
+| `FEED_REFRESH_CONCURRENCY` | | 單輪同時對外抓取的上限，預設 `5` |
+| `FEED_REFRESH_MIN_INTERVAL_MINUTES` | | 個別 feed 抓取間隔下限，預設 `15` |
+| `FEED_REFRESH_MAX_INTERVAL_MINUTES` | | 個別 feed 抓取間隔上限，預設 `1440`（24 小時）|
 
 > `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**。前端的 Supabase 設定在
 > `frontend/src/environments/`，那裡用的是 anon key。

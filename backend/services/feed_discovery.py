@@ -36,6 +36,22 @@ class DiscoveryCandidate:
     website_url: str | None
 
 
+@dataclass(frozen=True)
+class CappedResponse:
+    """A fetch result plus the bits conditional GET needs: the status (to spot
+    304) and the validators to replay on the next poll.
+    """
+    status_code: int
+    text: str
+    content_type: str
+    etag: str | None = None
+    last_modified: str | None = None
+
+    @property
+    def not_modified(self) -> bool:
+        return self.status_code == 304
+
+
 class DiscoveryError(Exception):
     pass
 
@@ -93,10 +109,14 @@ def validate_fetch_url(url: str) -> str:
     return url
 
 
-async def fetch_with_cap(
-    client: httpx.AsyncClient, url: str, max_bytes: int, max_redirects: int = 5
-) -> tuple[str, str]:
-    """Return (text, content_type). Caps bytes read.
+async def fetch_with_cap_response(
+    client: httpx.AsyncClient,
+    url: str,
+    max_bytes: int,
+    max_redirects: int = 5,
+    extra_headers: dict[str, str] | None = None,
+) -> CappedResponse:
+    """Fetch `url`, capping bytes read, and return status + body + validators.
 
     `client` must be constructed with follow_redirects=False — redirects are
     followed manually here, re-validating each hop's host, so a public URL
@@ -104,9 +124,9 @@ async def fetch_with_cap(
     host is not enough on its own, since the SSRF guard only ever inspects
     the URL that's about to be fetched).
 
-    Public (not a leading-underscore name) because rss_parser.fetch_and_parse
-    calls this too, for the same streaming byte cap — a bare httpx client.get()
-    buffers the entire response in memory with no limit.
+    `extra_headers` carries per-request headers the shared client can't hold —
+    conditional-GET validators (If-None-Match / If-Modified-Since) differ per
+    feed, so they can't live on the client's default headers.
     """
     # The initial URL is validated here, not just redirect hops, because not
     # every caller supplies a URL a client typed: _validate_feed() below
@@ -117,7 +137,21 @@ async def fetch_with_cap(
     # an already-validated URL only costs one extra DNS lookup.
     current_url = validate_fetch_url(url)
     for _ in range(max_redirects + 1):
-        async with client.stream("GET", current_url) as resp:
+        async with client.stream("GET", current_url, headers=extra_headers) as resp:
+            # Must precede the redirect branch: httpx's is_redirect is True for
+            # *any* 3xx, so a 304 would otherwise be treated as a redirect and
+            # rejected for its (correctly) missing Location header. It also
+            # slips past raise_for_status, which only fires on 4xx/5xx — so
+            # without this branch the empty body would reach parse_feed and
+            # surface as "malformed XML" rather than the no-change it is.
+            if resp.status_code == 304:
+                return CappedResponse(
+                    status_code=304,
+                    text="",
+                    content_type=resp.headers.get("content-type", ""),
+                    etag=resp.headers.get("etag"),
+                    last_modified=resp.headers.get("last-modified"),
+                )
             if resp.is_redirect:
                 location = resp.headers.get("location")
                 if not location:
@@ -141,8 +175,37 @@ async def fetch_with_cap(
                 text = body.decode(encoding, errors="replace")
             except LookupError:
                 text = body.decode("utf-8", errors="replace")
-            return text, ctype
+            return CappedResponse(
+                status_code=resp.status_code,
+                text=text,
+                content_type=ctype,
+                etag=resp.headers.get("etag"),
+                last_modified=resp.headers.get("last-modified"),
+            )
     raise DiscoveryError(f"Too many redirects (> {max_redirects})")
+
+
+async def fetch_with_cap(
+    client: httpx.AsyncClient, url: str, max_bytes: int, max_redirects: int = 5
+) -> tuple[str, str]:
+    """Return (text, content_type). Caps bytes read.
+
+    Thin wrapper over fetch_with_cap_response for the unconditional callers
+    (discovery, manual/OPML import) that only ever want the body.
+
+    Public (not a leading-underscore name) because rss_parser.fetch_and_parse
+    calls this too, for the same streaming byte cap — a bare httpx client.get()
+    buffers the entire response in memory with no limit.
+    """
+    resp = await fetch_with_cap_response(
+        client, url, max_bytes, max_redirects=max_redirects
+    )
+    if resp.not_modified:
+        # No validators were sent, so a 304 here is the server violating the
+        # spec. Fail loudly rather than hand back an empty body that would
+        # resurface downstream as a confusing "malformed feed XML".
+        raise DiscoveryError("Unexpected 304 for an unconditional request")
+    return resp.text, resp.content_type
 
 
 def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:

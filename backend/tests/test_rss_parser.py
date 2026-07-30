@@ -184,6 +184,149 @@ async def test_fetch_and_parse_rejects_oversized_response():
 
 
 @pytest.mark.asyncio
+async def test_fetch_and_parse_conditional_sends_stored_validators():
+    seen: list[dict[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append({
+            "if-none-match": request.headers.get("if-none-match"),
+            "if-modified-since": request.headers.get("if-modified-since"),
+        })
+        return httpx.Response(
+            200,
+            text=RSS_SAMPLE,
+            headers={
+                "content-type": "application/rss+xml",
+                "etag": 'W/"fresh"',
+                "last-modified": "Thu, 02 Jan 2025 00:00:00 GMT",
+            },
+        )
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        result = await rss_parser.fetch_and_parse_conditional(
+            "https://example.com/feed.xml",
+            etag='W/"old"',
+            last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+        )
+
+    assert seen == [{
+        "if-none-match": 'W/"old"',
+        "if-modified-since": "Wed, 01 Jan 2025 00:00:00 GMT",
+    }]
+    assert result.not_modified is False
+    assert result.parsed is not None
+    assert result.parsed.title == "Test Feed"
+    # Fresh validators come back for storage on the feed row.
+    assert result.etag == 'W/"fresh"'
+    assert result.last_modified == "Thu, 02 Jan 2025 00:00:00 GMT"
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_parse_conditional_omits_headers_when_no_validators():
+    seen: list[dict[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append({
+            "if-none-match": request.headers.get("if-none-match"),
+            "if-modified-since": request.headers.get("if-modified-since"),
+        })
+        return httpx.Response(
+            200, text=RSS_SAMPLE, headers={"content-type": "application/rss+xml"}
+        )
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        result = await rss_parser.fetch_and_parse_conditional("https://example.com/feed.xml")
+
+    assert seen == [{"if-none-match": None, "if-modified-since": None}]
+    assert result.parsed is not None
+    assert result.etag is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_parse_conditional_handles_304():
+    """304 carries no body. It is not a 4xx/5xx so raise_for_status lets it
+    through, and httpx's is_redirect is False for it — without an explicit
+    branch the empty body reaches parse_feed and surfaces as "malformed XML",
+    turning a success-with-no-change into a spurious feed failure.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(304)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        result = await rss_parser.fetch_and_parse_conditional(
+            "https://example.com/feed.xml", etag='W/"kept"'
+        )
+
+    assert result.not_modified is True
+    assert result.parsed is None
+    # A 304 that echoes no validators must not clear the stored ones, or every
+    # later poll would go out unconditional.
+    assert result.etag == 'W/"kept"'
+
+
+@pytest.mark.asyncio
+async def test_unconditional_fetch_rejects_unsolicited_304():
+    """fetch_and_parse sends no validators, so a 304 is the server misbehaving.
+    It must raise rather than yield an empty body that resurfaces later as a
+    misleading "malformed feed XML"."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(304)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        with pytest.raises(Exception):
+            await rss_parser.fetch_and_parse("https://example.com/feed.xml")
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_parse_conditional_still_guards_redirects_to_private_ips():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302, headers={"location": "http://169.254.169.254/latest/meta-data/"}
+        )
+
+    def fake_is_safe_host(host: str) -> bool:
+        return host != "169.254.169.254"
+
+    with (
+        patch("services.feed_discovery._is_safe_host", side_effect=fake_is_safe_host),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        with pytest.raises(Exception):
+            await rss_parser.fetch_and_parse_conditional("https://start.example.com/")
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_parse_conditional_rejects_oversized_response():
+    from services.feed_discovery import MAX_FEED_BYTES
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"<rss>" + b"a" * (MAX_FEED_BYTES + 1),
+            headers={"content-type": "application/rss+xml"},
+        )
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        with pytest.raises(Exception):
+            await rss_parser.fetch_and_parse_conditional("https://example.com/feed.xml")
+
+
+@pytest.mark.asyncio
 async def test_fetch_and_parse_uses_configured_user_agent(monkeypatch):
     """DISCOVERY_USER_AGENT must apply to feed ingestion too, not only to
     candidate discovery — /discover/import, admin import/refresh and OPML

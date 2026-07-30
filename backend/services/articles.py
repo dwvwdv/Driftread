@@ -14,11 +14,19 @@ def upsert_articles(db: "Client", feed_id: str, articles: list["ParsedArticle"])
     """Upsert parsed articles for a feed, deduping by URL and batching in
     chunks of `CHUNK_SIZE` (a single request with duplicate URLs would make
     Postgres raise "ON CONFLICT DO UPDATE command cannot affect row a second
-    time"). Returns the number of rows upserted.
+    time").
+
+    Returns the number of rows *touched*, which includes updates to articles
+    already stored — a feed serves the same recent items on every poll, so this
+    is close to the feed's item count and says nothing about whether anything
+    new arrived. Callers that need that (services/feed_refresh.py) compare
+    article counts before and after instead.
     """
     # Keyed by URL so a repeated URL keeps the *last* occurrence's data,
     # matching the previous sequential-upsert behavior (each upsert
     # overwrote the row) while still sending one row per URL per batch.
+    # One feed_id per call, so keying on URL alone matches the per-feed
+    # uniqueness the articles_feed_id_url_key constraint enforces.
     rows_by_url: dict[str, dict] = {}
     for article in articles:
         if not article.url:
@@ -39,6 +47,8 @@ def upsert_articles(db: "Client", feed_id: str, articles: list["ParsedArticle"])
     inserted = 0
     for i in range(0, len(rows), CHUNK_SIZE):
         chunk = rows[i : i + CHUNK_SIZE]
-        result = db.table("articles").upsert(chunk, on_conflict="url").execute()
+        # Must match articles_feed_id_url_key (migration 005). The old
+        # on_conflict="url" targets a constraint that no longer exists.
+        result = db.table("articles").upsert(chunk, on_conflict="feed_id,url").execute()
         inserted += len(result.data)
     return inserted

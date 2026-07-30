@@ -84,6 +84,10 @@ async def import_opml(
             "description": parsed.description,
             "website_url": parsed.website_url or outline.get("htmlUrl"),
             "language": parsed.language,
+            # Articles aren't upserted here — an import of up to
+            # MAX_OPML_OUTLINES feeds would take far too long inside one
+            # request. Mark each feed due so the scheduler fetches it next pass.
+            "next_fetch_at": datetime.now(timezone.utc).isoformat(),
         }
         result = db.table("feeds").upsert(feed_data, on_conflict="url").execute()
         if not result.data:
