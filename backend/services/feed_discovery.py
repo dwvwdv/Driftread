@@ -9,6 +9,7 @@ SSRF protection is applied: private / loopback / link-local addresses are reject
 """
 from __future__ import annotations
 import asyncio
+import concurrent.futures
 import ipaddress
 import os
 import socket
@@ -55,6 +56,24 @@ MAX_FEED_LINK_CANDIDATES = 50
 # request into address_count x timeout of hung connection time. 2 covers the
 # realistic dual-stack case (one AAAA, one A) this exists for.
 MAX_PINNED_CONNECT_ATTEMPTS = 2
+# socket.getaddrinfo() has no cooperative cancellation point, so
+# asyncio.wait_for() timing out a resolution (see _resolve_pinned_ips) only
+# ever stops *waiting* on it — the blocking call keeps running in whatever
+# thread it was submitted to until the OS resolver itself gives up, often far
+# past our own timeout. asyncio.to_thread() always submits to the process-
+# wide default executor, which every other blocking call in the app shares;
+# a pile of abandoned lookups (attacker-controlled, slow/unresponsive DNS,
+# submitted once per candidate feed link and fallback path from the public
+# /api/discover) could occupy every thread in that shared pool, stalling
+# unrelated blocking work elsewhere in the app too. Resolving through a
+# small, dedicated executor instead confines that occupancy to DNS
+# resolution alone — it doesn't make the abandoned lookups go away (nothing
+# short of real async DNS can), but it stops them from starving anything
+# outside this one bounded pool.
+DNS_RESOLVER_MAX_WORKERS = 8
+_dns_resolver_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=DNS_RESOLVER_MAX_WORKERS, thread_name_prefix="pinned-dns-resolve"
+)
 
 
 @dataclass
@@ -171,8 +190,9 @@ async def _resolve_pinned_ips(host: str, timeout: float | None = None) -> list[s
     — e.g. an AAAA record picked first in an environment with broken IPv6
     would fail outright instead of falling back to a working A record.
 
-    Runs socket.getaddrinfo() via asyncio.to_thread() rather than calling it
-    directly: it's a blocking call, and this coroutine runs inside
+    Runs socket.getaddrinfo() in a thread (via _dns_resolver_executor, see
+    its module-level comment) rather than calling it directly: it's a
+    blocking call, and this coroutine runs inside
     PinnedTransport.handle_async_request(), invoked once per candidate feed
     link and fallback path in discover_feeds() — called directly from the
     fully public, unauthenticated POST /api/discover. A synchronous call
@@ -180,9 +200,11 @@ async def _resolve_pinned_ips(host: str, timeout: float | None = None) -> list[s
     not just this one) for however long an attacker-controlled or slow DNS
     server takes to answer, repeated once per candidate.
     """
+    loop = asyncio.get_running_loop()
     try:
         infos = await asyncio.wait_for(
-            asyncio.to_thread(socket.getaddrinfo, host, None), timeout
+            loop.run_in_executor(_dns_resolver_executor, socket.getaddrinfo, host, None),
+            timeout,
         )
     except (socket.gaierror, UnicodeError):
         raise DiscoveryError(f"DNS resolution failed for {host!r}")
