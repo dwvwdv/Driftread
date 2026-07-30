@@ -69,7 +69,7 @@ Compose 有三個服務：
 | 服務 | 內容 |
 |------|------|
 | `api` | FastAPI。不發布 port，只能透過 `frontend` 的 nginx 容器存取（`/api/` 反向代理到 `api:8000`）|
-| `worker` | 自動抓取排程器。與 `api` 共用同一個 image，只換 `command` 跑 `worker.py`。不對外服務，只接 `default` network |
+| `worker` | 自動抓取排程器。與 `api` 共用同一個 image，只換 `command` 跑 `worker.py`。不對外服務，只接 `default` network。restart policy 是 `on-failure`（不是 `unless-stopped`），這樣 `FEED_REFRESH_ENABLED=false` 時乾淨退出就會保持停止，崩潰時仍會自動重啟 |
 | `frontend` | Angular build 產物 + nginx。接 `web_network` 供外部反向代理 |
 
 資料庫 migration 由後端啟動時的 `backend/migrate.py` 自動套用 `backend/migrations/*.sql`。

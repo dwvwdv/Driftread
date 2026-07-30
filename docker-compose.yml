@@ -32,7 +32,13 @@ services:
   worker:
     image: ghcr.io/dwvwdv/driftread-api:latest
     command: ["python", "worker.py"]
-    restart: unless-stopped
+    # on-failure, not unless-stopped: FEED_REFRESH_ENABLED=false makes worker.py
+    # log one line and exit 0, and unless-stopped (which carries `always`
+    # semantics apart from honoring a manual stop) restarts regardless of exit
+    # code — turning the intended "disabled" state into a start/exit loop.
+    # on-failure restarts only on a non-zero exit, so a crash still recovers
+    # while a deliberate opt-out stays down.
+    restart: on-failure
     depends_on:
       # api applies the migrations on startup; wait for it so the worker never
       # queries next_fetch_at before migration 005 has landed.
