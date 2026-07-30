@@ -205,7 +205,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **`validate_fetch_url()` / `_is_safe_host()` 本身不動**：既有的 check-then-fetch 語意保留在呼叫端（仍然是 `allow_url` 政策層跑之前的第一道門），新的傳輸層解析是**第二道獨立的門**，決定的是真正的連線目標——兩道門之間不再有「驗證用一個 IP、連線用另一個 IP」的落差，因為傳輸層自己的解析結果就是它自己拿去連線的那個。
 - **已知限制**：`_resolve_pinned_ips()` 每次呼叫只解析一次，但 `fetch_with_cap_response()` 對每個 redirect hop 都會重新進入這個傳輸層（每個 hop 都是新的一次 `client.stream()` 呼叫），所以每個 hop 各自有自己的單次解析——這是預期行為，不是遺漏。
 - **附帶修掉 `routers/discover.py:41`**（#24 附帶記錄的既存暴露，當時未改）：`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出的第三方字串，原本整批塞進 `.in_("url", feed_urls)`，與 #14 修的 `.or_()` 注入同一類問題（只是經由 `.in_()` 的 list 序列化而非手拼字串）。改為逐一 `.eq("url", feed_url).maybe_single()`，match `services/discovery_candidates.py` 既有的作法，第三方字串完全不進 PostgREST filter 語法。
-- **PR review（自動化 code review，三輪）抓出六個問題，同一輪補上**：
+- **PR review（自動化 code review，四輪）抓出七個問題，同一輪補上**：
 
   第一輪：
 
@@ -221,6 +221,10 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
   第三輪（對第二輪修法本身又抓出的問題）：
 
   6. **P1 — 位址 fallback 沒有共用一個 deadline，攻擊者可用 DNS answer 放大單次請求耗時**。`PinnedTransport` 依序嘗試每個驗證過的位址，但每次呼叫底層 transport 都拿到**完整**的連線逾時設定——沒有東西在嘗試之間遞減剩餘時間。惡意 DNS 可以讓一個 hostname 解析出一長串「公開但打不通」的位址（都通過 SSRF 檢查，因為每個都是真正的公開 IP，只是連不上），一次公開免認證的 `/api/discover` 請求就可能被拖到約「位址數 × 逾時秒數」那麼久——比 pin 之前的行為差。真正正確的修法是共用一個 deadline、逐次遞減每次嘗試分到的剩餘時間，但那需要正確組出 httpx 內部 `timeout` extension 的 dict 形狀，這個 sandbox 沒有網路能裝 httpx 對著真正的函式庫驗證，做錯的後果是每個請求的逾時設定被默默弄壞（比現在這個問題更糟，而且無聲無息）。改採風險小很多的作法：新增 `MAX_PINNED_CONNECT_ATTEMPTS = 2`，最多只嘗試前兩筆驗證過的位址——涵蓋這個 fallback 原本要處理的現實情境（一筆 AAAA、一筆 A），把最壞情況的放大倍率從「攻擊者控制的任意位址數」壓到一個固定的小常數。
+
+  第四輪（對第三輪修法本身又抓出的問題）：
+
+  7. **P2 — 位址上限的截斷沒有顧到位址族**。第三輪的 `ips[:MAX_PINNED_CONNECT_ATTEMPTS]` 是照 `getaddrinfo()` 回傳順序直接截斷——如果一個 resolver 對同一個 hostname 回傳兩筆以上 AAAA 記錄、排在唯一一筆 A 記錄前面，兩個嘗試名額會被 IPv6 佔滿，在 IPv6 實際不通的環境裡，又把第 3 點（dual-stack fallback）原本要解決的情境重新弄壞一次——只是這次不是「只回傳一筆」，而是「回傳的順序讓上限截斷到同一個族」。修法：新增 `_pick_pinned_ips(ips, limit)`，依「先出現的族優先」交錯排列（例如 IPv6、IPv4、IPv6、IPv4……，各自保留族內原始順序）後再截斷，確保只要有兩個以上族存在，上限之內一定各占到至少一個名額。這是純函式、不涉及任何 httpx／httpcore 內部細節，可以在沒有網路的環境裡放心驗證正確性。
 
 ---
 

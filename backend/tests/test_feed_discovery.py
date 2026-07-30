@@ -12,6 +12,7 @@ from services.feed_discovery import (
     DiscoveryError,
     PinnedTransport,
     _extract_feed_links,
+    _pick_pinned_ips,
     _resolve_pinned_ips,
     discover_feeds,
     ssrf_safe_client,
@@ -393,6 +394,24 @@ def test_resolve_pinned_ips_propagates_dns_failure():
             _resolve_pinned_ips("nonexistent.invalid")
 
 
+def test_pick_pinned_ips_interleaves_by_family():
+    """A plain ips[:limit] would fail this exact case: a resolver that lists
+    two AAAA records before its one A record would have both attempt slots
+    taken by IPv6, silently losing the IPv4 fallback again in an environment
+    where IPv6 doesn't actually work."""
+    ips = ["2606:4700:4700::1111", "2001:4860:4860::8888", "93.184.216.34"]
+    assert _pick_pinned_ips(ips, 2) == ["2606:4700:4700::1111", "93.184.216.34"]
+
+
+def test_pick_pinned_ips_single_family_takes_first_n_in_order():
+    ips = ["93.184.216.34", "93.184.216.35", "93.184.216.36"]
+    assert _pick_pinned_ips(ips, 2) == ["93.184.216.34", "93.184.216.35"]
+
+
+def test_pick_pinned_ips_returns_fewer_than_limit_if_thats_all_there_is():
+    assert _pick_pinned_ips(["93.184.216.34"], 2) == ["93.184.216.34"]
+
+
 @pytest.mark.asyncio
 async def test_pinned_transport_connects_to_resolved_ip_keeps_host_and_sni():
     """The mechanism that closes the rebind gap: the request handed to the
@@ -531,6 +550,38 @@ async def test_pinned_transport_caps_address_attempts():
             await transport.handle_async_request(request)
 
     assert attempted_hosts == many_ips[:MAX_PINNED_CONNECT_ATTEMPTS]
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_falls_back_to_ipv4_past_multiple_aaaa_records():
+    """End-to-end version of test_pick_pinned_ips_interleaves_by_family: a
+    resolver listing two AAAA records before the one A record must still
+    reach the IPv4 fallback within the attempt budget, not exhaust it on
+    IPv6 alone."""
+    attempted_hosts: list[str] = []
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        attempted_hosts.append(request.url.host)
+        if request.url.host != "93.184.216.34":
+            raise httpx.ConnectError("network unreachable", request=request)
+        return httpx.Response(200, text="ok")
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://dualstack.example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo(
+                "2606:4700:4700::1111", "2001:4860:4860::8888", "93.184.216.34"
+            ),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        response = await transport.handle_async_request(request)
+
+    assert attempted_hosts == ["2606:4700:4700::1111", "93.184.216.34"]
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

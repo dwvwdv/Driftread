@@ -185,6 +185,38 @@ def _resolve_pinned_ips(host: str) -> list[str]:
     return ips
 
 
+def _pick_pinned_ips(ips: list[str], limit: int) -> list[str]:
+    """Choose up to `limit` addresses to try, from `ips` in
+    _resolve_pinned_ips()'s original (resolver-returned) order, but
+    interleaved by address family first.
+
+    A plain ips[:limit] would fail the exact case PinnedTransport's fallback
+    exists for: a host whose resolver lists two or more AAAA records before
+    any A record would have every slot in the attempt budget taken by IPv6,
+    silently dropping the IPv4 fallback again in an environment where IPv6
+    doesn't actually work. Round-robining by family (first-seen family
+    first, preserving each family's internal order) guarantees every family
+    present gets a slot before any family gets a second one.
+    """
+    by_family: dict[int, list[str]] = {}
+    families_in_order: list[int] = []
+    for ip in ips:
+        version = ipaddress.ip_address(ip).version
+        if version not in by_family:
+            by_family[version] = []
+            families_in_order.append(version)
+        by_family[version].append(ip)
+
+    picked: list[str] = []
+    while len(picked) < limit and any(by_family[v] for v in families_in_order):
+        for version in families_in_order:
+            if by_family[version]:
+                picked.append(by_family[version].pop(0))
+                if len(picked) >= limit:
+                    break
+    return picked
+
+
 class PinnedTransport(httpx.AsyncHTTPTransport):
     """The real transport used for every outbound fetch (see ssrf_safe_client
     below) — connects to one of the exact IPs _resolve_pinned_ips() just
@@ -197,8 +229,10 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     so retrying the same Request object across addresses is safe — there is
     no request stream that a failed attempt could have partially consumed.
 
-    Only the first MAX_PINNED_CONNECT_ATTEMPTS validated addresses are ever
-    tried. Each attempt below gets the *full* configured connect timeout
+    Only MAX_PINNED_CONNECT_ATTEMPTS validated addresses are ever tried,
+    chosen via _pick_pinned_ips() so both address families get a slot before
+    either gets a second one. Each attempt below gets the *full* configured
+    connect timeout
     independently (there's no cheap, safe-to-implement-blind way to share a
     single deadline across attempts here — httpx's per-request timeout
     override needs the extension dict shape gotten exactly right, and this
@@ -215,7 +249,7 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         original_host = request.url.host
         original_url = request.url
-        ips = _resolve_pinned_ips(original_host)[:MAX_PINNED_CONNECT_ATTEMPTS]
+        ips = _pick_pinned_ips(_resolve_pinned_ips(original_host), MAX_PINNED_CONNECT_ATTEMPTS)
         last_error: httpx.TransportError | None = None
         for ip in ips:
             request.url = original_url.copy_with(host=ip)
