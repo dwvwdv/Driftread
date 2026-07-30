@@ -8,9 +8,11 @@ Strategy (in order):
 SSRF protection is applied: private / loopback / link-local addresses are rejected.
 """
 from __future__ import annotations
+import asyncio
 import ipaddress
 import os
 import socket
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
@@ -19,6 +21,16 @@ from bs4 import BeautifulSoup
 
 from rss_parser import ParsedFeed, parse_feed
 
+
+# A crawl-policy predicate: given the URL about to be fetched, may we fetch it?
+# Evaluated at the single fetch choke point below, on the initial URL *and* every
+# redirect hop. This is where denylists and robots.txt checks belong — the
+# autonomous discovery loop installs one (see services/discovery_probe.py), while
+# user-triggered discovery passes None and behaves exactly as before.
+#
+# It is NOT a security boundary against private addresses: validate_fetch_url()
+# is, and it always runs first.
+AllowUrl = Callable[[str], Awaitable[bool]]
 
 FEED_CONTENT_TYPES = ("application/rss+xml", "application/atom+xml", "application/xml", "text/xml")
 FALLBACK_PATHS = ("/feed", "/rss", "/rss.xml", "/atom.xml", "/feed.xml", "/index.xml", "/feed/")
@@ -115,6 +127,7 @@ async def fetch_with_cap_response(
     max_bytes: int,
     max_redirects: int = 5,
     extra_headers: dict[str, str] | None = None,
+    allow_url: AllowUrl | None = None,
 ) -> CappedResponse:
     """Fetch `url`, capping bytes read, and return status + body + validators.
 
@@ -127,6 +140,13 @@ async def fetch_with_cap_response(
     `extra_headers` carries per-request headers the shared client can't hold —
     conditional-GET validators (If-None-Match / If-Modified-Since) differ per
     feed, so they can't live on the client's default headers.
+
+    `allow_url`, when given, is consulted for the initial URL and again for every
+    redirect target. Placing it here rather than at each call site is what makes
+    a host denylist actually hold: the denylist is checked against the host we
+    harvested, but a 3xx can hand off anywhere (blog.example.com -> facebook.com,
+    or any shortener), and up to five hops per request means five chances to
+    escape a per-call-site check.
     """
     # The initial URL is validated here, not just redirect hops, because not
     # every caller supplies a URL a client typed: _validate_feed() below
@@ -137,6 +157,12 @@ async def fetch_with_cap_response(
     # an already-validated URL only costs one extra DNS lookup.
     current_url = validate_fetch_url(url)
     for _ in range(max_redirects + 1):
+        # After the SSRF gate, never before it: crawl policy is a layer stacked
+        # on top of the security boundary, not a replacement for it. Inside the
+        # loop so the initial URL and each redirect hop are both covered by this
+        # one call.
+        if allow_url is not None and not await allow_url(current_url):
+            raise DiscoveryError("Blocked by crawl policy")
         async with client.stream("GET", current_url, headers=extra_headers) as resp:
             # Must precede the redirect branch: httpx's is_redirect is True for
             # *any* 3xx, so a 304 would otherwise be treated as a redirect and
@@ -186,7 +212,11 @@ async def fetch_with_cap_response(
 
 
 async def fetch_with_cap(
-    client: httpx.AsyncClient, url: str, max_bytes: int, max_redirects: int = 5
+    client: httpx.AsyncClient,
+    url: str,
+    max_bytes: int,
+    max_redirects: int = 5,
+    allow_url: AllowUrl | None = None,
 ) -> tuple[str, str]:
     """Return (text, content_type). Caps bytes read.
 
@@ -198,7 +228,7 @@ async def fetch_with_cap(
     buffers the entire response in memory with no limit.
     """
     resp = await fetch_with_cap_response(
-        client, url, max_bytes, max_redirects=max_redirects
+        client, url, max_bytes, max_redirects=max_redirects, allow_url=allow_url
     )
     if resp.not_modified:
         # No validators were sent, so a 304 here is the server violating the
@@ -239,17 +269,46 @@ def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:
 
 
 async def _validate_feed(
-    client: httpx.AsyncClient, feed_url: str
+    client: httpx.AsyncClient,
+    feed_url: str,
+    delay_seconds: float = 0.0,
+    allow_url: AllowUrl | None = None,
 ) -> ParsedFeed | None:
+    # Sleeping here rather than at each of discover_feeds' loops is what makes
+    # "pause between requests, but not before the first one" fall out for free:
+    # discover_feeds' own initial fetch is the only request that doesn't come
+    # through this function.
+    if delay_seconds > 0:
+        await asyncio.sleep(delay_seconds)
     try:
-        text, ctype = await fetch_with_cap(client, feed_url, MAX_FEED_BYTES)
+        text, ctype = await fetch_with_cap(
+            client, feed_url, MAX_FEED_BYTES, allow_url=allow_url
+        )
         return parse_feed(text)
     except (httpx.HTTPError, DiscoveryError, ValueError):
         return None
 
 
-async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandidate]:
-    """Discover candidate feeds for a URL. Returns list (possibly empty)."""
+async def discover_feeds(
+    url: str,
+    timeout: float = 12.0,
+    delay_seconds: float = 0.0,
+    allow_url: AllowUrl | None = None,
+) -> list[DiscoveryCandidate]:
+    """Discover candidate feeds for a URL. Returns list (possibly empty).
+
+    `delay_seconds` pauses between the requests this call makes against the one
+    host it is probing (a full run is the initial page plus up to seven
+    well-known feed paths), and `allow_url` gates every one of them. Both default
+    to off so user-triggered discovery via POST /api/discover is unchanged; the
+    autonomous loop supplies them.
+
+    Note that fetch failures are absorbed into an empty result rather than
+    raised, so `[]` cannot distinguish "this site has no feed" from "this site is
+    unreachable". Callers that need to tell those apart have to probe
+    reachability separately — see services/discovery_probe.py, which reuses its
+    robots.txt fetch for exactly that.
+    """
     safe_url = validate_fetch_url(url)
     headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
@@ -258,7 +317,9 @@ async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandi
     ) as client:
         # 1. Maybe the URL itself is already a feed.
         try:
-            text, ctype = await fetch_with_cap(client, safe_url, MAX_FEED_BYTES)
+            text, ctype = await fetch_with_cap(
+                client, safe_url, MAX_FEED_BYTES, allow_url=allow_url
+            )
         except (httpx.HTTPError, DiscoveryError):
             return []
 
@@ -281,7 +342,7 @@ async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandi
         # 3. Validate each candidate; keep working ones with parsed metadata.
         validated: list[DiscoveryCandidate] = []
         for c in candidates:
-            parsed = await _validate_feed(client, c.feed_url)
+            parsed = await _validate_feed(client, c.feed_url, delay_seconds, allow_url)
             if parsed:
                 validated.append(
                     DiscoveryCandidate(
@@ -298,7 +359,9 @@ async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandi
         root = f"{parsed_url.scheme}://{parsed_url.netloc}"
         for path in FALLBACK_PATHS:
             candidate_url = urljoin(root, path)
-            parsed = await _validate_feed(client, candidate_url)
+            parsed = await _validate_feed(
+                client, candidate_url, delay_seconds, allow_url
+            )
             if parsed:
                 validated.append(
                     DiscoveryCandidate(
