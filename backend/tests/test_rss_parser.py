@@ -7,6 +7,13 @@ import pytest
 import rss_parser
 from rss_parser import parse_feed
 
+ENTITY_EXPANSION_RSS = """<?xml version="1.0"?>
+<!DOCTYPE rss [
+  <!ENTITY a "spam">
+  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+]>
+<rss version="2.0"><channel><title>&b;</title><link>https://x.com</link></channel></rss>"""
+
 RSS_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
@@ -74,6 +81,21 @@ def test_parse_rss_no_articles():
     feed = parse_feed(xml)
     assert feed.title == "Empty"
     assert feed.articles == []
+
+
+def test_parse_feed_rejects_entity_expansion():
+    """A billion-laughs payload from a remote feed server must raise a plain
+    ValueError (the same failure mode as any other malformed feed, and what
+    services.feed_discovery's narrow `except ValueError` already expects) —
+    not blow up memory/CPU or raise an unhandled defusedxml exception that
+    turns an anonymous /api/discover call into a 500."""
+    with pytest.raises(ValueError):
+        parse_feed(ENTITY_EXPANSION_RSS)
+
+
+def test_parse_feed_rejects_malformed_xml():
+    with pytest.raises(ValueError):
+        parse_feed("<not xml")
 
 
 _RealAsyncClient = httpx.AsyncClient

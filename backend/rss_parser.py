@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import httpx
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring as safe_fromstring
 
 
 RSS_NS = ""
@@ -152,7 +154,18 @@ def _parse_atom(root: ET.Element) -> ParsedFeed:
 def parse_feed(xml_text: str) -> ParsedFeed:
     ET.register_namespace("content", CONTENT_NS)
     ET.register_namespace("dc", DC_NS)
-    root = ET.fromstring(xml_text)
+    # safe_fromstring (defusedxml) rejects DTD entity declarations and
+    # external references, closing the same billion-laughs / XXE holes that
+    # opml.py's import guards against — except here the XML comes from
+    # fetch_and_parse/discover_feeds, i.e. an arbitrary remote server chosen
+    # by whoever calls the fully public, unauthenticated /api/discover
+    # endpoint. A plain xml.etree.ElementTree.fromstring here would let any
+    # anonymous caller point at a feed URL serving a malicious payload and
+    # exhaust this process's memory/CPU.
+    try:
+        root = safe_fromstring(xml_text)
+    except (ET.ParseError, DefusedXmlException) as e:
+        raise ValueError(f"Malformed feed XML: {e}") from e
 
     tag = root.tag.lower()
     if "rss" in tag or root.find("channel") is not None:
