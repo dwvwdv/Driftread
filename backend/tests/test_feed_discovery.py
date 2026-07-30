@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import threading
 import time
 from unittest.mock import patch
 
@@ -7,11 +8,13 @@ import httpx
 import pytest
 
 from services.feed_discovery import (
+    DNS_RESOLVER_MAX_WORKERS,
     FALLBACK_PATHS,
     MAX_FEED_LINK_CANDIDATES,
     MAX_PINNED_CONNECT_ATTEMPTS,
     DiscoveryError,
     PinnedTransport,
+    _dns_resolver_executor,
     _extract_feed_links,
     _pick_pinned_ips,
     _resolve_pinned_ips,
@@ -420,6 +423,47 @@ async def test_resolve_pinned_ips_bounds_resolution_by_timeout():
     ):
         with pytest.raises(DiscoveryError):
             await _resolve_pinned_ips("slow.example.com", timeout=0.05)
+
+
+def test_dns_resolver_executor_is_bounded():
+    assert _dns_resolver_executor._max_workers == DNS_RESOLVER_MAX_WORKERS
+
+
+@pytest.mark.asyncio
+async def test_resolve_pinned_ips_uses_isolated_executor_not_shared_with_rest_of_app():
+    """asyncio.wait_for() timing out a resolution only stops *waiting* on it —
+    socket.getaddrinfo() has no cancellation point, so the blocking call keeps
+    running in whatever thread it was submitted to. If that thread came from
+    the process-wide default executor (what asyncio.to_thread() always uses),
+    a pile of abandoned lookups could occupy every thread in a pool every
+    other blocking call in the app shares. Saturating the dedicated DNS
+    resolver pool must not stall unrelated to_thread() work."""
+    barrier = threading.Barrier(DNS_RESOLVER_MAX_WORKERS + 1)
+    release = threading.Event()
+
+    def blocking_getaddrinfo(host, port):
+        barrier.wait(timeout=5)
+        release.wait(timeout=5)
+        return _fake_addrinfo("93.184.216.34")
+
+    with patch(
+        "services.feed_discovery.socket.getaddrinfo", side_effect=blocking_getaddrinfo
+    ):
+        tasks = [
+            asyncio.create_task(_resolve_pinned_ips(f"slow{i}.example.com"))
+            for i in range(DNS_RESOLVER_MAX_WORKERS)
+        ]
+        # Blocks until every one of the dedicated pool's threads is occupied.
+        await asyncio.to_thread(barrier.wait, 5)
+
+        # Unrelated default-executor work must still complete promptly, even
+        # though the dedicated DNS pool is entirely saturated.
+        result = await asyncio.wait_for(asyncio.to_thread(lambda: 1 + 1), timeout=1)
+        assert result == 2
+
+        release.set()
+        results = await asyncio.gather(*tasks)
+        assert all(r == ["93.184.216.34"] for r in results)
 
 
 def test_pick_pinned_ips_interleaves_by_family():
