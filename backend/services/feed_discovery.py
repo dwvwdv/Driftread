@@ -22,7 +22,10 @@ from rss_parser import ParsedFeed, parse_feed
 
 FEED_CONTENT_TYPES = ("application/rss+xml", "application/atom+xml", "application/xml", "text/xml")
 FALLBACK_PATHS = ("/feed", "/rss", "/rss.xml", "/atom.xml", "/feed.xml", "/index.xml", "/feed/")
-MAX_HTML_BYTES = 2 * 1024 * 1024  # 2 MiB
+# One cap for every fetch. discover_feeds's first request serves double
+# duty — the URL may turn out to be a feed or an HTML page — so the cap
+# has to be chosen before the content type is known, and the feed limit
+# is the one that has to hold.
 MAX_FEED_BYTES = 5 * 1024 * 1024  # 5 MiB
 
 
@@ -37,7 +40,12 @@ class DiscoveryError(Exception):
     pass
 
 
-def _user_agent() -> str:
+def user_agent() -> str:
+    """The User-Agent for every outbound fetch — discovery and feed ingestion
+    alike. rss_parser.fetch_and_parse() uses this too, so DISCOVERY_USER_AGENT
+    applies to /discover/import, admin import/refresh and OPML import, not
+    just candidate discovery.
+    """
     return os.getenv("DISCOVERY_USER_AGENT", "Driftread/1.0")
 
 
@@ -100,7 +108,14 @@ async def fetch_with_cap(
     calls this too, for the same streaming byte cap — a bare httpx client.get()
     buffers the entire response in memory with no limit.
     """
-    current_url = url
+    # The initial URL is validated here, not just redirect hops, because not
+    # every caller supplies a URL a client typed: _validate_feed() below
+    # fetches candidates lifted out of remote HTML (<link rel="alternate">
+    # hrefs, which may be absolute and point anywhere). Validating per call
+    # site had already been forgotten once for that path, so the guard lives
+    # at the single choke point every fetch goes through instead. Re-checking
+    # an already-validated URL only costs one extra DNS lookup.
+    current_url = validate_fetch_url(url)
     for _ in range(max_redirects + 1):
         async with client.stream("GET", current_url) as resp:
             if resp.is_redirect:
@@ -173,7 +188,7 @@ async def _validate_feed(
 async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandidate]:
     """Discover candidate feeds for a URL. Returns list (possibly empty)."""
     safe_url = validate_fetch_url(url)
-    headers = {"User-Agent": _user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
+    headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
     async with httpx.AsyncClient(
         follow_redirects=False, timeout=timeout, headers=headers
