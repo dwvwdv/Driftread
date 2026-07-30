@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
+from env_utils import env_flag, env_int
 from rss_parser import fetch_and_parse_conditional
 from services.articles import upsert_articles
 from services.feed_discovery import validate_fetch_url
@@ -35,18 +35,10 @@ Status = Literal["updated", "not_modified", "failed"]
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("%s=%r is not an integer — using default %d", name, raw, default)
-        return default
-    if value < 1:
-        logger.warning("%s=%d is below 1 — using default %d", name, value, default)
-        return default
-    return value
+    """Kept as a name of its own (rather than importing env_int at every call
+    site) because the module's public env accessors below all read through it and
+    the tests pin its fallback behavior."""
+    return env_int(name, default)
 
 
 def min_interval_minutes() -> int:
@@ -70,12 +62,7 @@ def tick_seconds() -> int:
 
 
 def refresh_enabled() -> bool:
-    return os.getenv("FEED_REFRESH_ENABLED", "true").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+    return env_flag("FEED_REFRESH_ENABLED", True)
 
 
 @dataclass(frozen=True)

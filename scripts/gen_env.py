@@ -28,6 +28,34 @@ OPTIONAL_REFRESH_DEFAULTS = {
     "FEED_REFRESH_MAX_INTERVAL_MINUTES": "1440",
 }
 
+# Autonomous discovery knobs. Same deal as above — backend/services/
+# discovery_config.py supplies these defaults — except this loop ships OFF, so
+# the reporting below leads with that rather than listing every value.
+OPTIONAL_DISCOVERY_DEFAULTS = {
+    "FEED_DISCOVERY_ENABLED": "false",
+    "FEED_DISCOVERY_TICK_SECONDS": "900",
+    "FEED_DISCOVERY_HARVEST_BATCH_SIZE": "10",
+    "FEED_DISCOVERY_HARVEST_ARTICLES": "20",
+    "FEED_DISCOVERY_HARVEST_INTERVAL_HOURS": "168",
+    "FEED_DISCOVERY_HARVEST_MAX_LINKS_PER_FEED": "200",
+    "FEED_DISCOVERY_BLOGROLL_ENABLED": "false",
+    "FEED_DISCOVERY_DIRECTORY_ENABLED": "false",
+    "FEED_DISCOVERY_DIRECTORY_BATCH_SIZE": "3",
+    "FEED_DISCOVERY_PROBE_BATCH_SIZE": "20",
+    "FEED_DISCOVERY_PROBE_CONCURRENCY": "3",
+    "FEED_DISCOVERY_PROBE_MAX_ATTEMPTS": "3",
+    "FEED_DISCOVERY_PROBE_RETRY_HOURS": "24",
+    "FEED_DISCOVERY_HOST_DELAY_SECONDS": "2",
+    "FEED_DISCOVERY_RESPECT_ROBOTS": "true",
+    "FEED_DISCOVERY_MAX_FRONTIER_SIZE": "50000",
+    "FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS": "0",
+}
+
+# Read by backend/worker.py. Optional, with a code-level default.
+OPTIONAL_MISC_DEFAULTS = {
+    "LOG_LEVEL": "INFO",
+}
+
 
 def read_env(path: str) -> dict[str, str]:
     result = {}
@@ -107,6 +135,26 @@ def main():
         print("\nℹ 自動抓取排程使用預設值（可在 .env 覆寫，見 .env.example）：")
         for key, default in OPTIONAL_REFRESH_DEFAULTS.items():
             print(f"    {key}={default}")
+
+    # Autonomous discovery. Report the on/off state unconditionally rather than
+    # only when nothing is set: whether the crawler is running is the one thing
+    # an operator should never have to go digging for.
+    discovery_flag = existing.get("FEED_DISCOVERY_ENABLED", "").strip().lower()
+    if discovery_flag and discovery_flag not in ("0", "false", "no", "off"):
+        print("\n⚠ 自主發現已啟用（FEED_DISCOVERY_ENABLED=%s）。" % discovery_flag)
+        print("  這個迴圈會主動對第三方網站發出請求。請確認你已讀過")
+        print("  docs/SECURITY.md 的自主發現章節，特別是 DNS rebinding 一節，")
+        print("  並在 DISCOVERY_USER_AGENT 帶上聯絡網址。")
+    else:
+        print("\nℹ 自主發現預設關閉（FEED_DISCOVERY_ENABLED=false）；")
+        print("  啟用前請先讀 docs/SECURITY.md。其餘 FEED_DISCOVERY_* 參數")
+        print("  也都有預設值，見 .env.example。")
+
+    unset_misc = [k for k in OPTIONAL_MISC_DEFAULTS if k not in existing]
+    if unset_misc:
+        print("\nℹ 其他可選變數使用預設值：")
+        for key in unset_misc:
+            print(f"    {key}={OPTIONAL_MISC_DEFAULTS[key]}")
 
 
 if __name__ == "__main__":

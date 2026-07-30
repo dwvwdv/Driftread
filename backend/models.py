@@ -1,9 +1,9 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 
 class Feed(BaseModel):
@@ -166,3 +166,168 @@ class FeedHealthSummary(BaseModel):
     last_failure_at: datetime | None = None
     last_failure_reason: str | None = None
     last_fetched_at: datetime | None = None
+
+
+# ── Autonomous discovery (migration 006) ─────────────────────────────────────
+# Note the response model for a discovered feed is FeedCandidate, not
+# DiscoveryCandidate: that name is already the dataclass in
+# services/feed_discovery.py, and services/discovery_probe.py imports both.
+
+_Url = Annotated[str, StringConstraints(max_length=2048)]
+
+
+class DiscoveryTarget(BaseModel):
+    """One host (or feed URL) in the crawl frontier."""
+    id: UUID
+    url: str
+    host: str
+    source: str
+    source_feed_id: UUID | None = None
+    referring_feed_count: int = 0
+    status: str
+    attempts: int = 0
+    feeds_found: int = 0
+    next_probe_at: datetime | None = None
+    last_probe_at: datetime | None = None
+    last_failure_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PaginatedDiscoveryTargets(BaseModel):
+    items: list[DiscoveryTarget]
+    total: int
+    page: int
+    page_size: int
+
+
+class FeedCandidate(BaseModel):
+    """A feed URL the probe fetched and parsed, awaiting review."""
+    id: UUID
+    target_id: UUID | None = None
+    feed_url: str
+    title: str | None = None
+    website_url: str | None = None
+    source_host: str | None = None
+    referring_feed_count: int = 0
+    status: str
+    feed_id: UUID | None = None
+    review_note: str | None = None
+    discovered_at: datetime
+    last_seen_at: datetime | None = None
+    reviewed_at: datetime | None = None
+
+
+class PaginatedFeedCandidates(BaseModel):
+    items: list[FeedCandidate]
+    total: int
+    page: int
+    page_size: int
+
+
+class DiscoverySource(BaseModel):
+    id: UUID
+    url: str
+    kind: str
+    label: str | None = None
+    enabled: bool = True
+    interval_hours: int = 168
+    next_harvest_at: datetime | None = None
+    last_harvested_at: datetime | None = None
+    attempts: int = 0
+    last_failure_reason: str | None = None
+    targets_created: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class SeedTargetsRequest(BaseModel):
+    # 500 URLs at 2048 chars is ~1 MiB, comfortably under main.py's 6 MiB body cap.
+    urls: list[_Url] = Field(min_length=1, max_length=500)
+
+
+class SeedTargetsResult(BaseModel):
+    accepted: int
+    requeued: int
+    skipped: int
+    # Per-URL failures are reported rather than failing the whole batch, the same
+    # shape routers/opml.py::import_opml uses for its `failed` list.
+    rejected: list[str] = []
+
+
+class DiscoverySourceInput(BaseModel):
+    url: _Url
+    kind: str = Field(default="links_page", pattern="^(links_page|opml)$")
+    label: str | None = Field(default=None, max_length=200)
+
+
+class AddSourcesRequest(BaseModel):
+    items: list[DiscoverySourceInput] = Field(min_length=1, max_length=100)
+
+
+class UpdateSourceRequest(BaseModel):
+    enabled: bool | None = None
+    interval_hours: int | None = Field(default=None, ge=1, le=8760)
+
+
+class ApproveCandidateRequest(BaseModel):
+    category: str | None = Field(default=None, max_length=100)
+    tags: list[Annotated[str, StringConstraints(max_length=50)]] = Field(
+        default=[], max_length=20
+    )
+
+
+class RejectCandidateRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+    # Also mark the parent target rejected, so the host never re-enters the
+    # frontier from any source.
+    block_host: bool = False
+
+
+class HarvestSummary(BaseModel):
+    processed: int = 0
+    articles_scanned: int = 0
+    anchors_seen: int = 0
+    hosts_kept: int = 0
+    targets_created: int = 0
+    referrers_recorded: int = 0
+    failed: int = 0
+
+
+class DirectorySummary(BaseModel):
+    processed: int = 0
+    targets_created: int = 0
+    feed_targets_created: int = 0
+    failed: int = 0
+
+
+class ProbeSummary(BaseModel):
+    processed: int = 0
+    found: int = 0
+    # `none_found`, not `none` — reads far better than `none` next to `found`.
+    none_found: int = 0
+    blocked: int = 0
+    failed: int = 0
+    exhausted: int = 0
+    candidates_new: int = 0
+
+
+class DiscoveryCycleSummary(BaseModel):
+    directory: DirectorySummary
+    harvest: HarvestSummary
+    probe: ProbeSummary
+    auto_promoted: int = 0
+    imported: int = 0
+
+
+class DiscoveryStats(BaseModel):
+    targets_pending: int = 0
+    targets_done: int = 0
+    targets_blocked: int = 0
+    targets_exhausted: int = 0
+    targets_rejected: int = 0
+    candidates_pending: int = 0
+    candidates_approved: int = 0
+    candidates_rejected: int = 0
+    candidates_imported: int = 0
+    sources_enabled: int = 0
