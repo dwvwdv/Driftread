@@ -62,6 +62,15 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 - **嚴重度高於 #19**：OPML 上傳需要認證，feed 解析卻可經由完全公開的 `/api/discover` 觸發。任何匿名呼叫者都能指向自己控制的 feed URL 供應 billion-laughs payload。既有的 SSRF 守門與下載 byte cap 都幫不上——cap 限制的是**下載**的位元組數，不是 entity 展開**後**的大小。
 - **修法**：改用 `defusedxml` 的 `fromstring`（已是專案依賴，`routers/opml.py` 已用同樣 import 形式），並把 `xml.etree.ElementTree.ParseError` 與 `defusedxml.common.DefusedXmlException` 都正規化成 `ValueError`。這順帶補掉第二個潛在缺口：`services/feed_discovery.py` 的 `discover_feeds` / `_validate_feed` 只 `except ValueError`（預期「不是合法 feed」以此形式浮現），但格式錯誤的 XML 原本拋的是未被攔截的 `ET.ParseError`（`SyntaxError` 子類，不是 `ValueError`），會以未處理例外的形式穿過公開的 `/api/discover`。
 
+### #22 — discover 候選連結未經 SSRF 驗證（07-30）
+
+- **問題**：`discover_feeds()` 對使用者給的 URL 呼叫了 `validate_fetch_url()`，但從那個頁面 HTML 抽出來的候選 feed 連結沒有。`_extract_feed_links()` 用 `urljoin(base_url, href)` 產生候選，絕對路徑的 `href` 會直接覆蓋 base，因此可以指向任何位址；`_validate_feed()` 再把它交給 `fetch_with_cap()`，而後者當時只驗證 **redirect hop**，不驗證初始 URL。
+- **嚴重度**：`/api/discover` 公開免認證。攻擊者只要架一個正常的公開頁面，內含
+  `<link rel="alternate" type="application/rss+xml" href="http://169.254.169.254/latest/meta-data/">`，伺服器就會去請求那個內部位址。#15 修的是「呼叫端忘記守門」，這次是「守門位置不對」——連結不是使用者打的，是遠端內容給的。
+- **修法**：把守門移到唯一的抓取瓶頸點，`fetch_with_cap()` 對**初始 URL 與每個 redirect hop** 都跑 `validate_fetch_url()`，而不再依賴每個呼叫端各自記得。重複驗證一個已驗證過的 URL 只多一次 DNS 查詢。
+- **測試**：`test_discover_feeds_rejects_private_alternate_link` 斷言 `MockTransport` 從未收到往 `169.254.169.254` 的請求（修法前這個測試會失敗，實際觀察到該請求）。
+- **附帶**：`MAX_HTML_BYTES`（2 MiB）從未被任何程式碼引用——`discover_feeds` 的第一次抓取一律用 `MAX_FEED_BYTES`。這個常數是死碼，卻讓人以為有一道 2 MiB 的 HTML 上限。已刪除，文件改為記載實際的單一 5 MiB 上限。
+
 ---
 
 ## 目前的防線總覽
@@ -71,8 +80,8 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 | Request 入口 | `Content-Length` > 6 MiB → 413（最外層 middleware） | `main.py::MaxBodySizeMiddleware` |
 | Client 識別 | `ProxyHeadersMiddleware(trusted_hosts="*")` + nginx `X-Forwarded-For $remote_addr` | `main.py`、`frontend/nginx.conf` |
 | 濫用防護 | 每 IP 每端點 20 req / 60s，追蹤上限 10k clients | `rate_limit.py` |
-| 外連目標 | `validate_fetch_url()` 阻擋私網 / loopback / link-local，**且重新驗證 redirect 目標** | `services/feed_discovery.py` |
-| 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（feed）/ 2 MiB（HTML） | `services/feed_discovery.py` |
+| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local | `services/feed_discovery.py` |
+| 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用） | `services/feed_discovery.py` |
 | XML 解析 | 全數 `defusedxml`（feed 與 OPML 兩條路徑） | `rss_parser.py`、`routers/opml.py` |
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()` | `utils.py`、`routers/*` |
 | 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |

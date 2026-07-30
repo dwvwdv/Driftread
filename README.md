@@ -129,7 +129,7 @@ docker compose up -d frontend
 # Backend
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --reload          # http://localhost:8000，docs 在 /docs
+uvicorn main:app --reload --env-file ../.env   # http://localhost:8000，docs 在 /docs
 
 # Backend 測試
 pytest
@@ -143,7 +143,11 @@ npm start                          # http://localhost:4200
 前端 development 設定（`frontend/src/environments/environment.development.ts`）預設打
 `http://localhost:8000/api`，因此本地開發時後端直接跑在 8000 即可，不需要 nginx。
 
-後端在本地也需要 `.env`（或環境變數）提供 Supabase 憑證；缺 `DATABASE_URL` 時 migration 只會發出警告，不會中斷啟動。
+後端只讀 `os.getenv()`，自己不載入 dotenv，所以 `--env-file` 是必要的 —— 少了它 `SUPABASE_URL` /
+`SUPABASE_KEY` 會是空的，server 起得來但每個 API 請求都會失敗。
+（`uvicorn[standard]` 已含 python-dotenv，不需額外安裝；也可以改成 `backend/.env` 並傳 `--env-file .env`。）
+
+缺 `DATABASE_URL` 時 migration 只會發出警告，不會中斷啟動。
 
 ---
 

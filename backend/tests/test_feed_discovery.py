@@ -109,3 +109,35 @@ async def test_discover_feeds_rejects_redirect_to_private_ip():
         # that the same as any other fetch failure and returns no candidates,
         # rather than propagating the internal target anywhere.
         assert await discover_feeds("https://start.example.com/") == []
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_rejects_private_alternate_link():
+    """A discovered candidate must be validated before its first fetch, not
+    only on redirects. /api/discover is public and unauthenticated, so a
+    safe public page advertising <link rel="alternate" href="http://169.254.
+    169.254/..."> would otherwise make the server request that internal
+    address — the guard only ever inspects the URL it is about to fetch, and
+    nothing had inspected this one.
+    """
+    html = (
+        '<html><head><link rel="alternate" type="application/rss+xml" '
+        'href="http://169.254.169.254/latest/meta-data/"/></head></html>'
+    )
+    requested_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(request.url.host)
+        return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+
+    def fake_is_safe_host(host: str) -> bool:
+        return host != "169.254.169.254"
+
+    with (
+        patch("services.feed_discovery._is_safe_host", side_effect=fake_is_safe_host),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        candidates = await discover_feeds("https://start.example.com/")
+
+    assert "169.254.169.254" not in requested_hosts
+    assert [c.feed_url for c in candidates] == []
