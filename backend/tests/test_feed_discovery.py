@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import time
 from unittest.mock import patch
 
 import httpx
@@ -402,6 +403,25 @@ async def test_resolve_pinned_ips_propagates_dns_failure():
             await _resolve_pinned_ips("nonexistent.invalid")
 
 
+@pytest.mark.asyncio
+async def test_resolve_pinned_ips_bounds_resolution_by_timeout():
+    """asyncio.to_thread() has no deadline of its own, so a hostname whose
+    resolver stalls could otherwise block far longer than any timeout the
+    caller configured — passing `timeout` must cut the wait short instead of
+    leaving the caller to hang on the system resolver's own (often much
+    longer) give-up point."""
+
+    def slow_getaddrinfo(host, port):
+        time.sleep(0.2)
+        return _fake_addrinfo("93.184.216.34")
+
+    with patch(
+        "services.feed_discovery.socket.getaddrinfo", side_effect=slow_getaddrinfo
+    ):
+        with pytest.raises(DiscoveryError):
+            await _resolve_pinned_ips("slow.example.com", timeout=0.05)
+
+
 def test_pick_pinned_ips_interleaves_by_family():
     """A plain ips[:limit] would fail this exact case: a resolver that lists
     two AAAA records before its one A record would have both attempt slots
@@ -449,6 +469,40 @@ async def test_pinned_transport_connects_to_resolved_ip_keeps_host_and_sni():
     assert captured["host_header"] == "example.com"
     assert captured["sni_hostname"] == "example.com"
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_bounds_resolution_by_request_connect_timeout():
+    """The request handed in already carries the client's configured timeout
+    (httpx.Client.build_request() always sets extensions["timeout"]) — this
+    is what PinnedTransport must reuse to bound _resolve_pinned_ips(), rather
+    than resolving unbounded, so a stalling hostname can't stall a fetch past
+    the timeout the caller actually configured."""
+    captured: dict = {}
+
+    async def fake_resolve(host, timeout=None):
+        captured["timeout"] = timeout
+        return ["93.184.216.34"]
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="ok")
+
+    transport = PinnedTransport()
+    request = httpx.Request(
+        "GET",
+        "https://example.com/feed.xml",
+        extensions={
+            "timeout": {"connect": 12.0, "read": 12.0, "write": 12.0, "pool": 12.0}
+        },
+    )
+
+    with (
+        patch("services.feed_discovery._resolve_pinned_ips", fake_resolve),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        await transport.handle_async_request(request)
+
+    assert captured["timeout"] == 12.0
 
 
 @pytest.mark.asyncio
