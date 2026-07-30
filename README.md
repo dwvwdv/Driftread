@@ -125,7 +125,14 @@ docker compose up -d frontend
 
 ## 本地開發
 
-兩個服務各開一個 terminal，都從 repo 根目錄開始：
+`.env` 有被 gitignore，全新 clone 不會有這個檔案，所以先產生它（與上面部署段的第 1、2 步相同；已經做過就跳過）：
+
+```bash
+python3 scripts/gen_env.py
+# 再依提示手動填入 SUPABASE_URL / SUPABASE_KEY / DATABASE_URL / SUPABASE_JWT_SECRET
+```
+
+然後兩個服務各開一個 terminal，都從 repo 根目錄開始：
 
 ```bash
 # Backend（terminal 1）

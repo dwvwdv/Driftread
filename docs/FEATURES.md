@@ -11,7 +11,7 @@
 |------|------|------|----------|
 | 信息源瀏覽 | ✅ | 分頁、分類 / tag 篩選、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文 | `routers/articles.py`、`components/article-reader` |
-| 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，可左右滑動表態 | `routers/recommendations.py`、`components/recommendations` |
+| 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ⚠ | Supabase Auth（email / password）；JWT 由後端驗證。**前端的 Supabase 設定是 build 時編進 bundle 的，官方 GHCR image 帶空值 → 需自建 image 才可用**（見第 4 節） | `auth.py`、`services/auth.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy | `routers/me.py`、`components/my-feeds`、`components/bookmarks` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed | `services/feed_discovery.py`、`routers/discover.py` |
