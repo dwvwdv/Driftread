@@ -679,6 +679,24 @@ async def test_ssrf_safe_client_disables_keepalive_by_default():
 
 
 @pytest.mark.asyncio
+async def test_ssrf_safe_client_disables_trust_env_by_default():
+    """httpx.AsyncClient consults trust_env for its own environment-proxy
+    mounting (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) independently of whether
+    an explicit transport was supplied — and a mounted proxy transport wins
+    over PinnedTransport for a matching URL, silently bypassing pinning on
+    any deployment with one of those env vars set. Driftread documents no
+    proxy support, so this must stay opted out by default."""
+    async with ssrf_safe_client() as client:
+        assert client._trust_env is False
+
+
+@pytest.mark.asyncio
+async def test_ssrf_safe_client_respects_explicit_trust_env():
+    async with ssrf_safe_client(trust_env=True) as client:
+        assert client._trust_env is True
+
+
+@pytest.mark.asyncio
 async def test_ssrf_safe_client_respects_explicit_transport():
     """A caller-supplied transport (as every test's _mock_client_factory
     supplies) must win — ssrf_safe_client only sets a default, never forces

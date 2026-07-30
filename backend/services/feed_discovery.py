@@ -319,11 +319,26 @@ def ssrf_safe_client(**kwargs) -> httpx.AsyncClient:
     default transport itself. That's why `limits` below is threaded into
     PinnedTransport(...) directly rather than passed alongside `transport` in
     kwargs.
+
+    `trust_env=False` is the one client-level kwarg that still matters with
+    an explicit transport: unlike `limits`/`verify`/`cert`, httpx.AsyncClient
+    consults `trust_env` for its own environment-proxy mounting (HTTP_PROXY /
+    HTTPS_PROXY / ALL_PROXY / NO_PROXY) independently of transport
+    construction, and a mounted proxy transport for a matching URL wins over
+    `self._transport` — i.e. over PinnedTransport — bypassing the pinning
+    this whole module exists for on any deployment that happens to have one
+    of those env vars set (this project documents none of them; an operator
+    could still export one at the container/host level without touching
+    Driftread's own .env). Explicitly opting out removes the ambiguity
+    rather than relying on exactly how httpx resolves that precedence.
+    Revisit only alongside actually implementing proxy-aware pinning, not by
+    flipping this back to the default.
     """
     kwargs.setdefault(
         "transport",
         PinnedTransport(limits=httpx.Limits(max_keepalive_connections=0)),
     )
+    kwargs.setdefault("trust_env", False)
     return httpx.AsyncClient(**kwargs)
 
 
