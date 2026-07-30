@@ -9,6 +9,7 @@ import pytest
 from services.discovery_candidates import (
     approve_candidate,
     auto_promote_due,
+    block_host,
     get_candidate,
     list_candidates,
     promote_approved,
@@ -213,7 +214,7 @@ def test_reject_candidate_with_block_host_rejects_the_target():
     target = {"id": TARGET_ID, "host": "blog.example.org", "status": "done"}
     db = FakeDB(discovery_candidates=[row], discovery_targets=[target])
 
-    reject_candidate(db, row["id"], block_host=True)
+    reject_candidate(db, row["id"], block_host_too=True)
 
     assert target["status"] == "rejected"
 
@@ -222,7 +223,7 @@ def test_reject_candidate_without_block_host_leaves_the_target():
     row = _candidate_row()
     target = {"id": TARGET_ID, "host": "blog.example.org", "status": "done"}
     db = FakeDB(discovery_candidates=[row], discovery_targets=[target])
-    reject_candidate(db, row["id"], block_host=False)
+    reject_candidate(db, row["id"], block_host_too=False)
     assert target["status"] == "done"
 
 
@@ -504,3 +505,44 @@ def test_explicit_arguments_still_win_over_stored_ones():
 
     assert feed["category"] == "新的"
     assert feed["tags"] == ["new"]
+
+
+# ── blocking a host blocks all of its frontier rows ──────────────────────────
+
+def test_block_host_rejects_every_row_for_that_host():
+    """discovery_targets is unique on url, so an OPML directory can leave several
+    rows on one host. Rejecting only the one the admin was looking at would leave
+    its siblings pending — still contacted, still proposing feeds."""
+    rows = [
+        {"id": "t1", "host": "pub.example.org", "url": "https://pub.example.org/a",
+         "status": "pending"},
+        {"id": "t2", "host": "pub.example.org", "url": "https://pub.example.org/b",
+         "status": "done"},
+        {"id": "t3", "host": "other.example.org", "url": "https://other.example.org/",
+         "status": "pending"},
+    ]
+    db = FakeDB(discovery_targets=rows)
+
+    assert block_host(db, "pub.example.org") == 2
+    assert [r["status"] for r in rows] == ["rejected", "rejected", "pending"]
+
+
+def test_reject_with_block_host_covers_sibling_targets():
+    row = _candidate_row(source_host="pub.example.org")
+    siblings = [
+        {"id": row["target_id"], "host": "pub.example.org",
+         "url": "https://pub.example.org/a", "status": "pending"},
+        {"id": str(uuid4()), "host": "pub.example.org",
+         "url": "https://pub.example.org/b", "status": "pending"},
+    ]
+    db = FakeDB(discovery_candidates=[row], discovery_targets=siblings)
+
+    reject_candidate(db, row["id"], block_host_too=True)
+
+    assert all(t["status"] == "rejected" for t in siblings)
+
+
+def test_block_host_ignores_an_empty_host():
+    db = FakeDB(discovery_targets=[])
+    assert block_host(db, "") == 0
+    assert db.ops == []

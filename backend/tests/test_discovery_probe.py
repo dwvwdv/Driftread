@@ -228,19 +228,22 @@ async def test_a_real_disallow_rule_is_still_permanent():
 
 @pytest.mark.asyncio
 async def test_robots_off_skips_the_check_entirely():
+    """And the empty-result verdict is unaffected, because it now comes from the
+    target's own fetch rather than from robots reachability."""
     target = _target()
     db = _db([target])
     result, check, _disc = await _probe(db, target, respect=False)
     check.assert_not_called()
-    assert result.status == "failed"  # no reachability signal — see below
+    assert result.status == "none"
+    assert target["status"] == "done"
 
 
 # ── the empty-result decision ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_empty_result_on_a_reachable_host_is_terminal():
-    """robots.txt answered, so we know the host is up: [] means it has no feed,
-    and retrying forever would be pure waste."""
+    """discover_feeds fetched the page without raising and found nothing, so the
+    site genuinely has no feed. Retrying forever would be pure waste."""
     target = _target()
     db = _db([target])
 
@@ -253,18 +256,36 @@ async def test_empty_result_on_a_reachable_host_is_terminal():
 
 
 @pytest.mark.asyncio
-async def test_empty_result_without_a_reachability_signal_is_retried():
-    """With robots off we can't tell 'no feed' from 'site down', so the safe
-    reading is a soft failure. Turning robots off costs retry precision as well
-    as politeness."""
+@pytest.mark.parametrize("respect", [True, False])
+async def test_a_failing_target_fetch_is_retried(respect):
+    """A 404 on /robots.txt proves the server answered *that* request, not that
+    the target page is fetchable. So the verdict comes from the target's own
+    fetch: if it raises, the target is down and must be retried — with robots on
+    or off."""
     target = _target()
     db = _db([target])
 
-    result, _check, _disc = await _probe(db, target, discover=[], respect=False)
+    with (
+        patch("services.discovery_probe.respect_robots", return_value=respect),
+        patch("services.discovery_probe.robots.check", return_value=_reachable()),
+        patch("services.discovery_probe.discover_feeds",
+              side_effect=DiscoveryError("Response exceeds cap")),
+        patch("services.discovery_probe.validate_fetch_url", side_effect=lambda u: u),
+    ):
+        result = await probe_one(db, target)
 
     assert result.status == "failed"
     assert target["status"] == "pending"
     assert target["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_asks_discover_feeds_for_the_fetch_outcome():
+    """raise_on_fetch_error is what makes [] unambiguous."""
+    target = _target()
+    db = _db([target])
+    _result, _check, disc = await _probe(db, target)
+    assert disc.call_args.kwargs["raise_on_fetch_error"] is True
 
 
 @pytest.mark.asyncio

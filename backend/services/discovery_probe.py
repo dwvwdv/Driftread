@@ -6,21 +6,25 @@ well-known paths) is exactly what's wanted, and it already validates every
 candidate by parsing it. What this module adds is everything around that: the due
 queue, politeness, robots, retry backoff, and turning results into candidates.
 
-**The empty-result problem.** discover_feeds() absorbs its own fetch errors and
-returns `[]`, so from its return value alone "this site has no feed" and "this
-site is down" look identical. Retrying the first forever is pure waste; not
-retrying the second loses real sources. The resolution is to reuse the robots.txt
-fetch as a reachability probe — we make that request anyway, against the same
-host, moments earlier:
+**The empty-result problem.** By default discover_feeds() absorbs its own fetch
+errors and returns `[]`, so from its return value alone "this site has no feed"
+and "this site is down" look identical. Retrying the first forever is pure waste;
+not retrying the second loses real sources.
 
-| robots | reachable | `[]` means      | outcome                     |
-|--------|-----------|-----------------|-----------------------------|
-| on     | yes       | no feed here    | done, terminal, no retry    |
-| on     | no        | host unreachable| failed, backoff             |
-| off    | unknown   | can't tell      | failed, backoff (imprecise) |
+An earlier version inferred the difference from the robots.txt fetch, on the
+grounds that it hits the same host moments earlier. That is not sound: a 404 on
+/robots.txt proves the server answered *that* request, not that the target page
+is fetchable, so a site whose homepage was timing out could still be filed as
+"no feed here" and never revisited. The probe therefore passes
+`raise_on_fetch_error=True` and gets the target's own outcome:
 
-So turning FEED_DISCOVERY_RESPECT_ROBOTS off costs retry precision as well as
-politeness. That asymmetry is documented in docs/FEATURES.md too.
+| discover_feeds outcome | means                          | result                  |
+|------------------------|--------------------------------|-------------------------|
+| raises                 | the page itself is unreachable | failed, backoff         |
+| `[]`                   | fetched fine, advertises no feed | done, terminal        |
+| candidates             | feeds found                     | done, recorded         |
+
+Which also means the decision no longer depends on robots being enabled.
 """
 from __future__ import annotations
 
@@ -157,12 +161,10 @@ async def probe_one(db: "Client", target: dict) -> ProbeResult:
         _record_terminal(db, target, "blocked", last_failure_reason="denylisted host")
         return ProbeResult(target_id, host, "blocked", error="denylisted host")
 
-    # 3. robots.txt. Doubles as the reachability probe — see the module docstring.
+    # 3. robots.txt.
     delay = host_delay_seconds()
-    reachable: bool | None = None
     if respect_robots():
         decision = await robots.check(safe_url, ua)
-        reachable = decision.reachable
         if not decision.allowed:
             if not decision.transient:
                 # An actual Disallow rule is an answer, not a failure: attempts
@@ -187,15 +189,19 @@ async def probe_one(db: "Client", target: dict) -> ProbeResult:
             delay = max(delay, decision.crawl_delay)
         delay = min(delay, robots.MAX_CRAWL_DELAY_SECONDS)
 
-    # 4. The actual sweep.
+    # 4. The actual sweep. raise_on_fetch_error makes the target's own fetch
+    #    outcome visible instead of collapsing into [] — that is what separates
+    #    "no feed here" from "this page is down".
     try:
         candidates = await discover_feeds(
-            safe_url, delay_seconds=delay, allow_url=make_gate(ua)
+            safe_url, delay_seconds=delay, allow_url=make_gate(ua),
+            raise_on_fetch_error=True,
         )
     except Exception as e:  # noqa: BLE001 - a bad target must not abort the batch
-        logger.exception("Probe of %s failed unexpectedly", safe_url)
-        exhausted, _ = _record_failure(db, target, str(e))
-        return ProbeResult(target_id, host, "failed", error=str(e)[:500],
+        reason = str(e)[:500] or e.__class__.__name__
+        logger.info("Probe of %s failed: %s", safe_url, reason)
+        exhausted, _ = _record_failure(db, target, reason)
+        return ProbeResult(target_id, host, "failed", error=reason,
                            exhausted=exhausted)
 
     if candidates:
@@ -207,16 +213,13 @@ async def probe_one(db: "Client", target: dict) -> ProbeResult:
         return ProbeResult(target_id, host, "found", candidates_new=new,
                            candidates_seen=seen)
 
-    # 5. Nothing found. What that means depends on whether we know the host is up.
-    if reachable:
-        _record_terminal(
-            db, target, "done", feeds_found=0, attempts=0, last_failure_reason=None
-        )
-        return ProbeResult(target_id, host, "none")
-
-    exhausted, _ = _record_failure(db, target, "no feed found and host unverified")
-    return ProbeResult(target_id, host, "failed",
-                       error="no feed found and host unverified", exhausted=exhausted)
+    # 5. We fetched the page and it advertises no feed, and none of the
+    #    well-known paths answered either. Terminal — retrying would only ask the
+    #    same question again.
+    _record_terminal(
+        db, target, "done", feeds_found=0, attempts=0, last_failure_reason=None
+    )
+    return ProbeResult(target_id, host, "none")
 
 
 async def probe_due(

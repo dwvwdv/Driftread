@@ -450,3 +450,65 @@ def test_summarize_sources_totals():
     assert summarize_sources(results) == {
         "processed": 3, "targets_created": 3, "feed_targets_created": 5, "failed": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_shipped_default_sources_are_not_blocked_by_the_gate():
+    """Regression: the shipped defaults are hosted on github.com, which is on the
+    target denylist. Handing the directory fetch a denylist-applying gate made
+    every one of them fail with "Blocked by crawl policy" and reschedule forever.
+    The denylist is about hosts worth cataloguing, not about where we read a list
+    from."""
+    import json
+
+    from services.crawl_policy import make_gate
+
+    gate = make_gate("Driftread/1.0", apply_denylist=False)
+    entries = json.loads(directory_sources.SEEDS_PATH.read_text(encoding="utf-8"))
+
+    with patch("services.crawl_policy.respect_robots", return_value=False):
+        for entry in entries:
+            assert await gate(entry["url"]) is True, entry["url"]
+
+
+@pytest.mark.asyncio
+async def test_a_github_hosted_directory_can_actually_be_harvested():
+    """End to end through harvest_source_one with the gate the cycle really uses."""
+    from services.crawl_policy import make_gate
+
+    db = FakeDB(
+        discovery_sources=[_source(url="https://github.com/someone/awesome-rss")],
+        discovery_targets=[],
+    )
+    handler = _responding('<a href="https://found.example.org/">a blog</a>')
+
+    with patch("services.crawl_policy.respect_robots", return_value=False):
+        result = await _harvest(
+            db, db.rows("discovery_sources")[0], handler=handler,
+            allow_url=make_gate("Driftread/1.0", apply_denylist=False),
+        )
+
+    assert result.error is None
+    assert result.targets_created == 1
+    # ...while the links it yields are still filtered normally.
+    assert {r["host"] for r in db.rows("discovery_targets")} == {"found.example.org"}
+
+
+@pytest.mark.asyncio
+async def test_links_extracted_from_a_directory_still_respect_the_denylist():
+    from services.crawl_policy import make_gate
+
+    db = FakeDB(discovery_sources=[_source()], discovery_targets=[])
+    handler = _responding(
+        '<a href="https://github.com/x/y">code</a>'
+        '<a href="https://twitter.com/someone">social</a>'
+        '<a href="https://real.example.org/">a blog</a>'
+    )
+
+    with patch("services.crawl_policy.respect_robots", return_value=False):
+        await _harvest(
+            db, db.rows("discovery_sources")[0], handler=handler,
+            allow_url=make_gate("Driftread/1.0", apply_denylist=False),
+        )
+
+    assert {r["host"] for r in db.rows("discovery_targets")} == {"real.example.org"}

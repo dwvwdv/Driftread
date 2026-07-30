@@ -139,21 +139,32 @@ robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有�
 5xx 依 RFC 9309 確實要當成「此刻不准」，但那是站台壞了，不是站台叫我們別來 —— 若把它記成
 永久排除，站台修好之後就再也不會被看一眼。
 
-**三個對外階段都套同一份政策**（denylist ∧ robots）：blogroll 一跳、目錄頁抓取、以及探測。
-政策由 `services/crawl_policy.py::make_gate()` 產生，經 `allow_url` 傳進唯一的 fetch choke
-point，對初始 URL 與每個 redirect hop 都評估。
+**三個對外階段都套政策**：blogroll 一跳、目錄頁抓取、以及探測。政策由
+`services/crawl_policy.py::make_gate()` 產生，經 `allow_url` 傳進唯一的 fetch choke point，
+對初始 URL 與每個 redirect hop 都評估。
 
-**「空結果代表什麼」**：`discover_feeds()` 吞掉自己的抓取錯誤後回 `[]`，所以光看回傳值，
-「這站沒有 feed」和「這站掛了」長得一模一樣。解法是把 robots.txt 那次抓取當可達性探針 ——
-反正幾毫秒前才對同一個 host 打過：
+但**denylist 只套在探測**。收割與目錄階段讀的是「我們自己選的地方」——管理員設定的目錄頁，
+或已經在 catalog 裡的 feed 的首頁；而 denylist 回答的是另一個問題：「這個 host 值得被收錄成
+部落格嗎？」。把它套上去會永久擋死預設目錄清單（那份清單就放在 github.com）。這兩個階段仍
+然過 URL 形狀檢查與 robots，而它們**抽出來的連結**照常過 denylist。
 
-| robots | 可達 | `[]` 的意思 | 結果 |
-|--------|------|-------------|------|
-| 開 | 是 | 這站沒有 feed | `done`，終態，不重試 |
-| 開 | 否 | 這站不可達 | `failed`，退避重試 |
-| 關 | 不知道 | 分不出來 | `failed`，退避重試（精確度下降）|
+禮貌延遲也涵蓋「robots.txt → 首頁」這一段：探測剛對同一個 host 抓過 robots.txt，若不算進去，
+這兩個請求會背靠背送出。
 
-所以 `FEED_DISCOVERY_RESPECT_ROBOTS=false` 除了讓合規責任落到你自己身上，也會讓重試判斷變粗糙。
+**「空結果代表什麼」**：`discover_feeds()` 預設吞掉自己的抓取錯誤後回 `[]`，所以光看回傳值，
+「這站沒有 feed」和「這站掛了」長得一模一樣 —— 前者無止境重試是純浪費，後者不重試會丟掉真正
+的源。探測階段因此傳 `raise_on_fetch_error=True`，直接拿到目標自己的抓取結果：
+
+| `discover_feeds` 的結果 | 意思 | 目標狀態 |
+|--------------------------|------|----------|
+| 拋例外 | 這個頁面抓不到 | `failed`，退避重試 |
+| `[]` | 抓到了，但它沒有宣告 feed | `done`，終態，不重試 |
+| 有候選 | 找到 feed | `done`，記錄候選 |
+
+> 早期版本是拿 robots.txt 那次抓取當可達性探針（反正幾毫秒前才打過同一個 host）。那不成立：
+> `/robots.txt` 回 404 只證明伺服器回應了**那個**請求，不代表目標頁抓得到，於是首頁正在逾時
+> 的站也會被判成「沒有 feed」而永不重看。改用目標自己的結果之後，這個判斷也不再依賴 robots
+> 是否啟用。
 
 **待探測目標的狀態機**（`discovery_targets.status`）：
 
@@ -161,7 +172,7 @@ point，對初始 URL 與每個 redirect hop 都評估。
 |------|------|
 | `pending` | 可探測（或等 `next_probe_at`）——唯一會被探測的狀態 |
 | `done` | 已探測且可達；`feeds_found` 可能是 0 |
-| `blocked` | robots.txt 拒絕，或命中 denylist |
+| `blocked` | robots.txt 有 `Disallow` 規則，或命中 denylist |
 | `exhausted` | 連續不可達達 `FEED_DISCOVERY_PROBE_MAX_ATTEMPTS` 次 |
 | `rejected` | 管理員封鎖，**永不重新排入** |
 
@@ -174,8 +185,9 @@ point，對初始 URL 與每個 redirect hop 都評估。
 
 **被拒的候選永不重新提議** —— 而它「本來一定會」回來，因為同一批文章每輪都還連著同一個
 feed。所以寫入路徑從不 upsert 覆蓋 `status`，而是先查再插，既有列的更新一律加上
-`.eq("status","pending")` 圍欄。拒絕時可勾選一併把整個 host 設為 `rejected`，而收割會跳過
-任何已存在於 `discovery_targets` 的 host —— 那就是封鎖永久生效的機制，不需要第五張表。
+`.eq("status","pending")` 圍欄。拒絕時可勾選一併封鎖整個 host：這會把**該 host 的每一列**都設為 `rejected`（不只是眼前那一列 ——
+待探測列以 URL 唯一，一個 host 可能有好幾列），而收割會跳過任何已存在於 `discovery_targets`
+的 host，那就是封鎖永久生效的機制，不需要第五張表。
 
 `approved` 是真實的中間態：先記審核結果再寫 `feeds`，所以 `feeds` 寫入失敗時審核決定不會
 遺失，由下一輪的 `promote_approved()` 補上。
@@ -393,7 +405,7 @@ DELETE FROM discovery_targets
 | Frontend | Angular 21（Material + CDK）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
-| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、466 個測試） |
+| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試） |
 | 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理 |
 
 `worker` 容器跑兩個獨立迴圈（refresh 與 discovery），共用同一個 event loop 與同一個 stop

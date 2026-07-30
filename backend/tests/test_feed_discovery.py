@@ -239,9 +239,10 @@ async def test_allow_url_is_applied_to_redirect_hops():
 
 
 @pytest.mark.asyncio
-async def test_delay_seconds_pauses_between_requests_but_not_before_the_first():
-    """Politeness spacing applies to the requests *after* the first: a single
-    probe otherwise fires the homepage plus seven fallback paths back to back."""
+async def test_delay_seconds_paces_every_request_including_the_first():
+    """The autonomous caller has just fetched this host's robots.txt, so the
+    advertised per-host interval has to cover the robots-to-homepage transition
+    too — otherwise those two go out back to back."""
     sleeps: list[float] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -264,8 +265,8 @@ async def test_delay_seconds_pauses_between_requests_but_not_before_the_first():
     ):
         await discover_feeds("https://example.com/", delay_seconds=1.5)
 
-    # One sleep per fallback path, none for the initial fetch.
-    assert sleeps == [1.5] * len(FALLBACK_PATHS)
+    # One before the initial fetch, then one per fallback path.
+    assert sleeps == [1.5] * (len(FALLBACK_PATHS) + 1)
 
 
 @pytest.mark.asyncio

@@ -186,8 +186,35 @@ def get_candidate(db: "Client", candidate_id: str) -> dict | None:
     )
 
 
+def block_host(db: "Client", host: str) -> int:
+    """Reject *every* frontier row for `host`. Returns how many were rejected.
+
+    By host and not by target id: discovery_targets is unique on url, so one host
+    can legitimately hold several rows (an OPML directory contributing multiple
+    feeds from one publisher). Rejecting only the row an admin happened to be
+    looking at would leave its siblings pending, and they would go on being
+    contacted and proposing feeds from a host that was explicitly blocked.
+
+    The rows stay put rather than being deleted — link_harvest skips any host
+    already in discovery_targets, so their continued presence is what makes the
+    block permanent without a separate blocklist table.
+    """
+    if not host:
+        return 0
+    result = (
+        db.table("discovery_targets")
+        .update({"status": "rejected"})
+        .eq("host", host)
+        .execute()
+    )
+    return len(result.data or [])
+
+
 def reject_candidate(
-    db: "Client", candidate_id: str, note: str | None = None, block_host: bool = False
+    db: "Client",
+    candidate_id: str,
+    note: str | None = None,
+    block_host_too: bool = False,
 ) -> dict | None:
     candidate = get_candidate(db, candidate_id)
     if not candidate:
@@ -204,13 +231,19 @@ def reject_candidate(
         .execute()
     )
 
-    if block_host and candidate.get("target_id"):
-        # The target keeps its row and moves to 'rejected'. link_harvest skips any
-        # host already in discovery_targets, so this is what makes the block
-        # permanent without a separate blocklist table.
-        db.table("discovery_targets").update({"status": "rejected"}).eq(
-            "id", str(candidate["target_id"])
-        ).execute()
+    if block_host_too:
+        host = candidate.get("source_host")
+        if not host and candidate.get("target_id"):
+            target = _row_or_none(
+                db.table("discovery_targets")
+                .select("host")
+                .eq("id", str(candidate["target_id"]))
+                .maybe_single()
+                .execute()
+            )
+            host = (target or {}).get("host")
+        if host:
+            block_host(db, host)
 
     return updated.data[0] if updated.data else None
 

@@ -27,6 +27,7 @@ from services.directory_sources import load_default_sources
 from services.discovery import run_cycle
 from services.discovery_candidates import (
     approve_candidate,
+    block_host,
     list_candidates,
     reject_candidate,
     stats,
@@ -169,11 +170,16 @@ async def block_target(
     target_id: UUID,
     db: Client = Depends(get_client),
 ) -> DiscoveryTarget:
-    """Permanently keep a host out of the frontier. link_harvest skips any host
-    already present, so the row staying put is what makes the block stick."""
+    """Permanently keep a host out of the frontier.
+
+    Blocks the whole host, not just this row: discovery_targets is unique on url,
+    so one host can hold several rows and leaving the siblings pending would mean
+    still contacting a host the admin explicitly blocked. link_harvest skips any
+    host already present, so the rows staying put is what makes the block stick.
+    """
     existing = _row_or_none(
         db.table("discovery_targets")
-        .select("id")
+        .select("id,host")
         .eq("id", str(target_id))
         .maybe_single()
         .execute()
@@ -181,13 +187,16 @@ async def block_target(
     if not existing:
         raise HTTPException(status_code=404, detail="Target not found")
 
-    updated = (
+    block_host(db, existing["host"])
+
+    refreshed = _row_or_none(
         db.table("discovery_targets")
-        .update({"status": "rejected"})
+        .select("*")
         .eq("id", str(target_id))
+        .maybe_single()
         .execute()
     )
-    return DiscoveryTarget(**updated.data[0])
+    return DiscoveryTarget(**refreshed)
 
 
 # ── candidates ───────────────────────────────────────────────────────────────

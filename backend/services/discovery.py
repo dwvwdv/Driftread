@@ -69,11 +69,20 @@ async def run_cycle(
     probe = dict(_EMPTY_PROBE)
     auto_promoted = imported = 0
 
-    # The same policy the probe uses. Both harvest stages can make outbound
-    # requests — the blogroll hop and the directory-page fetch — so both are
-    # gated too; without this, FEED_DISCOVERY_RESPECT_ROBOTS would only apply to
-    # the probe and quietly mean nothing for the other two.
-    gate = make_gate(user_agent())
+    # Both harvest stages make outbound requests — the blogroll hop and the
+    # directory-page fetch — so both are gated; without this,
+    # FEED_DISCOVERY_RESPECT_ROBOTS would only apply to the probe and quietly
+    # mean nothing for the other two.
+    #
+    # They get the gate *without* the target denylist, though. These stages read
+    # from a place we chose (an admin-configured directory, or the homepage of a
+    # feed already in the catalog), and DENY_HOST_SUFFIXES answers a different
+    # question: "is this host ever worth cataloguing as a blog?" Applying it here
+    # would permanently block the shipped default directory list, which is hosted
+    # on github.com. The links extracted from those pages are still filtered
+    # normally, and the probe — which really is chasing a candidate — keeps the
+    # full gate.
+    source_gate = make_gate(user_agent(), apply_denylist=False)
 
     # One index for the whole cycle, shared by both harvest stages: a host a
     # directory contributes is then visible to article harvesting instead of
@@ -88,7 +97,7 @@ async def run_cycle(
         try:
             directory = summarize_sources(
                 await harvest_sources_due(
-                    db, index, limit=directory_limit, allow_url=gate
+                    db, index, limit=directory_limit, allow_url=source_gate
                 )
             )
         except Exception:
@@ -98,7 +107,7 @@ async def run_cycle(
         try:
             harvest = summarize_harvest(
                 await harvest_due(
-                    db, limit=harvest_limit, allow_url=gate, index=index
+                    db, limit=harvest_limit, allow_url=source_gate, index=index
                 )
             )
         except Exception:

@@ -15,17 +15,28 @@ from services.feed_discovery import AllowUrl
 from services.link_harvest import is_denied_host, normalize_host
 
 
-def make_gate(user_agent: str) -> AllowUrl:
-    """A feed_discovery.AllowUrl enforcing denylist ∧ robots.txt.
+def make_gate(user_agent: str, *, apply_denylist: bool = True) -> AllowUrl:
+    """A feed_discovery.AllowUrl enforcing (optionally) the denylist ∧ robots.txt.
 
     Handed to fetch_with_cap_response, which evaluates it on the initial URL and
     again on every redirect hop — so a 3xx can't carry a request to a host the
     denylist or robots.txt would have refused.
+
+    `apply_denylist=False` is for the stages that read from a place we chose
+    rather than probe a place we found: an admin-configured directory page, or
+    the homepage of a feed already in the catalog. DENY_HOST_SUFFIXES answers
+    "is this host ever a blog worth cataloguing?", which is the wrong question
+    there — the shipped default directory list is hosted on github.com, and
+    applying the denylist to it blocks every one of those sources forever. The
+    URL-shape and robots checks still apply, and the *links extracted* from
+    those pages go through the denylist as normal.
     """
 
     async def allow(url: str) -> bool:
         host = normalize_host(url)
-        if not host or is_denied_host(host):
+        if not host:
+            return False
+        if apply_denylist and is_denied_host(host):
             return False
         if not respect_robots():
             return True

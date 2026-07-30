@@ -294,20 +294,22 @@ async def discover_feeds(
     timeout: float = 12.0,
     delay_seconds: float = 0.0,
     allow_url: AllowUrl | None = None,
+    raise_on_fetch_error: bool = False,
 ) -> list[DiscoveryCandidate]:
     """Discover candidate feeds for a URL. Returns list (possibly empty).
 
-    `delay_seconds` pauses between the requests this call makes against the one
-    host it is probing (a full run is the initial page plus up to seven
-    well-known feed paths), and `allow_url` gates every one of them. Both default
-    to off so user-triggered discovery via POST /api/discover is unchanged; the
-    autonomous loop supplies them.
+    `delay_seconds` paces the requests this call makes against the one host it is
+    probing (a full run is the initial page plus up to seven well-known feed
+    paths), and `allow_url` gates every one of them. Both default to off so
+    user-triggered discovery via POST /api/discover is unchanged; the autonomous
+    loop supplies them.
 
-    Note that fetch failures are absorbed into an empty result rather than
-    raised, so `[]` cannot distinguish "this site has no feed" from "this site is
-    unreachable". Callers that need to tell those apart have to probe
-    reachability separately — see services/discovery_probe.py, which reuses its
-    robots.txt fetch for exactly that.
+    `raise_on_fetch_error` decides what `[]` means. By default the initial fetch
+    failing is absorbed into an empty result, which is right for a person who
+    pasted a URL — they just want "nothing found". An unattended caller needs the
+    difference, because "this site has no feed" is terminal while "this site is
+    down" must be retried; passing True re-raises instead, leaving `[]` to mean
+    unambiguously "we fetched the page and it advertises no feed".
     """
     safe_url = validate_fetch_url(url)
     headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
@@ -315,12 +317,21 @@ async def discover_feeds(
     async with httpx.AsyncClient(
         follow_redirects=False, timeout=timeout, headers=headers
     ) as client:
+        # The pause applies before the *first* request too. The autonomous caller
+        # has just fetched this host's robots.txt, so without it the advertised
+        # per-host interval wouldn't cover the robots-to-homepage transition —
+        # the two requests would go out back to back.
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
         # 1. Maybe the URL itself is already a feed.
         try:
             text, ctype = await fetch_with_cap(
                 client, safe_url, MAX_FEED_BYTES, allow_url=allow_url
             )
         except (httpx.HTTPError, DiscoveryError):
+            if raise_on_fetch_error:
+                raise
             return []
 
         if any(ft in ctype.lower() for ft in FEED_CONTENT_TYPES):

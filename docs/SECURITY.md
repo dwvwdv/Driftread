@@ -166,10 +166,15 @@ redirect，而本次改動前每個 hop 只重跑私有位址檢查。於是 `bl
 
 **6. robots / 禮貌性**
 
-預設開啟，且**三個對外階段都套同一份政策**（denylist ∧ robots）：blogroll 一跳、目錄頁抓取、
-以及探測。政策由 `services/crawl_policy.py::make_gate()` 產生後傳進 choke point ——
-初版只在探測階段掛了政策，於是另外兩個階段在 `RESPECT_ROBOTS=true` 之下照樣裸奔，正是
-規則 9 想防的那種「各 call site 各寫一份就會漏」。現在建立政策與使用政策分開，新增階段漏不掉。
+預設開啟，且**三個對外階段都套政策**：blogroll 一跳、目錄頁抓取、以及探測。政策由
+`services/crawl_policy.py::make_gate()` 產生後傳進 choke point —— 初版只在探測階段掛了政策，
+於是另外兩個階段在 `RESPECT_ROBOTS=true` 之下照樣裸奔，正是規則 9 想防的那種「各 call site
+各寫一份就會漏」。現在建立政策與使用政策分開，新增階段漏不掉。
+
+**denylist 只套在探測階段。** 收割與目錄讀的是我們自己選的地方（管理員設定的目錄頁、已在
+catalog 裡的 feed 的首頁），而 denylist 回答的是「這個 host 值得被收錄成部落格嗎」—— 對
+「要從哪裡讀清單」是錯的問題，而且套上去會永久擋死預設目錄清單（它就放在 github.com）。
+這兩個階段仍過 URL 形狀檢查與 robots，它們抽出來的連結也照常過 denylist。
 
 RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕。`Crawl-delay` 尊重但夾在 30 秒 ——
 一句 `Crawl-delay: 86400` 不能釘住一個探測槽位一整天。robots.txt 走同一個有 SSRF gate 與

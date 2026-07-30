@@ -202,8 +202,12 @@ async def test_cycle_gates_both_harvest_stages_not_just_the_probe():
 
 
 @pytest.mark.asyncio
-async def test_cycle_gate_denies_a_denylisted_host():
-    """Sanity-check the object actually is the crawl policy, not just non-None."""
+async def test_source_gate_still_rejects_unusable_urls_but_not_denylisted_hosts():
+    """The harvest stages read from a place we chose — an admin-configured
+    directory, or the homepage of a feed already in the catalog. The target
+    denylist answers a different question ("is this host ever worth cataloguing?")
+    and applying it here would permanently block the shipped default directory
+    list, which is hosted on github.com."""
     captured = {}
 
     async def capture(db, limit=None, allow_url=None, index=None):
@@ -222,4 +226,8 @@ async def test_cycle_gate_denies_a_denylisted_host():
 
     with patch("services.crawl_policy.respect_robots", return_value=False):
         assert await captured["gate"]("https://ok.example.org/") is True
-        assert await captured["gate"]("https://facebook.com/x") is False
+        # The shipped defaults live here — blocking it would strand them forever.
+        assert await captured["gate"]("https://github.com/x/awesome-rss") is True
+        # URL-shape checks still apply.
+        assert await captured["gate"]("https://192.168.0.1/x") is False
+        assert await captured["gate"]("mailto:x@y.com") is False
