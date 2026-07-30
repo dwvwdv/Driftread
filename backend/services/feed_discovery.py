@@ -137,7 +137,7 @@ def validate_fetch_url(url: str) -> str:
     return url
 
 
-def _resolve_pinned_ips(host: str) -> list[str]:
+async def _resolve_pinned_ips(host: str) -> list[str]:
     """Resolve `host` and return every IP that passed the same private/
     loopback/etc checks as _is_safe_host — for PinnedTransport to connect to
     directly, trying them in order.
@@ -159,9 +159,18 @@ def _resolve_pinned_ips(host: str) -> list[str]:
     order, and only trying address[0] here would silently drop that fallback
     — e.g. an AAAA record picked first in an environment with broken IPv6
     would fail outright instead of falling back to a working A record.
+
+    Runs socket.getaddrinfo() via asyncio.to_thread() rather than calling it
+    directly: it's a blocking call, and this coroutine runs inside
+    PinnedTransport.handle_async_request(), invoked once per candidate feed
+    link and fallback path in discover_feeds() — called directly from the
+    fully public, unauthenticated POST /api/discover. A synchronous call
+    here would stall the *entire* event loop (every other in-flight request,
+    not just this one) for however long an attacker-controlled or slow DNS
+    server takes to answer, repeated once per candidate.
     """
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
     except (socket.gaierror, UnicodeError):
         raise DiscoveryError(f"DNS resolution failed for {host!r}")
     # Reject the whole host if *any* resolved address is unsafe, not just the
@@ -249,7 +258,7 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         original_host = request.url.host
         original_url = request.url
-        ips = _pick_pinned_ips(_resolve_pinned_ips(original_host), MAX_PINNED_CONNECT_ATTEMPTS)
+        ips = _pick_pinned_ips(await _resolve_pinned_ips(original_host), MAX_PINNED_CONNECT_ATTEMPTS)
         last_error: httpx.TransportError | None = None
         try:
             for ip in ips:
