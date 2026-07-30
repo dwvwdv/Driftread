@@ -9,7 +9,16 @@ from starlette.responses import PlainTextResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from migrate import run_migrations
-from routers import admin, articles, discover, feeds, me, opml, recommendations
+from routers import (
+    admin,
+    admin_discovery,
+    articles,
+    discover,
+    feeds,
+    me,
+    opml,
+    recommendations,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -95,6 +104,7 @@ app.include_router(feeds.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(admin_discovery.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
 app.include_router(opml.router, prefix="/api")
 app.include_router(discover.router, prefix="/api")
