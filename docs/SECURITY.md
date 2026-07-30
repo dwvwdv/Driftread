@@ -205,7 +205,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **`validate_fetch_url()` / `_is_safe_host()` 本身不動**：既有的 check-then-fetch 語意保留在呼叫端（仍然是 `allow_url` 政策層跑之前的第一道門），新的傳輸層解析是**第二道獨立的門**，決定的是真正的連線目標——兩道門之間不再有「驗證用一個 IP、連線用另一個 IP」的落差，因為傳輸層自己的解析結果就是它自己拿去連線的那個。
 - **已知限制**：`_resolve_pinned_ips()` 每次呼叫只解析一次，但 `fetch_with_cap_response()` 對每個 redirect hop 都會重新進入這個傳輸層（每個 hop 都是新的一次 `client.stream()` 呼叫），所以每個 hop 各自有自己的單次解析——這是預期行為，不是遺漏。
 - **附帶修掉 `routers/discover.py:41`**（#24 附帶記錄的既存暴露，當時未改）：`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出的第三方字串，原本整批塞進 `.in_("url", feed_urls)`，與 #14 修的 `.or_()` 注入同一類問題（只是經由 `.in_()` 的 list 序列化而非手拼字串）。改為逐一 `.eq("url", feed_url).maybe_single()`，match `services/discovery_candidates.py` 既有的作法，第三方字串完全不進 PostgREST filter 語法。
-- **PR review（自動化 code review，四輪）抓出七個問題，同一輪補上**：
+- **PR review（自動化 code review，五輪）抓出八個問題，同一輪補上**：
 
   第一輪：
 
@@ -226,7 +226,9 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 
   7. **P2 — 位址上限的截斷沒有顧到位址族**。第三輪的 `ips[:MAX_PINNED_CONNECT_ATTEMPTS]` 是照 `getaddrinfo()` 回傳順序直接截斷——如果一個 resolver 對同一個 hostname 回傳兩筆以上 AAAA 記錄、排在唯一一筆 A 記錄前面，兩個嘗試名額會被 IPv6 佔滿，在 IPv6 實際不通的環境裡，又把第 3 點（dual-stack fallback）原本要解決的情境重新弄壞一次——只是這次不是「只回傳一筆」，而是「回傳的順序讓上限截斷到同一個族」。修法：新增 `_pick_pinned_ips(ips, limit)`，依「先出現的族優先」交錯排列（例如 IPv6、IPv4、IPv6、IPv4……，各自保留族內原始順序）後再截斷，確保只要有兩個以上族存在，上限之內一定各占到至少一個名額。這是純函式、不涉及任何 httpx／httpcore 內部細節，可以在沒有網路的環境裡放心驗證正確性。
 
----
+  第五輪：
+
+  8. **P2 — 回傳前沒有還原 `request.url`**。`httpx.Client._send_single_request()` 拿到 transport 回傳的 response 後才設定 `response.request = request`，然後才用 `response.request.url` 的 host 當 cookie domain 去解析回應帶的 `Set-Cookie`——這一步發生在 `PinnedTransport.handle_async_request()` **回傳之後**，而 `request` 是同一個被本函式改過 `url` 的物件。如果回傳前沒把 `request.url` 還原成原始 hostname，Set-Cookie 就會被歸檔到那次連線用的 IP 底下；`fetch_with_cap_response()` 手動 redirect 迴圈的下一 hop 用同一個 `client`、對真正的 hostname 建立新請求時，找不到存在 IP 底下的 cookie，帶 cookie 才能過關的重新導向鏈（例如某些反爬蟲挑戰）就會在這裡斷掉。修法：整個重試迴圈包進 `try/finally`，在 `finally` 裡把 `request.url` 還原成 `original_url`——`finally` 保證在 `return`／`raise` 真正把控制權交還呼叫端之前執行，所以呼叫端（不管是拿到 response 還是抓到例外）看到的 `request.url` 永遠是原始 hostname，不會是曾經用過的 pinned IP。
 
 ## 目前的防線總覽
 

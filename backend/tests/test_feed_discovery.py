@@ -444,6 +444,56 @@ async def test_pinned_transport_connects_to_resolved_ip_keeps_host_and_sni():
 
 
 @pytest.mark.asyncio
+async def test_pinned_transport_restores_original_url_before_returning():
+    """httpx.Client._send_single_request sets response.request = request and
+    only *then* extracts Set-Cookie headers from the response, using
+    response.request.url's host as the cookie domain. Since request is the
+    same object PinnedTransport mutated, leaving request.url pointing at the
+    pinned IP after returning would file any Set-Cookie under the IP instead
+    of the real hostname — and the next manual-redirect hop in
+    fetch_with_cap_response() (same client, built against the real hostname)
+    would then fail to find it."""
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="ok")
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo("93.184.216.34"),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        await transport.handle_async_request(request)
+
+    assert request.url.host == "example.com"
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_restores_original_url_after_every_address_fails():
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unreachable", request=request)
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://unreachable.example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo("93.184.216.34"),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(request)
+
+    assert request.url.host == "unreachable.example.com"
+
+
+@pytest.mark.asyncio
 async def test_pinned_transport_falls_back_to_next_address_on_connect_error():
     """A dual-stack host whose first resolved address is unreachable (e.g. an
     AAAA record in an environment with broken IPv6) must still succeed via a

@@ -251,28 +251,44 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
         original_url = request.url
         ips = _pick_pinned_ips(_resolve_pinned_ips(original_host), MAX_PINNED_CONNECT_ATTEMPTS)
         last_error: httpx.TransportError | None = None
-        for ip in ips:
-            request.url = original_url.copy_with(host=ip)
-            request.extensions = {**request.extensions, "sni_hostname": original_host}
-            try:
-                return await super().handle_async_request(request)
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                # Only a connect-stage failure warrants trying the next
-                # address — anything past that point (read/write timeout,
-                # HTTP-level error) isn't an address-reachability problem and
-                # retrying it against a different IP wouldn't fix it. Both
-                # exceptions are needed: httpx.ConnectTimeout is a sibling of
-                # ConnectError, not a subclass of it (they hang off
-                # TimeoutException vs NetworkError respectively), and a
-                # connect-stage timeout — packets silently dropped rather than
-                # actively refused — is the more common real-world shape of
-                # exactly the "broken IPv6 route" case this fallback exists
-                # for, not the exception thrown for an address that's merely
-                # unreachable.
-                last_error = exc
-                continue
-        assert last_error is not None  # ips is non-empty; the loop always runs >=1 time
-        raise last_error
+        try:
+            for ip in ips:
+                request.url = original_url.copy_with(host=ip)
+                request.extensions = {**request.extensions, "sni_hostname": original_host}
+                try:
+                    return await super().handle_async_request(request)
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    # Only a connect-stage failure warrants trying the next
+                    # address — anything past that point (read/write timeout,
+                    # HTTP-level error) isn't an address-reachability problem and
+                    # retrying it against a different IP wouldn't fix it. Both
+                    # exceptions are needed: httpx.ConnectTimeout is a sibling of
+                    # ConnectError, not a subclass of it (they hang off
+                    # TimeoutException vs NetworkError respectively), and a
+                    # connect-stage timeout — packets silently dropped rather than
+                    # actively refused — is the more common real-world shape of
+                    # exactly the "broken IPv6 route" case this fallback exists
+                    # for, not the exception thrown for an address that's merely
+                    # unreachable.
+                    last_error = exc
+                    continue
+            assert last_error is not None  # ips is non-empty; the loop always runs >=1 time
+            raise last_error
+        finally:
+            # The caller (httpx.Client._send_single_request) sets
+            # response.request = request and *then* extracts Set-Cookie
+            # headers from the response using response.request.url's host as
+            # the cookie domain — after this method returns, not before. A
+            # finally block runs before a `return` actually hands control
+            # back, so restoring request.url here (undoing the per-attempt
+            # rewrite above) guarantees the caller only ever observes the
+            # original hostname, never the pinned IP. Without this, a
+            # Set-Cookie on this response would be filed under the IP, and
+            # the next manual-redirect hop in fetch_with_cap_response() (same
+            # client, request built against the real hostname) wouldn't find
+            # it — breaking any site that gates a redirect chain on a cookie
+            # set earlier in it (e.g. a bot-challenge cookie).
+            request.url = original_url
 
 
 def ssrf_safe_client(**kwargs) -> httpx.AsyncClient:
