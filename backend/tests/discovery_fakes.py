@@ -308,8 +308,12 @@ class FakeDB:
     """
 
     def __init__(self, **tables: list[dict]):
+        # The caller's dicts are stored as-is, not copied, so a test can hold a
+        # reference to a seeded row and assert on it directly after the code under
+        # test has updated it. Every helper in the test files builds fresh dicts,
+        # so there is nothing to leak between tests.
         self._tables: dict[str, list[dict]] = {
-            name: [dict(r) for r in rows] for name, rows in tables.items()
+            name: list(rows) for name, rows in tables.items()
         }
         self.ops: list[tuple[str, str, tuple]] = []
         self.updates: list[tuple[str, dict]] = []

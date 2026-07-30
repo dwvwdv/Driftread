@@ -549,20 +549,27 @@ async def harvest_one(
 
 
 async def harvest_due(
-    db: "Client", limit: int | None = None, allow_url: AllowUrl | None = None
+    db: "Client",
+    limit: int | None = None,
+    allow_url: AllowUrl | None = None,
+    index: HostIndex | None = None,
 ) -> list[HarvestResult]:
     """Harvest every feed currently due, bounded by `limit`.
 
     Sequential rather than concurrent: the article path is DB-bound with a batch
     of ten, and the only outbound hop (blogroll) is already spaced by its own
-    per-host delay. The HostIndex is built once and shared, so hosts discovered
-    earlier in the batch are not re-inserted later in it.
+    per-host delay. The HostIndex is built once and shared across the batch, so
+    hosts discovered by an earlier feed aren't re-inserted by a later one.
+
+    `index` lets a caller supply that snapshot — services/discovery.py passes the
+    one the directory stage already used, so the two stages agree on what exists.
     """
     feeds = select_due_harvest_feeds(db, limit or harvest_batch_size())
     if not feeds:
         return []
 
-    index = build_host_index(db)
+    if index is None:
+        index = build_host_index(db)
     return [await harvest_one(db, feed, index, allow_url) for feed in feeds]
 
 
