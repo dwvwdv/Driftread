@@ -29,6 +29,12 @@ RSS 推薦平台，核心功能為「猜你喜歡」，幫助用戶挖掘心儀�
 driftread/
 ├── frontend/          # Angular 應用（Dockerfile → GHCR）
 ├── backend/           # Python FastAPI（Dockerfile → GHCR）
+├── extension/         # 瀏覽器擴充（一鍵加入 feed）
+├── docs/              # 專案文件
+│   ├── FEATURES.md    # 當前功能 / API / 資料表清單
+│   ├── CHANGELOG.md   # 逐 PR 變更紀錄
+│   └── SECURITY.md    # 安全加固紀錄與注意事項
+├── scripts/gen_env.py # 產生 .env
 ├── docker-compose.yml # 正式環境部署
 ├── .github/
 │   └── workflows/
