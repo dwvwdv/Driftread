@@ -139,6 +139,12 @@ CREATE TABLE IF NOT EXISTS discovery_candidates (
   --   sweep promotes it into `feeds`. If the feeds write fails the approval
   --   isn't lost and the next cycle retries it.
   feed_id              UUID REFERENCES feeds(id) ON DELETE SET NULL,
+  -- The category/tags the reviewer chose, stored with the approval rather than
+  -- held in the request. Without these, a promotion that failed and got retried
+  -- by promote_approved() next cycle would import the feed uncategorised and
+  -- silently discard what the admin actually picked.
+  approved_category    TEXT,
+  approved_tags        TEXT[] NOT NULL DEFAULT '{}',
   review_note          TEXT,
   discovered_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),

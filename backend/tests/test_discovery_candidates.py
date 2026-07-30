@@ -420,3 +420,87 @@ def test_stats_counts_every_status():
     assert out["candidates_pending"] == 1
     assert out["candidates_imported"] == 1
     assert out["sources_enabled"] == 1
+
+
+# ── promotion must not clobber an existing feed ──────────────────────────────
+
+def test_promote_links_to_an_existing_feed_without_overwriting_it():
+    """A feed on this URL may have been imported by hand while the candidate sat
+    in the queue. Upserting would replace a curated title/category/tags with
+    scraped values and this call's empty defaults, so a duplicate approval would
+    quietly damage the catalog."""
+    row = _candidate_row(title="Scraped Title", website_url="https://scraped.example/")
+    curated = {
+        "id": str(uuid4()),
+        "title": "Hand-curated Title",
+        "url": "https://blog.example.org/feed",
+        "website_url": "https://curated.example/",
+        "category": "科技",
+        "tags": ["精選"],
+    }
+    db = FakeDB(discovery_candidates=[row], feeds=[curated])
+
+    feed = promote_candidate(db, row)
+
+    assert feed["id"] == curated["id"]
+    assert curated["title"] == "Hand-curated Title"
+    assert curated["category"] == "科技"
+    assert curated["tags"] == ["精選"]
+    assert curated["website_url"] == "https://curated.example/"
+    assert db.upserts == []          # nothing was written to feeds at all
+    assert row["status"] == "imported"
+    assert row["feed_id"] == curated["id"]
+
+
+def test_approve_links_to_an_existing_feed_instead_of_overwriting():
+    row = _candidate_row()
+    curated = {"id": str(uuid4()), "title": "Curated", "category": "既有",
+               "url": "https://blog.example.org/feed", "tags": ["keep"]}
+    db = FakeDB(discovery_candidates=[row], feeds=[curated])
+
+    feed, outcome = approve_candidate(db, row["id"], category="新的", tags=["new"])
+
+    assert outcome == "imported"
+    assert feed["id"] == curated["id"]
+    assert curated["category"] == "既有"
+    assert curated["tags"] == ["keep"]
+
+
+# ── approval metadata survives a failed write ────────────────────────────────
+
+def test_approval_stores_the_reviewers_choices():
+    row = _candidate_row()
+    db = FakeDB(discovery_candidates=[row], feeds=[])
+
+    approve_candidate(db, row["id"], category="科技", tags=["blog", "個人"])
+
+    approval = [p for t, p in db.updates if t == "discovery_candidates"][0]
+    assert approval["status"] == "approved"
+    assert approval["approved_category"] == "科技"
+    assert approval["approved_tags"] == ["blog", "個人"]
+
+
+def test_retry_after_a_failed_write_reproduces_the_reviewers_choices():
+    """promote_approved() calls promote_candidate() with no arguments, so without
+    the stored choices the retry would import the feed uncategorised and silently
+    discard what the admin picked."""
+    stranded = _candidate_row(
+        status="approved", approved_category="科技", approved_tags=["blog"],
+    )
+    db = FakeDB(discovery_candidates=[stranded], feeds=[])
+
+    promoted = promote_approved(db)
+
+    assert len(promoted) == 1
+    assert promoted[0]["category"] == "科技"
+    assert promoted[0]["tags"] == ["blog"]
+
+
+def test_explicit_arguments_still_win_over_stored_ones():
+    row = _candidate_row(approved_category="舊的", approved_tags=["old"])
+    db = FakeDB(discovery_candidates=[row], feeds=[])
+
+    feed = promote_candidate(db, row, category="新的", tags=["new"])
+
+    assert feed["category"] == "新的"
+    assert feed["tags"] == ["new"]

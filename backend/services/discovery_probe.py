@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
 from services import robots
+from services.crawl_policy import make_gate
 from services.discovery_candidates import record_candidates
 from services.discovery_config import (
     host_delay_seconds,
@@ -41,13 +42,12 @@ from services.discovery_config import (
     respect_robots,
 )
 from services.feed_discovery import (
-    AllowUrl,
     DiscoveryError,
     discover_feeds,
     user_agent,
     validate_fetch_url,
 )
-from services.link_harvest import is_denied_host, normalize_host
+from services.link_harvest import is_denied_host
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -100,25 +100,6 @@ def next_probe_delay_hours(attempts: int) -> int:
     if attempts < 1:
         return base
     return min(MAX_RETRY_HOURS, base * (2 ** (attempts - 1)))
-
-
-def _make_gate(ua: str) -> AllowUrl:
-    """The crawl policy handed to discover_feeds: denylist ∧ robots, re-evaluated
-    on every request and every redirect hop.
-
-    Checking the denylist here and not only at harvest time is what stops a
-    redirect from carrying a probe somewhere we said we wouldn't go.
-    """
-
-    async def allow(url: str) -> bool:
-        host = normalize_host(url)
-        if not host or is_denied_host(host):
-            return False
-        if not respect_robots():
-            return True
-        return await robots.is_allowed(url, ua)
-
-    return allow
 
 
 def _record_failure(
@@ -183,17 +164,25 @@ async def probe_one(db: "Client", target: dict) -> ProbeResult:
         decision = await robots.check(safe_url, ua)
         reachable = decision.reachable
         if not decision.allowed:
-            if decision.reachable:
-                # A disallow is an answer, not a failure: attempts stays put and
-                # the target is terminal rather than retried.
+            if not decision.transient:
+                # An actual Disallow rule is an answer, not a failure: attempts
+                # stays put and the target is terminal rather than retried.
                 _record_terminal(
                     db, target, "blocked", last_failure_reason="robots.txt disallow"
                 )
                 return ProbeResult(target_id, host, "blocked",
                                    error="robots.txt disallow")
-            exhausted, _ = _record_failure(db, target, "robots.txt unreachable")
-            return ProbeResult(target_id, host, "failed",
-                               error="robots.txt unreachable", exhausted=exhausted)
+            # A 5xx or an unreachable robots.txt disallows us right now, but the
+            # site never said to stay away — so it has to go down the retry path,
+            # not be filed away as permanently excluded.
+            reason = (
+                "robots.txt server error"
+                if decision.reachable
+                else "robots.txt unreachable"
+            )
+            exhausted, _ = _record_failure(db, target, reason)
+            return ProbeResult(target_id, host, "failed", error=reason,
+                               exhausted=exhausted)
         if decision.crawl_delay:
             delay = max(delay, decision.crawl_delay)
         delay = min(delay, robots.MAX_CRAWL_DELAY_SECONDS)
@@ -201,7 +190,7 @@ async def probe_one(db: "Client", target: dict) -> ProbeResult:
     # 4. The actual sweep.
     try:
         candidates = await discover_feeds(
-            safe_url, delay_seconds=delay, allow_url=_make_gate(ua)
+            safe_url, delay_seconds=delay, allow_url=make_gate(ua)
         )
     except Exception as e:  # noqa: BLE001 - a bad target must not abort the batch
         logger.exception("Probe of %s failed unexpectedly", safe_url)

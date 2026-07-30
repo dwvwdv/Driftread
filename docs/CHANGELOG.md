@@ -170,6 +170,14 @@ review 過程中順帶修掉三個文件對不上實作、以及實作本身的�
 - **`auto_promote_min_referrers()` 差點被 `_env_int` 的 `< 1 → 用預設` 規則吃掉**。`0` 在這個參數是有意義的「永不自動入庫」，照抄 `FEED_REFRESH_*` 的守則會把明確的關閉打回預設值、**默默打開自動入庫**。`env_int` 因此多一個 `minimum` 參數，並用兩個測試釘住（含對非零預設值的斷言）。
 - **收割文章若照 `published_at` 排序會系統性挖錯東西**。該欄位可為 NULL，而 Postgres `DESC` 預設 `NULLS FIRST`，用它取「最近 20 篇」實際上會優先拿到沒有日期的文章。改用 `NOT NULL` 的 `fetched_at`。
 
+### 自動 review（Codex）指出後修掉的問題
+
+- **爬取政策只掛在探測階段**（P1）。`blogroll` 與目錄頁兩個階段的 `allow_url` 留在預設的 `None`，於是 `FEED_DISCOVERY_RESPECT_ROBOTS=true` 對它們形同虛設 —— 明明是本 PR 自己剛寫進 SECURITY.md 規則 9 的那種錯（政策要掛在唯一的 choke point，不要靠各 call site 記得）。政策抽成 `services/crawl_policy.py::make_gate()`，由 `run_cycle()` 建立一次後傳給三個階段。
+- **入庫會覆寫既有 feed 的 metadata**（P1）。候選在佇列裡等的期間，同一個 URL 可能已被手動匯入；無條件 upsert 會把人工整理過的標題、分類、標籤換成抓來的值與空白預設。改為先查再寫，已存在就只連結不覆寫。
+- **robots.txt 的 5xx 被當成永久排除**（P2）。RFC 9309 說 5xx 要當「此刻不准」，但那是站台壞了不是站台叫我們別來；記成 `blocked` 終態的話，站台修好後就再也不會被看一眼。`RobotsDecision` 加 `transient` 區分「解析出的 Disallow」與「5xx / 不可達」，後者走退避重試。
+- **重建 `https://<正規化 host>/` 會丟掉能用的位址**（P2）。`normalize_host()` 去掉 `www.` 對去重是對的、對抓取是錯的：不少站只服務 `www.` 而 apex 解析失敗，也還有少數 http-only。新增 `origin_of()` 保留原始 scheme 與 authority 當抓取位址，正規化 host 只當去重鍵。
+- **核准時選的分類與標籤在重試時會遺失**（P2）。`promote_approved()` 不帶參數呼叫，所以寫 `feeds` 失敗後的重試會把源無分類匯入。改為把選擇一起寫進候選列（`approved_category` / `approved_tags`，migration 006 尚未發布故直接補欄位）。
+
 ### 環境變數
 
 新增 16 個 `FEED_DISCOVERY_*`（皆有預設值、不填也能跑），依 `CLAUDE.md` 要求同步 `.env.example`、`docker-compose.yml`（`api` 與 `worker` 兩個區塊）、`scripts/gen_env.py` 三處。
@@ -178,7 +186,7 @@ review 過程中順帶修掉三個文件對不上實作、以及實作本身的�
 
 ### 測試
 
-新增 8 個測試檔（`test_discovery_config` / `test_robots` / `test_link_harvest` / `test_directory_sources` / `test_discovery_probe` / `test_discovery_candidates` / `test_discovery_cycle` / `test_admin_discovery`）與共用的 in-memory `tests/discovery_fakes.py`（會實際套用 filter 而非只記錄 op chain，讓測試能斷言結果狀態）。擴充 `test_feed_discovery.py` 與 `test_worker.py` —— 兩者的既有測試**原封不動**通過（diff 只有新增行）。測試總數 117 → 444。
+新增 8 個測試檔（`test_discovery_config` / `test_robots` / `test_link_harvest` / `test_directory_sources` / `test_discovery_probe` / `test_discovery_candidates` / `test_discovery_cycle` / `test_admin_discovery`）與共用的 in-memory `tests/discovery_fakes.py`（會實際套用 filter 而非只記錄 op chain，讓測試能斷言結果狀態）。擴充 `test_feed_discovery.py` 與 `test_worker.py` —— 兩者的既有測試**原封不動**通過（diff 只有新增行）。測試總數 117 → 466。
 
 migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、補上 Supabase 的 `auth.users` / `auth.uid()` 與三個角色），驗證了：六個 migration 依序套用成功；006 單獨重跑乾淨（DO-guard 有效）；四張新表的 RLS 是「已啟用且零 policy」；partial index 的定義與述詞正確；以及 in-memory fake 驗證不了的 trigger 語意 —— 邊數重算而非遞增（重複收割不膨脹）、pending 候選跟著證據走而已審核的凍結、刪 feed 會 cascade 並讓計數下降、清理終態目標不會毀掉審核歷史（`ON DELETE SET NULL`）。
 

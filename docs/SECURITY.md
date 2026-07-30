@@ -140,6 +140,13 @@ redirect，而本次改動前每個 hop 只重跑私有位址檢查。於是 `bl
 換個地方出現：**檢查放在唯一的瓶頸點，不要放在各 call site**，因為 call site 會被漏掉，
 而 5 次 redirect 等於 5 次逃脫機會。
 
+**4b. 入庫覆寫既有 feed 的 metadata**
+
+候選在佇列裡等待期間，同一個 feed URL 可能已被手動、由擴充或由 OPML 匯入。初版的入庫是
+無條件 `upsert(on_conflict="url")`，於是一次無害的重複核准就會把人工整理過的標題、網站、
+分類與標籤，換成抓來的值與這次呼叫的空白預設。改為先查再寫：已存在就只把候選標成
+`imported` 並指向既有列，一個欄位都不動。
+
 **5. 儲存不受信任的第三方標題 / URL**
 
 候選的 `title` 與 `website_url` 來自遠端 HTML/XML，核准後會進到 `feeds.title` —— 一張
@@ -159,11 +166,20 @@ redirect，而本次改動前每個 hop 只重跑私有位址檢查。於是 `bl
 
 **6. robots / 禮貌性**
 
-預設開啟。RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕。`Crawl-delay` 尊重
-但夾在 30 秒 —— 一句 `Crawl-delay: 86400` 不能釘住一個探測槽位一整天。robots.txt 走同一個
-有 SSRF gate 與位元組上限的 choke point；**絕不呼叫 `RobotFileParser.read()`**，它會自己
-`urlopen` 並繞過上述全部（已加測試釘住）。cache 有界（2000 origin、LRU）且有 TTL（1 小時），
-理由同 `rate_limit.py::MAX_TRACKED_CLIENTS`。
+預設開啟，且**三個對外階段都套同一份政策**（denylist ∧ robots）：blogroll 一跳、目錄頁抓取、
+以及探測。政策由 `services/crawl_policy.py::make_gate()` 產生後傳進 choke point ——
+初版只在探測階段掛了政策，於是另外兩個階段在 `RESPECT_ROBOTS=true` 之下照樣裸奔，正是
+規則 9 想防的那種「各 call site 各寫一份就會漏」。現在建立政策與使用政策分開，新增階段漏不掉。
+
+RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕。`Crawl-delay` 尊重但夾在 30 秒 ——
+一句 `Crawl-delay: 86400` 不能釘住一個探測槽位一整天。robots.txt 走同一個有 SSRF gate 與
+位元組上限的 choke point；**絕不呼叫 `RobotFileParser.read()`**，它會自己 `urlopen` 並繞過
+上述全部（已加測試釘住）。cache 有界（2000 origin、LRU）且有 TTL（1 小時），理由同
+`rate_limit.py::MAX_TRACKED_CLIENTS`。
+
+「不准」分成永久與暫時兩種，`RobotsDecision.transient` 帶這個資訊：解析出的 `Disallow` 是
+站台叫我們別來（終態），而 5xx 或不可達只是站台此刻壞了（退避重試）。兩者混為一談的話，
+一次短暫的 503 就會讓那個目標被永久歸檔，站台修好也不會再被看一眼。
 
 `FEED_DISCOVERY_RESPECT_ROBOTS=false` 是給爬自己財產的運維人員用的，合規責任由你自負；
 另外它會移除「站台是否可達」的信號，讓重試判斷變粗糙（見 FEATURES.md 第 2c 節的決策表）。

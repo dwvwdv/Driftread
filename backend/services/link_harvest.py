@@ -223,6 +223,25 @@ def normalize_host(url: str | None) -> str | None:
     return host or None
 
 
+def origin_of(url: str) -> str | None:
+    """The scheme + authority of `url`, with the path stripped — what we actually
+    probe, since feed autodiscovery lives at the site root.
+
+    Deliberately keeps the URL's *own* scheme and authority rather than rebuilding
+    `https://<normalized host>/`: stripping `www.` is right for deduplication but
+    wrong for fetching, because plenty of sites serve only `www.` and let the
+    apex fail to resolve — and a handful are still http-only. The normalized host
+    stays the dedupe key; this is the address.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return None
+    return f"{parsed.scheme.lower()}://{parsed.netloc}/"
+
+
 def site_key(host: str) -> str:
     """The unit we treat as "one site", for denylisting and politeness.
 
@@ -489,8 +508,11 @@ async def harvest_one(
             if host in host_urls:
                 continue
             # Probe the origin, not the deep link that happened to be shared:
-            # feed autodiscovery lives at the site root.
-            host_urls[host] = f"https://{host}/"
+            # feed autodiscovery lives at the site root. Keyed by the normalized
+            # host but addressed by the link's own origin — see origin_of().
+            origin = origin_of(absolute)
+            if origin:
+                host_urls[host] = origin
 
     try:
         articles = (

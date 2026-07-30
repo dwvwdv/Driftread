@@ -257,3 +257,34 @@ async def test_is_allowed_is_a_thin_bool_wrapper():
     with p1, p2:
         assert await robots.is_allowed("https://example.com/ok", UA) is True
         assert await robots.is_allowed("https://example.com/private/x", UA) is False
+
+
+@pytest.mark.asyncio
+async def test_500_is_marked_transient_but_a_real_disallow_is_not():
+    """The distinction discovery_probe routes on: a server error must be
+    retryable, an actual Disallow rule must not be."""
+    server_error = await _check(_serving("", status=500), "https://example.com/x")
+    assert (server_error.allowed, server_error.transient) == (False, True)
+
+    robots.clear_cache()
+    disallowed = await _check(
+        _serving("User-agent: *\nDisallow: /\n"), "https://example.com/x"
+    )
+    assert (disallowed.allowed, disallowed.transient) == (False, False)
+
+
+@pytest.mark.asyncio
+async def test_unreachable_host_is_transient():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    decision = await _check(handler, "https://example.com/x")
+    assert (decision.allowed, decision.reachable, decision.transient) == (
+        False, False, True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_allowed_decision_is_never_transient():
+    decision = await _check(_serving("User-agent: *\nAllow: /\n"), "https://example.com/")
+    assert (decision.allowed, decision.transient) == (True, False)

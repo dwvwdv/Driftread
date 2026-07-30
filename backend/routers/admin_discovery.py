@@ -33,7 +33,7 @@ from services.discovery_candidates import (
 )
 from services.discovery_config import discovery_enabled
 from services.feed_discovery import DiscoveryError, validate_fetch_url
-from services.link_harvest import is_denied_host, normalize_host
+from services.link_harvest import is_denied_host, normalize_host, origin_of
 
 router = APIRouter(prefix="/admin/discovery", tags=["admin", "discovery"])
 
@@ -107,8 +107,11 @@ async def seed_targets(
             .execute()
         )
         if existing is None:
+            # The admin's own scheme and authority, not a rebuilt
+            # https://<normalized host>/ — they may have deliberately given a
+            # www. or http:// address because that's the one that works.
             db.table("discovery_targets").insert({
-                "url": f"https://{host}/",
+                "url": origin_of(safe_url) or f"https://{host}/",
                 "host": host,
                 "source": "seed",
             }).execute()

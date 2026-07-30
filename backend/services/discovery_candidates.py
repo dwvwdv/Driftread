@@ -215,6 +215,14 @@ def reject_candidate(
     return updated.data[0] if updated.data else None
 
 
+def _mark_imported(db: "Client", candidate_id: str, feed_id: str) -> None:
+    db.table("discovery_candidates").update({
+        "status": "imported",
+        "feed_id": str(feed_id),
+        "reviewed_at": _now(),
+    }).eq("id", str(candidate_id)).execute()
+
+
 def promote_candidate(
     db: "Client",
     candidate: dict,
@@ -225,6 +233,25 @@ def promote_candidate(
     feed_url = sanitize_http_url(candidate.get("feed_url"))
     if not feed_url:
         return None
+
+    # A feed on this URL may already exist — imported by hand, by the extension,
+    # or by OPML while this candidate sat in the queue. Link to it and stop.
+    # Upserting instead would overwrite a curated title, website, category and
+    # tags with scraped values and this call's (probably empty) defaults, so an
+    # otherwise harmless duplicate approval would quietly damage the catalog.
+    existing = _row_or_none(
+        db.table("feeds").select("*").eq("url", feed_url).maybe_single().execute()
+    )
+    if existing:
+        _mark_imported(db, candidate["id"], existing["id"])
+        return existing
+
+    # Fall back to the choices stored at approval time, so a retry from
+    # promote_approved() reproduces what the reviewer actually picked.
+    if category is None:
+        category = candidate.get("approved_category")
+    if tags is None:
+        tags = candidate.get("approved_tags")
 
     feed_data = {
         # feeds.title is NOT NULL, and a discovered candidate's title can be None
@@ -239,16 +266,15 @@ def promote_candidate(
         # does the first article fetch — promotion must never fetch inline.
         "next_fetch_at": _now(),
     }
+    # Still an upsert rather than an insert: two cycles could race on the same
+    # URL, and losing that race should link rather than raise. The pre-check
+    # above is what protects an already-curated row.
     result = db.table("feeds").upsert(feed_data, on_conflict="url").execute()
     if not result.data:
         return None
     feed = result.data[0]
 
-    db.table("discovery_candidates").update({
-        "status": "imported",
-        "feed_id": str(feed["id"]),
-        "reviewed_at": _now(),
-    }).eq("id", str(candidate["id"])).execute()
+    _mark_imported(db, candidate["id"], feed["id"])
     return feed
 
 
@@ -271,12 +297,19 @@ def approve_candidate(
         # reviving it would undo the one guarantee this queue makes.
         return (None, "already_rejected")
 
-    # Record the approval before writing feeds. If the feeds write fails, the
-    # decision survives and promote_approved() retries it next cycle.
-    db.table("discovery_candidates").update(
-        {"status": "approved", "reviewed_at": _now()}
-    ).eq("id", str(candidate_id)).execute()
+    # Record the approval — including what the reviewer chose — before writing
+    # feeds. If the feeds write fails, the whole decision survives and
+    # promote_approved() reproduces it next cycle rather than importing the feed
+    # uncategorised.
+    db.table("discovery_candidates").update({
+        "status": "approved",
+        "reviewed_at": _now(),
+        "approved_category": category,
+        "approved_tags": tags or [],
+    }).eq("id", str(candidate_id)).execute()
 
+    candidate["approved_category"] = category
+    candidate["approved_tags"] = tags or []
     feed = promote_candidate(db, candidate, category, tags)
     return (feed, "imported" if feed else "failed")
 

@@ -630,3 +630,48 @@ def test_summarize_harvest_totals():
         "processed": 2, "articles_scanned": 4, "anchors_seen": 11,
         "hosts_kept": 2, "targets_created": 2, "referrers_recorded": 2, "failed": 1,
     }
+
+
+# ── origin preservation ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://example.com/deep/post?a=1#f", "https://example.com/"),
+        ("http://legacy.example/post", "http://legacy.example/"),
+        ("https://www.keepwww.example/x", "https://www.keepwww.example/"),
+        ("https://example.com:8443/x", "https://example.com:8443/"),
+        ("HTTPS://Example.com/x", "https://Example.com/"),
+    ],
+)
+def test_origin_of_keeps_scheme_and_authority(url, expected):
+    from services.link_harvest import origin_of
+
+    assert origin_of(url) == expected
+
+
+@pytest.mark.parametrize("url", ["mailto:a@b.com", "javascript:x", "/relative", ""])
+def test_origin_of_rejects_non_http(url):
+    from services.link_harvest import origin_of
+
+    assert origin_of(url) is None
+
+
+@pytest.mark.asyncio
+async def test_harvest_keeps_the_links_own_scheme_and_www():
+    """normalize_host strips www. and that's right for deduplication, but wrong
+    for fetching: plenty of sites serve only www. and let the apex fail to
+    resolve, and a few are still http-only. Rebuilding https://<host>/ would send
+    those straight to `exhausted` even though the harvested link was fine."""
+    db = _db_with_articles(
+        '<a href="http://www.legacy.example.org/post">legacy</a>'
+        '<a href="https://modern.example.net/post">modern</a>'
+    )
+    await harvest_one(db, db.rows("feeds")[0], EMPTY_INDEX)
+
+    by_host = {r["host"]: r["url"] for r in db.rows("discovery_targets")}
+    # Deduped under the normalized host...
+    assert set(by_host) == {"legacy.example.org", "modern.example.net"}
+    # ...but addressed exactly as the link had it.
+    assert by_host["legacy.example.org"] == "http://www.legacy.example.org/"
+    assert by_host["modern.example.net"] == "https://modern.example.net/"

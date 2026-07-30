@@ -14,10 +14,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from services.crawl_policy import make_gate
 from services.directory_sources import harvest_sources_due, summarize_sources
 from services.discovery_candidates import auto_promote_due, promote_approved
 from services.discovery_config import directory_enabled
 from services.discovery_probe import probe_due, summarize_probes
+from services.feed_discovery import user_agent
 from services.link_harvest import build_host_index, harvest_due, summarize_harvest
 
 if TYPE_CHECKING:
@@ -67,6 +69,12 @@ async def run_cycle(
     probe = dict(_EMPTY_PROBE)
     auto_promoted = imported = 0
 
+    # The same policy the probe uses. Both harvest stages can make outbound
+    # requests — the blogroll hop and the directory-page fetch — so both are
+    # gated too; without this, FEED_DISCOVERY_RESPECT_ROBOTS would only apply to
+    # the probe and quietly mean nothing for the other two.
+    gate = make_gate(user_agent())
+
     # One index for the whole cycle, shared by both harvest stages: a host a
     # directory contributes is then visible to article harvesting instead of
     # being inserted twice.
@@ -79,7 +87,9 @@ async def run_cycle(
     if index is not None and directory_enabled():
         try:
             directory = summarize_sources(
-                await harvest_sources_due(db, index, limit=directory_limit)
+                await harvest_sources_due(
+                    db, index, limit=directory_limit, allow_url=gate
+                )
             )
         except Exception:
             logger.exception("Directory harvest stage failed")
@@ -87,7 +97,9 @@ async def run_cycle(
     if index is not None:
         try:
             harvest = summarize_harvest(
-                await harvest_due(db, limit=harvest_limit, index=index)
+                await harvest_due(
+                    db, limit=harvest_limit, allow_url=gate, index=index
+                )
             )
         except Exception:
             logger.exception("Article harvest stage failed")

@@ -44,6 +44,7 @@ from services.link_harvest import (
     extract_anchor_hosts,
     is_denied_host,
     normalize_host,
+    origin_of,
     record_targets,
 )
 
@@ -231,10 +232,12 @@ async def harvest_source_one(
             feed_created = record_feed_targets(db, extract_opml_feed_urls(text), index)
         else:
             host_urls: dict[str, str] = {}
-            for host, _absolute in extract_anchor_hosts(text, url):
+            for host, absolute in extract_anchor_hosts(text, url):
                 if host in index.feed_hosts or is_denied_host(host):
                     continue
-                host_urls.setdefault(host, f"https://{host}/")
+                origin = origin_of(absolute)
+                if origin:
+                    host_urls.setdefault(host, origin)
             # feed_id=None: a directory has no owning feed, so there is no
             # distinct-feed edge to record — the target row is the whole signal.
             created, _ = record_targets(db, None, host_urls, index, source="directory")

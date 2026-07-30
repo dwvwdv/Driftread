@@ -88,7 +88,14 @@
 → 候選越多 → 核准後源又更多。
 
 抽出的網址先過 `normalize_host()`：非 http(s)、IP literal、無點 host、超長 label、
-`.local` / `.internal` / `.onion` 等保留 TLD 一律在**寫進資料庫之前**就丟掉。接著過
+`.local` / `.internal` / `.onion` 等保留 TLD 一律在**寫進資料庫之前**就丟掉。
+
+正規化後的 host 是**去重鍵**，但**不是要抓的位址**：待探測列另存 `origin_of()` 算出的原始
+scheme 與 authority。`http://www.legacy.org/post` 會以 `legacy.org` 去重、以
+`http://www.legacy.org/` 抓取 —— 不少站只服務 `www.` 而讓 apex 解析失敗，也還有少數是
+http-only，重建成 `https://<host>/` 會讓它們白白重試到 `exhausted`。
+
+接著過
 denylist（社群、影音、程式碼託管、百科、電商、短網址、CDN…），比對用後綴，但**部落格
 平台的子網域例外**：`substack.com` 這個 apex 被封，`someone.substack.com` 保留，因為在
 那些平台上子網域「就是」站點。已知遺漏：`medium.com/feed/@user` 是有效的，但 origin
@@ -119,8 +126,22 @@ denylist（社群、影音、程式碼託管、百科、電商、短網址、CDN
 
 robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有）、5xx 全拒絕但算可達、
 傳輸錯誤則不可達。`Crawl-delay` 尊重但夾在 30 秒，否則一句 `Crawl-delay: 86400` 就能釘住
-一個探測槽位一整天。**robots disallow 記成 `blocked` 但 attempts 不增加** —— 拒絕是答案不是
-故障，重試只會讓我們更失禮。
+一個探測槽位一整天。
+
+**「不准」也分兩種**，這決定了目標是終態還是重排：
+
+| robots.txt 的情況 | 結果 | attempts |
+|-------------------|------|----------|
+| 解析出 `Disallow` 規則 | `blocked`，終態 | 不增加（拒絕是答案不是故障，重試只會讓我們更失禮）|
+| 5xx（站暫時壞掉）| `failed`，退避重試 | +1 |
+| 傳輸錯誤 / 不可達 | `failed`，退避重試 | +1 |
+
+5xx 依 RFC 9309 確實要當成「此刻不准」，但那是站台壞了，不是站台叫我們別來 —— 若把它記成
+永久排除，站台修好之後就再也不會被看一眼。
+
+**三個對外階段都套同一份政策**（denylist ∧ robots）：blogroll 一跳、目錄頁抓取、以及探測。
+政策由 `services/crawl_policy.py::make_gate()` 產生，經 `allow_url` 傳進唯一的 fetch choke
+point，對初始 URL 與每個 redirect hop 都評估。
 
 **「空結果代表什麼」**：`discover_feeds()` 吞掉自己的抓取錯誤後回 `[]`，所以光看回傳值，
 「這站沒有 feed」和「這站掛了」長得一模一樣。解法是把 robots.txt 那次抓取當可達性探針 ——
@@ -169,6 +190,14 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 只寫 `feeds` 的 metadata 並設 `next_fetch_at = now()`，**絕不 inline 抓文章** —— 首次抓文由
 既有的 refresh worker 負責（同 `POST /admin/feeds` 的做法）。`feeds.title` 是 NOT NULL 而候選
 標題可能為空，此時退回我們自己算出的 host，而不是遠端文字。
+
+**已存在的 feed 只連結、不覆寫。** 候選在佇列裡等待期間，同一個 URL 可能已被手動、由擴充
+或由 OPML 匯入。此時入庫只把候選標成 `imported` 並指向既有列，不動它的標題、網站、分類與
+標籤 —— 否則一次無害的重複核准就會用抓來的值和空白預設覆蓋掉人工整理過的資料。
+
+核准時選的分類與標籤會**一併寫進候選列**（`approved_category` / `approved_tags`），而不是只
+留在當下的請求裡。這樣萬一寫 `feeds` 失敗，下一輪的 `promote_approved()` 能重現管理員原本的
+選擇，而不是把源匿名地無分類匯入。
 
 第三方文字（`title` / `website_url`）寫入前過 `sanitize_text()` / `sanitize_http_url()`：
 移除控制字元、零寬字元與 bidi override，並強制 http(s) scheme。詳見 SECURITY.md。
@@ -284,7 +313,7 @@ image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時
 | `user_preferences` | 002 | `preferred_categories` / `preferred_languages` |
 | `discovery_targets` | 006 | 待探測佇列。`url` UNIQUE（不是 host —— 一個站可以有多個 feed），`host` 另建索引供去重；`status` / `attempts` / `next_probe_at` / `referring_feed_count` |
 | `discovery_target_referrers` | 006 | `(target_id, feed_id)` 主鍵的分帳表，讓「幾個**不同**的既有源連到這裡」精確且重複收割時冪等 |
-| `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制 |
+| `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制；`approved_category` / `approved_tags` 讓核准決定在寫 `feeds` 失敗時不會遺失 |
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名 |
 
@@ -364,7 +393,7 @@ DELETE FROM discovery_targets
 | Frontend | Angular 21（Material + CDK）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
-| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、444 個測試） |
+| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、466 個測試） |
 | 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理 |
 
 `worker` 容器跑兩個獨立迴圈（refresh 與 discovery），共用同一個 event loop 與同一個 stop

@@ -51,8 +51,16 @@ def _db(targets=None, **extra):
     )
 
 
-def _reachable(allowed=True, reachable=True, crawl_delay=None):
-    return RobotsDecision(allowed=allowed, reachable=reachable, crawl_delay=crawl_delay)
+def _reachable(allowed=True, reachable=True, crawl_delay=None, transient=None):
+    if transient is None:
+        # Mirror what robots.check() can actually return: an unreachable host
+        # never yields a *permanent* disallow, because the site never told us
+        # anything. Only a parsed Disallow rule does.
+        transient = not reachable
+    return RobotsDecision(
+        allowed=allowed, reachable=reachable, crawl_delay=crawl_delay,
+        transient=transient,
+    )
 
 
 async def _probe(db, target, *, discover=None, robots_decision=None, respect=True):
@@ -179,6 +187,43 @@ async def test_unreachable_robots_is_a_retryable_failure():
     assert target["status"] == "pending"
     assert target["attempts"] == 1
     assert target["next_probe_at"] > "2026-07-01"
+
+
+@pytest.mark.asyncio
+async def test_robots_server_error_is_retried_not_permanently_blocked():
+    """A 503 on /robots.txt disallows us right now (RFC 9309), but the site never
+    told us to stay away — filing it as `blocked` would mean never looking again
+    after the server recovered."""
+    target = _target()
+    db = _db([target])
+
+    result, _check, disc = await _probe(
+        db, target,
+        robots_decision=_reachable(allowed=False, reachable=True, transient=True),
+    )
+
+    disc.assert_not_called()
+    assert result.status == "failed"
+    assert result.error == "robots.txt server error"
+    assert target["status"] == "pending"
+    assert target["attempts"] == 1
+    assert target["next_probe_at"] > "2026-07-01"
+
+
+@pytest.mark.asyncio
+async def test_a_real_disallow_rule_is_still_permanent():
+    """The counterpart: an actual Disallow must not start burning retries."""
+    target = _target()
+    db = _db([target])
+
+    result, _check, _disc = await _probe(
+        db, target,
+        robots_decision=_reachable(allowed=False, reachable=True, transient=False),
+    )
+
+    assert result.status == "blocked"
+    assert target["status"] == "blocked"
+    assert target["attempts"] == 0
 
 
 @pytest.mark.asyncio
@@ -311,7 +356,7 @@ async def test_probe_passes_a_crawl_policy_gate_that_denies_denylisted_hosts():
     _result, _check, disc = await _probe(db, target)
 
     gate = disc.call_args.kwargs["allow_url"]
-    with patch("services.discovery_probe.respect_robots", return_value=False):
+    with patch("services.crawl_policy.respect_robots", return_value=False):
         assert await gate("https://ok.example.org/feed") is True
         assert await gate("https://facebook.com/x") is False
         assert await gate("https://192.168.0.1/x") is False

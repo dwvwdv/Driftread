@@ -58,6 +58,11 @@ class RobotsDecision:
     # got an HTTP answer. A 4xx or 5xx still means the host is up and talking.
     reachable: bool
     crawl_delay: float | None = None
+    # Qualifies a disallow (meaningless when allowed). True means "not right now"
+    # rather than "not ever": a 5xx on robots.txt disallows this request per RFC
+    # 9309, but the site never actually told us to stay away, so the caller must
+    # retry later instead of treating the target as permanently excluded.
+    transient: bool = False
 
 
 @dataclass
@@ -67,6 +72,7 @@ class _Cached:
     parser: RobotFileParser | None
     reachable: bool
     fetched_at: float
+    transient: bool = False
 
 
 # Keyed by origin only, not (origin, user_agent): the UA is fixed per process
@@ -120,8 +126,15 @@ async def _fetch(origin: str, user_agent: str) -> _Cached:
         # RFC 9309 §2.3.1.4: a server error means "unreachable" and the crawler
         # must assume complete disallow. The host answered, though, so it counts
         # as reachable for the probe's purposes.
+        #
+        # transient=True is the important part: a 503 is the site being briefly
+        # broken, not the site telling us to stay away. Without the distinction
+        # the caller would file the target under "robots says no" permanently and
+        # never look at it again once the server recovered.
         parser.disallow_all = True
-        return _remember(origin, _Cached(parser, reachable=True, fetched_at=now))
+        return _remember(
+            origin, _Cached(parser, reachable=True, fetched_at=now, transient=True)
+        )
     except DiscoveryError as e:
         # The SSRF gate, the crawl policy, or the byte cap said no. Not a
         # statement about the host being up, so reachable stays False.
@@ -153,7 +166,8 @@ async def check(url: str, user_agent: str) -> RobotsDecision:
     """May we fetch `url`, and is its host answering at all?"""
     cached = await _load(_origin(url), user_agent)
     if cached.parser is None:
-        return RobotsDecision(allowed=False, reachable=cached.reachable)
+        # No parse at all: the host didn't answer. Always retryable.
+        return RobotsDecision(allowed=False, reachable=cached.reachable, transient=True)
 
     allowed = cached.parser.can_fetch(user_agent, url)
 
@@ -168,7 +182,12 @@ async def check(url: str, user_agent: str) -> RobotsDecision:
     except (TypeError, ValueError):
         delay = None
 
-    return RobotsDecision(allowed=allowed, reachable=cached.reachable, crawl_delay=delay)
+    return RobotsDecision(
+        allowed=allowed,
+        reachable=cached.reachable,
+        crawl_delay=delay,
+        transient=cached.transient,
+    )
 
 
 async def is_allowed(url: str, user_agent: str) -> bool:
