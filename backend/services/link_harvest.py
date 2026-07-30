@@ -153,6 +153,15 @@ class HostIndex:
     feed_hosts: frozenset[str]
     target_hosts: dict[str, str]  # host -> discovery_targets.id
     frontier_full: bool = False
+    # Every frontier URL, for the OPML path: an OPML directory can legitimately
+    # contribute several feed URLs on one host, so it dedupes by URL where link
+    # mining dedupes by host.
+    target_urls: frozenset[str] = frozenset()
+    # Hosts an admin rejected, or that a probe found blocked. Link mining skips
+    # these implicitly (they're in target_hosts), but the OPML path dedupes by
+    # URL and so needs them called out — otherwise a directory listing could walk
+    # a rejected host straight back into the frontier under a new URL.
+    blocked_hosts: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -330,10 +339,16 @@ def build_host_index(db: "Client") -> HostIndex:
                 feed_hosts.add(host)
 
     target_hosts: dict[str, str] = {}
-    for row in _paged(db, "discovery_targets", "id,host"):
+    target_urls: set[str] = set()
+    blocked_hosts: set[str] = set()
+    for row in _paged(db, "discovery_targets", "id,host,url,status"):
         host = row.get("host")
         if host and host not in target_hosts:
             target_hosts[host] = str(row["id"])
+        if row.get("url"):
+            target_urls.add(row["url"])
+        if host and row.get("status") in ("rejected", "blocked"):
+            blocked_hosts.add(host)
 
     pending = (
         db.table("discovery_targets")
@@ -347,6 +362,8 @@ def build_host_index(db: "Client") -> HostIndex:
         feed_hosts=frozenset(feed_hosts),
         target_hosts=target_hosts,
         frontier_full=pending_count > max_frontier_size(),
+        target_urls=frozenset(target_urls),
+        blocked_hosts=frozenset(blocked_hosts),
     )
 
 
