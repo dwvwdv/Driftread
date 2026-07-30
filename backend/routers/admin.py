@@ -14,14 +14,21 @@ from models import (
     FeedCreate,
     FeedHealthSummary,
     ImportFeedsRequest,
+    PaginatedFeeds,
+    RefreshDueSummary,
 )
 from rss_parser import fetch_and_parse
-from services.articles import upsert_articles
 from services.feed_discovery import DiscoveryError, validate_fetch_url
+from services.feed_refresh import (
+    AUTO_ARCHIVE_FAILURE_THRESHOLD,  # noqa: F401  (re-exported for existing importers)
+    batch_size,
+    concurrency,
+    refresh_due,
+    refresh_one,
+    summarize,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-AUTO_ARCHIVE_FAILURE_THRESHOLD = 10
 
 
 def _require_api_key(x_api_key: str = Header(...)) -> None:
@@ -40,8 +47,12 @@ async def import_feeds(
     db: Client = Depends(get_client),
 ) -> list[Feed]:
     created: list[Feed] = []
+    now = datetime.now(timezone.utc).isoformat()
     for feed_in in body.feeds:
         data = feed_in.model_dump()
+        # Fetching inline would make a bulk import of hundreds of feeds time
+        # out; mark them due instead and let the scheduler do the first fetch.
+        data["next_fetch_at"] = now
         result = (
             db.table("feeds")
             .upsert(data, on_conflict="url")
@@ -101,36 +112,21 @@ async def refresh_feed(
     if not feed_result or not feed_result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
-    feed_url: str = feed_result.data["url"]
-    current_failures: int = feed_result.data.get("consecutive_failures") or 0
-    try:
-        safe_url = validate_fetch_url(feed_url)
-        parsed = await fetch_and_parse(safe_url)
-    except Exception as e:
-        failures = current_failures + 1
-        update = {
-            "consecutive_failures": failures,
-            "last_failure_at": datetime.now(timezone.utc).isoformat(),
-            "last_failure_reason": str(e)[:500],
-            "health_score": max(0, 100 - failures * 10),
-        }
-        if failures >= AUTO_ARCHIVE_FAILURE_THRESHOLD:
-            update["archived_at"] = datetime.now(timezone.utc).isoformat()
-        db.table("feeds").update(update).eq("id", str(feed_id)).execute()
+    # All the fetch / health / backoff bookkeeping lives in feed_refresh so the
+    # scheduler behaves identically to this endpoint.
+    result = await refresh_one(db, feed_result.data)
+    if result.status == "failed":
         raise HTTPException(status_code=502, detail="Failed to fetch feed")
 
-    now = datetime.now(timezone.utc).isoformat()
-    inserted = upsert_articles(db, str(feed_id), parsed.articles)
-
-    db.table("feeds").update({
-        "last_fetched_at": now,
-        "article_count": inserted,
-        "consecutive_failures": 0,
-        "health_score": 100,
-        "last_failure_reason": None,
-    }).eq("id", str(feed_id)).execute()
-
-    return {"inserted": inserted, "feed_id": str(feed_id)}
+    # Response key stays "inserted" with its original rows-touched meaning —
+    # the browser extension and any external scripts already read it.
+    return {
+        "inserted": result.upserted,
+        "feed_id": str(feed_id),
+        "status": result.status,
+        "new_articles": result.new_articles,
+        "total_articles": result.total_articles,
+    }
 
 
 @router.post("/feeds/from-url", response_model=Feed, dependencies=[Depends(_require_api_key)])
@@ -154,11 +150,74 @@ async def import_feed_from_url(
         "description": parsed.description,
         "website_url": parsed.website_url,
         "language": parsed.language,
+        # Metadata only here — the scheduler picks it up immediately and does
+        # the first article fetch.
+        "next_fetch_at": datetime.now(timezone.utc).isoformat(),
     }
     result = db.table("feeds").upsert(feed_data, on_conflict="url").execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to upsert feed")
     return Feed(**result.data[0])
+
+
+@router.post(
+    "/feeds/refresh-due",
+    response_model=RefreshDueSummary,
+    dependencies=[Depends(_require_api_key)],
+)
+async def refresh_due_feeds(
+    limit: int | None = Query(None, ge=1, le=500),
+    max_concurrency: int | None = Query(None, ge=1, le=20),
+    db: Client = Depends(get_client),
+) -> RefreshDueSummary:
+    """Run one pass over the due queue.
+
+    The worker container does this on a timer; this endpoint exists to kick a
+    cycle by hand and to let a deployment without the worker drive refreshes
+    from an external scheduler.
+
+    Both bounds default to the FEED_REFRESH_* env values when omitted, so this
+    endpoint and the worker behave the same unless deliberately overridden.
+    """
+    results = await refresh_due(
+        db,
+        limit=limit or batch_size(),
+        max_concurrency=max_concurrency or concurrency(),
+    )
+    return RefreshDueSummary(**summarize(results))
+
+
+@router.get("/feeds", response_model=PaginatedFeeds, dependencies=[Depends(_require_api_key)])
+async def list_all_feeds(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    archived: bool | None = None,
+    db: Client = Depends(get_client),
+) -> PaginatedFeeds:
+    """Paginated list of every feed, archived included.
+
+    The public GET /feeds hides archived rows and the other admin lists are
+    filtered by health or archival, so nothing could enumerate the whole
+    catalog — which an external scheduler needs.
+    """
+    offset = (page - 1) * page_size
+    query = db.table("feeds").select("*", count="exact")
+    if archived is True:
+        query = query.not_.is_("archived_at", "null")
+    elif archived is False:
+        query = query.is_("archived_at", "null")
+
+    result = (
+        query.range(offset, offset + page_size - 1)
+        .order("next_fetch_at")
+        .execute()
+    )
+    return PaginatedFeeds(
+        items=[Feed(**row) for row in result.data],
+        total=result.count or 0,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get(

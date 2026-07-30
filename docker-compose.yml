@@ -11,12 +11,48 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DATABASE_URL: ${DATABASE_URL}
       DISCOVERY_USER_AGENT: ${DISCOVERY_USER_AGENT:-Driftread/1.0}
+      # api reads these too: POST /api/admin/feeds/refresh-due drives the same
+      # due queue by hand and takes its defaults from them.
+      FEED_REFRESH_BATCH_SIZE: ${FEED_REFRESH_BATCH_SIZE:-50}
+      FEED_REFRESH_CONCURRENCY: ${FEED_REFRESH_CONCURRENCY:-5}
+      FEED_REFRESH_MIN_INTERVAL_MINUTES: ${FEED_REFRESH_MIN_INTERVAL_MINUTES:-15}
+      FEED_REFRESH_MAX_INTERVAL_MINUTES: ${FEED_REFRESH_MAX_INTERVAL_MINUTES:-1440}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
     networks:
+      - default
+
+  # Feed refresh scheduler. Same image as api, different entrypoint — it polls
+  # the due queue on a timer so imported feeds keep getting new articles without
+  # anyone calling the admin refresh endpoint. Runs as its own container so
+  # fetches don't compete with request handling and api stays scalable.
+  worker:
+    image: ghcr.io/dwvwdv/driftread-api:latest
+    command: ["python", "worker.py"]
+    restart: unless-stopped
+    depends_on:
+      # api applies the migrations on startup; wait for it so the worker never
+      # queries next_fetch_at before migration 005 has landed.
+      api:
+        condition: service_healthy
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_KEY: ${SUPABASE_KEY}
+      DISCOVERY_USER_AGENT: ${DISCOVERY_USER_AGENT:-Driftread/1.0}
+      FEED_REFRESH_ENABLED: ${FEED_REFRESH_ENABLED:-true}
+      FEED_REFRESH_TICK_SECONDS: ${FEED_REFRESH_TICK_SECONDS:-300}
+      FEED_REFRESH_BATCH_SIZE: ${FEED_REFRESH_BATCH_SIZE:-50}
+      FEED_REFRESH_CONCURRENCY: ${FEED_REFRESH_CONCURRENCY:-5}
+      FEED_REFRESH_MIN_INTERVAL_MINUTES: ${FEED_REFRESH_MIN_INTERVAL_MINUTES:-15}
+      FEED_REFRESH_MAX_INTERVAL_MINUTES: ${FEED_REFRESH_MAX_INTERVAL_MINUTES:-1440}
+      # No ADMIN_API_KEY / CORS_ORIGINS (serves no HTTP) and no DATABASE_URL
+      # (runs no migrations) — it writes through the Supabase service_role key.
+    networks:
+      # default only: the worker makes outbound fetches but exposes nothing, so
+      # it stays off the reverse-proxy network.
       - default
 
   frontend:

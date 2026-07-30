@@ -176,6 +176,79 @@ def parse_feed(xml_text: str) -> ParsedFeed:
     raise ValueError(f"Unknown feed format: {root.tag}")
 
 
+@dataclass
+class ConditionalFetch:
+    """Result of a conditional feed fetch. `parsed` is None exactly when
+    `not_modified` is True — the server told us nothing changed and sent no
+    body, so there is nothing to parse and nothing to upsert.
+    """
+    not_modified: bool
+    parsed: ParsedFeed | None = None
+    etag: str | None = None
+    last_modified: str | None = None
+
+
+async def fetch_and_parse_conditional(
+    url: str,
+    etag: str | None = None,
+    last_modified: str | None = None,
+    timeout: float = 15.0,
+    max_redirects: int = 5,
+) -> ConditionalFetch:
+    """Fetch and parse a feed, skipping the download when it hasn't changed.
+
+    Used only by the scheduled refresh path (services/feed_refresh.py), which
+    has stored validators from the previous poll. The import paths keep using
+    fetch_and_parse() — a first fetch has nothing to be conditional on.
+
+    Returns the validators from the response so the caller can store them for
+    next time. A server that omits them simply gets an unconditional fetch on
+    the following poll; the refresh path falls back to comparing article counts
+    to decide whether anything actually changed.
+    """
+    # Local import for the same circular-import reason as fetch_and_parse below.
+    from services.feed_discovery import (
+        MAX_FEED_BYTES,
+        fetch_with_cap_response,
+        user_agent,
+        validate_fetch_url,
+    )
+
+    headers = {"User-Agent": user_agent()}
+    conditional: dict[str, str] = {}
+    if etag:
+        conditional["If-None-Match"] = etag
+    if last_modified:
+        conditional["If-Modified-Since"] = last_modified
+
+    current_url = validate_fetch_url(url)
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers=headers) as client:
+        resp = await fetch_with_cap_response(
+            client,
+            current_url,
+            MAX_FEED_BYTES,
+            max_redirects=max_redirects,
+            extra_headers=conditional or None,
+        )
+
+    if resp.not_modified:
+        # Keep the previously stored validators when the 304 omits them —
+        # dropping them would make every subsequent poll unconditional again.
+        return ConditionalFetch(
+            not_modified=True,
+            parsed=None,
+            etag=resp.etag or etag,
+            last_modified=resp.last_modified or last_modified,
+        )
+
+    return ConditionalFetch(
+        not_modified=False,
+        parsed=parse_feed(resp.text),
+        etag=resp.etag,
+        last_modified=resp.last_modified,
+    )
+
+
 async def fetch_and_parse(url: str, timeout: float = 15.0, max_redirects: int = 5) -> ParsedFeed:
     # Local import: services.feed_discovery imports ParsedFeed/parse_feed from
     # this module at load time, so importing it back at module level here

@@ -20,6 +20,12 @@ class Feed(BaseModel):
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    # Scheduling / conditional-GET state (migration 005). Optional so rows read
+    # before the migration lands still deserialize.
+    fetch_interval_minutes: int | None = None
+    next_fetch_at: datetime | None = None
+    etag: str | None = None
+    last_modified: str | None = None
 
 
 class FeedCreate(BaseModel):
@@ -139,6 +145,16 @@ class OpmlImportResult(BaseModel):
     imported: int
     subscribed: int
     failed: list[str] = []
+
+
+class RefreshDueSummary(BaseModel):
+    """Outcome counts for one pass over the due queue."""
+    processed: int
+    updated: int
+    not_modified: int
+    failed: int
+    archived: int
+    new_articles: int
 
 
 class FeedHealthSummary(BaseModel):
