@@ -137,10 +137,21 @@ def validate_fetch_url(url: str) -> str:
     return url
 
 
-async def _resolve_pinned_ips(host: str) -> list[str]:
+async def _resolve_pinned_ips(host: str, timeout: float | None = None) -> list[str]:
     """Resolve `host` and return every IP that passed the same private/
     loopback/etc checks as _is_safe_host — for PinnedTransport to connect to
     directly, trying them in order.
+
+    `timeout`, when given, bounds the resolution itself — PinnedTransport
+    passes the request's configured connect timeout (see handle_async_request
+    below). Before pin-and-connect, httpcore performed its own connect-time
+    DNS lookup *inside* the connect deadline, so an attacker-controlled or
+    merely slow-to-answer hostname could only ever stall a fetch by up to
+    that deadline. Resolving separately here, via asyncio.to_thread(), has no
+    deadline of its own — an unbounded await would let such a host stall
+    POST /api/discover for however long the system resolver takes to give up
+    (often far longer than the client's configured timeout), once per
+    candidate feed link and fallback path.
 
     validate_fetch_url() and the actual TCP connection each used to do their
     own independent socket.getaddrinfo() for the same hostname (the former to
@@ -170,9 +181,13 @@ async def _resolve_pinned_ips(host: str) -> list[str]:
     server takes to answer, repeated once per candidate.
     """
     try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        infos = await asyncio.wait_for(
+            asyncio.to_thread(socket.getaddrinfo, host, None), timeout
+        )
     except (socket.gaierror, UnicodeError):
         raise DiscoveryError(f"DNS resolution failed for {host!r}")
+    except TimeoutError:
+        raise DiscoveryError(f"DNS resolution timed out for {host!r}")
     # Reject the whole host if *any* resolved address is unsafe, not just the
     # ones we'd try to connect to — same conservative stance as _is_safe_host
     # (a host that can answer with a private address under some resolution is
@@ -258,7 +273,18 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         original_host = request.url.host
         original_url = request.url
-        ips = _pick_pinned_ips(await _resolve_pinned_ips(original_host), MAX_PINNED_CONNECT_ATTEMPTS)
+        # request.extensions["timeout"] is the dict httpx.Client.build_request()
+        # attaches to every request (Timeout.as_dict() — connect/read/write/pool
+        # keys), the same configured timeout httpcore's own connect-time DNS
+        # lookup used to be bounded by. Reusing its "connect" value here bounds
+        # this resolution the same way; a request without that extension (e.g.
+        # one built by hand in a test) resolves unbounded, same as before this
+        # existed.
+        connect_timeout = (request.extensions.get("timeout") or {}).get("connect")
+        ips = _pick_pinned_ips(
+            await _resolve_pinned_ips(original_host, connect_timeout),
+            MAX_PINNED_CONNECT_ATTEMPTS,
+        )
         last_error: httpx.TransportError | None = None
         try:
             for ip in ips:
