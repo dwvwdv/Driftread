@@ -205,7 +205,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **`validate_fetch_url()` / `_is_safe_host()` 本身不動**：既有的 check-then-fetch 語意保留在呼叫端（仍然是 `allow_url` 政策層跑之前的第一道門），新的傳輸層解析是**第二道獨立的門**，決定的是真正的連線目標——兩道門之間不再有「驗證用一個 IP、連線用另一個 IP」的落差，因為傳輸層自己的解析結果就是它自己拿去連線的那個。
 - **已知限制**：`_resolve_pinned_ips()` 每次呼叫只解析一次，但 `fetch_with_cap_response()` 對每個 redirect hop 都會重新進入這個傳輸層（每個 hop 都是新的一次 `client.stream()` 呼叫），所以每個 hop 各自有自己的單次解析——這是預期行為，不是遺漏。
 - **附帶修掉 `routers/discover.py:41`**（#24 附帶記錄的既存暴露，當時未改）：`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出的第三方字串，原本整批塞進 `.in_("url", feed_urls)`，與 #14 修的 `.or_()` 注入同一類問題（只是經由 `.in_()` 的 list 序列化而非手拼字串）。改為逐一 `.eq("url", feed_url).maybe_single()`，match `services/discovery_candidates.py` 既有的作法，第三方字串完全不進 PostgREST filter 語法。
-- **PR review（自動化 code review，兩輪）抓出五個問題，同一輪補上**：
+- **PR review（自動化 code review，三輪）抓出六個問題，同一輪補上**：
 
   第一輪：
 
@@ -217,6 +217,10 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 
   4. **P2 — 用 `find_all("link", limit=50)` 限制掃描數，會在真正的 feed 宣告前就停手**。BeautifulSoup 用 `"html.parser"` 解析時，整份文件（已受 `MAX_FEED_BYTES` 位元組上限約束）在 `find_all` 執行前就已經全部解析進記憶體——`limit=` 只影響回傳幾個元素，不影響解析成本，所以拿它限制掃描數量並沒有真的省到什麼，卻會讓一個 `<head>` 裡有 50 個以上 stylesheet / icon / preload 之類無關 `<link>` 標籤、真正 feed 宣告排在更後面的正常頁面，直接漏掉那個宣告。修法：把 cap 從「掃描的 `<link>` 標籤數」改成「篩選後、符合 `rel="alternate"` 且是 feed content-type 的候選數」——迴圈照樣跑過所有標籤（便宜，反正已經解析好了），只在候選數蒐集到 `MAX_FEED_LINK_CANDIDATES` 時才 `break`，惡意頁面全部標籤都合格的最壞情況仍然一樣被限制住。
   5. **P2 — 位址 fallback 沒接住連線逾時**。`PinnedTransport` 第一輪只 `except httpx.ConnectError`，但 `httpx.ConnectTimeout` 不是 `ConnectError` 的子類——兩者是 `httpx.TransportError` 下的兩個平行分支（`TimeoutException` vs `NetworkError`），不是父子關係。而「封包被默默丟棄」（逾時）其實比「立刻拒絕連線」更是「這條路由實際不通」（例如壞掉的 IPv6）在真實世界最常見的樣子，第一輪的 fallback 因此漏接了它原本要解決的那個情境裡最典型的失敗形態。修法：`except (httpx.ConnectError, httpx.ConnectTimeout)`。
+
+  第三輪（對第二輪修法本身又抓出的問題）：
+
+  6. **P1 — 位址 fallback 沒有共用一個 deadline，攻擊者可用 DNS answer 放大單次請求耗時**。`PinnedTransport` 依序嘗試每個驗證過的位址，但每次呼叫底層 transport 都拿到**完整**的連線逾時設定——沒有東西在嘗試之間遞減剩餘時間。惡意 DNS 可以讓一個 hostname 解析出一長串「公開但打不通」的位址（都通過 SSRF 檢查，因為每個都是真正的公開 IP，只是連不上），一次公開免認證的 `/api/discover` 請求就可能被拖到約「位址數 × 逾時秒數」那麼久——比 pin 之前的行為差。真正正確的修法是共用一個 deadline、逐次遞減每次嘗試分到的剩餘時間，但那需要正確組出 httpx 內部 `timeout` extension 的 dict 形狀，這個 sandbox 沒有網路能裝 httpx 對著真正的函式庫驗證，做錯的後果是每個請求的逾時設定被默默弄壞（比現在這個問題更糟，而且無聲無息）。改採風險小很多的作法：新增 `MAX_PINNED_CONNECT_ATTEMPTS = 2`，最多只嘗試前兩筆驗證過的位址——涵蓋這個 fallback 原本要處理的現實情境（一筆 AAAA、一筆 A），把最壞情況的放大倍率從「攻擊者控制的任意位址數」壓到一個固定的小常數。
 
 ---
 

@@ -8,6 +8,7 @@ import pytest
 from services.feed_discovery import (
     FALLBACK_PATHS,
     MAX_FEED_LINK_CANDIDATES,
+    MAX_PINNED_CONNECT_ATTEMPTS,
     DiscoveryError,
     PinnedTransport,
     _extract_feed_links,
@@ -500,6 +501,36 @@ async def test_pinned_transport_raises_after_every_address_fails():
     ):
         with pytest.raises(httpx.ConnectError):
             await transport.handle_async_request(request)
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_caps_address_attempts():
+    """Each attempt gets its own full connect timeout, so an unbounded
+    attempt count would let a hostname resolving to many public-but-
+    unreachable addresses (attacker-controlled DNS) turn one request into
+    address_count x timeout of hung connection time. Only the first
+    MAX_PINNED_CONNECT_ATTEMPTS addresses may ever be tried."""
+    attempted_hosts: list[str] = []
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        attempted_hosts.append(request.url.host)
+        raise httpx.ConnectError("network unreachable", request=request)
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://many-addresses.example.com/feed.xml")
+    many_ips = [f"93.184.216.{i}" for i in range(10)]
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo(*many_ips),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(request)
+
+    assert attempted_hosts == many_ips[:MAX_PINNED_CONNECT_ATTEMPTS]
 
 
 @pytest.mark.asyncio

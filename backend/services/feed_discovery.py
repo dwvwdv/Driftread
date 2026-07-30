@@ -49,6 +49,12 @@ MAX_FEED_BYTES = 5 * 1024 * 1024  # 5 MiB
 # same choke point (_extract_feed_links) so every downstream consumer of its
 # output is bounded by construction, not by remembering to cap it themselves.
 MAX_FEED_LINK_CANDIDATES = 50
+# PinnedTransport tries at most this many resolved addresses per fetch. Each
+# attempt gets its own full connect timeout, so an attacker-controlled DNS
+# answer with many public-but-unreachable addresses could otherwise turn one
+# request into address_count x timeout of hung connection time. 2 covers the
+# realistic dual-stack case (one AAAA, one A) this exists for.
+MAX_PINNED_CONNECT_ATTEMPTS = 2
 
 
 @dataclass
@@ -190,12 +196,26 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
     request in this project is a bodyless GET (see fetch_with_cap_response),
     so retrying the same Request object across addresses is safe — there is
     no request stream that a failed attempt could have partially consumed.
+
+    Only the first MAX_PINNED_CONNECT_ATTEMPTS validated addresses are ever
+    tried. Each attempt below gets the *full* configured connect timeout
+    independently (there's no cheap, safe-to-implement-blind way to share a
+    single deadline across attempts here — httpx's per-request timeout
+    override needs the extension dict shape gotten exactly right, and this
+    project has no way to exercise that against a real network stack before
+    it ships), so an uncapped attempt count would let a hostname resolving to
+    many public-but-unreachable addresses (attacker-controlled DNS, since the
+    resolution runs on every fetch, including ones the fully public
+    /api/discover endpoint triggers) turn one request into roughly
+    address_count × timeout of hung connection time. Capping the attempt
+    count bounds that to a small constant instead, while still covering the
+    realistic dual-stack case this fallback exists for (one AAAA, one A).
     """
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         original_host = request.url.host
         original_url = request.url
-        ips = _resolve_pinned_ips(original_host)
+        ips = _resolve_pinned_ips(original_host)[:MAX_PINNED_CONNECT_ATTEMPTS]
         last_error: httpx.TransportError | None = None
         for ip in ips:
             request.url = original_url.copy_with(host=ip)
