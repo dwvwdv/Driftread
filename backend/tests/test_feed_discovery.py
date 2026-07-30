@@ -337,9 +337,9 @@ def test_resolve_pinned_ips_returns_every_address_in_order():
     would across getaddrinfo()'s own results."""
     with patch(
         "services.feed_discovery.socket.getaddrinfo",
-        return_value=_fake_addrinfo("2001:db8::1", "93.184.216.34"),
+        return_value=_fake_addrinfo("2606:4700:4700::1111", "93.184.216.34"),
     ):
-        assert _resolve_pinned_ips("dualstack.example.com") == ["2001:db8::1", "93.184.216.34"]
+        assert _resolve_pinned_ips("dualstack.example.com") == ["2606:4700:4700::1111", "93.184.216.34"]
 
 
 def test_resolve_pinned_ips_rejects_private_address():
@@ -415,7 +415,7 @@ async def test_pinned_transport_falls_back_to_next_address_on_connect_error():
 
     async def fake_inner(self, request: httpx.Request) -> httpx.Response:
         attempted_hosts.append(request.url.host)
-        if request.url.host == "2001:db8::1":
+        if request.url.host == "2606:4700:4700::1111":
             raise httpx.ConnectError("network unreachable", request=request)
         return httpx.Response(200, text="ok")
 
@@ -425,13 +425,13 @@ async def test_pinned_transport_falls_back_to_next_address_on_connect_error():
     with (
         patch(
             "services.feed_discovery.socket.getaddrinfo",
-            return_value=_fake_addrinfo("2001:db8::1", "93.184.216.34"),
+            return_value=_fake_addrinfo("2606:4700:4700::1111", "93.184.216.34"),
         ),
         patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
     ):
         response = await transport.handle_async_request(request)
 
-    assert attempted_hosts == ["2001:db8::1", "93.184.216.34"]
+    assert attempted_hosts == ["2606:4700:4700::1111", "93.184.216.34"]
     assert response.status_code == 200
 
 
