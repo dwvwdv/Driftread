@@ -80,7 +80,7 @@ docker compose down
 | `SUPABASE_KEY` | ✅ | **service_role key**，非 anon key。後端需繞過 RLS 寫入 feeds / articles |
 | `DATABASE_URL` | ✅ | 直連 PostgreSQL 連線字串，供 migration 使用（Dashboard → Settings → Database）|
 | `SUPABASE_JWT_SECRET` | ✅ | 驗證用戶 `Authorization: Bearer` token（Dashboard → Settings → API → JWT Settings）|
-| `ADMIN_API_KEY` | ✅ | 後台 / 開放 API 的 `X-Admin-API-Key`，由 `gen_env.py` 自動產生 |
+| `ADMIN_API_KEY` | ✅ | 後台 / 開放 API 的 `X-API-Key` 標頭，由 `gen_env.py` 自動產生 |
 | `CORS_ORIGINS` | | 逗號分隔的允許來源，預設 `*` |
 | `DISCOVERY_USER_AGENT` | | Auto-discover 抓取網頁時的 User-Agent，預設 `Driftread/1.0` |
 
@@ -88,6 +88,33 @@ docker compose down
 > `frontend/src/environments/`，那裡用的是 anon key。
 
 新增 / 移除環境變數時，必須同步更新 `.env.example`、`docker-compose.yml`、`scripts/gen_env.py` 三處（見 `CLAUDE.md`）。
+
+### ⚠ 前端 Supabase 設定是 build 時決定的
+
+上面那些環境變數只餵給 **backend**。瀏覽器端的 Supabase Auth 另外讀
+`frontend/src/environments/environment.ts` 的 `supabaseUrl` / `supabaseAnonKey`，
+而這兩個值在 `npm run build` 時就被編進 JS bundle —— compose 沒有任何 runtime 替換機制。
+
+repo 內這兩個值目前是**空字串**，因此 GHCR 上由 CI 建出的 `driftread-frontend:latest`
+也是空的。`AuthService` 遇到空值時 `isConfigured()` 回 `false`，
+**註冊 / 登入 / 訂閱 / 已讀 / 收藏 / 稍後讀全部不會運作**（瀏覽功能與猜你喜歡的匿名模式不受影響）。
+
+要啟用用戶功能，必須自己建前端 image：
+
+```bash
+# 1. 填入 frontend/src/environments/environment.ts
+#    supabaseUrl:     https://your-project-id.supabase.co
+#    supabaseAnonKey: <anon key，不是 service_role key>
+
+# 2. 自建並改用本地 image（或 fork 後讓自己的 CI 推到自己的 GHCR）
+docker compose build frontend
+```
+
+（本地開發走 `npm start` 時讀的是 `environment.development.ts`，同樣要自己填。）
+
+> 這是目前的已知限制：沒有 runtime 注入機制，所以官方 image 無法直接開啟用戶功能。
+> 若要讓同一個 image 在不同部署帶不同 Supabase 專案，需要改成啟動時載入
+> `assets/config.json` 之類的作法——尚未實作。
 
 ---
 

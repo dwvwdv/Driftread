@@ -75,7 +75,7 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 | 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（feed）/ 2 MiB（HTML） | `services/feed_discovery.py` |
 | XML 解析 | 全數 `defusedxml`（feed 與 OPML 兩條路徑） | `rss_parser.py`、`routers/opml.py` |
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()` | `utils.py`、`routers/*` |
-| 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；admin 用 `X-Admin-API-Key` | `auth.py`、`routers/admin.py` |
+| 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
 | 資料存取 | 四張 `user_*` 表 RLS owner-only；`feeds` / `articles` RLS + public read | `migrations/002`、`004` |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 

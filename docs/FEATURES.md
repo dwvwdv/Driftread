@@ -12,7 +12,7 @@
 | 信息源瀏覽 | ✅ | 分頁、分類 / tag 篩選、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文 | `routers/articles.py`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，可左右滑動表態 | `routers/recommendations.py`、`components/recommendations` |
-| 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證 | `auth.py`、`services/auth.ts` |
+| 用戶系統 | ⚠ | Supabase Auth（email / password）；JWT 由後端驗證。**前端的 Supabase 設定是 build 時編進 bundle 的，官方 GHCR image 帶空值 → 需自建 image 才可用**（見第 4 節） | `auth.py`、`services/auth.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy | `routers/me.py`、`components/my-feeds`、`components/bookmarks` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed | `services/feed_discovery.py`、`routers/discover.py` |
 | OPML 匯入 / 匯出 | ✅ | 與 Feedly / Inoreader 互通 | `routers/opml.py` |
@@ -37,13 +37,13 @@
 
 ## 3. API 端點
 
-所有端點前綴 `/api`。認證欄位：**公開** = 無需認證；**用戶** = 需 `Authorization: Bearer <Supabase JWT>`；**Admin** = 需 `X-Admin-API-Key`。
+所有端點前綴 `/api`。認證欄位：**公開** = 無需認證；**用戶** = 需 `Authorization: Bearer <Supabase JWT>`；**Admin** = 需 `X-API-Key`。
 
 ### Feeds / Articles（公開）
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
-| GET | `/feeds` | 列表；支援分頁、`category`、`tags`、`search`（`search` 上限 200 字） |
+| GET | `/feeds` | 列表；支援分頁、`category`、`tag`（單一 tag，對 `tags` 陣列做 contains）、`search`（`search` 上限 200 字） |
 | GET | `/feeds/categories` | 所有分類 |
 | GET | `/feeds/{feed_id}` | feed 詳情 + 文章（不存在回 404） |
 | GET | `/feeds/{feed_id}/articles` | 該 feed 的文章分頁 |
@@ -78,7 +78,7 @@
 | POST | `/me/import/opml` | 匯入 OPML（檔案上限 5 MiB、單檔最多處理 200 個 outline） |
 | GET | `/me/export/opml` | 匯出 OPML |
 
-### Admin（需 `X-Admin-API-Key`）
+### Admin（需 `X-API-Key`）
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
@@ -107,6 +107,11 @@
 
 前端設定在 `frontend/src/environments/`：`apiUrl` 正式為 `/api`（走 nginx 代理），
 `supabaseUrl` / `supabaseAnonKey` 供瀏覽器端 Supabase Auth 使用（**anon key，不是 service_role**）。
+
+⚠ 這三個值在 `npm run build` 時就被編進 bundle，沒有 runtime 替換機制。repo 內
+`supabaseUrl` / `supabaseAnonKey` 是空字串，GHCR 的官方 frontend image 因此也是空的，
+`AuthService.isConfigured()` 會回 `false`，所有需要登入的功能都不會運作 —— 必須填值後自建
+image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時決定的)。
 
 ## 5. 資料表
 
