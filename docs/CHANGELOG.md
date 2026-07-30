@@ -136,3 +136,55 @@ review 過程中順帶修掉三個文件對不上實作、以及實作本身的�
 ### 不在此 PR 範圍
 
 種子源目錄（`CLAUDE.md` 的「大量 RSS 源資料庫」）仍未實作，DB 依然是空的出貨。那是內容收集問題而非管道問題，留作獨立 PR；此 PR 完成後，種子匯入只要打 `POST /admin/feeds` 就會被排程器自動接手第一次抓取。
+
+## 階段十：主動發現新的 RSS 源（PR #24，2026-07-30）
+
+| PR | 標題 | 內容 |
+|----|------|------|
+| #24 | feat: 主動發現新的 RSS 源 | 在此之前「發現」只有被動的一種：使用者貼一個網址到 `POST /api/discover`，`discover_feeds()` 才去探測。平台自己沒有任何找新源的機制，而階段九結尾記著「種子源目錄仍未實作，DB 依然是空的出貨」——空的 catalog 讓核心功能「猜你喜歡」無從推薦。本 PR 補上自主發現迴圈：收割 → 探測 → 候選審核 → 入庫，接著由既有的 refresh worker 抓文章。 |
+
+### 新增
+
+- **`migrations/006_feed_discovery.sql`** —— `feeds` 加收割游標兩欄與對應 partial index；四張新表：`discovery_targets`（待探測佇列）、`discovery_target_referrers`（`(target_id, feed_id)` 主鍵的分帳表）、`discovery_candidates`（審核佇列）、`discovery_sources`（目錄頁清單）。四張表開 RLS 且**刻意不建任何 policy**，連 SELECT 都沒有 —— 誰連到誰是 scraping 敏感資料，anon key 洩漏不該能列舉。
+- **`services/link_harvest.py`** —— 文章外連挖掘（**零網路請求**，讀的是 refresh worker 早就快取好的 `articles.content`）與 blogroll 一跳抓取。含 host 正規化、`site_key`、denylist、anchor 抽取。
+- **`services/directory_sources.py`** —— 目錄頁來源，`links_page`（HTML 連結頁）與 `opml`（`outline/@xmlUrl` 直接成為待探測的 feed URL）兩種形態，附一份預設清單 `backend/seeds/discovery_sources.json`。
+- **`services/robots.py`** —— RFC 9309 語義、`Crawl-delay`（夾 30 秒）、有界 TTL/LRU cache。抓取走既有的 choke point，**絕不呼叫 `RobotFileParser.read()`**（它會自己 `urlopen`，繞過 SSRF gate、redirect 處理與位元組上限），已加測試釘住。
+- **`services/discovery_probe.py`** —— 到期佇列（依證據數而非時間排序：探測預算是稀缺資源）、robots 與 denylist 閘門、重試退避、`exhausted` 終態。
+- **`services/discovery_candidates.py`** —— 候選記錄、消毒、核准／拒絕、入庫、門檻自動入庫。
+- **`services/discovery.py`** —— worker 與 admin endpoint 共用的 `run_cycle()`，就是 `refresh_due()` 今天的角色。
+- **`routers/admin_discovery.py`** —— 12 個 `X-API-Key` 端點（種子網址、佇列檢視與封鎖、候選審核、目錄來源 CRUD、手動跑一輪、統計）。
+- **`backend/env_utils.py`** —— 把 `feed_refresh._env_int` 抽成共用的 `env_int` / `env_float` / `env_flag`。
+- **前端** —— `/admin` 加四個區塊：發現總覽與立即執行、候選審核、種子網址、目錄來源。
+
+### 設計決策
+
+- **聚合站（HN / Reddit / lobste.rs）不寫爬蟲**。把它們的 RSS 用既有的 `POST /admin/feeds` 當普通 feed 收進來，文章外連挖掘就會自動撿走每個被投稿的網域 —— 一行程式都不用寫。刻意不做這些站的 HTML 爬蟲：結構說變就變，每個都是獨立的維護負擔。
+- **`FEED_DISCOVERY_ENABLED` 預設 false**，與 `FEED_REFRESH_ENABLED=true` 相反。refresh 只碰運維人員自己匯入的源；發現迴圈會去探測沒人要求過的第三方，既有部署拉 `:latest` 不該默默變成一台爬蟲。blogroll 與目錄兩個對外階段各自另開。
+- **`POST /admin/discovery/run` 在停用時回 503**，刻意與 `/admin/feeds/refresh-due` 不同。對主動探測第三方的爬蟲，「已停用」必須真的是停用，否則那是站方寫信來時無法背書的說法。
+- **`allow_url` 政策 hook 掛在唯一的 fetch choke point**，對初始 URL 與每個 redirect hop 都評估，順序在 `validate_fetch_url()` 之後。這同時關掉一條既有的繞過：denylist 只驗我們收割到的 host，但 choke point 會跟隨 5 次 redirect，所以 `blog.example.com` 可以 302 到任何被封的站（SECURITY.md #24 第 4 點）。
+
+### review 過程中修掉的實作錯誤
+
+- **denylist 把部落格平台的子網域一起吃掉了**。第一版無條件用後綴比對，於是 `substack.com` 這個 apex 被封的同時，`someone.substack.com` 也被封 —— 而那正是最值得探測的一類 host（在那些平台上子網域「就是」站點）。改為：完全比對一律封鎖（擋 apex），但平台子網域只認完全比對、不套後綴。由 `test_platform_apex_denied_but_subdomains_survive` 抓到。
+- **OPML 路徑會讓被拒的 host 換個 URL 走回來**。待探測佇列以 URL 唯一（一個站可以合法地有多個 feed），所以「同 host 只探一次」這條規則在 OPML 路徑上不成立，被管理員封鎖的 host 只要出現在某份目錄清單的不同 URL 就會重新入列。`HostIndex` 因此多帶 `blocked_hosts` 與 `target_urls` 兩個集合，OPML 路徑明確擋掉。
+- **`auto_promote_min_referrers()` 差點被 `_env_int` 的 `< 1 → 用預設` 規則吃掉**。`0` 在這個參數是有意義的「永不自動入庫」，照抄 `FEED_REFRESH_*` 的守則會把明確的關閉打回預設值、**默默打開自動入庫**。`env_int` 因此多一個 `minimum` 參數，並用兩個測試釘住（含對非零預設值的斷言）。
+- **收割文章若照 `published_at` 排序會系統性挖錯東西**。該欄位可為 NULL，而 Postgres `DESC` 預設 `NULLS FIRST`，用它取「最近 20 篇」實際上會優先拿到沒有日期的文章。改用 `NOT NULL` 的 `fetched_at`。
+
+### 環境變數
+
+新增 16 個 `FEED_DISCOVERY_*`（皆有預設值、不填也能跑），依 `CLAUDE.md` 要求同步 `.env.example`、`docker-compose.yml`（`api` 與 `worker` 兩個區塊）、`scripts/gen_env.py` 三處。
+
+附帶修掉一個既有漏洞：**`LOG_LEVEL`** 被 `worker.py:24` 讀取，但三處都沒有 —— 在 `.env` 設它完全沒有效果，因為 compose 根本沒往下傳。
+
+### 測試
+
+新增 8 個測試檔（`test_discovery_config` / `test_robots` / `test_link_harvest` / `test_directory_sources` / `test_discovery_probe` / `test_discovery_candidates` / `test_discovery_cycle` / `test_admin_discovery`）與共用的 in-memory `tests/discovery_fakes.py`（會實際套用 filter 而非只記錄 op chain，讓測試能斷言結果狀態）。擴充 `test_feed_discovery.py` 與 `test_worker.py` —— 兩者的既有測試**原封不動**通過（diff 只有新增行）。測試總數 117 → 444。
+
+migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、補上 Supabase 的 `auth.users` / `auth.uid()` 與三個角色），驗證了：六個 migration 依序套用成功；006 單獨重跑乾淨（DO-guard 有效）；四張新表的 RLS 是「已啟用且零 policy」；partial index 的定義與述詞正確；以及 in-memory fake 驗證不了的 trigger 語意 —— 邊數重算而非遞增（重複收割不膨脹）、pending 候選跟著證據走而已審核的凍結、刪 feed 會 cascade 並讓計數下降、清理終態目標不會毀掉審核歷史（`ON DELETE SET NULL`）。
+
+### 不在此 PR 範圍
+
+- **pin-and-connect SSRF 加固**。DNS rebinding 這個從 #22 起就記錄但未修的繞過，在自主迴圈下嚴重度明顯上升：待探測佇列是從第三方文章 HTML 填的，只要讓一個連結出現在任何被收割 feed 的任何文章裡，就能讓迴圈依自己的排程、無人看管地重複去抓那個 host。**建議在任何環境把 `FEED_DISCOVERY_ENABLED` 設為 true 之前先落地**（SECURITY.md #24 第 2 點）。
+- `routers/discover.py:41` 把遠端 HTML 抽出的 URL 直接餵進 `.in_("url", feed_urls)`，屬 #14 同類的暴露，本次未改。
+- 前端 `article-reader.html` 的 `a.content` 用 `[innerHTML]`（既有、面積大得多）。
+- **001 與 002 的 `CREATE TRIGGER` / `CREATE POLICY` 沒有存在性防護**。本 PR 在真的 PostgreSQL 16 上跑過驗證（見下），006 單獨重跑完全乾淨，但把 `_migrations` 整個清空後重跑會在 **001** 就炸掉（`trigger "feeds_updated_at" ... already exists`）。005 的註解其實已經推導出這個道理才替 `ADD CONSTRAINT` 加了 DO-guard，只是沒回頭補 001/002。實務上不會踩到（`_migrations` 只增不減），但手動修補過資料庫的人會在開機時被擋下。留作獨立的小 PR。

@@ -14,7 +14,8 @@
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ⚠ | Supabase Auth（email / password）；JWT 由後端驗證。**前端的 Supabase 設定是 build 時編進 bundle 的，官方 GHCR image 帶空值 → 需自建 image 才可用**（見第 4 節） | `auth.py`、`services/auth.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy | `routers/me.py`、`components/my-feeds`、`components/bookmarks` |
-| Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed | `services/feed_discovery.py`、`routers/discover.py` |
+| Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
+| **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
 | OPML 匯入 / 匯出 | ✅ | 與 Feedly / Inoreader 互通 | `routers/opml.py` |
 | **自動定期抓取** | ✅ | `next_fetch_at` 驅動的到期佇列 + 自適應間隔 + conditional GET；由獨立 `worker` 容器輪詢 | `services/feed_refresh.py`、`worker.py` |
 | Feed 健康度與自動封存 | ✅ | 連續失敗計數 + 原因；達 10 次自動封存 | `services/feed_refresh.py` |
@@ -64,6 +65,113 @@
 **執行者**：`worker` 容器每 `FEED_REFRESH_TICK_SECONDS` 掃一輪；也可用
 `POST /api/admin/feeds/refresh-due` 手動踢，或由外部排程器驅動（此時可不啟用 worker）。
 單輪並發由 `asyncio.Semaphore` 限制，逐 feed 隔離例外 —— 一個壞源不會拖垮整批。
+
+## 2c. 主動發現管道
+
+> ⚠ **預設關閉。** 這是唯一一個會主動對「沒人要求過的第三方網站」發出請求的迴圈，
+> 啟用前請先讀 [SECURITY.md 的自主發現章節](SECURITY.md)，特別是 DNS rebinding 那一節。
+> `FEED_DISCOVERY_ENABLED=false` 時 worker 不跑這個迴圈，且 `POST /api/admin/discovery/run`
+> 直接回 **503** —— 這個 flag 是真的 kill switch，與只管 worker 的 `FEED_REFRESH_ENABLED` 不同。
+
+四個階段，由 `services/discovery.py::run_cycle()` 依序驅動，worker 與
+`POST /api/admin/discovery/run` 共用同一個入口。
+
+**1. 收割（harvest）**——把已知的東西挖出線索。
+
+| 來源 | 網路請求 | 開關 |
+|------|----------|------|
+| 既有 feed 的文章外連（讀 `articles.content`）| **零**（refresh worker 早就抓好快取了）| 隨主開關 |
+| 既有 feed 的網站首頁（blogroll / 友情連結）| 每個 feed 一次 | `FEED_DISCOVERY_BLOGROLL_ENABLED`（預設關）|
+| `discovery_sources` 的目錄頁 | 每個來源一次 | `FEED_DISCOVERY_DIRECTORY_ENABLED`（預設關）|
+
+文章外連挖掘是免費的，也是這個迴圈會自我複利的原因：源越多 → 文章越多 → 外連越多
+→ 候選越多 → 核准後源又更多。
+
+抽出的網址先過 `normalize_host()`：非 http(s)、IP literal、無點 host、超長 label、
+`.local` / `.internal` / `.onion` 等保留 TLD 一律在**寫進資料庫之前**就丟掉。接著過
+denylist（社群、影音、程式碼託管、百科、電商、短網址、CDN…），比對用後綴，但**部落格
+平台的子網域例外**：`substack.com` 這個 apex 被封，`someone.substack.com` 保留，因為在
+那些平台上子網域「就是」站點。已知遺漏：`medium.com/feed/@user` 是有效的，但 origin
+正規化到不了，所以 `medium.com` 直接封掉。
+
+`rel="nofollow"` **刻意忽略** —— 那是排名指令不是爬取指令，而 blogroll 連結常被 nofollow，
+尊重它等於丟掉最好的信號。
+
+**目錄來源的兩種形態**（`discovery_sources.kind`）：
+
+- `links_page`：HTML 頁，每個外部 `<a href>` 變成一個待探測 host。
+- `opml`：OPML/XML，每個 `outline/@xmlUrl` 本身就是 feed URL，直接成為待探測目標。
+  用 `defusedxml` 解析（同 OPML 上傳的 billion-laughs / XXE 加固）。這條路以 **URL** 去重
+  而非 host，因為一個站可以合法地有多個 feed；被封鎖的 host 因此要額外明確擋掉。
+
+> **聚合站（HN / Reddit / lobste.rs）不需要任何新程式。** 把它們的 RSS 用
+> `POST /api/admin/feeds` 當成普通 feed 收進來，文章外連挖掘就會自動撿走每個被投稿的
+> 網域。刻意不寫這些站的 HTML 爬蟲：結構說變就變，每個都是獨立的維護負擔。
+
+**2. 探測（probe）**——`services/discovery_probe.py`
+
+到期佇列取 `status='pending' AND next_probe_at <= now()`，依
+`referring_feed_count DESC, next_probe_at` 排序（命中 `discovery_targets_due_idx`）。
+排序把證據放在時間之前是刻意的：探測預算是稀缺資源，永遠先花在最多不同來源背書的 host。
+
+順序：`validate_fetch_url()`（SSRF，最先跑，在任何網路請求與 DB 寫入之前）→ denylist 複驗
+→ robots.txt → 既有的 `discover_feeds()` 四階段掃描。
+
+robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有）、5xx 全拒絕但算可達、
+傳輸錯誤則不可達。`Crawl-delay` 尊重但夾在 30 秒，否則一句 `Crawl-delay: 86400` 就能釘住
+一個探測槽位一整天。**robots disallow 記成 `blocked` 但 attempts 不增加** —— 拒絕是答案不是
+故障，重試只會讓我們更失禮。
+
+**「空結果代表什麼」**：`discover_feeds()` 吞掉自己的抓取錯誤後回 `[]`，所以光看回傳值，
+「這站沒有 feed」和「這站掛了」長得一模一樣。解法是把 robots.txt 那次抓取當可達性探針 ——
+反正幾毫秒前才對同一個 host 打過：
+
+| robots | 可達 | `[]` 的意思 | 結果 |
+|--------|------|-------------|------|
+| 開 | 是 | 這站沒有 feed | `done`，終態，不重試 |
+| 開 | 否 | 這站不可達 | `failed`，退避重試 |
+| 關 | 不知道 | 分不出來 | `failed`，退避重試（精確度下降）|
+
+所以 `FEED_DISCOVERY_RESPECT_ROBOTS=false` 除了讓合規責任落到你自己身上，也會讓重試判斷變粗糙。
+
+**待探測目標的狀態機**（`discovery_targets.status`）：
+
+| 狀態 | 意義 |
+|------|------|
+| `pending` | 可探測（或等 `next_probe_at`）——唯一會被探測的狀態 |
+| `done` | 已探測且可達；`feeds_found` 可能是 0 |
+| `blocked` | robots.txt 拒絕，或命中 denylist |
+| `exhausted` | 連續不可達達 `FEED_DISCOVERY_PROBE_MAX_ATTEMPTS` 次 |
+| `rejected` | 管理員封鎖，**永不重新排入** |
+
+重試退避從 `FEED_DISCOVERY_PROBE_RETRY_HOURS` 起逐次加倍，上限 30 天。
+
+**3. 候選審核（candidates）**——`services/discovery_candidates.py`
+
+探測到的 feed URL 進 `discovery_candidates`，帶來源 host 與「幾個不同的既有源連到這裡」。
+`status` 為 `pending` / `approved` / `rejected` / `imported`。
+
+**被拒的候選永不重新提議** —— 而它「本來一定會」回來，因為同一批文章每輪都還連著同一個
+feed。所以寫入路徑從不 upsert 覆蓋 `status`，而是先查再插，既有列的更新一律加上
+`.eq("status","pending")` 圍欄。拒絕時可勾選一併把整個 host 設為 `rejected`，而收割會跳過
+任何已存在於 `discovery_targets` 的 host —— 那就是封鎖永久生效的機制，不需要第五張表。
+
+`approved` 是真實的中間態：先記審核結果再寫 `feeds`，所以 `feeds` 寫入失敗時審核決定不會
+遺失，由下一輪的 `promote_approved()` 補上。
+
+**自動入庫**：`FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS` 設為 N 時，被 N 個以上不同既有源
+連到的候選跳過人工審核直接入庫。**預設 0 = 永不自動**。migration 006 的 trigger 會持續更新
+pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積的證據」有反應，而不是看發現
+當時的快照。
+
+**4. 入庫（promote）**
+
+只寫 `feeds` 的 metadata 並設 `next_fetch_at = now()`，**絕不 inline 抓文章** —— 首次抓文由
+既有的 refresh worker 負責（同 `POST /admin/feeds` 的做法）。`feeds.title` 是 NOT NULL 而候選
+標題可能為空，此時退回我們自己算出的 host，而不是遠端文字。
+
+第三方文字（`title` / `website_url`）寫入前過 `sanitize_text()` / `sanitize_http_url()`：
+移除控制字元、零寬字元與 bidi override，並強制 http(s) scheme。詳見 SECURITY.md。
 
 ## 3. API 端點
 
@@ -122,6 +230,23 @@
 | GET | `/admin/feeds/unhealthy` | 健康度低於門檻的 feed，差的排前面。`threshold` 預設 50、`limit` 預設 200（上限 1000） |
 | GET | `/admin/feeds/archived` | 已封存的 feed，`limit` 預設 200（上限 1000） |
 
+### Admin — 主動發現（需 `X-API-Key`）
+
+| Method | 路徑 | 說明 |
+|--------|------|------|
+| POST | `/admin/discovery/targets` | 種子網址進待探測佇列。`urls` 1–500 筆、每筆上限 2048 字。單筆失敗進 `rejected` 陣列而不讓整批失敗；已 `rejected` 的 host **不會**被重新排入 |
+| GET | `/admin/discovery/targets` | 分頁列出待探測佇列，可用 `status` 過濾，依證據數排序。`page_size` 上限 200 |
+| PATCH | `/admin/discovery/targets/{id}/block` | 永久封鎖該 host（設為 `rejected`）|
+| GET | `/admin/discovery/candidates` | 候選審核佇列。`status` 預設 `pending`、`min_referrers` 可過濾證據數 |
+| POST | `/admin/discovery/candidates/{id}/approve` | 核准入庫，可帶 `category` / `tags`。只寫 metadata，文章交給排程器。已被拒的候選回 **409** |
+| POST | `/admin/discovery/candidates/{id}/reject` | 拒絕，可帶 `note`；`block_host=true` 一併封鎖整個網域 |
+| GET | `/admin/discovery/sources` | 目錄來源清單 |
+| POST | `/admin/discovery/sources` | 新增目錄來源（`kind` 為 `links_page` 或 `opml`），依 `url` upsert |
+| PATCH | `/admin/discovery/sources/{id}` | 調整 `enabled` / `interval_hours` |
+| POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
+| POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
+| GET | `/admin/discovery/stats` | 各狀態的計數 |
+
 ## 4. 前端路由
 
 | 路徑 | 元件 |
@@ -151,21 +276,42 @@ image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時
 
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
-| `feeds` | 001 + 003 + 005 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified` |
+| `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at` |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)` |
 | `user_feeds` | 002 | 訂閱關係 |
 | `user_article_reads` | 002 | 已讀回報 |
 | `user_bookmarks` | 002 | 收藏 / 稍後讀（`bookmark_type` 區分） |
 | `user_preferences` | 002 | `preferred_categories` / `preferred_languages` |
+| `discovery_targets` | 006 | 待探測佇列。`url` UNIQUE（不是 host —— 一個站可以有多個 feed），`host` 另建索引供去重；`status` / `attempts` / `next_probe_at` / `referring_feed_count` |
+| `discovery_target_referrers` | 006 | `(target_id, feed_id)` 主鍵的分帳表，讓「幾個**不同**的既有源連到這裡」精確且重複收割時冪等 |
+| `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制 |
+| `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名 |
 
 RLS：四張 `user_*` 表為 owner-only policy（002）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。
+**四張 `discovery_*` 表開 RLS 但刻意不建任何 policy（006）** —— 連 SELECT 都沒有，所以 anon 與
+authenticated 看不到任何列也寫不進去，只有 service_role 能繞過。這與 004 對公開 catalog 開 public
+read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key 洩漏不該能列舉待探測佇列。
 後端使用 **service_role key** 繞過 RLS 進行寫入，權限改由 JWT 驗證與 `ADMIN_API_KEY` 控管。
 
 索引：`feeds(category)`、`feeds(archived_at)`、`feeds(health_score)`、
-`feeds(next_fetch_at) WHERE archived_at IS NULL`（partial，供到期佇列）、`articles(feed_id)`、
+`feeds(next_fetch_at) WHERE archived_at IS NULL`（partial，供到期佇列）、
+`feeds(next_harvest_at) WHERE archived_at IS NULL`（partial，供收割佇列）、`articles(feed_id)`、
 `articles(published_at DESC)`、`user_feeds(user_id)`、`user_feeds(feed_id)`、
-`user_article_reads(user_id)`、`user_bookmarks(user_id, bookmark_type)`。
+`user_article_reads(user_id)`、`user_bookmarks(user_id, bookmark_type)`、
+`discovery_targets(referring_feed_count DESC, next_probe_at) WHERE status='pending'`（partial，供探測佇列）、
+`discovery_targets(host)`、`discovery_targets(status)`、
+`discovery_candidates(referring_feed_count DESC, discovered_at DESC) WHERE status='pending'`（partial，供審核佇列）、
+`discovery_candidates(status)`、`discovery_candidates(target_id)`、
+`discovery_target_referrers(feed_id)`、`discovery_sources(next_harvest_at) WHERE enabled`。
+
+清理待探測佇列（終態列可安全刪除 —— 候選是 `ON DELETE SET NULL`，審核歷史不受影響）：
+
+```sql
+DELETE FROM discovery_targets
+ WHERE status IN ('done','exhausted','blocked')
+   AND updated_at < now() - interval '180 days';
+```
 
 ## 6. 生效中的限制與門檻
 
@@ -190,6 +336,26 @@ RLS：四張 `user_*` 表為 owner-only policy（002）；`feeds` / `articles` �
 | 對外抓取 User-Agent | `DISCOVERY_USER_AGENT`，預設 `Driftread/1.0` | `services/feed_discovery.py::user_agent()` |
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
+| **主動發現總開關** | **關**（`FEED_DISCOVERY_ENABLED`）| `services/discovery_config.py` |
+| 發現週期間隔 | 900 秒（`FEED_DISCOVERY_TICK_SECONDS`）| `discovery_config.py::tick_seconds()` |
+| 單輪收割 feed 數 | 10（`..._HARVEST_BATCH_SIZE`）| `discovery_config.py` |
+| 每個 feed 掃描文章數 | 20（`..._HARVEST_ARTICLES`）| `discovery_config.py` |
+| 同一 feed 再收割間隔 | 168 小時（`..._HARVEST_INTERVAL_HOURS`）| `discovery_config.py` |
+| 單一 feed 每輪貢獻網域上限 | 200（`..._HARVEST_MAX_LINKS_PER_FEED`）| `discovery_config.py` |
+| 單篇文件解析的 anchor 上限 | 500 | `services/link_harvest.py::MAX_ANCHORS_PER_DOC` |
+| 單篇文章實際解析的 HTML | 512 KiB | `services/link_harvest.py::MAX_HARVEST_HTML_BYTES` |
+| blogroll / 目錄階段 | **各自預設關**（`..._BLOGROLL_ENABLED` / `..._DIRECTORY_ENABLED`）| `discovery_config.py` |
+| 單輪目錄來源數 | 3（`..._DIRECTORY_BATCH_SIZE`）| `discovery_config.py` |
+| 單一 OPML 目錄取用 feed 數 | 500 | `services/directory_sources.py::MAX_OPML_FEEDS_PER_SOURCE` |
+| 單輪探測目標數 / 並發 | 20 / 3（`..._PROBE_BATCH_SIZE` / `..._PROBE_CONCURRENCY`）| `discovery_config.py` |
+| 探測放棄門檻 / 重試基礎間隔 | 3 次 / 24 小時（逐次加倍，上限 30 天）| `discovery_probe.py::MAX_RETRY_HOURS` |
+| 同站請求間隔 | 2 秒（`..._HOST_DELAY_SECONDS`），robots 的 `Crawl-delay` 更大時以它為準 | `discovery_config.py` |
+| `Crawl-delay` 上限 | 30 秒 | `services/robots.py::MAX_CRAWL_DELAY_SECONDS` |
+| robots.txt 大小 / 快取 | 512 KiB / 1 小時、2000 origin LRU | `services/robots.py` |
+| 待探測佇列上限 | 50,000 個 pending（`..._MAX_FRONTIER_SIZE`）| `discovery_config.py` |
+| 自動入庫門檻 | **0 = 關閉**（`..._AUTO_PROMOTE_MIN_REFERRERS`）| `discovery_config.py` |
+| 候選標題長度 | 200 | `services/discovery_candidates.py::MAX_TITLE_LEN` |
+| 種子網址批次 | 1–500 筆 | `models.py::SeedTargetsRequest` |
 
 ## 7. 技術棧與依賴
 
@@ -198,5 +364,9 @@ RLS：四張 `user_*` 表為 owner-only policy（002）；`feeds` / `articles` �
 | Frontend | Angular 21（Material + CDK）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
-| 測試 | pytest + pytest-asyncio，`backend/tests/`（15 個測試檔、117 個測試） |
+| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、444 個測試） |
 | 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理 |
+
+`worker` 容器跑兩個獨立迴圈（refresh 與 discovery），共用同一個 event loop 與同一個 stop
+event，各有自己的開關與 tick。兩者皆停用時 worker 記一行 log 後 exit 0（`restart: on-failure`
+因此讓它維持停機）；某個迴圈死掉則回非零讓 compose 重啟。

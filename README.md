@@ -20,6 +20,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 - **猜你喜歡**：依 category / tags / language 加權評分，推薦未訂閱的 feed
 - **用戶系統**：Supabase Auth 註冊 / 登入；訂閱、已讀、收藏、稍後讀
 - **Auto-discover**：貼任意網址，自動找出 RSS / Atom feed
+- **主動發現新的 RSS 源**：平台自己從文章外連、blogroll 與目錄頁挖出候選源，探測驗證後進後台審核佇列，核准即入庫。**預設關閉**，啟用前請先讀 [`docs/SECURITY.md`](docs/SECURITY.md)
 - **OPML 匯入 / 匯出**：與 Feedly / Inoreader 互通
 - **自動定期抓取**：獨立 `worker` 容器輪詢到期佇列，抓取間隔依實際更新狀況自適應（有新文章就縮短、沒動靜就拉長），並以 ETag / Last-Modified 避免重複下載
 - **Feed 健康度監測**：連續失敗計數與原因，達 10 次自動封存
@@ -33,8 +34,8 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 | 文件 | 內容 |
 |------|------|
 | [`docs/FEATURES.md`](docs/FEATURES.md) | 當前功能、API 端點、資料表、生效中的各項限制 |
-| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 逐 PR 變更紀錄（#1–#21）與架構演進 |
-| [`docs/SECURITY.md`](docs/SECURITY.md) | 安全加固紀錄（#14–#21）與改動時的注意事項 |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 逐 PR 變更紀錄（#1–#24）與架構演進 |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | 安全加固紀錄（#14–#24）與改動時的注意事項 |
 | [`extension/README.md`](extension/README.md) | 瀏覽器擴充安裝與設定 |
 | [`CLAUDE.md`](CLAUDE.md) | 專案上下文與開發規則 |
 
@@ -69,7 +70,7 @@ Compose 有三個服務：
 | 服務 | 內容 |
 |------|------|
 | `api` | FastAPI。不發布 port，只能透過 `frontend` 的 nginx 容器存取（`/api/` 反向代理到 `api:8000`）|
-| `worker` | 自動抓取排程器。與 `api` 共用同一個 image，只換 `command` 跑 `worker.py`。不對外服務，只接 `default` network。restart policy 是 `on-failure`（不是 `unless-stopped`），這樣 `FEED_REFRESH_ENABLED=false` 時乾淨退出就會保持停止，崩潰時仍會自動重啟 |
+| `worker` | 背景排程器，跑兩個獨立迴圈：自動抓取與主動發現（各有自己的開關與 tick，共用同一個 event loop 與 stop 訊號）。與 `api` 共用同一個 image，只換 `command` 跑 `worker.py`。不對外服務，只接 `default` network。restart policy 是 `on-failure`（不是 `unless-stopped`），這樣兩個開關都關掉時乾淨退出就會保持停止，某個迴圈崩潰時仍會自動重啟 |
 | `frontend` | Angular build 產物 + nginx。接 `web_network` 供外部反向代理 |
 
 資料庫 migration 由後端啟動時的 `backend/migrate.py` 自動套用 `backend/migrations/*.sql`。
@@ -77,6 +78,8 @@ Compose 有三個服務：
 
 不想跑 `worker` 的話，設 `FEED_REFRESH_ENABLED=false` 並改由外部排程器定期呼叫
 `POST /api/admin/feeds/refresh-due`（需 `X-API-Key`）即可，抓取邏輯完全相同。
+主動發現同理，對應端點是 `POST /api/admin/discovery/run` —— 但那條路徑要求
+`FEED_DISCOVERY_ENABLED=true`，停用時直接回 503（見下方環境變數說明）。
 
 ### 停止
 
@@ -101,6 +104,22 @@ docker compose down
 | `FEED_REFRESH_CONCURRENCY` | | 單輪同時對外抓取的上限，預設 `5` |
 | `FEED_REFRESH_MIN_INTERVAL_MINUTES` | | 個別 feed 抓取間隔下限，預設 `15` |
 | `FEED_REFRESH_MAX_INTERVAL_MINUTES` | | 個別 feed 抓取間隔上限，預設 `1440`（24 小時）|
+| `FEED_DISCOVERY_ENABLED` | | 是否啟用主動發現，**預設 `false`**。詳見下方說明 |
+| `LOG_LEVEL` | | worker 的日誌等級，預設 `INFO` |
+
+其餘 15 個 `FEED_DISCOVERY_*` 參數（收割批次、探測並發、禮貌延遲、robots、自動入庫門檻…）
+皆有預設值，說明見 [`.env.example`](.env.example)，完整語意見
+[`docs/FEATURES.md` 第 2c 節](docs/FEATURES.md)。
+
+> **主動發現為什麼預設關閉**
+>
+> `FEED_REFRESH_*` 只會碰你自己匯入的源；主動發現會依自己的排程去探測「沒有人要求過的
+> 第三方網站」。拉一個新版 image 不該讓你的部署默默變成一台爬蟲，所以這個開關預設是關的，
+> blogroll 與目錄兩個對外階段也各自另開。
+>
+> 啟用前請先讀 [`docs/SECURITY.md`](docs/SECURITY.md) 的 #24，特別是 **DNS rebinding** 那一節 ——
+> 那個從 #22 起就記錄但尚未修復的繞過，在無人看管的自主迴圈下嚴重度明顯上升。另外請在
+> `DISCOVERY_USER_AGENT` 帶上聯絡網址，讓被抓取的站方找得到你。
 
 > `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**。前端的 Supabase 設定在
 > `frontend/src/environments/`，那裡用的是 anon key。
