@@ -37,7 +37,12 @@ class DiscoveryError(Exception):
     pass
 
 
-def _user_agent() -> str:
+def user_agent() -> str:
+    """The User-Agent for every outbound fetch — discovery and feed ingestion
+    alike. rss_parser.fetch_and_parse() uses this too, so DISCOVERY_USER_AGENT
+    applies to /discover/import, admin import/refresh and OPML import, not
+    just candidate discovery.
+    """
     return os.getenv("DISCOVERY_USER_AGENT", "Driftread/1.0")
 
 
@@ -173,7 +178,7 @@ async def _validate_feed(
 async def discover_feeds(url: str, timeout: float = 12.0) -> list[DiscoveryCandidate]:
     """Discover candidate feeds for a URL. Returns list (possibly empty)."""
     safe_url = validate_fetch_url(url)
-    headers = {"User-Agent": _user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
+    headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
     async with httpx.AsyncClient(
         follow_redirects=False, timeout=timeout, headers=headers

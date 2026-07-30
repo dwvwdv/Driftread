@@ -181,3 +181,27 @@ async def test_fetch_and_parse_rejects_oversized_response():
     ):
         with pytest.raises(Exception):
             await rss_parser.fetch_and_parse("https://start.example.com/")
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_parse_uses_configured_user_agent(monkeypatch):
+    """DISCOVERY_USER_AGENT must apply to feed ingestion too, not only to
+    candidate discovery — /discover/import, admin import/refresh and OPML
+    import all fetch through fetch_and_parse().
+    """
+    monkeypatch.setenv("DISCOVERY_USER_AGENT", "CustomAgent/9.9")
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("user-agent"))
+        return httpx.Response(
+            200, text=RSS_SAMPLE, headers={"content-type": "application/rss+xml"}
+        )
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        await rss_parser.fetch_and_parse("https://example.com/feed.xml")
+
+    assert seen == ["CustomAgent/9.9"]

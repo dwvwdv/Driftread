@@ -87,8 +87,8 @@
 | POST | `/admin/feeds/{feed_id}/refresh` | 重抓該 feed，更新文章與健康度 |
 | PATCH | `/admin/feeds/{feed_id}/archive` | 封存 |
 | PATCH | `/admin/feeds/{feed_id}/unarchive` | 解除封存 |
-| GET | `/admin/feeds/...`（列表） | 管理用列表，`limit` 預設 200、上限 1000 |
-| GET | `/admin/feeds/archived` | 已封存的 feed |
+| GET | `/admin/feeds/unhealthy` | 健康度低於門檻的 feed，差的排前面。`threshold` 預設 50、`limit` 預設 200（上限 1000） |
+| GET | `/admin/feeds/archived` | 已封存的 feed，`limit` 預設 200（上限 1000） |
 
 ## 4. 前端路由
 
@@ -150,6 +150,7 @@ RLS：四張 `user_*` 表為 owner-only policy（002）；`feeds` / `articles` �
 | `search` 長度 | 200 | `routers/feeds.py` |
 | `page_size`（feeds） | 預設 20、上限 100 | `routers/feeds.py` |
 | Admin 列表 `limit` | 預設 200、上限 1000 | `routers/admin.py` |
+| 對外抓取 User-Agent | `DISCOVERY_USER_AGENT`，預設 `Driftread/1.0` | `services/feed_discovery.py::user_agent()` |
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
 

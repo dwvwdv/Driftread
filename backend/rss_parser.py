@@ -184,9 +184,14 @@ async def fetch_and_parse(url: str, timeout: float = 15.0, max_redirects: int = 
     # URL that 302s to e.g. http://169.254.169.254/ must not bypass the SSRF
     # guard) and caps response bytes read — a bare client.get() has no size
     # limit and would let a validated host exhaust memory via a huge body.
-    from services.feed_discovery import MAX_FEED_BYTES, fetch_with_cap, validate_fetch_url
+    from services.feed_discovery import (
+        MAX_FEED_BYTES,
+        fetch_with_cap,
+        user_agent,
+        validate_fetch_url,
+    )
 
-    headers = {"User-Agent": "Driftread/1.0"}
+    headers = {"User-Agent": user_agent()}
     current_url = validate_fetch_url(url)
     async with httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers=headers) as client:
         text, _ctype = await fetch_with_cap(client, current_url, MAX_FEED_BYTES, max_redirects=max_redirects)

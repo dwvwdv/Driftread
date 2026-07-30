@@ -82,7 +82,7 @@ docker compose down
 | `SUPABASE_JWT_SECRET` | ✅ | 驗證用戶 `Authorization: Bearer` token（Dashboard → Settings → API → JWT Settings）|
 | `ADMIN_API_KEY` | ✅ | 後台 / 開放 API 的 `X-API-Key` 標頭，由 `gen_env.py` 自動產生 |
 | `CORS_ORIGINS` | | 逗號分隔的允許來源，預設 `*` |
-| `DISCOVERY_USER_AGENT` | | Auto-discover 抓取網頁時的 User-Agent，預設 `Driftread/1.0` |
+| `DISCOVERY_USER_AGENT` | | 所有對外抓取（discover 與 feed 匯入 / refresh）的 User-Agent，預設 `Driftread/1.0` |
 
 > `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**。前端的 Supabase 設定在
 > `frontend/src/environments/`，那裡用的是 anon key。
@@ -106,11 +106,16 @@ repo 內這兩個值目前是**空字串**，因此 GHCR 上由 CI 建出的 `dr
 #    supabaseUrl:     https://your-project-id.supabase.co
 #    supabaseAnonKey: <anon key，不是 service_role key>
 
-# 2. 自建並改用本地 image（或 fork 後讓自己的 CI 推到自己的 GHCR）
+# 2. 從原始碼重建 frontend image（compose 的 frontend 服務有 build: ./frontend）
 docker compose build frontend
+docker compose up -d frontend
 ```
 
 （本地開發走 `npm start` 時讀的是 `environment.development.ts`，同樣要自己填。）
+
+> ⚠ 自建的 image 沿用 `ghcr.io/dwvwdv/driftread-frontend:latest` 這個 tag，
+> 所以之後跑 `docker compose pull` 會用官方（空值）image 蓋掉它。
+> 長期部署建議 fork 後讓自己的 CI 推到自己的 GHCR，或在 compose 裡改成自己的 image 名稱。
 
 > 這是目前的已知限制：沒有 runtime 注入機制，所以官方 image 無法直接開啟用戶功能。
 > 若要讓同一個 image 在不同部署帶不同 Supabase 專案，需要改成啟動時載入
