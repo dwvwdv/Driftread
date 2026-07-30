@@ -196,17 +196,25 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
         original_host = request.url.host
         original_url = request.url
         ips = _resolve_pinned_ips(original_host)
-        last_error: httpx.ConnectError | None = None
+        last_error: httpx.TransportError | None = None
         for ip in ips:
             request.url = original_url.copy_with(host=ip)
             request.extensions = {**request.extensions, "sni_hostname": original_host}
             try:
                 return await super().handle_async_request(request)
-            except httpx.ConnectError as exc:
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 # Only a connect-stage failure warrants trying the next
-                # address — anything past that point (timeout mid-response,
+                # address — anything past that point (read/write timeout,
                 # HTTP-level error) isn't an address-reachability problem and
-                # retrying it against a different IP wouldn't fix it.
+                # retrying it against a different IP wouldn't fix it. Both
+                # exceptions are needed: httpx.ConnectTimeout is a sibling of
+                # ConnectError, not a subclass of it (they hang off
+                # TimeoutException vs NetworkError respectively), and a
+                # connect-stage timeout — packets silently dropped rather than
+                # actively refused — is the more common real-world shape of
+                # exactly the "broken IPv6 route" case this fallback exists
+                # for, not the exception thrown for an address that's merely
+                # unreachable.
                 last_error = exc
                 continue
         assert last_error is not None  # ips is non-empty; the loop always runs >=1 time
@@ -370,7 +378,18 @@ def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[DiscoveryCandidate] = []
     seen: set[str] = set()
-    for link in soup.find_all("link", limit=MAX_FEED_LINK_CANDIDATES):
+    # Cap qualifying candidates, not the raw <link> tags scanned: BeautifulSoup
+    # has already parsed the whole (byte-capped) document by the time find_all
+    # returns anything, so limiting the scan itself (find_all(..., limit=...))
+    # buys no real cost saving — it only risks stopping before the actual feed
+    # declaration on a page whose <head> happens to list many ordinary
+    # stylesheet/icon/preload <link> tags first. Capping on candidates found
+    # keeps the bound that matters (outbound validation fetches downstream in
+    # discover_feeds(), DB lookups in routers/discover.py) without that
+    # false-negative.
+    for link in soup.find_all("link"):
+        if len(candidates) >= MAX_FEED_LINK_CANDIDATES:
+            break
         rel = link.get("rel") or []
         if isinstance(rel, str):
             rel = [rel]

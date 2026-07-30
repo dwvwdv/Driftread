@@ -205,10 +205,18 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **`validate_fetch_url()` / `_is_safe_host()` 本身不動**：既有的 check-then-fetch 語意保留在呼叫端（仍然是 `allow_url` 政策層跑之前的第一道門），新的傳輸層解析是**第二道獨立的門**，決定的是真正的連線目標——兩道門之間不再有「驗證用一個 IP、連線用另一個 IP」的落差，因為傳輸層自己的解析結果就是它自己拿去連線的那個。
 - **已知限制**：`_resolve_pinned_ips()` 每次呼叫只解析一次，但 `fetch_with_cap_response()` 對每個 redirect hop 都會重新進入這個傳輸層（每個 hop 都是新的一次 `client.stream()` 呼叫），所以每個 hop 各自有自己的單次解析——這是預期行為，不是遺漏。
 - **附帶修掉 `routers/discover.py:41`**（#24 附帶記錄的既存暴露，當時未改）：`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出的第三方字串，原本整批塞進 `.in_("url", feed_urls)`，與 #14 修的 `.or_()` 注入同一類問題（只是經由 `.in_()` 的 list 序列化而非手拼字串）。改為逐一 `.eq("url", feed_url).maybe_single()`，match `services/discovery_candidates.py` 既有的作法，第三方字串完全不進 PostgREST filter 語法。
-- **PR review（自動化 code review）抓出的三個問題，同一輪補上**：
+- **PR review（自動化 code review，兩輪）抓出五個問題，同一輪補上**：
+
+  第一輪：
+
   1. **P1 — 連線池的 key 被換成了 IP**。`PinnedTransport` 把 `request.url.host` 換成解析出的 IP 再交給底層 transport，這連帶讓 httpcore 的連線池 key 也變成那個 IP。兩個**不同的原始 hostname**如果剛好指到同一個共用主機 / CDN IP（同 IP、不同租戶），就會在池裡撞在一起——第二個 hostname 的請求可能被送進一條「TLS session 是用第一個 hostname 的 SNI 建立的」既有連線，等於繞過了以 hostname 為單位的 TLS 身分驗證。修法：`ssrf_safe_client()` 把 `PinnedTransport(limits=httpx.Limits(max_keepalive_connections=0))` 接上——關掉 keep-alive 重用後，沒有連線會活過它服務的那一個請求，池裡不會留下任何東西可以撞。（`limits` 必須傳進 `PinnedTransport(...)` 建構子本身，不能傳給 `httpx.AsyncClient(**kwargs)`——一旦 `transport` 是明確給的，`AsyncClient` 會完全略過 `limits`／`verify`／`cert`／`http2`／`proxy` 這些參數，只有它自己組預設 transport 時才會套用；這是實作時另外抓到的一個坑，記在 `ssrf_safe_client()` 的 docstring 裡。）
-  2. **P1 — `routers/discover.py` 的逐 URL 查詢沒有上限**。把 `.in_()` 改成逐 URL `.eq().maybe_single()` 解決了 filter 注入，但候選數量本身沒有上限——`_extract_feed_links()` 對 `<link rel="alternate">` 的掃描不設限，惡意頁面可以塞進成千上萬個宣告，讓公開免認證的 `/api/discover` 一次觸發同樣多次的驗證抓取（`discover_feeds()` 既有行為）加上（本次新增的）DB 查詢。修法：`_extract_feed_links()` 的 `soup.find_all("link", limit=...)` 加上 `MAX_FEED_LINK_CANDIDATES = 50`，與 `link_harvest.py` 的 `MAX_ANCHORS_PER_DOC` 同一手法、同一位置（choke point），下游（驗證抓取迴圈、DB 查詢迴圈）跟著一起被限制住，不必各自記得加。
-  3. **P2 — 只取第一筆解析位址會丟失 dual-stack 的 fallback**。未 pin 之前，httpx/httpcore 的預設連線邏輯會依序嘗試 `getaddrinfo()` 回傳的每一筆位址；只回傳 `ips[0]` 等於拿掉了這個 fallback——例如某環境 IPv6 實際不通但仍解析得出 AAAA，若那筆剛好排在前面，抓取會直接失敗而不會退回還可用的 IPv4。修法：`_resolve_pinned_ip()` 改名 `_resolve_pinned_ips()`，回傳**全部**驗證過的位址（驗證邏輯不變：任何一筆不安全就整個拒絕）；`PinnedTransport.handle_async_request()` 依序嘗試，只有 `httpx.ConnectError`（連線層失敗，不是逾時或 HTTP 層錯誤）才換下一筆重試。全站每個請求都是不帶 body 的 GET（見 `fetch_with_cap_response`），重試沿用同一個 `Request` 物件是安全的——沒有已被消耗一部分的 request stream 需要顧慮。
+  2. **P1 — `routers/discover.py` 的逐 URL 查詢沒有上限**。把 `.in_()` 改成逐 URL `.eq().maybe_single()` 解決了 filter 注入，但候選數量本身沒有上限——`_extract_feed_links()` 對 `<link rel="alternate">` 的掃描不設限，惡意頁面可以塞進成千上萬個宣告，讓公開免認證的 `/api/discover` 一次觸發同樣多次的驗證抓取（`discover_feeds()` 既有行為）加上（本次新增的）DB 查詢。第一輪修法是 `soup.find_all("link", limit=...)`（見下方第二輪第 4 點，這個做法本身又被抓出問題，第二輪換掉了）。
+  3. **P2 — 只取第一筆解析位址會丟失 dual-stack 的 fallback**。未 pin 之前，httpx/httpcore 的預設連線邏輯會依序嘗試 `getaddrinfo()` 回傳的每一筆位址；只回傳 `ips[0]` 等於拿掉了這個 fallback——例如某環境 IPv6 實際不通但仍解析得出 AAAA，若那筆剛好排在前面，抓取會直接失敗而不會退回還可用的 IPv4。修法：`_resolve_pinned_ip()` 改名 `_resolve_pinned_ips()`，回傳**全部**驗證過的位址（驗證邏輯不變：任何一筆不安全就整個拒絕）；`PinnedTransport.handle_async_request()` 依序嘗試，只有連線層失敗才換下一筆重試（見第二輪第 5 點——第一輪只接 `httpx.ConnectError` 沒接對）。全站每個請求都是不帶 body 的 GET（見 `fetch_with_cap_response`），重試沿用同一個 `Request` 物件是安全的——沒有已被消耗一部分的 request stream 需要顧慮。
+
+  第二輪（對第一輪修法的 review）：
+
+  4. **P2 — 用 `find_all("link", limit=50)` 限制掃描數，會在真正的 feed 宣告前就停手**。BeautifulSoup 用 `"html.parser"` 解析時，整份文件（已受 `MAX_FEED_BYTES` 位元組上限約束）在 `find_all` 執行前就已經全部解析進記憶體——`limit=` 只影響回傳幾個元素，不影響解析成本，所以拿它限制掃描數量並沒有真的省到什麼，卻會讓一個 `<head>` 裡有 50 個以上 stylesheet / icon / preload 之類無關 `<link>` 標籤、真正 feed 宣告排在更後面的正常頁面，直接漏掉那個宣告。修法：把 cap 從「掃描的 `<link>` 標籤數」改成「篩選後、符合 `rel="alternate"` 且是 feed content-type 的候選數」——迴圈照樣跑過所有標籤（便宜，反正已經解析好了），只在候選數蒐集到 `MAX_FEED_LINK_CANDIDATES` 時才 `break`，惡意頁面全部標籤都合格的最壞情況仍然一樣被限制住。
+  5. **P2 — 位址 fallback 沒接住連線逾時**。`PinnedTransport` 第一輪只 `except httpx.ConnectError`，但 `httpx.ConnectTimeout` 不是 `ConnectError` 的子類——兩者是 `httpx.TransportError` 下的兩個平行分支（`TimeoutException` vs `NetworkError`），不是父子關係。而「封包被默默丟棄」（逾時）其實比「立刻拒絕連線」更是「這條路由實際不通」（例如壞掉的 IPv6）在真實世界最常見的樣子，第一輪的 fallback 因此漏接了它原本要解決的那個情境裡最典型的失敗形態。修法：`except (httpx.ConnectError, httpx.ConnectTimeout)`。
 
 ---
 

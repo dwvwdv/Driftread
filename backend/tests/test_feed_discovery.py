@@ -45,6 +45,24 @@ def test_extract_feed_links_caps_candidates():
     assert len(out) == MAX_FEED_LINK_CANDIDATES
 
 
+def test_extract_feed_links_finds_feed_past_many_unrelated_link_tags():
+    """The cap must apply to qualifying candidates, not to how many raw <link>
+    tags get scanned — a real page can easily list more than
+    MAX_FEED_LINK_CANDIDATES stylesheet/icon/preload <link> tags before its
+    actual feed declaration, and a scan-count cap would silently never reach
+    it."""
+    noise = "".join(
+        f'<link rel="stylesheet" href="/style{i}.css"/>' for i in range(MAX_FEED_LINK_CANDIDATES * 3)
+    )
+    html = (
+        f"<html><head>{noise}"
+        '<link rel="alternate" type="application/rss+xml" href="/real-feed.xml"/>'
+        "</head></html>"
+    )
+    out = _extract_feed_links(html, "https://example.com")
+    assert [c.feed_url for c in out] == ["https://example.com/real-feed.xml"]
+
+
 def test_extract_feed_links_empty_when_none():
     html = "<html><head></head></html>"
     assert _extract_feed_links(html, "https://example.com") == []
@@ -417,6 +435,36 @@ async def test_pinned_transport_falls_back_to_next_address_on_connect_error():
         attempted_hosts.append(request.url.host)
         if request.url.host == "2606:4700:4700::1111":
             raise httpx.ConnectError("network unreachable", request=request)
+        return httpx.Response(200, text="ok")
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://dualstack.example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo("2606:4700:4700::1111", "93.184.216.34"),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        response = await transport.handle_async_request(request)
+
+    assert attempted_hosts == ["2606:4700:4700::1111", "93.184.216.34"]
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_falls_back_on_connect_timeout_too():
+    """httpx.ConnectTimeout is a sibling of ConnectError, not a subclass of it
+    — and a connect-stage timeout (packets silently dropped) is the more
+    common real-world shape of "this address doesn't actually work" than an
+    immediately-refused connection, so it must trigger fallback too."""
+    attempted_hosts: list[str] = []
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        attempted_hosts.append(request.url.host)
+        if request.url.host == "2606:4700:4700::1111":
+            raise httpx.ConnectTimeout("timed out", request=request)
         return httpx.Response(200, text="ok")
 
     transport = PinnedTransport()
