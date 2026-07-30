@@ -125,19 +125,23 @@ docker compose up -d frontend
 
 ## 本地開發
 
+兩個服務各開一個 terminal，都從 repo 根目錄開始：
+
 ```bash
-# Backend
+# Backend（terminal 1）
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload --env-file ../.env   # http://localhost:8000，docs 在 /docs
 
-# Backend 測試
+# Backend 測試（在 backend/ 底下）
 pytest
+```
 
-# Frontend
+```bash
+# Frontend（terminal 2）
 cd frontend
 npm install
-npm start                          # http://localhost:4200
+npm start                                      # http://localhost:4200
 ```
 
 前端 development 設定（`frontend/src/environments/environment.development.ts`）預設打

@@ -70,6 +70,8 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 - **修法**：把守門移到唯一的抓取瓶頸點，`fetch_with_cap()` 對**初始 URL 與每個 redirect hop** 都跑 `validate_fetch_url()`，而不再依賴每個呼叫端各自記得。重複驗證一個已驗證過的 URL 只多一次 DNS 查詢。
 - **測試**：`test_discover_feeds_rejects_private_alternate_link` 斷言 `MockTransport` 從未收到往 `169.254.169.254` 的請求（修法前這個測試會失敗，實際觀察到該請求）。
 - **附帶**：`MAX_HTML_BYTES`（2 MiB）從未被任何程式碼引用——`discover_feeds` 的第一次抓取一律用 `MAX_FEED_BYTES`。這個常數是死碼，卻讓人以為有一道 2 MiB 的 HTML 上限。已刪除，文件改為記載實際的單一 5 MiB 上限。
+- **已知限制：DNS rebinding 仍可繞過守門（未修）**。`_is_safe_host()` 用 `socket.getaddrinfo()` 解析主機名做判斷，但接下來 `client.stream()` 連線時 httpx 會**獨立再解析一次**。攻擊者控制的 domain 可以在驗證那次回公開 IP、在連線那次回 `169.254.169.254` 之類的位址（短 TTL 或多筆 A 記錄輪替），於是 `/api/discover` 這條公開免認證路徑仍可能發出內部請求。
+  這是 check-then-fetch 這種守門形式的固有弱點，從 #15 引入守門起就存在，不是這次改動造成的。要真正關掉必須改成 pin-and-connect：解析一次、只連到那個已驗證的 IP，同時保留原始 hostname 給 HTTP `Host` 標頭與 TLS SNI（httpx 需自訂 transport 或用 `sni_hostname` request extension）。屬於獨立的實作工作，尚未進行。
 
 ---
 
@@ -80,7 +82,7 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 | Request 入口 | `Content-Length` > 6 MiB → 413（最外層 middleware） | `main.py::MaxBodySizeMiddleware` |
 | Client 識別 | `ProxyHeadersMiddleware(trusted_hosts="*")` + nginx `X-Forwarded-For $remote_addr` | `main.py`、`frontend/nginx.conf` |
 | 濫用防護 | 每 IP 每端點 20 req / 60s，追蹤上限 10k clients | `rate_limit.py` |
-| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local | `services/feed_discovery.py` |
+| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local（⚠ 仍可被 DNS rebinding 繞過，見 #22 的已知限制） | `services/feed_discovery.py` |
 | 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用） | `services/feed_discovery.py` |
 | XML 解析 | 全數 `defusedxml`（feed 與 OPML 兩條路徑） | `rss_parser.py`、`routers/opml.py` |
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()` | `utils.py`、`routers/*` |
