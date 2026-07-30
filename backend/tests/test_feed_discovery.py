@@ -8,8 +8,11 @@ import pytest
 from services.feed_discovery import (
     FALLBACK_PATHS,
     DiscoveryError,
+    PinnedTransport,
     _extract_feed_links,
+    _resolve_pinned_ip,
     discover_feeds,
+    ssrf_safe_client,
     validate_fetch_url,
 )
 
@@ -291,3 +294,130 @@ async def test_no_delay_and_no_gate_by_default():
         await discover_feeds("https://example.com/")
 
     assert sleeps == []
+
+
+# ── pin-and-connect (DNS-rebinding gap, SECURITY.md #22/#24) ──────────────────
+#
+# These test _resolve_pinned_ip and PinnedTransport directly rather than via
+# discover_feeds()'s MockTransport-based tests above: MockTransport replaces
+# the whole transport, so it never reaches PinnedTransport.handle_async_request
+# and can't observe what host/headers/extensions a real connection would see.
+
+
+def _fake_addrinfo(ip: str):
+    return [(None, None, None, "", (ip, 0))]
+
+
+def test_resolve_pinned_ip_returns_the_resolved_address():
+    with patch(
+        "services.feed_discovery.socket.getaddrinfo",
+        return_value=_fake_addrinfo("93.184.216.34"),
+    ):
+        assert _resolve_pinned_ip("example.com") == "93.184.216.34"
+
+
+def test_resolve_pinned_ip_rejects_private_address():
+    with patch(
+        "services.feed_discovery.socket.getaddrinfo",
+        return_value=_fake_addrinfo("169.254.169.254"),
+    ):
+        with pytest.raises(DiscoveryError):
+            _resolve_pinned_ip("evil.example.com")
+
+
+def test_resolve_pinned_ip_rejects_host_if_any_of_several_addresses_unsafe():
+    """Same conservative stance as _is_safe_host: a host that resolves to
+    multiple addresses is rejected outright if any one of them is private,
+    not just when the address we'd happen to pick first is."""
+    with patch(
+        "services.feed_discovery.socket.getaddrinfo",
+        return_value=[
+            (None, None, None, "", ("93.184.216.34", 0)),
+            (None, None, None, "", ("169.254.169.254", 0)),
+        ],
+    ):
+        with pytest.raises(DiscoveryError):
+            _resolve_pinned_ip("multi-record.example.com")
+
+
+def test_resolve_pinned_ip_propagates_dns_failure():
+    import socket as socket_module
+
+    with patch(
+        "services.feed_discovery.socket.getaddrinfo",
+        side_effect=socket_module.gaierror("no such host"),
+    ):
+        with pytest.raises(DiscoveryError):
+            _resolve_pinned_ip("nonexistent.invalid")
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_connects_to_resolved_ip_keeps_host_and_sni():
+    """The mechanism that closes the rebind gap: the request handed to the
+    real transport must target the resolved IP, while Host and SNI stay on
+    the original hostname so the fetch is transparent to the server."""
+    captured: dict = {}
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        captured["host"] = request.url.host
+        captured["host_header"] = request.headers.get("host")
+        captured["sni_hostname"] = request.extensions.get("sni_hostname")
+        return httpx.Response(200, text="ok")
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo("93.184.216.34"),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        response = await transport.handle_async_request(request)
+
+    assert captured["host"] == "93.184.216.34"
+    assert captured["host_header"] == "example.com"
+    assert captured["sni_hostname"] == "example.com"
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_rejects_dns_rebind_to_private_ip():
+    """This is the actual connect-time choke point: even if an earlier
+    validate_fetch_url() call saw a public address for this hostname, the
+    transport's own resolution is what decides the real connect target, and
+    must independently reject a private one — no unpinned second lookup is
+    left for an attacker's short-TTL DNS answer to exploit."""
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not reach the real transport for a private IP")
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://rebind.example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo("169.254.169.254"),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        with pytest.raises(DiscoveryError):
+            await transport.handle_async_request(request)
+
+
+@pytest.mark.asyncio
+async def test_ssrf_safe_client_defaults_to_pinned_transport():
+    async with ssrf_safe_client() as client:
+        assert isinstance(client._transport, PinnedTransport)
+
+
+@pytest.mark.asyncio
+async def test_ssrf_safe_client_respects_explicit_transport():
+    """A caller-supplied transport (as every test's _mock_client_factory
+    supplies) must win — ssrf_safe_client only sets a default, never forces
+    PinnedTransport onto an already-mocked client."""
+    sentinel = httpx.MockTransport(lambda request: httpx.Response(200))
+    async with ssrf_safe_client(transport=sentinel) as client:
+        assert client._transport is sentinel

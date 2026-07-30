@@ -121,6 +121,81 @@ def validate_fetch_url(url: str) -> str:
     return url
 
 
+def _resolve_pinned_ip(host: str) -> str:
+    """Resolve `host` and return one IP that passed the same private/loopback/
+    etc checks as _is_safe_host — for PinnedTransport to connect to directly.
+
+    validate_fetch_url() and the actual TCP connection each used to do their
+    own independent socket.getaddrinfo() for the same hostname (the former to
+    decide whether to proceed, httpcore internally for the latter). A DNS
+    answer with a short TTL or multiple A/AAAA records can differ between the
+    two lookups — the classic DNS-rebinding bypass documented in
+    docs/SECURITY.md (#22's known limitation, elaborated in #24 point 2): a
+    public IP can pass validation while a private one is what's actually
+    connected to. Reusing *this* function's single resolution as the connect
+    target (via PinnedTransport below) closes that gap by construction —
+    there is no second, independent lookup left to disagree with the first.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError):
+        raise DiscoveryError(f"DNS resolution failed for {host!r}")
+    # Reject the whole host if *any* resolved address is unsafe, not just the
+    # one we'd pick to connect to — same conservative stance as _is_safe_host
+    # (a host that can answer with a private address under some resolution is
+    # treated as unsafe outright, not just "unsafe on the record we happened
+    # to pick first").
+    ips: list[str] = []
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            raise DiscoveryError(f"DNS resolution returned an invalid address for {host!r}")
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise DiscoveryError(f"Refusing to connect {host!r} to private/loopback address")
+        ips.append(ip_str)
+    if not ips:
+        raise DiscoveryError(f"DNS resolution returned no addresses for {host!r}")
+    return ips[0]
+
+
+class PinnedTransport(httpx.AsyncHTTPTransport):
+    """The real transport used for every outbound fetch (see ssrf_safe_client
+    below) — connects to the exact IP _resolve_pinned_ip() just validated,
+    instead of handing httpcore a hostname it would resolve again on its own.
+    The Host header and TLS SNI still use the original hostname (the former
+    was already set from it when httpx built the request, before any
+    transport runs; the latter is set explicitly below), so this is
+    transparent to the server — only the connect target is pinned.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        original_host = request.url.host
+        ip = _resolve_pinned_ip(original_host)
+        request.url = request.url.copy_with(host=ip)
+        request.extensions = {**request.extensions, "sni_hostname": original_host}
+        return await super().handle_async_request(request)
+
+
+def ssrf_safe_client(**kwargs) -> httpx.AsyncClient:
+    """The only way any code in this project should construct an AsyncClient
+    for fetching an externally-supplied URL — wires in PinnedTransport so the
+    DNS resolution that validated a host is the same resolution the TCP
+    connection actually uses. Tests override this at the `httpx.AsyncClient`
+    patch point same as before (see tests/test_feed_discovery.py's
+    _mock_client_factory): MockTransport always overwrites `transport`, so
+    this default never reaches a mocked client.
+
+    None of the current callers pass transport-level kwargs (verify, cert,
+    http2, proxy, limits...) — if one ever needs to, it must go to
+    PinnedTransport(...) instead of here, since httpx.AsyncClient ignores
+    those once an explicit `transport` is supplied.
+    """
+    kwargs.setdefault("transport", PinnedTransport())
+    return httpx.AsyncClient(**kwargs)
+
+
 async def fetch_with_cap_response(
     client: httpx.AsyncClient,
     url: str,
@@ -314,7 +389,7 @@ async def discover_feeds(
     safe_url = validate_fetch_url(url)
     headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
-    async with httpx.AsyncClient(
+    async with ssrf_safe_client(
         follow_redirects=False, timeout=timeout, headers=headers
     ) as client:
         # The pause applies before the *first* request too. The autonomous caller

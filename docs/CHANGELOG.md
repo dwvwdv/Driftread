@@ -203,3 +203,14 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 - `routers/discover.py:41` 把遠端 HTML 抽出的 URL 直接餵進 `.in_("url", feed_urls)`，屬 #14 同類的暴露，本次未改。
 - 前端 `article-reader.html` 的 `a.content` 用 `[innerHTML]`（既有、面積大得多）。
 - **001 與 002 的 `CREATE TRIGGER` / `CREATE POLICY` 沒有存在性防護**。本 PR 在真的 PostgreSQL 16 上跑過驗證（見下），006 單獨重跑完全乾淨，但把 `_migrations` 整個清空後重跑會在 **001** 就炸掉（`trigger "feeds_updated_at" ... already exists`）。005 的註解其實已經推導出這個道理才替 `ADD CONSTRAINT` 加了 DO-guard，只是沒回頭補 001/002。實務上不會踩到（`_migrations` 只增不減），但手動修補過資料庫的人會在開機時被擋下。留作獨立的小 PR。
+
+## 階段十一：DNS rebinding pin-and-connect 與 discover.py 的 filter 收尾（PR #25，2026-07-30）
+
+同一個「持續改善專案」排程任務，補完 #24 明確列為「不在此 PR 範圍」的兩項。完整說明見 [SECURITY.md](SECURITY.md) 的對應章節。
+
+- **pin-and-connect**（#22 的已知限制，#24 第 2 點稱其優先度應提高）。`validate_fetch_url()` 與實際連線各自獨立呼叫 `socket.getaddrinfo()`，中間沒有任何東西把兩次解析釘在一起 —— 短 TTL 或多筆 A 記錄的 DNS 答案可以讓驗證那次回公開 IP、連線那次回 `169.254.169.254` 之類的內網位址。新增 `services/feed_discovery.py::PinnedTransport`（包住 `httpx.AsyncHTTPTransport`）與 `_resolve_pinned_ip()`：在**傳輸層**單次解析、驗證每一筆位址、把連線目標換成解析出的 IP，同時保留原始 hostname 給 `Host` 標頭與 TLS SNI（`extensions["sni_hostname"]`）。透過新的 `ssrf_safe_client()` 工廠函式接上全部 6 個 `httpx.AsyncClient` 建構點（`feed_discovery.discover_feeds`、`rss_parser` 的兩個 fetch 函式、`robots._fetch`、`directory_sources._fetch`、`link_harvest._fetch_blogroll`），不逐一手動修改每個 call site 是刻意的 —— SECURITY.md 規則 9 講的就是這件事。`validate_fetch_url()` / `_is_safe_host()` 完全不動，既有測試全部照舊通過；新測試直接對 `PinnedTransport.handle_async_request()` 灌假的內層 transport 斷言連線目標、`Host`、`sni_hostname`。
+- **`routers/discover.py:41`**（#24 附帶記錄的既存暴露）。`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出來的第三方字串，原本整批塞進 `.in_("url", feed_urls)` 一個 PostgREST filter —— 與 #14 修的 `.or_()` 注入同一類問題，只是換一個進場方式。改為逐一 `.eq("url", feed_url).maybe_single()`，與 `services/discovery_candidates.py` 既有的作法一致，第三方字串完全不進 filter 語法。
+
+### 測試
+
+`test_feed_discovery.py` 新增 8 個測試（`_resolve_pinned_ip` 的正常 / 拒絕私網 / 多筆位址其一為私網 / DNS 失敗、`PinnedTransport` 的連線目標與 `Host`/SNI 保留、DNS rebind 拒絕、`ssrf_safe_client` 的預設與可覆寫）；`test_discover.py` 新增 1 個測試斷言帶 PostgREST 特殊字元的 `feed_url` 只會走 `.eq()`，`.in_()` 從未被呼叫。

@@ -70,8 +70,8 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 - **修法**：把守門移到唯一的抓取瓶頸點，`fetch_with_cap()` 對**初始 URL 與每個 redirect hop** 都跑 `validate_fetch_url()`，而不再依賴每個呼叫端各自記得。重複驗證一個已驗證過的 URL 只多一次 DNS 查詢。
 - **測試**：`test_discover_feeds_rejects_private_alternate_link` 斷言 `MockTransport` 從未收到往 `169.254.169.254` 的請求（修法前這個測試會失敗，實際觀察到該請求）。
 - **附帶**：`MAX_HTML_BYTES`（2 MiB）從未被任何程式碼引用——`discover_feeds` 的第一次抓取一律用 `MAX_FEED_BYTES`。這個常數是死碼，卻讓人以為有一道 2 MiB 的 HTML 上限。已刪除，文件改為記載實際的單一 5 MiB 上限。
-- **已知限制：DNS rebinding 仍可繞過守門（未修）**。`_is_safe_host()` 用 `socket.getaddrinfo()` 解析主機名做判斷，但接下來 `client.stream()` 連線時 httpx 會**獨立再解析一次**。攻擊者控制的 domain 可以在驗證那次回公開 IP、在連線那次回 `169.254.169.254` 之類的位址（短 TTL 或多筆 A 記錄輪替），於是 `/api/discover` 這條公開免認證路徑仍可能發出內部請求。
-  這是 check-then-fetch 這種守門形式的固有弱點，從 #15 引入守門起就存在，不是這次改動造成的。要真正關掉必須改成 pin-and-connect：解析一次、只連到那個已驗證的 IP，同時保留原始 hostname 給 HTTP `Host` 標頭與 TLS SNI（httpx 需自訂 transport 或用 `sni_hostname` request extension）。屬於獨立的實作工作，尚未進行。
+- **已知限制：DNS rebinding 仍可繞過守門（#25 已修）**。`_is_safe_host()` 用 `socket.getaddrinfo()` 解析主機名做判斷，但接下來 `client.stream()` 連線時 httpx 會**獨立再解析一次**。攻擊者控制的 domain 可以在驗證那次回公開 IP、在連線那次回 `169.254.169.254` 之類的位址（短 TTL 或多筆 A 記錄輪替），於是 `/api/discover` 這條公開免認證路徑仍可能發出內部請求。
+  這是 check-then-fetch 這種守門形式的固有弱點，從 #15 引入守門起就存在，不是這次改動造成的。真正關掉的做法是 pin-and-connect：解析一次、只連到那個已驗證的 IP，同時保留原始 hostname 給 HTTP `Host` 標頭與 TLS SNI（httpx 自訂 transport + `sni_hostname` request extension）。`services/feed_discovery.py::PinnedTransport` 在 #25 落地了這個修法，細節見 SECURITY.md 的 #25 條目。
 
 ### #24 — 自主發現：從「使用者觸發」變成「自我驅動」的外連（07-30）
 
@@ -196,7 +196,15 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - 本次設計刻意讓第三方字串完全不進 PostgREST filter：host 集合都從我們自己的列在記憶體裡
   建（`HostIndex`），候選查詢逐 URL 用 `.eq(...).maybe_single()` 而不是一次 `.in_(...)`。
   **相關的既存暴露，本次未改，記為後續**：`routers/discover.py:41` 把遠端 HTML 抽出的 URL
-  直接餵進 `.in_("url", feed_urls)`。
+  直接餵進 `.in_("url", feed_urls)`。（已於 #25 修掉，改為同樣的逐 URL `.eq(...).maybe_single()`。）
+
+### #25 — pin-and-connect：DNS rebinding 的 check-then-fetch 缺口（07-30）
+
+- **問題**：`validate_fetch_url()`（`socket.getaddrinfo()`）與實際的 `client.stream()` 連線各自獨立解析同一個 hostname。#22 記載的已知限制、#24 第 2 點標記為「應優先修」的正是這個 check-then-fetch 窗口：攻擊者控制的 domain 可以用短 TTL 或多筆 A 記錄，讓驗證那次解析回公開 IP、連線那次解析回 `169.254.169.254`（或任何內網位址）。#24 上線後風險更高——待探測佇列從第三方文章 HTML 自動填入，不再需要攻擊者主動打 API。
+- **修法**：在傳輸層而非呼叫端修。新增 `services/feed_discovery.py::PinnedTransport`（`httpx.AsyncHTTPTransport` 的子類）：`handle_async_request()` 對 `request.url.host` 做**單次** `socket.getaddrinfo()`（`_resolve_pinned_ip()`），驗證解析出的**每一筆**位址都不是 private / loopback / link-local / multicast / reserved（與 `_is_safe_host()` 同樣保守——任何一筆不安全就整個拒絕，不是只挑安全的那筆連），再把連線目標換成驗證過的 IP，同時把原始 hostname 塞進 `extensions["sni_hostname"]` 供 TLS SNI 使用（`Host` 標頭已在 httpx 組請求時就用原始 hostname 設好，不受影響）。新增 `ssrf_safe_client()` 工廠函式，是全專案唯一該用來建構會抓外部 URL 的 `AsyncClient` 的地方；6 個既有的 `httpx.AsyncClient(...)` 建構點（`feed_discovery.discover_feeds`、`rss_parser.fetch_and_parse` / `fetch_and_parse_conditional`、`robots._fetch`、`directory_sources._fetch`、`link_harvest._fetch_blogroll`）全部改用它——單一工廠而非逐一手改 call site，是規則 9 同一個教訓。
+- **`validate_fetch_url()` / `_is_safe_host()` 本身不動**：既有的 check-then-fetch 語意保留在呼叫端（仍然是 `allow_url` 政策層跑之前的第一道門），新的傳輸層解析是**第二道獨立的門**，決定的是真正的連線目標——兩道門之間不再有「驗證用一個 IP、連線用另一個 IP」的落差，因為傳輸層自己的解析結果就是它自己拿去連線的那個。
+- **已知限制**：`_resolve_pinned_ip()` 只解析一次，但 `fetch_with_cap_response()` 對每個 redirect hop 都會重新進入這個傳輸層（每個 hop 都是新的一次 `client.stream()` 呼叫），所以每個 hop 各自有自己的單次解析——這是預期行為，不是遺漏。
+- **附帶修掉 `routers/discover.py:41`**（#24 附帶記錄的既存暴露，當時未改）：`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出的第三方字串，原本整批塞進 `.in_("url", feed_urls)`，與 #14 修的 `.or_()` 注入同一類問題（只是經由 `.in_()` 的 list 序列化而非手拼字串）。改為逐一 `.eq("url", feed_url).maybe_single()`，match `services/discovery_candidates.py` 既有的作法，第三方字串完全不進 PostgREST filter 語法。
 
 ---
 
@@ -207,7 +215,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 | Request 入口 | `Content-Length` > 6 MiB → 413（最外層 middleware） | `main.py::MaxBodySizeMiddleware` |
 | Client 識別 | `ProxyHeadersMiddleware(trusted_hosts="*")` + nginx `X-Forwarded-For $remote_addr` | `main.py`、`frontend/nginx.conf` |
 | 濫用防護 | 每 IP 每端點 20 req / 60s，追蹤上限 10k clients | `rate_limit.py` |
-| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local（⚠ 仍可被 DNS rebinding 繞過，見 #22 的已知限制與 #24 第 2 點） | `services/feed_discovery.py` |
+| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local；傳輸層 `PinnedTransport` 對實際連線目標做獨立的單次解析並驗證，關閉 #22 記載的 DNS rebinding check-then-fetch 缺口（見 #25） | `services/feed_discovery.py` |
 | 爬取政策 | `allow_url` hook 掛在同一個 choke point，對初始 URL 與每個 hop 評估 denylist ∧ robots（在 SSRF gate 之後）| `services/feed_discovery.py`、`discovery_probe.py::_make_gate` |
 | 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用）；robots.txt 另限 512 KiB | `services/feed_discovery.py`、`services/robots.py` |
 | 自主爬取 | 總開關預設關；批次 / 並發 / per-host 延遲上限；robots 遵循；`POST /admin/discovery/run` 在停用時回 503 | `services/discovery_config.py`、`routers/admin_discovery.py` |

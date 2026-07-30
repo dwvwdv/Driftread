@@ -42,6 +42,7 @@ from services.feed_discovery import (
     AllowUrl,
     DiscoveryError,
     fetch_with_cap,
+    ssrf_safe_client,
     user_agent,
 )
 
@@ -462,7 +463,7 @@ async def _fetch_blogroll(website_url: str, allow_url: AllowUrl | None) -> str |
     # Reusing MAX_FEED_BYTES rather than introducing an HTML-specific cap:
     # SECURITY.md #22 records a MAX_HTML_BYTES constant that was never wired up
     # and misled readers into thinking a second limit applied.
-    async with httpx.AsyncClient(
+    async with ssrf_safe_client(
         follow_redirects=False, timeout=12.0, headers=headers
     ) as client:
         text, _ctype = await fetch_with_cap(
