@@ -675,3 +675,16 @@ async def test_harvest_keeps_the_links_own_scheme_and_www():
     # ...but addressed exactly as the link had it.
     assert by_host["legacy.example.org"] == "http://www.legacy.example.org/"
     assert by_host["modern.example.net"] == "https://modern.example.net/"
+
+
+def test_build_host_index_collects_feed_urls_for_the_opml_path():
+    """Host-level knowledge isn't enough for OPML: it dedupes by feed URL, so the
+    index has to carry the URLs we already have."""
+    db = FakeDB(
+        feeds=[{"id": "1", "url": "https://pub.example.com/news.xml",
+                "website_url": "https://pub.example.com/"}],
+        discovery_targets=[],
+    )
+    index = build_host_index(db)
+    assert index.feed_urls == frozenset({"https://pub.example.com/news.xml"})
+    assert index.feed_hosts == frozenset({"pub.example.com"})

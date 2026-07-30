@@ -168,9 +168,12 @@ def record_feed_targets(
         host = normalize_host(raw)
         if not host or is_denied_host(host) or host in index.blocked_hosts:
             continue
-        if host in index.feed_hosts:
-            # We already carry a feed on this host; the probe would only
-            # rediscover what we have.
+        # By URL, not by host. A publisher we already carry can still have feeds
+        # we don't — /news.xml imported, /sports.xml not — and a host-level check
+        # would silently drop exactly the multi-feed publishers a directory is
+        # most useful for. This is the same reasoning that makes discovery_targets
+        # unique on url rather than host.
+        if raw in index.feed_urls:
             continue
         if raw in index.target_urls or raw in seen:
             continue

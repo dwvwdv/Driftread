@@ -82,7 +82,10 @@ async def run_cycle(
     # on github.com. The links extracted from those pages are still filtered
     # normally, and the probe — which really is chasing a candidate — keeps the
     # full gate.
-    source_gate = make_gate(user_agent(), apply_denylist=False)
+    # pace=True because these stages fetch a single page each and have no spacing
+    # of their own — without it the robots.txt request and the page request go
+    # out back to back. discover_feeds() paces itself, so the probe's gate doesn't.
+    source_gate = make_gate(user_agent(), apply_denylist=False, pace=True)
 
     # One index for the whole cycle, shared by both harvest stages: a host a
     # directory contributes is then visible to article harvesting instead of

@@ -291,3 +291,95 @@ async def test_no_delay_and_no_gate_by_default():
         await discover_feeds("https://example.com/")
 
     assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_a_transient_fallback_failure_is_reported_not_swallowed():
+    """The homepage is fine but the site's only feed lives at a well-known path
+    that is briefly 5xxing. Returning [] would have the caller write the site off
+    permanently, losing a real feed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(
+                200, text="<html><head></head></html>",
+                headers={"content-type": "text/html"},
+            )
+        return httpx.Response(503)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        with pytest.raises(DiscoveryError):
+            await discover_feeds("https://example.com/", raise_on_fetch_error=True)
+
+
+@pytest.mark.asyncio
+async def test_a_definitive_404_sweep_is_not_a_transient_failure():
+    """The ordinary case: every well-known path 404s because the site simply has
+    no feed. That must stay terminal, or nothing would ever be terminal."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(
+                200, text="<html><head></head></html>",
+                headers={"content-type": "text/html"},
+            )
+        return httpx.Response(404)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        assert await discover_feeds(
+            "https://example.com/", raise_on_fetch_error=True
+        ) == []
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_alongside_a_real_feed_still_returns_it():
+    """Found something, so the target isn't lost — no reason to raise."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(
+                200, text="<html><head></head></html>",
+                headers={"content-type": "text/html"},
+            )
+        if request.url.path == "/rss.xml":
+            return httpx.Response(
+                200,
+                text='<rss version="2.0"><channel><title>Yes</title></channel></rss>',
+                headers={"content-type": "application/rss+xml"},
+            )
+        return httpx.Response(503)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        found = await discover_feeds(
+            "https://example.com/", raise_on_fetch_error=True
+        )
+    assert [c.feed_url for c in found] == ["https://example.com/rss.xml"]
+
+
+@pytest.mark.asyncio
+async def test_transient_fallback_failures_are_still_swallowed_by_default():
+    """Regression net for the public POST /api/discover, which must keep
+    returning an empty list rather than raising at a person."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(
+                200, text="<html><head></head></html>",
+                headers={"content-type": "text/html"},
+            )
+        return httpx.Response(503)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        assert await discover_feeds("https://example.com/") == []

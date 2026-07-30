@@ -100,14 +100,23 @@ async def seed_targets(
             rejected.append(f"{raw}: host is on the discovery denylist")
             continue
 
-        existing = _row_or_none(
-            db.table("discovery_targets")
-            .select("id,status")
-            .eq("host", host)
-            .maybe_single()
-            .execute()
+        # Not maybe_single(): discovery_targets is unique on url, so one host can
+        # legitimately hold several rows (an OPML directory contributing several
+        # feeds from one publisher). maybe_single() demands zero-or-one and 406s
+        # on the rest, which would turn a perfectly ordinary seed request into a
+        # 500 for that host.
+        rows = list(
+            (
+                db.table("discovery_targets")
+                .select("id,status")
+                .eq("host", host)
+                .execute()
+            ).data
+            or []
         )
-        if existing is None:
+        statuses = {row["status"] for row in rows}
+
+        if not rows:
             # The admin's own scheme and authority, not a rebuilt
             # https://<normalized host>/ — they may have deliberately given a
             # www. or http:// address because that's the one that works.
@@ -117,15 +126,19 @@ async def seed_targets(
                 "source": "seed",
             }).execute()
             accepted += 1
-        elif existing["status"] in _REQUEUEABLE:
+        elif "rejected" in statuses or "pending" in statuses:
+            # Blocked by an admin, or already queued — nothing to do either way,
+            # and re-seeding must never be a back door around a block.
+            skipped += 1
+        elif statuses & set(_REQUEUEABLE):
+            # Requeue every row for the host, matching how blocking works.
             db.table("discovery_targets").update({
                 "status": "pending",
                 "attempts": 0,
                 "last_failure_reason": None,
-            }).eq("id", str(existing["id"])).execute()
+            }).eq("host", host).execute()
             requeued += 1
         else:
-            # Already pending, or rejected by an admin — either way, nothing to do.
             skipped += 1
 
     return SeedTargetsResult(

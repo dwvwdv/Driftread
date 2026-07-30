@@ -51,7 +51,7 @@ from services.feed_discovery import (
     user_agent,
     validate_fetch_url,
 )
-from services.link_harvest import is_denied_host
+from services.link_harvest import is_denied_host, site_key
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -227,12 +227,16 @@ async def probe_due(
 ) -> list[ProbeResult]:
     """Probe every due target, bounded by `limit` and `max_concurrency`.
 
-    Targets are URL-unique and the frontier is broad, so concurrent probes are
-    almost always against different hosts; the spacing that matters is *within* a
-    probe (robots, homepage, up to seven fallback paths) and that's what
-    delay_seconds covers. Worst case here is `max_concurrency` request streams at
-    one request per `host_delay_seconds`. If two subdomains of one site ever prove
-    too aggressive, the fix is a per-site_key asyncio.Lock map.
+    Two bounds, and both are needed. The semaphore caps how many hosts we talk to
+    at once. The per-site lock stops us talking to *one* host more than once at a
+    time: targets are URL-unique, so an OPML directory listing several feeds from
+    one publisher puts several rows on the same host, and they sort adjacently in
+    the due queue. Running those concurrently would overlap their delays and make
+    the configured (or robots-declared) per-host interval meaningless — which is
+    the one guarantee we make to the sites we crawl.
+
+    Keyed on site_key so subdomains of one site serialize together too. The locks
+    are created per call, so nothing accumulates between cycles.
     """
     limit = limit or probe_batch_size()
     max_concurrency = max_concurrency or probe_concurrency()
@@ -242,10 +246,22 @@ async def probe_due(
         return []
 
     semaphore = asyncio.Semaphore(max_concurrency)
+    host_locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(host: str) -> asyncio.Lock:
+        key = site_key(host) if host else ""
+        lock = host_locks.get(key)
+        if lock is None:
+            lock = host_locks[key] = asyncio.Lock()
+        return lock
 
     async def _guarded(target: dict) -> ProbeResult:
+        # Semaphore first, then the host lock: a task waiting on a busy host holds
+        # a slot, which is the intended backpressure — it keeps the batch from
+        # racing ahead against a host that needs to be approached slowly.
         async with semaphore:
-            return await probe_one(db, target)
+            async with _lock_for(target.get("host") or ""):
+                return await probe_one(db, target)
 
     settled = await asyncio.gather(
         *(_guarded(t) for t in targets), return_exceptions=True

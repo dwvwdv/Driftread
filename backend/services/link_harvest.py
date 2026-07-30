@@ -157,6 +157,10 @@ class HostIndex:
     # contribute several feed URLs on one host, so it dedupes by URL where link
     # mining dedupes by host.
     target_urls: frozenset[str] = frozenset()
+    # Every catalogued feed URL, for the same reason: a publisher we already carry
+    # can still have feeds we don't (news.xml imported, sports.xml not), so the
+    # OPML path has to ask "do we have *this feed*", not "do we have this host".
+    feed_urls: frozenset[str] = frozenset()
     # Hosts an admin rejected, or that a probe found blocked. Link mining skips
     # these implicitly (they're in target_hosts), but the OPML path dedupes by
     # URL and so needs them called out — otherwise a directory listing could walk
@@ -351,7 +355,10 @@ def _paged(db: "Client", table: str, columns: str) -> list[dict]:
 def build_host_index(db: "Client") -> HostIndex:
     """Snapshot every host we already know about, once per cycle."""
     feed_hosts: set[str] = set()
+    feed_urls: set[str] = set()
     for row in _paged(db, "feeds", "url,website_url"):
+        if row.get("url"):
+            feed_urls.add(row["url"])
         for value in (row.get("url"), row.get("website_url")):
             host = normalize_host(value)
             if host:
@@ -383,6 +390,7 @@ def build_host_index(db: "Client") -> HostIndex:
         frontier_full=pending_count > max_frontier_size(),
         target_urls=frozenset(target_urls),
         blocked_hosts=frozenset(blocked_hosts),
+        feed_urls=frozenset(feed_urls),
     )
 
 

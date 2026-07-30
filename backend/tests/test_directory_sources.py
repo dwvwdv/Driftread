@@ -150,13 +150,28 @@ def test_record_feed_targets_skips_urls_already_in_the_frontier():
     assert created == 0
 
 
-def test_record_feed_targets_skips_hosts_we_already_carry():
+def test_record_feed_targets_skips_feeds_we_already_carry():
     db = FakeDB(discovery_targets=[])
     created = record_feed_targets(
         db, ["https://known.example.com/feed"],
-        HostIndex(frozenset({"known.example.com"}), {}),
+        HostIndex(frozenset({"known.example.com"}), {},
+                  feed_urls=frozenset({"https://known.example.com/feed"})),
     )
     assert created == 0
+
+
+def test_record_feed_targets_keeps_another_feed_from_a_host_we_already_carry():
+    """A publisher we already carry can still have feeds we don't — /news.xml
+    imported, /sports.xml not. A host-level check would silently drop exactly the
+    multi-feed publishers a directory is most useful for."""
+    db = FakeDB(discovery_targets=[])
+    created = record_feed_targets(
+        db, ["https://pub.example.com/sports.xml"],
+        HostIndex(frozenset({"pub.example.com"}), {},
+                  feed_urls=frozenset({"https://pub.example.com/news.xml"})),
+    )
+    assert created == 1
+    assert db.rows("discovery_targets")[0]["url"] == "https://pub.example.com/sports.xml"
 
 
 def test_record_feed_targets_refuses_a_rejected_host_under_a_new_url():

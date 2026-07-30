@@ -185,6 +185,14 @@ review 過程中順帶修掉三個文件對不上實作、以及實作本身的�
 - **`block_host` 只擋掉一列**（P1）。待探測列以 URL 唯一，所以 OPML 目錄可以在同一個 host 留下好幾列；只拒絕候選的母列會讓兄弟列繼續是 `pending`、繼續被聯繫、繼續提議 feed。改為依 host 拒絕全部，`PATCH /targets/{id}/block` 也同步。
 - **robots.txt 與首頁之間沒有禮貌延遲**（P2）。`delay_seconds` 原本只睡在 `_validate_feed()` 裡，所以探測剛抓完 robots.txt 就緊接著抓首頁，宣稱的 per-host 間隔沒有涵蓋這一段。改為初始請求之前也睡。
 
+第三輪：
+
+- **fallback 路徑的暫時性失敗仍被吞掉**（P1）。上一輪的 `raise_on_fetch_error` 只涵蓋初始請求；某站唯一的 feed 在 `/feed` 而它剛好 502 時，`_validate_feed()` 仍把失敗轉成 `None`、整趟回 `[]`、目標記成 `done` 終態，永久弄丟一個真實的源。`_validate_feed()` 改回傳 `(parsed, transient)`：5xx 與傳輸錯誤算暫時性，4xx／解析失敗／我方政策拒絕不算（多數 fallback 回 404 是正常情況，不能當失敗）。全掃完仍是空的且出現過暫時性失敗時才拋。
+- **同一個 host 的探測會並行**（P2）。待探測列以 URL 唯一，OPML 目錄因此可以在同一個發布者底下留好幾列，而它們在到期佇列裡還排在一起；單靠 semaphore 會讓它們的延遲互相重疊，per-host 間隔形同虛設。`probe_due()` 加一組以 `site_key` 為鍵的鎖。（寫這段時發現原本兩個並發測試用的是 `h0.example.org` / `h1.example.org`，它們的 `site_key` 相同、本來就該共用鎖，所以測的並不是它宣稱的東西 —— 一併改成真正不同的網域。）
+- **收割階段的請求沒有 crawl delay**（P2）。gate 把 robots 的判斷壓成一個 bool 就丟掉了 `Crawl-delay`，於是目錄／blogroll 的 robots.txt 與頁面請求仍然背靠背。`make_gate()` 加 `pace` 參數：允許之後才睡，而 choke point 正好在每個請求（含 redirect hop）之前呼叫它。探測維持 `pace=False`，因為 `discover_feeds()` 自己會排。
+- **OPML 以 host 判斷「已經收錄」會丟掉同站的其他 feed**（P2）。已經有 `pub.com/news.xml` 不代表 `pub.com/sports.xml` 該被丟掉 —— 而多 feed 的發布者正是目錄最有價值的地方。`HostIndex` 改帶 `feed_urls`，這條路全程以 URL 比對。
+- **種子端點對多列的 host 會 500**（P2）。`.eq("host", host).maybe_single()` 在該 host 有兩列以上時 406。改為取回全部再判斷：任一列 rejected 或 pending 就 skip，其餘可重排狀態則整個 host 一起重排。
+
 ### 環境變數
 
 新增 16 個 `FEED_DISCOVERY_*`（皆有預設值、不填也能跑），依 `CLAUDE.md` 要求同步 `.env.example`、`docker-compose.yml`（`api` 與 `worker` 兩個區塊）、`scripts/gen_env.py` 三處。
@@ -193,7 +201,7 @@ review 過程中順帶修掉三個文件對不上實作、以及實作本身的�
 
 ### 測試
 
-新增 8 個測試檔（`test_discovery_config` / `test_robots` / `test_link_harvest` / `test_directory_sources` / `test_discovery_probe` / `test_discovery_candidates` / `test_discovery_cycle` / `test_admin_discovery`）與共用的 in-memory `tests/discovery_fakes.py`（會實際套用 filter 而非只記錄 op chain，讓測試能斷言結果狀態）。擴充 `test_feed_discovery.py` 與 `test_worker.py` —— 兩者的既有測試**原封不動**通過（diff 只有新增行）。測試總數 117 → 474。
+新增 8 個測試檔（`test_discovery_config` / `test_robots` / `test_link_harvest` / `test_directory_sources` / `test_discovery_probe` / `test_discovery_candidates` / `test_discovery_cycle` / `test_admin_discovery`）與共用的 in-memory `tests/discovery_fakes.py`（會實際套用 filter 而非只記錄 op chain，讓測試能斷言結果狀態）。擴充 `test_feed_discovery.py` 與 `test_worker.py` —— 兩者的既有測試**原封不動**通過（diff 只有新增行）。測試總數 117 → 486。
 
 migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、補上 Supabase 的 `auth.users` / `auth.uid()` 與三個角色），驗證了：六個 migration 依序套用成功；006 單獨重跑乾淨（DO-guard 有效）；四張新表的 RLS 是「已啟用且零 policy」；partial index 的定義與述詞正確；以及 in-memory fake 驗證不了的 trigger 語意 —— 邊數重算而非遞增（重複收割不膨脹）、pending 候選跟著證據走而已審核的凍結、刪 feed 會 cascade 並讓計數下降、清理終態目標不會毀掉審核歷史（`ON DELETE SET NULL`）。
 

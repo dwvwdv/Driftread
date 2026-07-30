@@ -436,3 +436,69 @@ def test_reload_defaults_reports_how_many_were_loaded(client):
     _fake_db_client(c, FakeDB(discovery_sources=[]))
     body = c.post(f"{BASE}/sources/reload-defaults", headers=KEY).json()
     assert body["loaded"] > 0
+
+
+def test_seed_handles_a_host_with_several_frontier_rows(client):
+    """discovery_targets is unique on url, so one host can hold several rows.
+    maybe_single() demands zero-or-one and 406s on the rest, which turned an
+    ordinary seed request into a 500 for that host."""
+    c, _mock = client
+    host_rows = [
+        {"id": str(uuid4()), "host": "pub.example.org",
+         "url": "https://pub.example.org/a", "status": "done", "attempts": 1},
+        {"id": str(uuid4()), "host": "pub.example.org",
+         "url": "https://pub.example.org/b", "status": "exhausted", "attempts": 3},
+    ]
+    fake = FakeDB(discovery_targets=host_rows)
+    _fake_db_client(c, fake)
+
+    with patch("services.feed_discovery._is_safe_host", return_value=True):
+        resp = c.post(f"{BASE}/targets", json={"urls": ["https://pub.example.org/"]},
+                      headers=KEY)
+
+    assert resp.status_code == 200
+    assert resp.json()["requeued"] == 1
+    # Every row for the host is requeued, matching how blocking works.
+    assert all(r["status"] == "pending" and r["attempts"] == 0 for r in host_rows)
+
+
+def test_seed_skips_a_host_with_any_rejected_row(client):
+    """Even one rejected row means the admin blocked this host — re-seeding must
+    not be a back door around that."""
+    c, _mock = client
+    rows = [
+        {"id": str(uuid4()), "host": "pub.example.org",
+         "url": "https://pub.example.org/a", "status": "rejected", "attempts": 0},
+        {"id": str(uuid4()), "host": "pub.example.org",
+         "url": "https://pub.example.org/b", "status": "exhausted", "attempts": 3},
+    ]
+    fake = FakeDB(discovery_targets=rows)
+    _fake_db_client(c, fake)
+
+    with patch("services.feed_discovery._is_safe_host", return_value=True):
+        resp = c.post(f"{BASE}/targets", json={"urls": ["https://pub.example.org/"]},
+                      headers=KEY)
+
+    assert resp.json()["skipped"] == 1
+    assert rows[0]["status"] == "rejected"
+
+
+def test_block_target_rejects_every_row_for_the_host(client):
+    c, _mock = client
+    rows = [
+        {"id": str(uuid4()), "host": "pub.example.org",
+         "url": "https://pub.example.org/a", "status": "pending", "source": "opml",
+         "created_at": "2026-01-01T00:00:00+00:00",
+         "updated_at": "2026-01-01T00:00:00+00:00"},
+        {"id": str(uuid4()), "host": "pub.example.org",
+         "url": "https://pub.example.org/b", "status": "pending", "source": "opml",
+         "created_at": "2026-01-01T00:00:00+00:00",
+         "updated_at": "2026-01-01T00:00:00+00:00"},
+    ]
+    _fake_db_client(c, FakeDB(discovery_targets=rows))
+
+    resp = c.patch(f"{BASE}/targets/{rows[0]['id']}/block", headers=KEY)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+    assert all(r["status"] == "rejected" for r in rows)

@@ -387,8 +387,10 @@ async def test_probe_passes_a_crawl_policy_gate_that_denies_denylisted_hosts():
 
 @pytest.mark.asyncio
 async def test_probe_due_caps_concurrency():
-    targets = [_target(id=str(i), url=f"https://h{i}.example.org/",
-                       host=f"h{i}.example.org") for i in range(8)]
+    # Distinct registrable domains: subdomains of one domain share a site_key
+    # and would (correctly) serialize on the same host lock instead.
+    targets = [_target(id=str(i), url=f"https://site{i}.org/",
+                       host=f"site{i}.org") for i in range(8)]
     db = _db(targets)
     in_flight = 0
     peak = 0
@@ -436,8 +438,8 @@ async def test_probe_due_returns_empty_when_nothing_is_due():
 @pytest.mark.asyncio
 async def test_probe_due_respects_the_batch_size(monkeypatch):
     monkeypatch.setenv("FEED_DISCOVERY_PROBE_BATCH_SIZE", "2")
-    db = _db([_target(id=str(i), url=f"https://h{i}.example.org/",
-                      host=f"h{i}.example.org") for i in range(5)])
+    db = _db([_target(id=str(i), url=f"https://site{i}.org/",
+                      host=f"site{i}.org") for i in range(5)])
 
     async def noop(_db, target):
         return discovery_probe.ProbeResult(str(target["id"]), target["host"], "none")
@@ -458,3 +460,86 @@ def test_summarize_probes_counts_every_outcome():
         "processed": 4, "found": 1, "none_found": 1, "blocked": 1,
         "failed": 1, "exhausted": 1, "candidates_new": 2,
     }
+
+
+# ── per-host serialization ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_probes_of_one_host_never_overlap():
+    """An OPML directory listing several feeds from one publisher puts several
+    URL-unique rows on the same host, and they sort adjacently in the due queue.
+    Running those concurrently would overlap their delays and make the per-host
+    interval — the one guarantee we make to the sites we crawl — meaningless."""
+    targets = [
+        _target(id="a", url="https://pub.example.org/a", host="pub.example.org"),
+        _target(id="b", url="https://pub.example.org/b", host="pub.example.org"),
+        _target(id="c", url="https://pub.example.org/c", host="pub.example.org"),
+    ]
+    db = _db(targets)
+    in_flight = 0
+    peak = 0
+
+    async def slow_probe(_db, target):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+        return discovery_probe.ProbeResult(str(target["id"]), target["host"], "none")
+
+    with patch("services.discovery_probe.probe_one", side_effect=slow_probe):
+        results = await probe_due(db, limit=3, max_concurrency=3)
+
+    assert len(results) == 3
+    assert peak == 1  # serialized despite three free concurrency slots
+
+
+@pytest.mark.asyncio
+async def test_subdomains_of_one_site_also_serialize():
+    """Keyed on site_key, so a publisher spread across subdomains still gets one
+    request stream."""
+    targets = [
+        _target(id="a", url="https://a.pub.example.org/", host="a.pub.example.org"),
+        _target(id="b", url="https://b.pub.example.org/", host="b.pub.example.org"),
+    ]
+    db = _db(targets)
+    in_flight = 0
+    peak = 0
+
+    async def slow_probe(_db, target):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+        return discovery_probe.ProbeResult(str(target["id"]), target["host"], "none")
+
+    with patch("services.discovery_probe.probe_one", side_effect=slow_probe):
+        await probe_due(db, limit=2, max_concurrency=2)
+
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_different_hosts_still_run_concurrently():
+    """The lock must not collapse the batch down to serial."""
+    targets = [
+        _target(id=str(i), url=f"https://site{i}.org/", host=f"site{i}.org")
+        for i in range(4)
+    ]
+    db = _db(targets)
+    in_flight = 0
+    peak = 0
+
+    async def slow_probe(_db, target):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return discovery_probe.ProbeResult(str(target["id"]), target["host"], "none")
+
+    with patch("services.discovery_probe.probe_one", side_effect=slow_probe):
+        await probe_due(db, limit=4, max_concurrency=3)
+
+    assert peak > 1

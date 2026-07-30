@@ -108,8 +108,10 @@ denylist（社群、影音、程式碼託管、百科、電商、短網址、CDN
 
 - `links_page`：HTML 頁，每個外部 `<a href>` 變成一個待探測 host。
 - `opml`：OPML/XML，每個 `outline/@xmlUrl` 本身就是 feed URL，直接成為待探測目標。
-  用 `defusedxml` 解析（同 OPML 上傳的 billion-laughs / XXE 加固）。這條路以 **URL** 去重
-  而非 host，因為一個站可以合法地有多個 feed；被封鎖的 host 因此要額外明確擋掉。
+  用 `defusedxml` 解析（同 OPML 上傳的 billion-laughs / XXE 加固）。這條路**全程以 URL 去重**
+  ——不只是對待探測列，對已收錄的 feed 也是：我們已經有 `pub.com/news.xml` 不代表
+  `pub.com/sports.xml` 該被丟掉，而多 feed 的發布者正是目錄最有價值的地方。代價是「被封鎖的
+  host 永不復活」在這條路上不會自動成立，必須明確擋掉。
 
 > **聚合站（HN / Reddit / lobste.rs）不需要任何新程式。** 把它們的 RSS 用
 > `POST /api/admin/feeds` 當成普通 feed 收進來，文章外連挖掘就會自動撿走每個被投稿的
@@ -157,14 +159,24 @@ robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有�
 
 | `discover_feeds` 的結果 | 意思 | 目標狀態 |
 |--------------------------|------|----------|
-| 拋例外 | 這個頁面抓不到 | `failed`，退避重試 |
-| `[]` | 抓到了，但它沒有宣告 feed | `done`，終態，不重試 |
+| 拋例外 | 頁面抓不到，或某個候選以「可能之後會成功」的方式失敗 | `failed`，退避重試 |
+| `[]` | 都抓到了，但沒有任何一個是 feed | `done`，終態，不重試 |
 | 有候選 | 找到 feed | `done`，記錄候選 |
+
+「可能之後會成功」的判斷在 `_validate_feed()`：5xx 與傳輸錯誤算暫時性，4xx（這條路徑沒有
+feed）、解析失敗（抓到了但不是 feed）、以及我方的政策拒絕都不算。多數 fallback 路徑回 404
+是**正常情況**，不能當失敗；但如果某站唯一的 feed 就在 `/feed` 而它剛好在 502，把那當成
+「這站沒有 feed」就會永久弄丟一個真實的源。
 
 > 早期版本是拿 robots.txt 那次抓取當可達性探針（反正幾毫秒前才打過同一個 host）。那不成立：
 > `/robots.txt` 回 404 只證明伺服器回應了**那個**請求，不代表目標頁抓得到，於是首頁正在逾時
 > 的站也會被判成「沒有 feed」而永不重看。改用目標自己的結果之後，這個判斷也不再依賴 robots
 > 是否啟用。
+
+**同一個站一次只接觸一條請求流。** 待探測列以 URL 唯一，所以 OPML 目錄可以在同一個發布者
+底下留好幾列，而它們在到期佇列裡還會排在一起。單靠 semaphore 會讓它們並行、延遲互相重疊，
+per-host 間隔就形同虛設。`probe_due()` 因此除了 semaphore 還有一組以 `site_key` 為鍵的鎖，
+子網域也一併序列化。
 
 **待探測目標的狀態機**（`discovery_targets.status`）：
 
@@ -405,7 +417,7 @@ DELETE FROM discovery_targets
 | Frontend | Angular 21（Material + CDK）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
-| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試） |
+| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、486 個測試） |
 | 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理 |
 
 `worker` 容器跑兩個獨立迴圈（refresh 與 discovery），共用同一個 event loop 與同一個 stop

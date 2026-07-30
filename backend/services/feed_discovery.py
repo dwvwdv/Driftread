@@ -273,20 +273,39 @@ async def _validate_feed(
     feed_url: str,
     delay_seconds: float = 0.0,
     allow_url: AllowUrl | None = None,
-) -> ParsedFeed | None:
-    # Sleeping here rather than at each of discover_feeds' loops is what makes
-    # "pause between requests, but not before the first one" fall out for free:
-    # discover_feeds' own initial fetch is the only request that doesn't come
-    # through this function.
+) -> tuple[ParsedFeed | None, bool]:
+    """Fetch and parse one candidate. Returns (parsed_or_None, was_transient).
+
+    The second element separates "there is definitively no feed here" — a 404 on
+    a well-known path, or a body that isn't a feed, both of which are the normal
+    case — from "we couldn't tell because the request failed". Only the latter is
+    worth coming back for, and callers that care say so via
+    discover_feeds(raise_on_fetch_error=True).
+    """
+    # Sleeping here rather than at each of discover_feeds' loops keeps the pacing
+    # in one place; discover_feeds handles the pause before its own first fetch.
     if delay_seconds > 0:
         await asyncio.sleep(delay_seconds)
     try:
         text, ctype = await fetch_with_cap(
             client, feed_url, MAX_FEED_BYTES, allow_url=allow_url
         )
-        return parse_feed(text)
-    except (httpx.HTTPError, DiscoveryError, ValueError):
-        return None
+    except httpx.HTTPStatusError as e:
+        # 5xx is the server briefly failing; 4xx means this path has no feed.
+        return (None, 500 <= e.response.status_code < 600)
+    except httpx.HTTPError:
+        # Timeouts, connection resets, DNS — all worth retrying.
+        return (None, True)
+    except DiscoveryError:
+        # SSRF gate, crawl policy or the byte cap. A definitive refusal on our
+        # side, not a hiccup on theirs.
+        return (None, False)
+
+    try:
+        return (parse_feed(text), False)
+    except ValueError:
+        # Fetched fine, just isn't a feed.
+        return (None, False)
 
 
 async def discover_feeds(
@@ -352,8 +371,16 @@ async def discover_feeds(
 
         # 3. Validate each candidate; keep working ones with parsed metadata.
         validated: list[DiscoveryCandidate] = []
+        # Tracks whether anything failed in a way that might succeed later, so an
+        # empty result can say which kind of empty it is. Without it, a site whose
+        # only feed lives at /feed and which happens to be 502ing right now looks
+        # identical to a site with no feed at all — and gets written off forever.
+        transient_failure = False
         for c in candidates:
-            parsed = await _validate_feed(client, c.feed_url, delay_seconds, allow_url)
+            parsed, transient = await _validate_feed(
+                client, c.feed_url, delay_seconds, allow_url
+            )
+            transient_failure = transient_failure or transient
             if parsed:
                 validated.append(
                     DiscoveryCandidate(
@@ -370,9 +397,10 @@ async def discover_feeds(
         root = f"{parsed_url.scheme}://{parsed_url.netloc}"
         for path in FALLBACK_PATHS:
             candidate_url = urljoin(root, path)
-            parsed = await _validate_feed(
+            parsed, transient = await _validate_feed(
                 client, candidate_url, delay_seconds, allow_url
             )
+            transient_failure = transient_failure or transient
             if parsed:
                 validated.append(
                     DiscoveryCandidate(
@@ -381,4 +409,12 @@ async def discover_feeds(
                         website_url=parsed.website_url or root,
                     )
                 )
+
+        if not validated and transient_failure and raise_on_fetch_error:
+            # We found nothing, but at least one candidate failed in a way that
+            # could succeed later. Saying "no feed here" would be a lie the caller
+            # then files away permanently.
+            raise DiscoveryError(
+                "No feed found, but some candidates failed transiently"
+            )
         return validated
