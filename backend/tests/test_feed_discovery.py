@@ -1,10 +1,12 @@
 from __future__ import annotations
+import asyncio
 from unittest.mock import patch
 
 import httpx
 import pytest
 
 from services.feed_discovery import (
+    FALLBACK_PATHS,
     DiscoveryError,
     _extract_feed_links,
     discover_feeds,
@@ -141,3 +143,151 @@ async def test_discover_feeds_rejects_private_alternate_link():
 
     assert "169.254.169.254" not in requested_hosts
     assert [c.feed_url for c in candidates] == []
+
+
+# ── the allow_url crawl-policy hook (used by the autonomous discovery loop) ───
+
+
+@pytest.mark.asyncio
+async def test_allow_url_blocking_initial_url_makes_no_request():
+    """The gate runs before the request, not after — a denylisted host must cost
+    zero outbound traffic."""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(200, text="<html></html>", headers={"content-type": "text/html"})
+
+    async def deny_all(url: str) -> bool:
+        return False
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        assert await discover_feeds("https://example.com/", allow_url=deny_all) == []
+
+    assert requested == []
+
+
+@pytest.mark.asyncio
+async def test_allow_url_blocks_one_fallback_path_but_not_the_others():
+    """A per-URL policy (robots.txt Disallow: /feed) must skip only the paths it
+    covers, leaving the rest of the fallback sweep intact."""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/rss.xml":
+            return httpx.Response(
+                200,
+                text='<rss version="2.0"><channel><title>Yes</title></channel></rss>',
+                headers={"content-type": "application/rss+xml"},
+            )
+        if request.url.path == "/":
+            # An ordinary HTML page with no <link rel=alternate>, so discovery
+            # falls through to the well-known-paths sweep.
+            return httpx.Response(
+                200,
+                text="<html><head></head></html>",
+                headers={"content-type": "text/html"},
+            )
+        return httpx.Response(404)
+
+    async def deny_feed_path(url: str) -> bool:
+        return httpx.URL(url).path != "/feed"
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        candidates = await discover_feeds(
+            "https://example.com/", allow_url=deny_feed_path
+        )
+
+    assert "/feed" not in requested
+    assert "/rss.xml" in requested
+    assert [c.feed_url for c in candidates] == ["https://example.com/rss.xml"]
+
+
+@pytest.mark.asyncio
+async def test_allow_url_is_applied_to_redirect_hops():
+    """The denylist is checked against the host we harvested, but a 3xx can hand
+    off anywhere. Without re-evaluating the policy per hop, blog.example.com
+    could redirect straight to a denylisted host — or any shortener could."""
+    requested_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(request.url.host)
+        if request.url.host == "start.example.com":
+            return httpx.Response(302, headers={"location": "https://denied.example.com/"})
+        return httpx.Response(200, text="<html></html>", headers={"content-type": "text/html"})
+
+    async def deny_one_host(url: str) -> bool:
+        return httpx.URL(url).host != "denied.example.com"
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        assert (
+            await discover_feeds("https://start.example.com/", allow_url=deny_one_host)
+            == []
+        )
+
+    assert "denied.example.com" not in requested_hosts
+
+
+@pytest.mark.asyncio
+async def test_delay_seconds_paces_every_request_including_the_first():
+    """The autonomous caller has just fetched this host's robots.txt, so the
+    advertised per-host interval has to cover the robots-to-homepage transition
+    too — otherwise those two go out back to back."""
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Not a feed and no <link rel=alternate>, so the fallback sweep runs and
+        # there is more than one request to space out.
+        return httpx.Response(
+            200, text="<html><head></head></html>", headers={"content-type": "text/html"}
+        )
+
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(seconds, *args, **kwargs):
+        sleeps.append(seconds)
+        await real_sleep(0)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+        patch("services.feed_discovery.asyncio.sleep", new=fake_sleep),
+    ):
+        await discover_feeds("https://example.com/", delay_seconds=1.5)
+
+    # One before the initial fetch, then one per fallback path.
+    assert sleeps == [1.5] * (len(FALLBACK_PATHS) + 1)
+
+
+@pytest.mark.asyncio
+async def test_no_delay_and_no_gate_by_default():
+    """The defaults must reproduce the pre-hook behaviour byte for byte — this is
+    the regression net for the public POST /api/discover endpoint."""
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="<html><head></head></html>", headers={"content-type": "text/html"}
+        )
+
+    async def fake_sleep(seconds, *args, **kwargs):
+        sleeps.append(seconds)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+        patch("services.feed_discovery.asyncio.sleep", new=fake_sleep),
+    ):
+        await discover_feeds("https://example.com/")
+
+    assert sleeps == []

@@ -73,6 +73,131 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 - **已知限制：DNS rebinding 仍可繞過守門（未修）**。`_is_safe_host()` 用 `socket.getaddrinfo()` 解析主機名做判斷，但接下來 `client.stream()` 連線時 httpx 會**獨立再解析一次**。攻擊者控制的 domain 可以在驗證那次回公開 IP、在連線那次回 `169.254.169.254` 之類的位址（短 TTL 或多筆 A 記錄輪替），於是 `/api/discover` 這條公開免認證路徑仍可能發出內部請求。
   這是 check-then-fetch 這種守門形式的固有弱點，從 #15 引入守門起就存在，不是這次改動造成的。要真正關掉必須改成 pin-and-connect：解析一次、只連到那個已驗證的 IP，同時保留原始 hostname 給 HTTP `Host` 標頭與 TLS SNI（httpx 需自訂 transport 或用 `sni_hostname` request extension）。屬於獨立的實作工作，尚未進行。
 
+### #24 — 自主發現：從「使用者觸發」變成「自我驅動」的外連（07-30）
+
+主動發現新 RSS 源這個功能把對外面向的性質整個換掉了：以前每一次外連都是某個人剛剛
+按下按鈕觸發的，而且吃 rate limit；現在有一個無人看管、依自己排程持續對第三方網站
+發請求的迴圈。以下六點是為此做的設計與仍存在的風險。
+
+**1. 自主放大 / 濫用**
+
+路徑上沒有人，也沒有 `rate_limit()`（端點由 `X-API-Key` 把關，真正的量能上限是批次與
+並發參數）。給運維人員自己估算流量的算式：
+
+> 每輪 `PROBE_BATCH_SIZE`(20) × (1 robots + 1 首頁 + 最多 7 條 fallback 路徑 + N 個
+> alternate link 驗證) ≈ 200 個請求。`TICK_SECONDS` 900 ⇒ 約 800 req/h，分散在約 80 個
+> 不同 host 上，每個 host ≤ 0.5 req/s。
+
+上限：`PROBE_BATCH_SIZE`、`PROBE_CONCURRENCY`(3)、`HOST_DELAY_SECONDS`(2)、
+`FEED_DISCOVERY_ENABLED` **預設 false**，以及 `POST /admin/discovery/run` 在停用時回
+**503**。最後這點是刻意與 `/admin/feeds/refresh-due` 不同的：refresh 的 flag 只管 worker，
+因為手動刷新我們自己已經擁有的源在排程關掉時仍然合理；但對一個主動探測第三方的爬蟲，
+「已停用」必須真的是停用，否則那是個運維人員在站方寫信來時無法背書的說法。
+
+`DISCOVERY_USER_AGENT` 應帶上聯絡網址，讓被抓取的站方能找到你要求停止。已查證
+`urllib.robotparser` 的 `Entry.applies_to` 只看第一個 `/` 之前的字，所以加括號註記不會
+破壞 robots 的 UA 匹配。
+
+**2. ⚠ DNS rebinding（#22 已記錄但未修的繞過）在這裡嚴重得多**
+
+以前攻擊者要主動 POST 一個 URL 到公開端點，並吃掉 20 req/60s 的配額。現在待探測佇列是
+**從第三方文章 HTML 填的**：只要讓一個連結出現在任何被收割 feed 的任何文章裡，就能讓
+迴圈依自己的排程、無人看管地、最多 `PROBE_MAX_ATTEMPTS` 次去抓那個 host（每次 robots
+加上最多 8 個探測請求）。那是很多次獨立的 DNS 解析，而攻擊者只需要其中一次落在內網位址；
+check-then-fetch 的窗口在每個請求的每個 hop 都會重新打開。
+
+過渡緩解（都不足以關掉這個洞，只是縮小它）：
+
+- 待探測佇列的 host 有唯一性，同一個 host 不會被反覆排入；
+- 解析到私有位址記為失敗，3 次後 `exhausted`；
+- `normalize_host()` 在**寫進資料庫之前**就拒絕 IP literal、無點 host 與
+  `.local` / `.internal` / `.onion` 等保留 TLD；
+- 整個迴圈預設關閉。
+
+**這提高了 pin-and-connect 修法的優先度。建議在任何環境把 `FEED_DISCOVERY_ENABLED`
+設為 true 之前先落地那個修法**（解析一次、只連到那個已驗證的 IP，同時保留原始 hostname
+給 `Host` 標頭與 TLS SNI）。
+
+**3. 待探測佇列無限膨脹**
+
+一個灌水 feed 每篇 500 個 anchor × 20 篇文章就能排入上千個 host，而每個被探測的 host 又
+可能產出約 7 個候選。上限：`HARVEST_MAX_LINKS_PER_FEED`(200，單一 feed 每輪貢獻的網域數)、
+`MAX_ANCHORS_PER_DOC`(500)、`MAX_HARVEST_HTML_BYTES`(512 KiB，單篇實際解析的量)、
+`MAX_OPML_FEEDS_PER_SOURCE`(500)、`MAX_FRONTIER_SIZE`(50k pending —— 超過後仍累積既有目標
+的證據但不再新增目標)、`discovery_targets.url` 的 UNIQUE，以及終態列會離開 partial index。
+
+清理指令見 [FEATURES.md 第 5 節](FEATURES.md)。候選是 `ON DELETE SET NULL` 參照待探測列，
+所以刪除終態列不會毀掉審核歷史（尤其是拒絕紀錄）。
+
+**4. denylist 被 redirect 繞過（本次修掉）**
+
+denylist 套用在我們收割到的 host 上，但 `fetch_with_cap_response()` 會跟隨最多 5 次
+redirect，而本次改動前每個 hop 只重跑私有位址檢查。於是 `blog.example.com` 可以 302 到
+`facebook.com`，任何不在清單上的短網址可以轉去任何地方。
+
+修法是新的 `allow_url` hook：choke point 對**初始 URL 與每個 hop** 都評估一次，且順序在
+`validate_fetch_url()` 之後 —— 政策層疊在安全邊界之上，不是取代它。這是 #22 同一個教訓
+換個地方出現：**檢查放在唯一的瓶頸點，不要放在各 call site**，因為 call site 會被漏掉，
+而 5 次 redirect 等於 5 次逃脫機會。
+
+**4b. 入庫覆寫既有 feed 的 metadata**
+
+候選在佇列裡等待期間，同一個 feed URL 可能已被手動、由擴充或由 OPML 匯入。初版的入庫是
+無條件 `upsert(on_conflict="url")`，於是一次無害的重複核准就會把人工整理過的標題、網站、
+分類與標籤，換成抓來的值與這次呼叫的空白預設。改為先查再寫：已存在就只把候選標成
+`imported` 並指向既有列，一個欄位都不動。
+
+**5. 儲存不受信任的第三方標題 / URL**
+
+候選的 `title` 與 `website_url` 來自遠端 HTML/XML，核准後會進到 `feeds.title` —— 一張
+**公開、全世界可讀**的表（004 的 read policy），由 Angular 渲染給每個訪客。Angular 預設會
+轉義插值，那處理掉了標記；這裡要處理的是轉義處理不了的東西：
+
+- `sanitize_text()` 移除 C0/C1 控制字元、零寬字元與 **bidi override**。標題裡的 bidi
+  override 能在審核者眼前把網域視覺反轉，於是按下核准的人看到的和實際存下的不是同一個
+  東西。長度截斷到 200。
+- `sanitize_http_url()` 強制 http(s) scheme，讓 `javascript:` 永遠進不了資料庫，更不會
+  進到 href。
+- 審核 UI **只用插值，絕不 `[innerHTML]`**，而且把我們自己正規化出來的 `source_host`
+  顯示在標題**旁邊**，讓偽裝的標題騙不到人。
+
+（既有、面積大得多、不在本次範圍：`article-reader.html` 的 `a.content` 用了
+`[innerHTML]`。）
+
+**6. robots / 禮貌性**
+
+預設開啟，且**三個對外階段都套政策**：blogroll 一跳、目錄頁抓取、以及探測。政策由
+`services/crawl_policy.py::make_gate()` 產生後傳進 choke point —— 初版只在探測階段掛了政策，
+於是另外兩個階段在 `RESPECT_ROBOTS=true` 之下照樣裸奔，正是規則 9 想防的那種「各 call site
+各寫一份就會漏」。現在建立政策與使用政策分開，新增階段漏不掉。
+
+**denylist 只套在探測階段。** 收割與目錄讀的是我們自己選的地方（管理員設定的目錄頁、已在
+catalog 裡的 feed 的首頁），而 denylist 回答的是「這個 host 值得被收錄成部落格嗎」—— 對
+「要從哪裡讀清單」是錯的問題，而且套上去會永久擋死預設目錄清單（它就放在 github.com）。
+這兩個階段仍過 URL 形狀檢查與 robots，它們抽出來的連結也照常過 denylist。
+
+RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕。`Crawl-delay` 尊重但夾在 30 秒 ——
+一句 `Crawl-delay: 86400` 不能釘住一個探測槽位一整天。robots.txt 走同一個有 SSRF gate 與
+位元組上限的 choke point；**絕不呼叫 `RobotFileParser.read()`**，它會自己 `urlopen` 並繞過
+上述全部（已加測試釘住）。cache 有界（2000 origin、LRU）且有 TTL（1 小時），理由同
+`rate_limit.py::MAX_TRACKED_CLIENTS`。
+
+「不准」分成永久與暫時兩種，`RobotsDecision.transient` 帶這個資訊：解析出的 `Disallow` 是
+站台叫我們別來（終態），而 5xx 或不可達只是站台此刻壞了（退避重試）。兩者混為一談的話，
+一次短暫的 503 就會讓那個目標被永久歸檔，站台修好也不會再被看一眼。
+
+`FEED_DISCOVERY_RESPECT_ROBOTS=false` 是給爬自己財產的運維人員用的，合規責任由你自負；
+另外它會移除「站台是否可達」的信號，讓重試判斷變粗糙（見 FEATURES.md 第 2c 節的決策表）。
+
+**另外兩點**
+
+- 四張新表開 RLS 但**刻意不建任何 policy**，連 SELECT 都沒有 —— anon key 洩漏也無法列舉
+  待探測佇列或候選清單。誰連到誰是 scraping 敏感資料。
+- 本次設計刻意讓第三方字串完全不進 PostgREST filter：host 集合都從我們自己的列在記憶體裡
+  建（`HostIndex`），候選查詢逐 URL 用 `.eq(...).maybe_single()` 而不是一次 `.in_(...)`。
+  **相關的既存暴露，本次未改，記為後續**：`routers/discover.py:41` 把遠端 HTML 抽出的 URL
+  直接餵進 `.in_("url", feed_urls)`。
+
 ---
 
 ## 目前的防線總覽
@@ -82,12 +207,15 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 | Request 入口 | `Content-Length` > 6 MiB → 413（最外層 middleware） | `main.py::MaxBodySizeMiddleware` |
 | Client 識別 | `ProxyHeadersMiddleware(trusted_hosts="*")` + nginx `X-Forwarded-For $remote_addr` | `main.py`、`frontend/nginx.conf` |
 | 濫用防護 | 每 IP 每端點 20 req / 60s，追蹤上限 10k clients | `rate_limit.py` |
-| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local（⚠ 仍可被 DNS rebinding 繞過，見 #22 的已知限制） | `services/feed_discovery.py` |
-| 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用） | `services/feed_discovery.py` |
-| XML 解析 | 全數 `defusedxml`（feed 與 OPML 兩條路徑） | `rss_parser.py`、`routers/opml.py` |
-| DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()` | `utils.py`、`routers/*` |
+| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local（⚠ 仍可被 DNS rebinding 繞過，見 #22 的已知限制與 #24 第 2 點） | `services/feed_discovery.py` |
+| 爬取政策 | `allow_url` hook 掛在同一個 choke point，對初始 URL 與每個 hop 評估 denylist ∧ robots（在 SSRF gate 之後）| `services/feed_discovery.py`、`discovery_probe.py::_make_gate` |
+| 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用）；robots.txt 另限 512 KiB | `services/feed_discovery.py`、`services/robots.py` |
+| 自主爬取 | 總開關預設關；批次 / 並發 / per-host 延遲上限；robots 遵循；`POST /admin/discovery/run` 在停用時回 503 | `services/discovery_config.py`、`routers/admin_discovery.py` |
+| XML 解析 | 全數 `defusedxml`（feed、OPML 上傳、遠端 OPML 目錄三條路徑） | `rss_parser.py`、`routers/opml.py`、`services/directory_sources.py` |
+| DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
+| 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
 | 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
-| 資料存取 | 四張 `user_*` 表 RLS owner-only；`feeds` / `articles` RLS + public read | `migrations/002`、`004` |
+| 資料存取 | 四張 `user_*` 表 RLS owner-only；`feeds` / `articles` RLS + public read；四張 `discovery_*` 表 RLS + **零 policy**（僅 service_role） | `migrations/002`、`004`、`006` |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 
 ## 改動時要注意的事
@@ -99,3 +227,6 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 5. **新增公開免認證端點** → 評估是否要掛 `rate_limit(...)`，特別是會觸發外連或大量 DB 工作的端點。
 6. **測試用的 db mock** → 避免裸 `MagicMock()` 讓錯誤的方法名靜默通過（#20 的教訓）。
 7. **環境變數** → 依 `CLAUDE.md` 規則同步 `.env.example`、`docker-compose.yml`、`scripts/gen_env.py` 三處（#15 就是漏了 compose 那一處）。
+8. **新增任何「自主」（非使用者觸發）的外連迴圈** → 必須有獨立的 enable flag 且**預設關閉**、批次與並發上限、per-host 延遲，並經過 robots 檢查。對應的手動觸發端點要一起尊重那個 flag，否則「已停用」是個沒有意義的說法。
+9. **新增任何抓取政策**（denylist、robots、allowlist）→ 掛在 `fetch_with_cap_response()` 的 `allow_url` hook 上，不要在各 call site 各寫一份。#22 與 #24 第 4 點是同一個教訓的兩次出現。
+10. **任何寫入公開表的第三方文字** → 先過 `sanitize_text()` / `sanitize_http_url()`，前端只能用插值呈現，並且把我們自己算出的識別資訊（host）顯示在旁邊。

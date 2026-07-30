@@ -41,6 +41,11 @@ def _require_api_key(x_api_key: str = Header(...)) -> None:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
+# Public alias so routers/admin_discovery.py doesn't have to import a private
+# name. The underscore version stays for the existing call sites in this file.
+require_api_key = _require_api_key
+
+
 @router.post("/feeds", response_model=list[Feed], dependencies=[Depends(_require_api_key)])
 async def import_feeds(
     body: ImportFeedsRequest,

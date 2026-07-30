@@ -95,3 +95,152 @@ async def test_run_forever_survives_a_failing_cycle(monkeypatch):
         await asyncio.wait_for(worker.run_forever(stop), timeout=2)
 
     assert len(attempts) == 2  # recovered and ran a second cycle
+
+
+# ── two-loop layout (refresh + discovery) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_main_exits_when_both_loops_are_disabled(monkeypatch):
+    """Exit 0 rather than idling, so compose's `restart: on-failure` leaves a
+    deliberately-disabled worker down instead of looping it."""
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "false")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+
+    with patch.object(worker, "get_client") as get_client:
+        assert await worker.main() == 0
+
+    get_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_main_runs_only_the_refresh_loop_when_discovery_is_off(monkeypatch):
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+
+    async def immediate(stop=None):
+        return None
+
+    with (
+        patch.object(worker, "run_forever", side_effect=immediate) as refresh,
+        patch.object(worker, "run_discovery_forever") as discovery,
+    ):
+        assert await worker.main() == 0
+
+    refresh.assert_called_once()
+    discovery.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_main_runs_only_the_discovery_loop_when_refresh_is_off(monkeypatch):
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "false")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+
+    async def immediate(stop=None):
+        return None
+
+    with (
+        patch.object(worker, "run_forever") as refresh,
+        patch.object(worker, "run_discovery_forever", side_effect=immediate) as discovery,
+    ):
+        assert await worker.main() == 0
+
+    refresh.assert_not_called()
+    discovery.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_main_returns_non_zero_when_a_loop_dies(monkeypatch):
+    """So compose's `restart: on-failure` actually restarts it. A failed *cycle*
+    never gets here — each loop absorbs those itself."""
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+
+    async def dies(stop=None):
+        raise RuntimeError("loop crashed")
+
+    async def survives(stop=None):
+        return None
+
+    with (
+        patch.object(worker, "run_forever", side_effect=survives),
+        patch.object(worker, "run_discovery_forever", side_effect=dies),
+    ):
+        assert await worker.main() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_dying_loop_does_not_orphan_its_sibling(monkeypatch):
+    """A bare gather would propagate the first exception and leave the other task
+    running, unawaited, inside a process that thinks it is shutting down."""
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    finished = []
+
+    async def dies(stop=None):
+        raise RuntimeError("loop crashed")
+
+    async def slow(stop=None):
+        await asyncio.sleep(0)
+        finished.append("refresh")
+
+    with (
+        patch.object(worker, "run_forever", side_effect=slow),
+        patch.object(worker, "run_discovery_forever", side_effect=dies),
+    ):
+        assert await asyncio.wait_for(worker.main(), timeout=2) == 1
+
+    assert finished == ["refresh"]
+
+
+@pytest.mark.asyncio
+async def test_one_stop_event_winds_down_both_loops(monkeypatch):
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    stops: list[object] = []
+
+    async def capture(stop=None):
+        stops.append(stop)
+        await asyncio.wait_for(stop.wait(), timeout=2)
+
+    async def stopper():
+        await asyncio.sleep(0)
+        stops[0].set()
+
+    with (
+        patch.object(worker, "run_forever", side_effect=capture),
+        patch.object(worker, "run_discovery_forever", side_effect=capture),
+        patch.object(worker, "_install_signal_handlers"),
+    ):
+        main_task = asyncio.create_task(worker.main())
+        await asyncio.sleep(0)
+        await stopper()
+        assert await asyncio.wait_for(main_task, timeout=2) == 0
+
+    # Both loops were handed the *same* event, so one SIGTERM winds down both.
+    assert len(stops) == 2
+    assert stops[0] is stops[1]
+
+
+@pytest.mark.asyncio
+async def test_run_discovery_forever_survives_a_failing_cycle(monkeypatch):
+    stop = asyncio.Event()
+    attempts = []
+
+    from services.discovery import CycleSummary
+
+    async def flaky(_db):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("supabase unreachable")
+        stop.set()
+        return CycleSummary()
+
+    with (
+        patch.object(worker, "get_client", return_value=MagicMock()),
+        patch.object(worker, "run_cycle", side_effect=flaky),
+        patch.object(worker, "discovery_tick_seconds", return_value=0),
+    ):
+        await asyncio.wait_for(worker.run_discovery_forever(stop), timeout=2)
+
+    assert len(attempts) == 2  # recovered and ran a second cycle

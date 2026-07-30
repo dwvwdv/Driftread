@@ -11,12 +11,33 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DATABASE_URL: ${DATABASE_URL}
       DISCOVERY_USER_AGENT: ${DISCOVERY_USER_AGENT:-Driftread/1.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # api reads these too: POST /api/admin/feeds/refresh-due drives the same
       # due queue by hand and takes its defaults from them.
       FEED_REFRESH_BATCH_SIZE: ${FEED_REFRESH_BATCH_SIZE:-50}
       FEED_REFRESH_CONCURRENCY: ${FEED_REFRESH_CONCURRENCY:-5}
       FEED_REFRESH_MIN_INTERVAL_MINUTES: ${FEED_REFRESH_MIN_INTERVAL_MINUTES:-15}
       FEED_REFRESH_MAX_INTERVAL_MINUTES: ${FEED_REFRESH_MAX_INTERVAL_MINUTES:-1440}
+      # Discovery vars belong on api as well as worker: POST
+      # /api/admin/discovery/run drives one cycle by hand with these as its
+      # defaults, and FEED_DISCOVERY_ENABLED is the kill switch that endpoint
+      # honours (it 503s while false).
+      FEED_DISCOVERY_ENABLED: ${FEED_DISCOVERY_ENABLED:-false}
+      FEED_DISCOVERY_HARVEST_BATCH_SIZE: ${FEED_DISCOVERY_HARVEST_BATCH_SIZE:-10}
+      FEED_DISCOVERY_HARVEST_ARTICLES: ${FEED_DISCOVERY_HARVEST_ARTICLES:-20}
+      FEED_DISCOVERY_HARVEST_INTERVAL_HOURS: ${FEED_DISCOVERY_HARVEST_INTERVAL_HOURS:-168}
+      FEED_DISCOVERY_HARVEST_MAX_LINKS_PER_FEED: ${FEED_DISCOVERY_HARVEST_MAX_LINKS_PER_FEED:-200}
+      FEED_DISCOVERY_BLOGROLL_ENABLED: ${FEED_DISCOVERY_BLOGROLL_ENABLED:-false}
+      FEED_DISCOVERY_DIRECTORY_ENABLED: ${FEED_DISCOVERY_DIRECTORY_ENABLED:-false}
+      FEED_DISCOVERY_DIRECTORY_BATCH_SIZE: ${FEED_DISCOVERY_DIRECTORY_BATCH_SIZE:-3}
+      FEED_DISCOVERY_PROBE_BATCH_SIZE: ${FEED_DISCOVERY_PROBE_BATCH_SIZE:-20}
+      FEED_DISCOVERY_PROBE_CONCURRENCY: ${FEED_DISCOVERY_PROBE_CONCURRENCY:-3}
+      FEED_DISCOVERY_PROBE_MAX_ATTEMPTS: ${FEED_DISCOVERY_PROBE_MAX_ATTEMPTS:-3}
+      FEED_DISCOVERY_PROBE_RETRY_HOURS: ${FEED_DISCOVERY_PROBE_RETRY_HOURS:-24}
+      FEED_DISCOVERY_HOST_DELAY_SECONDS: ${FEED_DISCOVERY_HOST_DELAY_SECONDS:-2}
+      FEED_DISCOVERY_RESPECT_ROBOTS: ${FEED_DISCOVERY_RESPECT_ROBOTS:-true}
+      FEED_DISCOVERY_MAX_FRONTIER_SIZE: ${FEED_DISCOVERY_MAX_FRONTIER_SIZE:-50000}
+      FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS: ${FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS:-0}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
@@ -25,19 +46,31 @@ services:
     networks:
       - default
 
-  # Feed refresh scheduler. Same image as api, different entrypoint — it polls
-  # the due queue on a timer so imported feeds keep getting new articles without
-  # anyone calling the admin refresh endpoint. Runs as its own container so
-  # fetches don't compete with request handling and api stays scalable.
+  # Background scheduler. Same image as api, different entrypoint. Runs two
+  # independent loops (see backend/worker.py):
+  #   - feed refresh: polls the due queue so imported feeds keep getting new
+  #     articles without anyone calling the admin refresh endpoint;
+  #   - autonomous discovery: mines the article corpus for outbound links, probes
+  #     the resulting hosts for feeds, and fills the review queue.
+  # Runs as its own container so fetches don't compete with request handling and
+  # api stays scalable. Both loops share one asyncio event loop; the politeness
+  # delays are all `await asyncio.sleep`, so a slow discovery cycle never delays
+  # a refresh tick.
+  #
+  # Split discovery into a fourth service when — and only when — it needs its own
+  # resource limits, its own image/dependencies, its own replica count, or must
+  # run on a different host. Until then a second container would duplicate this
+  # whole environment block for work that runs every 15 minutes.
   worker:
     image: ghcr.io/dwvwdv/driftread-api:latest
     command: ["python", "worker.py"]
-    # on-failure, not unless-stopped: FEED_REFRESH_ENABLED=false makes worker.py
-    # log one line and exit 0, and unless-stopped (which carries `always`
-    # semantics apart from honoring a manual stop) restarts regardless of exit
-    # code — turning the intended "disabled" state into a start/exit loop.
-    # on-failure restarts only on a non-zero exit, so a crash still recovers
-    # while a deliberate opt-out stays down.
+    # on-failure, not unless-stopped: worker.py logs one line and exits 0 when
+    # BOTH FEED_REFRESH_ENABLED and FEED_DISCOVERY_ENABLED are false, and
+    # unless-stopped (which carries `always` semantics apart from honoring a
+    # manual stop) restarts regardless of exit code — turning the intended
+    # "disabled" state into a start/exit loop. on-failure restarts only on a
+    # non-zero exit, so a crashed loop still recovers while a deliberate opt-out
+    # stays down.
     restart: on-failure
     depends_on:
       # api applies the migrations on startup; wait for it so the worker never
@@ -48,12 +81,33 @@ services:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_KEY: ${SUPABASE_KEY}
       DISCOVERY_USER_AGENT: ${DISCOVERY_USER_AGENT:-Driftread/1.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       FEED_REFRESH_ENABLED: ${FEED_REFRESH_ENABLED:-true}
       FEED_REFRESH_TICK_SECONDS: ${FEED_REFRESH_TICK_SECONDS:-300}
       FEED_REFRESH_BATCH_SIZE: ${FEED_REFRESH_BATCH_SIZE:-50}
       FEED_REFRESH_CONCURRENCY: ${FEED_REFRESH_CONCURRENCY:-5}
       FEED_REFRESH_MIN_INTERVAL_MINUTES: ${FEED_REFRESH_MIN_INTERVAL_MINUTES:-15}
       FEED_REFRESH_MAX_INTERVAL_MINUTES: ${FEED_REFRESH_MAX_INTERVAL_MINUTES:-1440}
+      # Autonomous discovery. Ships disabled — it probes third parties nobody
+      # asked about, so pulling a new image must not silently start a crawler.
+      # Read docs/SECURITY.md before setting FEED_DISCOVERY_ENABLED=true.
+      FEED_DISCOVERY_ENABLED: ${FEED_DISCOVERY_ENABLED:-false}
+      FEED_DISCOVERY_TICK_SECONDS: ${FEED_DISCOVERY_TICK_SECONDS:-900}
+      FEED_DISCOVERY_HARVEST_BATCH_SIZE: ${FEED_DISCOVERY_HARVEST_BATCH_SIZE:-10}
+      FEED_DISCOVERY_HARVEST_ARTICLES: ${FEED_DISCOVERY_HARVEST_ARTICLES:-20}
+      FEED_DISCOVERY_HARVEST_INTERVAL_HOURS: ${FEED_DISCOVERY_HARVEST_INTERVAL_HOURS:-168}
+      FEED_DISCOVERY_HARVEST_MAX_LINKS_PER_FEED: ${FEED_DISCOVERY_HARVEST_MAX_LINKS_PER_FEED:-200}
+      FEED_DISCOVERY_BLOGROLL_ENABLED: ${FEED_DISCOVERY_BLOGROLL_ENABLED:-false}
+      FEED_DISCOVERY_DIRECTORY_ENABLED: ${FEED_DISCOVERY_DIRECTORY_ENABLED:-false}
+      FEED_DISCOVERY_DIRECTORY_BATCH_SIZE: ${FEED_DISCOVERY_DIRECTORY_BATCH_SIZE:-3}
+      FEED_DISCOVERY_PROBE_BATCH_SIZE: ${FEED_DISCOVERY_PROBE_BATCH_SIZE:-20}
+      FEED_DISCOVERY_PROBE_CONCURRENCY: ${FEED_DISCOVERY_PROBE_CONCURRENCY:-3}
+      FEED_DISCOVERY_PROBE_MAX_ATTEMPTS: ${FEED_DISCOVERY_PROBE_MAX_ATTEMPTS:-3}
+      FEED_DISCOVERY_PROBE_RETRY_HOURS: ${FEED_DISCOVERY_PROBE_RETRY_HOURS:-24}
+      FEED_DISCOVERY_HOST_DELAY_SECONDS: ${FEED_DISCOVERY_HOST_DELAY_SECONDS:-2}
+      FEED_DISCOVERY_RESPECT_ROBOTS: ${FEED_DISCOVERY_RESPECT_ROBOTS:-true}
+      FEED_DISCOVERY_MAX_FRONTIER_SIZE: ${FEED_DISCOVERY_MAX_FRONTIER_SIZE:-50000}
+      FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS: ${FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS:-0}
       # No ADMIN_API_KEY / CORS_ORIGINS (serves no HTTP) and no DATABASE_URL
       # (runs no migrations) — it writes through the Supabase service_role key.
     networks:
