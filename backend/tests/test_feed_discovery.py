@@ -7,10 +7,11 @@ import pytest
 
 from services.feed_discovery import (
     FALLBACK_PATHS,
+    MAX_FEED_LINK_CANDIDATES,
     DiscoveryError,
     PinnedTransport,
     _extract_feed_links,
-    _resolve_pinned_ip,
+    _resolve_pinned_ips,
     discover_feeds,
     ssrf_safe_client,
     validate_fetch_url,
@@ -28,6 +29,20 @@ def test_extract_feed_links_finds_alternate():
     assert "https://example.com/feed.xml" in urls
     assert "https://other.example.com/atom" in urls
     assert len(out) == 2
+
+
+def test_extract_feed_links_caps_candidates():
+    """An attacker-controlled page seen by the fully public, unauthenticated
+    POST /api/discover could otherwise pad <head> with unlimited <link
+    rel="alternate"> tags, each costing an outbound validation fetch (and,
+    since #25, a DB lookup in routers/discover.py) per candidate."""
+    links = "".join(
+        f'<link rel="alternate" type="application/rss+xml" href="/feed{i}.xml"/>'
+        for i in range(MAX_FEED_LINK_CANDIDATES * 4)
+    )
+    html = f"<html><head>{links}</head></html>"
+    out = _extract_feed_links(html, "https://example.com")
+    assert len(out) == MAX_FEED_LINK_CANDIDATES
 
 
 def test_extract_feed_links_empty_when_none():
@@ -296,51 +311,59 @@ async def test_no_delay_and_no_gate_by_default():
     assert sleeps == []
 
 
-# ── pin-and-connect (DNS-rebinding gap, SECURITY.md #22/#24) ──────────────────
+# ── pin-and-connect (DNS-rebinding gap, SECURITY.md #22/#24/#25) ──────────────
 #
-# These test _resolve_pinned_ip and PinnedTransport directly rather than via
+# These test _resolve_pinned_ips and PinnedTransport directly rather than via
 # discover_feeds()'s MockTransport-based tests above: MockTransport replaces
 # the whole transport, so it never reaches PinnedTransport.handle_async_request
 # and can't observe what host/headers/extensions a real connection would see.
 
 
-def _fake_addrinfo(ip: str):
-    return [(None, None, None, "", (ip, 0))]
+def _fake_addrinfo(*ips: str):
+    return [(None, None, None, "", (ip, 0)) for ip in ips]
 
 
-def test_resolve_pinned_ip_returns_the_resolved_address():
+def test_resolve_pinned_ips_returns_the_resolved_addresses():
     with patch(
         "services.feed_discovery.socket.getaddrinfo",
         return_value=_fake_addrinfo("93.184.216.34"),
     ):
-        assert _resolve_pinned_ip("example.com") == "93.184.216.34"
+        assert _resolve_pinned_ips("example.com") == ["93.184.216.34"]
 
 
-def test_resolve_pinned_ip_rejects_private_address():
+def test_resolve_pinned_ips_returns_every_address_in_order():
+    """Dual-stack hosts keep every validated address, not just the first —
+    PinnedTransport falls back across them the same way plain httpx/httpcore
+    would across getaddrinfo()'s own results."""
+    with patch(
+        "services.feed_discovery.socket.getaddrinfo",
+        return_value=_fake_addrinfo("2001:db8::1", "93.184.216.34"),
+    ):
+        assert _resolve_pinned_ips("dualstack.example.com") == ["2001:db8::1", "93.184.216.34"]
+
+
+def test_resolve_pinned_ips_rejects_private_address():
     with patch(
         "services.feed_discovery.socket.getaddrinfo",
         return_value=_fake_addrinfo("169.254.169.254"),
     ):
         with pytest.raises(DiscoveryError):
-            _resolve_pinned_ip("evil.example.com")
+            _resolve_pinned_ips("evil.example.com")
 
 
-def test_resolve_pinned_ip_rejects_host_if_any_of_several_addresses_unsafe():
+def test_resolve_pinned_ips_rejects_host_if_any_of_several_addresses_unsafe():
     """Same conservative stance as _is_safe_host: a host that resolves to
     multiple addresses is rejected outright if any one of them is private,
-    not just when the address we'd happen to pick first is."""
+    not just when the address we'd happen to try first is."""
     with patch(
         "services.feed_discovery.socket.getaddrinfo",
-        return_value=[
-            (None, None, None, "", ("93.184.216.34", 0)),
-            (None, None, None, "", ("169.254.169.254", 0)),
-        ],
+        return_value=_fake_addrinfo("93.184.216.34", "169.254.169.254"),
     ):
         with pytest.raises(DiscoveryError):
-            _resolve_pinned_ip("multi-record.example.com")
+            _resolve_pinned_ips("multi-record.example.com")
 
 
-def test_resolve_pinned_ip_propagates_dns_failure():
+def test_resolve_pinned_ips_propagates_dns_failure():
     import socket as socket_module
 
     with patch(
@@ -348,7 +371,7 @@ def test_resolve_pinned_ip_propagates_dns_failure():
         side_effect=socket_module.gaierror("no such host"),
     ):
         with pytest.raises(DiscoveryError):
-            _resolve_pinned_ip("nonexistent.invalid")
+            _resolve_pinned_ips("nonexistent.invalid")
 
 
 @pytest.mark.asyncio
@@ -383,6 +406,55 @@ async def test_pinned_transport_connects_to_resolved_ip_keeps_host_and_sni():
 
 
 @pytest.mark.asyncio
+async def test_pinned_transport_falls_back_to_next_address_on_connect_error():
+    """A dual-stack host whose first resolved address is unreachable (e.g. an
+    AAAA record in an environment with broken IPv6) must still succeed via a
+    later validated address, matching the fallback plain httpx/httpcore
+    already provides across getaddrinfo()'s own results."""
+    attempted_hosts: list[str] = []
+
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        attempted_hosts.append(request.url.host)
+        if request.url.host == "2001:db8::1":
+            raise httpx.ConnectError("network unreachable", request=request)
+        return httpx.Response(200, text="ok")
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://dualstack.example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo("2001:db8::1", "93.184.216.34"),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        response = await transport.handle_async_request(request)
+
+    assert attempted_hosts == ["2001:db8::1", "93.184.216.34"]
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_raises_after_every_address_fails():
+    async def fake_inner(self, request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unreachable", request=request)
+
+    transport = PinnedTransport()
+    request = httpx.Request("GET", "https://unreachable.example.com/feed.xml")
+
+    with (
+        patch(
+            "services.feed_discovery.socket.getaddrinfo",
+            return_value=_fake_addrinfo("93.184.216.34", "93.184.216.35"),
+        ),
+        patch.object(httpx.AsyncHTTPTransport, "handle_async_request", fake_inner),
+    ):
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(request)
+
+
+@pytest.mark.asyncio
 async def test_pinned_transport_rejects_dns_rebind_to_private_ip():
     """This is the actual connect-time choke point: even if an earlier
     validate_fetch_url() call saw a public address for this hostname, the
@@ -411,6 +483,19 @@ async def test_pinned_transport_rejects_dns_rebind_to_private_ip():
 async def test_ssrf_safe_client_defaults_to_pinned_transport():
     async with ssrf_safe_client() as client:
         assert isinstance(client._transport, PinnedTransport)
+
+
+@pytest.mark.asyncio
+async def test_ssrf_safe_client_disables_keepalive_by_default():
+    """PinnedTransport's rewritten request.url makes httpcore's connection-
+    pool key the resolved IP rather than the original hostname — two
+    different hostnames sharing an IP (shared hosting/CDN) would otherwise
+    collide in the pool, letting a request for one reuse a connection whose
+    TLS session was established (and SNI'd) for the other. Disabling
+    keep-alive means no connection ever survives past the single request it
+    was opened for, so nothing is left in the pool to collide with."""
+    async with ssrf_safe_client() as client:
+        assert client._transport._pool._max_keepalive_connections == 0
 
 
 @pytest.mark.asyncio

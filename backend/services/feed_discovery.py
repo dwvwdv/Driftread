@@ -39,6 +39,16 @@ FALLBACK_PATHS = ("/feed", "/rss", "/rss.xml", "/atom.xml", "/feed.xml", "/index
 # has to be chosen before the content type is known, and the feed limit
 # is the one that has to hold.
 MAX_FEED_BYTES = 5 * 1024 * 1024  # 5 MiB
+# A real page's declared alternate feed links realistically number in the
+# single digits. Without a cap, a page crafted for the fully public,
+# unauthenticated POST /api/discover could pad <head> with thousands of
+# <link rel="alternate"> tags, each one costing an outbound validation fetch
+# in discover_feeds() below and, since #25, a DB lookup in routers/discover.py
+# — turning one cheap request into an unbounded pile of outbound/DB work.
+# Same technique as link_harvest.py's MAX_ANCHORS_PER_DOC, applied at the
+# same choke point (_extract_feed_links) so every downstream consumer of its
+# output is bounded by construction, not by remembering to cap it themselves.
+MAX_FEED_LINK_CANDIDATES = 50
 
 
 @dataclass
@@ -121,9 +131,10 @@ def validate_fetch_url(url: str) -> str:
     return url
 
 
-def _resolve_pinned_ip(host: str) -> str:
-    """Resolve `host` and return one IP that passed the same private/loopback/
-    etc checks as _is_safe_host — for PinnedTransport to connect to directly.
+def _resolve_pinned_ips(host: str) -> list[str]:
+    """Resolve `host` and return every IP that passed the same private/
+    loopback/etc checks as _is_safe_host — for PinnedTransport to connect to
+    directly, trying them in order.
 
     validate_fetch_url() and the actual TCP connection each used to do their
     own independent socket.getaddrinfo() for the same hostname (the former to
@@ -133,18 +144,25 @@ def _resolve_pinned_ip(host: str) -> str:
     docs/SECURITY.md (#22's known limitation, elaborated in #24 point 2): a
     public IP can pass validation while a private one is what's actually
     connected to. Reusing *this* function's single resolution as the connect
-    target (via PinnedTransport below) closes that gap by construction —
+    targets (via PinnedTransport below) closes that gap by construction —
     there is no second, independent lookup left to disagree with the first.
+
+    Returns the *whole* validated list, not just one address, so a dual-stack
+    host isn't reduced to a single attempt: connecting to plain (unpinned)
+    httpx/httpcore already falls back across every getaddrinfo() result in
+    order, and only trying address[0] here would silently drop that fallback
+    — e.g. an AAAA record picked first in an environment with broken IPv6
+    would fail outright instead of falling back to a working A record.
     """
     try:
         infos = socket.getaddrinfo(host, None)
     except (socket.gaierror, UnicodeError):
         raise DiscoveryError(f"DNS resolution failed for {host!r}")
     # Reject the whole host if *any* resolved address is unsafe, not just the
-    # one we'd pick to connect to — same conservative stance as _is_safe_host
+    # ones we'd try to connect to — same conservative stance as _is_safe_host
     # (a host that can answer with a private address under some resolution is
     # treated as unsafe outright, not just "unsafe on the record we happened
-    # to pick first").
+    # to try first").
     ips: list[str] = []
     for info in infos:
         ip_str = info[4][0]
@@ -154,28 +172,45 @@ def _resolve_pinned_ip(host: str) -> str:
             raise DiscoveryError(f"DNS resolution returned an invalid address for {host!r}")
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
             raise DiscoveryError(f"Refusing to connect {host!r} to private/loopback address")
-        ips.append(ip_str)
+        if ip_str not in ips:
+            ips.append(ip_str)
     if not ips:
         raise DiscoveryError(f"DNS resolution returned no addresses for {host!r}")
-    return ips[0]
+    return ips
 
 
 class PinnedTransport(httpx.AsyncHTTPTransport):
     """The real transport used for every outbound fetch (see ssrf_safe_client
-    below) — connects to the exact IP _resolve_pinned_ip() just validated,
-    instead of handing httpcore a hostname it would resolve again on its own.
-    The Host header and TLS SNI still use the original hostname (the former
-    was already set from it when httpx built the request, before any
-    transport runs; the latter is set explicitly below), so this is
-    transparent to the server — only the connect target is pinned.
+    below) — connects to one of the exact IPs _resolve_pinned_ips() just
+    validated, instead of handing httpcore a hostname it would resolve again
+    on its own. The Host header and TLS SNI still use the original hostname
+    (the former was already set from it when httpx built the request, before
+    any transport runs; the latter is set explicitly below), so this is
+    transparent to the server — only the connect target is pinned. Every
+    request in this project is a bodyless GET (see fetch_with_cap_response),
+    so retrying the same Request object across addresses is safe — there is
+    no request stream that a failed attempt could have partially consumed.
     """
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         original_host = request.url.host
-        ip = _resolve_pinned_ip(original_host)
-        request.url = request.url.copy_with(host=ip)
-        request.extensions = {**request.extensions, "sni_hostname": original_host}
-        return await super().handle_async_request(request)
+        original_url = request.url
+        ips = _resolve_pinned_ips(original_host)
+        last_error: httpx.ConnectError | None = None
+        for ip in ips:
+            request.url = original_url.copy_with(host=ip)
+            request.extensions = {**request.extensions, "sni_hostname": original_host}
+            try:
+                return await super().handle_async_request(request)
+            except httpx.ConnectError as exc:
+                # Only a connect-stage failure warrants trying the next
+                # address — anything past that point (timeout mid-response,
+                # HTTP-level error) isn't an address-reachability problem and
+                # retrying it against a different IP wouldn't fix it.
+                last_error = exc
+                continue
+        assert last_error is not None  # ips is non-empty; the loop always runs >=1 time
+        raise last_error
 
 
 def ssrf_safe_client(**kwargs) -> httpx.AsyncClient:
@@ -187,12 +222,30 @@ def ssrf_safe_client(**kwargs) -> httpx.AsyncClient:
     _mock_client_factory): MockTransport always overwrites `transport`, so
     this default never reaches a mocked client.
 
-    None of the current callers pass transport-level kwargs (verify, cert,
-    http2, proxy, limits...) — if one ever needs to, it must go to
-    PinnedTransport(...) instead of here, since httpx.AsyncClient ignores
-    those once an explicit `transport` is supplied.
+    Also defaults keep-alive connection reuse off (`Limits(
+    max_keepalive_connections=0)`). PinnedTransport rewrites request.url's
+    host to the resolved IP before delegating to the real transport, which
+    means httpcore's connection-pool key is that IP too — so two *different*
+    hostnames that happen to resolve to the same shared-hosting/CDN IP would
+    collide in the pool, and a request for the second could be sent over a
+    connection whose TLS session (and SNI) was established for the first.
+    Disabling reuse means no connection ever outlives the single request it
+    was opened for, so there is nothing left in the pool for a later request
+    — to any hostname — to collide with.
+
+    None of the current callers pass other transport-level kwargs (verify,
+    cert, http2, proxy...) — if one ever needs to, it must go to
+    PinnedTransport(...) instead of here, since httpx.AsyncClient silently
+    ignores `limits` (and verify/cert/http2/proxy) once an explicit
+    `transport` is supplied — it only applies them when *it* constructs the
+    default transport itself. That's why `limits` below is threaded into
+    PinnedTransport(...) directly rather than passed alongside `transport` in
+    kwargs.
     """
-    kwargs.setdefault("transport", PinnedTransport())
+    kwargs.setdefault(
+        "transport",
+        PinnedTransport(limits=httpx.Limits(max_keepalive_connections=0)),
+    )
     return httpx.AsyncClient(**kwargs)
 
 
@@ -317,7 +370,7 @@ def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[DiscoveryCandidate] = []
     seen: set[str] = set()
-    for link in soup.find_all("link"):
+    for link in soup.find_all("link", limit=MAX_FEED_LINK_CANDIDATES):
         rel = link.get("rel") or []
         if isinstance(rel, str):
             rel = [rel]
