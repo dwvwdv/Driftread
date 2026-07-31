@@ -221,11 +221,13 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 同一個「持續改善專案」排程任務。這次不是安全加固，是核心功能（`GET /api/recommendations`）本身的一個行為 bug，直接違背 CLAUDE.md／FEATURES.md 記載的產品目的：「根據用戶喜好推薦**未知** RSS 源，幫助挖掘**新**資訊源」。
 
 - **問題**：`_score_candidates()` 已經把 category 當成 +3 分的評分訊號（與 tag +2、language +1 同一套設計），但 `get_recommendations()` 在評分**之前**又對候選池下了 `query.in_("category", list(categories))` —— 等於把「加權」實作成了「篩選」。任何有訂閱紀錄或偏好設定的使用者，從此再也看不到自己已知類別以外的 feed，「猜你喜歡」名副其實地只剩下「猜你已經喜歡的」，新使用者發現全新類別的路徑被自己的訂閱紀錄堵死了。tags 與 language 從來沒有被這樣處理，這是三個訊號裡唯一不一致的一個。
-- **修法**：刪掉那行 `query.in_("category", ...)`，讓 category 回到單純的評分訊號，候選池只用 `archived_at IS NULL` 與排除清單（訂閱 / liked / disliked）過濾，其餘交給既有的 `_score_candidates()` 排序。行為現在與 FEATURES.md 第 2 節一直記載的評分表一致——文件本來就沒宣稱過有這道篩選，是實作跟文件對不上。
-- **範圍以外**：候選池本身仍用 `query.limit(limit * 5)`、不帶 `.order()`，對大型 catalog 而言取到的永遠是 PostgREST 預設順序的前 N 筆，不是整張表的隨機樣本——這是既有行為（拿掉 category 篩選前就是如此），不在這次修的範圍，需要 server 端 `ORDER BY random()`（RPC）才能真正解決，留給以後。
+- **修法（第一版）**：刪掉那行 `query.in_("category", ...)`，讓 category 回到單純的評分訊號，候選池只用 `archived_at IS NULL` 與排除清單（訂閱 / liked / disliked）過濾，其餘交給既有的 `_score_candidates()` 排序。行為與 FEATURES.md 第 2 節一直記載的評分表一致——文件本來就沒宣稱過有這道篩選，是實作跟文件對不上。
+- **PR review（Codex，P1）抓出第一版修法的迴歸**：候選池查詢仍是 `query.limit(limit * 5)`、不帶 `.order()`。對超過這個上限的 catalog 而言，拿掉 category 篩選後，PostgREST 回傳的（未排序）第一批候選完全有可能一筆都不落在使用者已知的類別裡——於是個人化訊號悄悄消失，`_score_candidates()` 對著一堆零分候選排序，即使資料庫裡明明有更相關的 feed。原本的硬性篩選雖然堵死了跨類別發現，但至少保證候選池裡「有」符合已知偏好的列。
+- **修法（第二版，本次落地）**：把候選池拆成兩次查詢——`preferred`（`in_("category", known)`，保證已知偏好仍能可靠進到候選池）與 `exploratory`（`not_.in_("category", known)`，保留給未知類別，維持這個 PR 原本要修的「能發現新類別」）。兩池的大小依 `_EXPLORATION_POOL_SHARE`（0.3）從 `limit * 5` 切分，合併後才進 `_score_candidates()` 排序。兩個保證同時成立：已知偏好不再可能被「排到第一批之外」而消失，也不會回到第一版之前「有訂閱就完全看不到新類別」的狀態。`tags` / `language` 不受影響——它們從來不是查詢層的篩選條件，這次的迴歸與修法只針對 category。
+- **範圍以外**：兩個子查詢個別仍不帶 `.order()`，各自取到的仍是 PostgREST 預設順序的前 N 筆，不是各自子集合的隨機樣本——這是既有行為（在第一版與第二版修法之前就是如此），需要 server 端 `ORDER BY random()`（RPC）才能真正解決，留給以後。
 
 ### 測試
 
-`backend/routers/recommendations.py` 先前完全沒有測試檔案——核心功能反而是測試覆蓋率的空白，這個 bug 也是因此才留到現在。新增 `backend/tests/test_recommendations.py`：`_score_candidates()` 的 category / tag / language 個別加分與疊加排序；`GET /api/recommendations` 的迴歸測試斷言候選池查詢**從未**呼叫 `.in_("category", ...)`（重現並釘住這次修法）；已登入使用者的訂閱會被排除；`liked` 訊號存在時，不同 category 的候選仍會出現在結果裡（而不是被篩掉）；`limit` 超出 1–50 範圍回 422。測試總數 474 → 483。
+`backend/routers/recommendations.py` 先前完全沒有測試檔案——核心功能反而是測試覆蓋率的空白，這個 bug 也是因此才留到現在。`backend/tests/test_recommendations.py`：`_score_candidates()` 的 category / tag / language 個別加分與疊加排序；無任何訊號時只送一次不帶 category 篩選的查詢；有 category 訊號時斷言候選池拆成 `in_("category", ...)` 的 preferred 池與 `not_.in_("category", ...)` 的 exploratory 池兩次獨立查詢（釘住第二版修法），且兩池各自仍正確帶上 id 排除條件；已登入使用者的訂閱會被排除；`limit` 超出 1–50 範圍回 422。測試總數 474 → 483。
 
 沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，交由 CI 跑完整測試。

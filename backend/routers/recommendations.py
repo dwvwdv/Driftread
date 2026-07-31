@@ -9,6 +9,18 @@ from models import Feed
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
+# Share of the candidate pool reserved for feeds outside the caller's known
+# categories, when there is at least one category signal. Pinned candidate
+# pool review (PR #26): querying the whole pool with no category predicate
+# means that on a catalog bigger than the fetch limit, the (unordered)
+# first batch returned may contain zero matches for a caller's known
+# categories, so personalization silently disappears even though matching
+# feeds exist further down the table. Splitting the fetch into a
+# category-matching slice and a category-excluded slice keeps both
+# guarantees: known preferences still reliably reach the scorer, and some
+# slots are always reserved for categories the caller doesn't know yet.
+_EXPLORATION_POOL_SHARE = 0.3
+
 
 def _score_candidates(
     candidates: list[dict],
@@ -67,6 +79,39 @@ def _signals_from_subscriptions(
     return subscribed_ids, categories, tags, languages
 
 
+def _base_feed_query(db: Client, excluded: set[str]):
+    query = db.table("feeds").select("*").is_("archived_at", "null")
+    if excluded:
+        query = query.not_.in_("id", list(excluded))
+    return query
+
+
+def _fetch_candidate_pool(
+    db: Client, excluded: set[str], categories: set[str], pool_size: int
+) -> list[dict]:
+    if not categories:
+        return _base_feed_query(db, excluded).limit(pool_size).execute().data
+
+    exploration_n = max(1, round(pool_size * _EXPLORATION_POOL_SHARE))
+    preferred_n = pool_size - exploration_n
+
+    preferred = (
+        _base_feed_query(db, excluded)
+        .in_("category", list(categories))
+        .limit(preferred_n)
+        .execute()
+        .data
+    )
+    exploratory = (
+        _base_feed_query(db, excluded)
+        .not_.in_("category", list(categories))
+        .limit(exploration_n)
+        .execute()
+        .data
+    )
+    return preferred + exploratory
+
+
 @router.get("", response_model=list[Feed])
 async def get_recommendations(
     liked: list[str] = Query(default=[], max_length=50),
@@ -104,12 +149,7 @@ async def get_recommendations(
             if row.get("language"):
                 languages.add(row["language"])
 
-    query = db.table("feeds").select("*").is_("archived_at", "null")
-    if excluded:
-        query = query.not_.in_("id", list(excluded))
-
-    result = query.limit(limit * 5).execute()
-    candidates: list[dict] = result.data
+    candidates = _fetch_candidate_pool(db, excluded, categories, limit * 5)
 
     if candidates and (categories or tags or languages):
         candidates = _score_candidates(candidates, categories, tags, languages)

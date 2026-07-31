@@ -24,7 +24,7 @@ def _chain(execute_return):
     """A MagicMock query-builder node where every filter method returns
     itself, so any combination/order of .select/.is_/.in_/.not_.in_/.eq/
     .limit calls resolves back to the same node — only the terminal
-    .execute() result matters for these tests."""
+    .execute() result matters unless a test asserts on a specific call."""
     chain = MagicMock()
     for name in ("select", "is_", "in_", "eq", "limit"):
         getattr(chain, name).return_value = chain
@@ -70,13 +70,9 @@ class TestScoreCandidates:
         assert scored[0] is strong
 
 
-def test_anonymous_no_signals_does_not_filter_by_category(client, monkeypatch):
-    """Regression test: the candidate query used to hard-filter with
-    query.in_("category", ...), which meant a user with any known category
-    signal would never see a feed outside the categories they already
-    follow — defeating the platform's "discover new sources" purpose
-    (CLAUDE.md, FEATURES.md §2). Category is a scoring signal only now,
-    the same as tags/language."""
+def test_anonymous_no_signals_fetches_a_single_unfiltered_pool(client, monkeypatch):
+    """With no category/tag/language signal at all there's nothing to split
+    the pool for — one plain query, no category predicate either way."""
     c, mock_db = client
     feeds_chain = _chain(MagicMock(data=[_feed_row() for _ in range(3)]))
     mock_db.table.side_effect = lambda name: {"feeds": feeds_chain}[name]
@@ -86,24 +82,33 @@ def test_anonymous_no_signals_does_not_filter_by_category(client, monkeypatch):
 
     assert resp.status_code == 200
     feeds_chain.in_.assert_not_called()
+    feeds_chain.not_.in_.assert_not_called()
 
 
-def test_liked_signal_still_surfaces_candidates_outside_that_category(client):
+def test_category_signal_splits_into_preferred_and_exploratory_pools(client):
+    """Regression test for the Codex P1 finding on PR #26: naively dropping
+    the category predicate meant that on a catalog bigger than the fetch
+    limit, the unfiltered first batch could contain zero matches for the
+    caller's known categories and personalization silently vanished. The
+    fix queries a category-matching slice and a category-excluded slice
+    separately so both a relevant match and a novel-category candidate are
+    guaranteed to reach the scorer regardless of table order."""
     c, mock_db = client
     liked_id = str(uuid4())
-    other_category_feed = _feed_row(category="art")
     matching_feed = _feed_row(category="tech")
+    other_category_feed = _feed_row(category="art")
 
     liked_lookup = _chain(
         MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
     )
-    candidate_pool = _chain(MagicMock(data=[matching_feed, other_category_feed]))
+    preferred_pool = _chain(MagicMock(data=[matching_feed]))
+    exploratory_pool = _chain(MagicMock(data=[other_category_feed]))
     calls = {"n": 0}
 
     def _table(name):
         assert name == "feeds"
         calls["n"] += 1
-        return liked_lookup if calls["n"] == 1 else candidate_pool
+        return {1: liked_lookup, 2: preferred_pool, 3: exploratory_pool}[calls["n"]]
 
     mock_db.table.side_effect = _table
 
@@ -111,8 +116,19 @@ def test_liked_signal_still_surfaces_candidates_outside_that_category(client):
 
     assert resp.status_code == 200
     ids = [row["id"] for row in resp.json()]
+    assert matching_feed["id"] in ids
     assert other_category_feed["id"] in ids
-    candidate_pool.in_.assert_not_called()
+
+    # preferred slice: positive category match, plus the usual id exclusion
+    preferred_pool.in_.assert_called_once_with("category", ["tech"])
+    preferred_pool.not_.in_.assert_called_once_with("id", [liked_id])
+
+    # exploratory slice: never a positive category filter, but it does
+    # carry both the id exclusion and the negated category predicate
+    exploratory_pool.in_.assert_not_called()
+    exploratory_pool.not_.in_.assert_any_call("id", [liked_id])
+    exploratory_pool.not_.in_.assert_any_call("category", ["tech"])
+    assert exploratory_pool.not_.in_.call_count == 2
 
 
 def test_authenticated_user_excludes_their_subscriptions(client):
@@ -135,6 +151,9 @@ def test_authenticated_user_excludes_their_subscriptions(client):
         if name == "user_preferences":
             return _chain(MagicMock(data=[]))
         if name == "feeds":
+            # both the preferred and the exploratory pool query hit `feeds`;
+            # returning the same candidate for either is enough to check
+            # that the subscribed feed itself never comes back.
             return _chain(MagicMock(data=[candidate]))
         raise AssertionError(f"unexpected table {name}")
 
