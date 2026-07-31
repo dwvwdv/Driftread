@@ -108,9 +108,6 @@ async def get_recommendations(
     if excluded:
         query = query.not_.in_("id", list(excluded))
 
-    if categories:
-        query = query.in_("category", list(categories))
-
     result = query.limit(limit * 5).execute()
     candidates: list[dict] = result.data
 

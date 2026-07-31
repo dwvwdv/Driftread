@@ -215,3 +215,17 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 ### 測試
 
 `test_feed_discovery.py` 新增 28 個測試（`_resolve_pinned_ips` 的正常 / 多筆位址 / 拒絕私網 / 多筆位址其一為私網 / DNS 失敗 / 逾時中止 / 走專屬執行緒池與其他共用預設池的工作互不干擾、`_pick_pinned_ips` 的族交錯 / 單一族 / 位址數少於上限、`_extract_feed_links` 的候選數上限 / 真正 feed 宣告排在許多無關 `<link>` 標籤之後仍找得到、`PinnedTransport` 的連線目標與 `Host`/SNI 保留、逾時取自 request 的連線逾時 extension、回傳成功或全部位址失敗後都還原 `request.url`、位址 fallback（`ConnectError` 與 `ConnectTimeout` 各一）、位址嘗試次數上限、多筆 AAAA 後仍 fallback 到 IPv4、全部位址失敗、DNS rebind 拒絕、`ssrf_safe_client` 的預設 transport / 預設關 keep-alive / 預設關 trust_env / 可覆寫 transport / 可覆寫 trust_env、專屬 DNS 執行緒池的大小固定）；`test_discover.py` 新增 1 個測試斷言帶 PostgREST 特殊字元的 `feed_url` 只會走 `.eq()`，`.in_()` 從未被呼叫。
+
+## 階段十二：猜你喜歡誤把 category 當硬性篩選（PR #26，2026-07-31）
+
+同一個「持續改善專案」排程任務。這次不是安全加固，是核心功能（`GET /api/recommendations`）本身的一個行為 bug，直接違背 CLAUDE.md／FEATURES.md 記載的產品目的：「根據用戶喜好推薦**未知** RSS 源，幫助挖掘**新**資訊源」。
+
+- **問題**：`_score_candidates()` 已經把 category 當成 +3 分的評分訊號（與 tag +2、language +1 同一套設計），但 `get_recommendations()` 在評分**之前**又對候選池下了 `query.in_("category", list(categories))` —— 等於把「加權」實作成了「篩選」。任何有訂閱紀錄或偏好設定的使用者，從此再也看不到自己已知類別以外的 feed，「猜你喜歡」名副其實地只剩下「猜你已經喜歡的」，新使用者發現全新類別的路徑被自己的訂閱紀錄堵死了。tags 與 language 從來沒有被這樣處理，這是三個訊號裡唯一不一致的一個。
+- **修法**：刪掉那行 `query.in_("category", ...)`，讓 category 回到單純的評分訊號，候選池只用 `archived_at IS NULL` 與排除清單（訂閱 / liked / disliked）過濾，其餘交給既有的 `_score_candidates()` 排序。行為現在與 FEATURES.md 第 2 節一直記載的評分表一致——文件本來就沒宣稱過有這道篩選，是實作跟文件對不上。
+- **範圍以外**：候選池本身仍用 `query.limit(limit * 5)`、不帶 `.order()`，對大型 catalog 而言取到的永遠是 PostgREST 預設順序的前 N 筆，不是整張表的隨機樣本——這是既有行為（拿掉 category 篩選前就是如此），不在這次修的範圍，需要 server 端 `ORDER BY random()`（RPC）才能真正解決，留給以後。
+
+### 測試
+
+`backend/routers/recommendations.py` 先前完全沒有測試檔案——核心功能反而是測試覆蓋率的空白，這個 bug 也是因此才留到現在。新增 `backend/tests/test_recommendations.py`：`_score_candidates()` 的 category / tag / language 個別加分與疊加排序；`GET /api/recommendations` 的迴歸測試斷言候選池查詢**從未**呼叫 `.in_("category", ...)`（重現並釘住這次修法）；已登入使用者的訂閱會被排除；`liked` 訊號存在時，不同 category 的候選仍會出現在結果裡（而不是被篩掉）；`limit` 超出 1–50 範圍回 422。測試總數 474 → 483。
+
+沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，交由 CI 跑完整測試。
