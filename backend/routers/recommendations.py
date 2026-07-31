@@ -105,19 +105,6 @@ def _fetch_candidate_pool(
 
     exploration_n = max(1, round(pool_size * _EXPLORATION_SHARE))
     preferred_n = pool_size - exploration_n
-    # Split the exploration budget between "known, other category" and
-    # "no category at all". `not_.in_("category", ...)` compiles to SQL's
-    # NOT IN, which never matches a NULL column, so a feed with no
-    # category (a normal catalog state — nullable per migration 001, and
-    # discovery promotion writes it when no category was approved) would
-    # otherwise be invisible to every personalized caller. A third
-    # .is_("category", "null") query covers it. Folding this into the
-    # second query via .or_() instead would mean concatenating `categories`
-    # — which can include a caller's own free-text `preferred_categories`
-    # — into a single filter string, reopening the PostgREST filter-
-    # injection class SECURITY.md #14 fixed.
-    other_category_n = max(1, exploration_n // 2)
-    uncategorized_n = exploration_n - other_category_n
 
     preferred = (
         _base_feed_query(db, excluded)
@@ -126,21 +113,40 @@ def _fetch_candidate_pool(
         .execute()
         .data
     )
+    # Exploratory candidates come from two sources: a known-but-different
+    # category, and no category at all. `not_.in_("category", ...)`
+    # compiles to SQL's NOT IN, which never matches a NULL column, so a
+    # feed with no category (a normal catalog state — nullable per
+    # migration 001, and discovery promotion writes it when no category
+    # was approved) would otherwise be invisible to every personalized
+    # caller — hence the separate .is_("category", "null") query rather
+    # than relying on the first to cover it. Folding both into one query
+    # via .or_() instead would mean concatenating `categories` — which can
+    # include a caller's own free-text `preferred_categories` — into a
+    # single filter string, reopening the PostgREST filter-injection class
+    # SECURITY.md #14 fixed.
+    #
+    # Each is capped at the *full* exploration_n rather than a pre-split
+    # half each: if one source is empty (e.g. a catalog with no
+    # uncategorized feeds at all), the other must still be able to fill
+    # the whole budget on its own, or `limit` results go undelivered even
+    # though enough eligible feeds exist. Combine and re-cap afterward.
     other_category = (
         _base_feed_query(db, excluded)
         .not_.in_("category", list(categories))
-        .limit(other_category_n)
+        .limit(exploration_n)
         .execute()
         .data
     )
     uncategorized = (
         _base_feed_query(db, excluded)
         .is_("category", "null")
-        .limit(uncategorized_n)
+        .limit(exploration_n)
         .execute()
         .data
     )
-    return preferred, other_category + uncategorized
+    exploratory = (other_category + uncategorized)[:exploration_n]
+    return preferred, exploratory
 
 
 @router.get("", response_model=list[Feed])

@@ -33,6 +33,24 @@ def _chain(execute_return):
     return chain
 
 
+def _limited_chain(full_data):
+    """Like _chain(), but .limit(n) actually truncates the configured
+    dataset to its first n rows — simulating a real DB LIMIT instead of
+    ignoring the argument — so a test can catch a request that under-asks
+    for rows even though more are available."""
+    chain = MagicMock()
+    for name in ("select", "is_", "in_", "eq"):
+        getattr(chain, name).return_value = chain
+    chain.not_.in_.return_value = chain
+
+    def _limit(n):
+        chain.execute.return_value = MagicMock(data=full_data[:n])
+        return chain
+
+    chain.limit.side_effect = _limit
+    return chain
+
+
 def _feed_row(feed_id=None, category=None, tags=None, language=None):
     return {
         "id": str(feed_id or uuid4()),
@@ -195,6 +213,52 @@ def test_exploration_slots_survive_scoring_on_a_populated_catalog(client):
     body = resp.json()
     assert len(body) == limit
     assert exploratory_match["id"] in [row["id"] for row in body]
+
+
+def test_exploratory_subpool_can_use_the_full_budget_when_the_other_is_empty(client):
+    """P2 regression: the exploration budget used to be pre-split in half
+    between the two exploratory sub-queries (other-category /
+    uncategorized), each independently capped at that half. If one
+    subtype had no matching rows at all — e.g. a catalog with zero
+    uncategorized feeds — the other was still capped at half the budget
+    even though it alone could have filled the whole thing, silently
+    under-delivering `limit` results despite plenty of eligible feeds
+    existing. Each subquery must be able to draw on the full budget."""
+    c, mock_db = client
+    limit = 10
+    liked_id = str(uuid4())
+    # more than half of the exploration budget (round(limit * 5 * 0.3) ==
+    # 15 for limit=10) — a pre-split-in-half cap would have silently
+    # thrown the rest away even though the catalog has them.
+    other_category_matches = [_feed_row(category="art") for _ in range(12)]
+
+    liked_lookup = _chain(
+        MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
+    )
+    preferred_pool = _chain(MagicMock(data=[]))
+    other_category_pool = _limited_chain(other_category_matches)
+    uncategorized_pool = _limited_chain([])
+    calls = {"n": 0}
+    pools = {
+        1: liked_lookup,
+        2: preferred_pool,
+        3: other_category_pool,
+        4: uncategorized_pool,
+    }
+
+    def _table(name):
+        assert name == "feeds"
+        calls["n"] += 1
+        return pools[calls["n"]]
+
+    mock_db.table.side_effect = _table
+
+    resp = c.get(
+        "/api/recommendations", params={"liked": [liked_id], "limit": limit}
+    )
+
+    assert resp.status_code == 200
+    assert len(resp.json()) == limit
 
 
 def test_authenticated_user_excludes_their_subscriptions(client):
