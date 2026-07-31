@@ -9,6 +9,7 @@ SSRF protection is applied: private / loopback / link-local addresses are reject
 """
 from __future__ import annotations
 import asyncio
+import concurrent.futures
 import ipaddress
 import os
 import socket
@@ -39,6 +40,40 @@ FALLBACK_PATHS = ("/feed", "/rss", "/rss.xml", "/atom.xml", "/feed.xml", "/index
 # has to be chosen before the content type is known, and the feed limit
 # is the one that has to hold.
 MAX_FEED_BYTES = 5 * 1024 * 1024  # 5 MiB
+# A real page's declared alternate feed links realistically number in the
+# single digits. Without a cap, a page crafted for the fully public,
+# unauthenticated POST /api/discover could pad <head> with thousands of
+# <link rel="alternate"> tags, each one costing an outbound validation fetch
+# in discover_feeds() below and, since #25, a DB lookup in routers/discover.py
+# — turning one cheap request into an unbounded pile of outbound/DB work.
+# Same technique as link_harvest.py's MAX_ANCHORS_PER_DOC, applied at the
+# same choke point (_extract_feed_links) so every downstream consumer of its
+# output is bounded by construction, not by remembering to cap it themselves.
+MAX_FEED_LINK_CANDIDATES = 50
+# PinnedTransport tries at most this many resolved addresses per fetch. Each
+# attempt gets its own full connect timeout, so an attacker-controlled DNS
+# answer with many public-but-unreachable addresses could otherwise turn one
+# request into address_count x timeout of hung connection time. 2 covers the
+# realistic dual-stack case (one AAAA, one A) this exists for.
+MAX_PINNED_CONNECT_ATTEMPTS = 2
+# socket.getaddrinfo() has no cooperative cancellation point, so
+# asyncio.wait_for() timing out a resolution (see _resolve_pinned_ips) only
+# ever stops *waiting* on it — the blocking call keeps running in whatever
+# thread it was submitted to until the OS resolver itself gives up, often far
+# past our own timeout. asyncio.to_thread() always submits to the process-
+# wide default executor, which every other blocking call in the app shares;
+# a pile of abandoned lookups (attacker-controlled, slow/unresponsive DNS,
+# submitted once per candidate feed link and fallback path from the public
+# /api/discover) could occupy every thread in that shared pool, stalling
+# unrelated blocking work elsewhere in the app too. Resolving through a
+# small, dedicated executor instead confines that occupancy to DNS
+# resolution alone — it doesn't make the abandoned lookups go away (nothing
+# short of real async DNS can), but it stops them from starving anything
+# outside this one bounded pool.
+DNS_RESOLVER_MAX_WORKERS = 8
+_dns_resolver_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=DNS_RESOLVER_MAX_WORKERS, thread_name_prefix="pinned-dns-resolve"
+)
 
 
 @dataclass
@@ -119,6 +154,249 @@ def validate_fetch_url(url: str) -> str:
     if not _is_safe_host(parsed.hostname or ""):
         raise DiscoveryError("Refusing to fetch private/loopback address")
     return url
+
+
+async def _resolve_pinned_ips(host: str, timeout: float | None = None) -> list[str]:
+    """Resolve `host` and return every IP that passed the same private/
+    loopback/etc checks as _is_safe_host — for PinnedTransport to connect to
+    directly, trying them in order.
+
+    `timeout`, when given, bounds the resolution itself — PinnedTransport
+    passes the request's configured connect timeout (see handle_async_request
+    below). Before pin-and-connect, httpcore performed its own connect-time
+    DNS lookup *inside* the connect deadline, so an attacker-controlled or
+    merely slow-to-answer hostname could only ever stall a fetch by up to
+    that deadline. Resolving separately here, via asyncio.to_thread(), has no
+    deadline of its own — an unbounded await would let such a host stall
+    POST /api/discover for however long the system resolver takes to give up
+    (often far longer than the client's configured timeout), once per
+    candidate feed link and fallback path.
+
+    validate_fetch_url() and the actual TCP connection each used to do their
+    own independent socket.getaddrinfo() for the same hostname (the former to
+    decide whether to proceed, httpcore internally for the latter). A DNS
+    answer with a short TTL or multiple A/AAAA records can differ between the
+    two lookups — the classic DNS-rebinding bypass documented in
+    docs/SECURITY.md (#22's known limitation, elaborated in #24 point 2): a
+    public IP can pass validation while a private one is what's actually
+    connected to. Reusing *this* function's single resolution as the connect
+    targets (via PinnedTransport below) closes that gap by construction —
+    there is no second, independent lookup left to disagree with the first.
+
+    Returns the *whole* validated list, not just one address, so a dual-stack
+    host isn't reduced to a single attempt: connecting to plain (unpinned)
+    httpx/httpcore already falls back across every getaddrinfo() result in
+    order, and only trying address[0] here would silently drop that fallback
+    — e.g. an AAAA record picked first in an environment with broken IPv6
+    would fail outright instead of falling back to a working A record.
+
+    Runs socket.getaddrinfo() in a thread (via _dns_resolver_executor, see
+    its module-level comment) rather than calling it directly: it's a
+    blocking call, and this coroutine runs inside
+    PinnedTransport.handle_async_request(), invoked once per candidate feed
+    link and fallback path in discover_feeds() — called directly from the
+    fully public, unauthenticated POST /api/discover. A synchronous call
+    here would stall the *entire* event loop (every other in-flight request,
+    not just this one) for however long an attacker-controlled or slow DNS
+    server takes to answer, repeated once per candidate.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(
+            loop.run_in_executor(_dns_resolver_executor, socket.getaddrinfo, host, None),
+            timeout,
+        )
+    except (socket.gaierror, UnicodeError):
+        raise DiscoveryError(f"DNS resolution failed for {host!r}")
+    except TimeoutError:
+        raise DiscoveryError(f"DNS resolution timed out for {host!r}")
+    # Reject the whole host if *any* resolved address is unsafe, not just the
+    # ones we'd try to connect to — same conservative stance as _is_safe_host
+    # (a host that can answer with a private address under some resolution is
+    # treated as unsafe outright, not just "unsafe on the record we happened
+    # to try first").
+    ips: list[str] = []
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            raise DiscoveryError(f"DNS resolution returned an invalid address for {host!r}")
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise DiscoveryError(f"Refusing to connect {host!r} to private/loopback address")
+        if ip_str not in ips:
+            ips.append(ip_str)
+    if not ips:
+        raise DiscoveryError(f"DNS resolution returned no addresses for {host!r}")
+    return ips
+
+
+def _pick_pinned_ips(ips: list[str], limit: int) -> list[str]:
+    """Choose up to `limit` addresses to try, from `ips` in
+    _resolve_pinned_ips()'s original (resolver-returned) order, but
+    interleaved by address family first.
+
+    A plain ips[:limit] would fail the exact case PinnedTransport's fallback
+    exists for: a host whose resolver lists two or more AAAA records before
+    any A record would have every slot in the attempt budget taken by IPv6,
+    silently dropping the IPv4 fallback again in an environment where IPv6
+    doesn't actually work. Round-robining by family (first-seen family
+    first, preserving each family's internal order) guarantees every family
+    present gets a slot before any family gets a second one.
+    """
+    by_family: dict[int, list[str]] = {}
+    families_in_order: list[int] = []
+    for ip in ips:
+        version = ipaddress.ip_address(ip).version
+        if version not in by_family:
+            by_family[version] = []
+            families_in_order.append(version)
+        by_family[version].append(ip)
+
+    picked: list[str] = []
+    while len(picked) < limit and any(by_family[v] for v in families_in_order):
+        for version in families_in_order:
+            if by_family[version]:
+                picked.append(by_family[version].pop(0))
+                if len(picked) >= limit:
+                    break
+    return picked
+
+
+class PinnedTransport(httpx.AsyncHTTPTransport):
+    """The real transport used for every outbound fetch (see ssrf_safe_client
+    below) — connects to one of the exact IPs _resolve_pinned_ips() just
+    validated, instead of handing httpcore a hostname it would resolve again
+    on its own. The Host header and TLS SNI still use the original hostname
+    (the former was already set from it when httpx built the request, before
+    any transport runs; the latter is set explicitly below), so this is
+    transparent to the server — only the connect target is pinned. Every
+    request in this project is a bodyless GET (see fetch_with_cap_response),
+    so retrying the same Request object across addresses is safe — there is
+    no request stream that a failed attempt could have partially consumed.
+
+    Only MAX_PINNED_CONNECT_ATTEMPTS validated addresses are ever tried,
+    chosen via _pick_pinned_ips() so both address families get a slot before
+    either gets a second one. Each attempt below gets the *full* configured
+    connect timeout
+    independently (there's no cheap, safe-to-implement-blind way to share a
+    single deadline across attempts here — httpx's per-request timeout
+    override needs the extension dict shape gotten exactly right, and this
+    project has no way to exercise that against a real network stack before
+    it ships), so an uncapped attempt count would let a hostname resolving to
+    many public-but-unreachable addresses (attacker-controlled DNS, since the
+    resolution runs on every fetch, including ones the fully public
+    /api/discover endpoint triggers) turn one request into roughly
+    address_count × timeout of hung connection time. Capping the attempt
+    count bounds that to a small constant instead, while still covering the
+    realistic dual-stack case this fallback exists for (one AAAA, one A).
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        original_host = request.url.host
+        original_url = request.url
+        # request.extensions["timeout"] is the dict httpx.Client.build_request()
+        # attaches to every request (Timeout.as_dict() — connect/read/write/pool
+        # keys), the same configured timeout httpcore's own connect-time DNS
+        # lookup used to be bounded by. Reusing its "connect" value here bounds
+        # this resolution the same way; a request without that extension (e.g.
+        # one built by hand in a test) resolves unbounded, same as before this
+        # existed.
+        connect_timeout = (request.extensions.get("timeout") or {}).get("connect")
+        ips = _pick_pinned_ips(
+            await _resolve_pinned_ips(original_host, connect_timeout),
+            MAX_PINNED_CONNECT_ATTEMPTS,
+        )
+        last_error: httpx.TransportError | None = None
+        try:
+            for ip in ips:
+                request.url = original_url.copy_with(host=ip)
+                request.extensions = {**request.extensions, "sni_hostname": original_host}
+                try:
+                    return await super().handle_async_request(request)
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    # Only a connect-stage failure warrants trying the next
+                    # address — anything past that point (read/write timeout,
+                    # HTTP-level error) isn't an address-reachability problem and
+                    # retrying it against a different IP wouldn't fix it. Both
+                    # exceptions are needed: httpx.ConnectTimeout is a sibling of
+                    # ConnectError, not a subclass of it (they hang off
+                    # TimeoutException vs NetworkError respectively), and a
+                    # connect-stage timeout — packets silently dropped rather than
+                    # actively refused — is the more common real-world shape of
+                    # exactly the "broken IPv6 route" case this fallback exists
+                    # for, not the exception thrown for an address that's merely
+                    # unreachable.
+                    last_error = exc
+                    continue
+            assert last_error is not None  # ips is non-empty; the loop always runs >=1 time
+            raise last_error
+        finally:
+            # The caller (httpx.Client._send_single_request) sets
+            # response.request = request and *then* extracts Set-Cookie
+            # headers from the response using response.request.url's host as
+            # the cookie domain — after this method returns, not before. A
+            # finally block runs before a `return` actually hands control
+            # back, so restoring request.url here (undoing the per-attempt
+            # rewrite above) guarantees the caller only ever observes the
+            # original hostname, never the pinned IP. Without this, a
+            # Set-Cookie on this response would be filed under the IP, and
+            # the next manual-redirect hop in fetch_with_cap_response() (same
+            # client, request built against the real hostname) wouldn't find
+            # it — breaking any site that gates a redirect chain on a cookie
+            # set earlier in it (e.g. a bot-challenge cookie).
+            request.url = original_url
+
+
+def ssrf_safe_client(**kwargs) -> httpx.AsyncClient:
+    """The only way any code in this project should construct an AsyncClient
+    for fetching an externally-supplied URL — wires in PinnedTransport so the
+    DNS resolution that validated a host is the same resolution the TCP
+    connection actually uses. Tests override this at the `httpx.AsyncClient`
+    patch point same as before (see tests/test_feed_discovery.py's
+    _mock_client_factory): MockTransport always overwrites `transport`, so
+    this default never reaches a mocked client.
+
+    Also defaults keep-alive connection reuse off (`Limits(
+    max_keepalive_connections=0)`). PinnedTransport rewrites request.url's
+    host to the resolved IP before delegating to the real transport, which
+    means httpcore's connection-pool key is that IP too — so two *different*
+    hostnames that happen to resolve to the same shared-hosting/CDN IP would
+    collide in the pool, and a request for the second could be sent over a
+    connection whose TLS session (and SNI) was established for the first.
+    Disabling reuse means no connection ever outlives the single request it
+    was opened for, so there is nothing left in the pool for a later request
+    — to any hostname — to collide with.
+
+    None of the current callers pass other transport-level kwargs (verify,
+    cert, http2, proxy...) — if one ever needs to, it must go to
+    PinnedTransport(...) instead of here, since httpx.AsyncClient silently
+    ignores `limits` (and verify/cert/http2/proxy) once an explicit
+    `transport` is supplied — it only applies them when *it* constructs the
+    default transport itself. That's why `limits` below is threaded into
+    PinnedTransport(...) directly rather than passed alongside `transport` in
+    kwargs.
+
+    `trust_env=False` is the one client-level kwarg that still matters with
+    an explicit transport: unlike `limits`/`verify`/`cert`, httpx.AsyncClient
+    consults `trust_env` for its own environment-proxy mounting (HTTP_PROXY /
+    HTTPS_PROXY / ALL_PROXY / NO_PROXY) independently of transport
+    construction, and a mounted proxy transport for a matching URL wins over
+    `self._transport` — i.e. over PinnedTransport — bypassing the pinning
+    this whole module exists for on any deployment that happens to have one
+    of those env vars set (this project documents none of them; an operator
+    could still export one at the container/host level without touching
+    Driftread's own .env). Explicitly opting out removes the ambiguity
+    rather than relying on exactly how httpx resolves that precedence.
+    Revisit only alongside actually implementing proxy-aware pinning, not by
+    flipping this back to the default.
+    """
+    kwargs.setdefault(
+        "transport",
+        PinnedTransport(limits=httpx.Limits(max_keepalive_connections=0)),
+    )
+    kwargs.setdefault("trust_env", False)
+    return httpx.AsyncClient(**kwargs)
 
 
 async def fetch_with_cap_response(
@@ -242,7 +520,18 @@ def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[DiscoveryCandidate] = []
     seen: set[str] = set()
+    # Cap qualifying candidates, not the raw <link> tags scanned: BeautifulSoup
+    # has already parsed the whole (byte-capped) document by the time find_all
+    # returns anything, so limiting the scan itself (find_all(..., limit=...))
+    # buys no real cost saving — it only risks stopping before the actual feed
+    # declaration on a page whose <head> happens to list many ordinary
+    # stylesheet/icon/preload <link> tags first. Capping on candidates found
+    # keeps the bound that matters (outbound validation fetches downstream in
+    # discover_feeds(), DB lookups in routers/discover.py) without that
+    # false-negative.
     for link in soup.find_all("link"):
+        if len(candidates) >= MAX_FEED_LINK_CANDIDATES:
+            break
         rel = link.get("rel") or []
         if isinstance(rel, str):
             rel = [rel]
@@ -314,7 +603,7 @@ async def discover_feeds(
     safe_url = validate_fetch_url(url)
     headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
-    async with httpx.AsyncClient(
+    async with ssrf_safe_client(
         follow_redirects=False, timeout=timeout, headers=headers
     ) as client:
         # The pause applies before the *first* request too. The autonomous caller

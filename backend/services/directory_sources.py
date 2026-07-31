@@ -37,6 +37,7 @@ from services.feed_discovery import (
     AllowUrl,
     DiscoveryError,
     fetch_with_cap,
+    ssrf_safe_client,
     user_agent,
 )
 from services.link_harvest import (
@@ -191,7 +192,7 @@ async def _fetch(url: str, allow_url: AllowUrl | None) -> str:
         "User-Agent": user_agent(),
         "Accept": "text/html,application/xhtml+xml,application/xml,*/*",
     }
-    async with httpx.AsyncClient(
+    async with ssrf_safe_client(
         follow_redirects=False, timeout=15.0, headers=headers
     ) as client:
         text, _ctype = await fetch_with_cap(

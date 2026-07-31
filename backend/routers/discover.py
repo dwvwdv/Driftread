@@ -35,11 +35,22 @@ async def discover(
     except DiscoveryError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    feed_urls = [c.feed_url for c in candidates]
+    # feed_url is lifted straight out of remote HTML (<link rel="alternate">
+    # hrefs on whatever page body.url points at — see _extract_feed_links()),
+    # so it's attacker-influenced third-party text, not something this app
+    # authored. A single .in_("url", feed_urls) call would splice every one of
+    # those strings into one PostgREST filter's comma/paren-delimited value
+    # list — the same class of filter-injection PR #14 fixed for .or_(), just
+    # reachable through .in_()'s list serialization instead of hand-built
+    # string concatenation (docs/SECURITY.md #24). Looking each URL up on its
+    # own via .eq().maybe_single() keeps every third-party string out of
+    # PostgREST's filter mini-language entirely, matching the pattern
+    # services/discovery_candidates.py already uses for the same reason.
     existing: dict[str, str] = {}
-    if feed_urls:
-        rows = db.table("feeds").select("id,url").in_("url", feed_urls).execute()
-        existing = {row["url"]: row["id"] for row in rows.data}
+    for feed_url in {c.feed_url for c in candidates}:
+        row = db.table("feeds").select("id,url").eq("url", feed_url).maybe_single().execute()
+        if row and row.data:
+            existing[row.data["url"]] = row.data["id"]
 
     result = [
         DiscoveredFeed(

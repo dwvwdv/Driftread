@@ -28,7 +28,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 
-from services.feed_discovery import DiscoveryError, fetch_with_cap
+from services.feed_discovery import DiscoveryError, fetch_with_cap, ssrf_safe_client
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ async def _fetch(origin: str, user_agent: str) -> _Cached:
         "headers": {"User-Agent": user_agent, "Accept": "text/plain,*/*"},
     }
     try:
-        async with httpx.AsyncClient(**client_kwargs) as client:
+        async with ssrf_safe_client(**client_kwargs) as client:
             text, _ctype = await fetch_with_cap(
                 client, f"{origin}/robots.txt", MAX_ROBOTS_BYTES
             )

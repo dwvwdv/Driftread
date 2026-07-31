@@ -70,8 +70,8 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 - **修法**：把守門移到唯一的抓取瓶頸點，`fetch_with_cap()` 對**初始 URL 與每個 redirect hop** 都跑 `validate_fetch_url()`，而不再依賴每個呼叫端各自記得。重複驗證一個已驗證過的 URL 只多一次 DNS 查詢。
 - **測試**：`test_discover_feeds_rejects_private_alternate_link` 斷言 `MockTransport` 從未收到往 `169.254.169.254` 的請求（修法前這個測試會失敗，實際觀察到該請求）。
 - **附帶**：`MAX_HTML_BYTES`（2 MiB）從未被任何程式碼引用——`discover_feeds` 的第一次抓取一律用 `MAX_FEED_BYTES`。這個常數是死碼，卻讓人以為有一道 2 MiB 的 HTML 上限。已刪除，文件改為記載實際的單一 5 MiB 上限。
-- **已知限制：DNS rebinding 仍可繞過守門（未修）**。`_is_safe_host()` 用 `socket.getaddrinfo()` 解析主機名做判斷，但接下來 `client.stream()` 連線時 httpx 會**獨立再解析一次**。攻擊者控制的 domain 可以在驗證那次回公開 IP、在連線那次回 `169.254.169.254` 之類的位址（短 TTL 或多筆 A 記錄輪替），於是 `/api/discover` 這條公開免認證路徑仍可能發出內部請求。
-  這是 check-then-fetch 這種守門形式的固有弱點，從 #15 引入守門起就存在，不是這次改動造成的。要真正關掉必須改成 pin-and-connect：解析一次、只連到那個已驗證的 IP，同時保留原始 hostname 給 HTTP `Host` 標頭與 TLS SNI（httpx 需自訂 transport 或用 `sni_hostname` request extension）。屬於獨立的實作工作，尚未進行。
+- **已知限制：DNS rebinding 仍可繞過守門（#25 已修）**。`_is_safe_host()` 用 `socket.getaddrinfo()` 解析主機名做判斷，但接下來 `client.stream()` 連線時 httpx 會**獨立再解析一次**。攻擊者控制的 domain 可以在驗證那次回公開 IP、在連線那次回 `169.254.169.254` 之類的位址（短 TTL 或多筆 A 記錄輪替），於是 `/api/discover` 這條公開免認證路徑仍可能發出內部請求。
+  這是 check-then-fetch 這種守門形式的固有弱點，從 #15 引入守門起就存在，不是這次改動造成的。真正關掉的做法是 pin-and-connect：解析一次、只連到那個已驗證的 IP，同時保留原始 hostname 給 HTTP `Host` 標頭與 TLS SNI（httpx 自訂 transport + `sni_hostname` request extension）。`services/feed_discovery.py::PinnedTransport` 在 #25 落地了這個修法，細節見 SECURITY.md 的 #25 條目。
 
 ### #24 — 自主發現：從「使用者觸發」變成「自我驅動」的外連（07-30）
 
@@ -196,9 +196,55 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - 本次設計刻意讓第三方字串完全不進 PostgREST filter：host 集合都從我們自己的列在記憶體裡
   建（`HostIndex`），候選查詢逐 URL 用 `.eq(...).maybe_single()` 而不是一次 `.in_(...)`。
   **相關的既存暴露，本次未改，記為後續**：`routers/discover.py:41` 把遠端 HTML 抽出的 URL
-  直接餵進 `.in_("url", feed_urls)`。
+  直接餵進 `.in_("url", feed_urls)`。（已於 #25 修掉，改為同樣的逐 URL `.eq(...).maybe_single()`。）
 
----
+### #25 — pin-and-connect：DNS rebinding 的 check-then-fetch 缺口（07-30）
+
+- **問題**：`validate_fetch_url()`（`socket.getaddrinfo()`）與實際的 `client.stream()` 連線各自獨立解析同一個 hostname。#22 記載的已知限制、#24 第 2 點標記為「應優先修」的正是這個 check-then-fetch 窗口：攻擊者控制的 domain 可以用短 TTL 或多筆 A 記錄，讓驗證那次解析回公開 IP、連線那次解析回 `169.254.169.254`（或任何內網位址）。#24 上線後風險更高——待探測佇列從第三方文章 HTML 自動填入，不再需要攻擊者主動打 API。
+- **修法**：在傳輸層而非呼叫端修。新增 `services/feed_discovery.py::PinnedTransport`（`httpx.AsyncHTTPTransport` 的子類）：`handle_async_request()` 對 `request.url.host` 做**單次** `socket.getaddrinfo()`（`_resolve_pinned_ips()`），驗證解析出的**每一筆**位址都不是 private / loopback / link-local / multicast / reserved（與 `_is_safe_host()` 同樣保守——任何一筆不安全就整個拒絕，不是只挑安全的那筆連），再把連線目標換成驗證過的 IP，同時把原始 hostname 塞進 `extensions["sni_hostname"]` 供 TLS SNI 使用（`Host` 標頭已在 httpx 組請求時就用原始 hostname 設好，不受影響）。新增 `ssrf_safe_client()` 工廠函式，是全專案唯一該用來建構會抓外部 URL 的 `AsyncClient` 的地方；6 個既有的 `httpx.AsyncClient(...)` 建構點（`feed_discovery.discover_feeds`、`rss_parser.fetch_and_parse` / `fetch_and_parse_conditional`、`robots._fetch`、`directory_sources._fetch`、`link_harvest._fetch_blogroll`）全部改用它——單一工廠而非逐一手改 call site，是規則 9 同一個教訓。
+- **`validate_fetch_url()` / `_is_safe_host()` 本身不動**：既有的 check-then-fetch 語意保留在呼叫端（仍然是 `allow_url` 政策層跑之前的第一道門），新的傳輸層解析是**第二道獨立的門**，決定的是真正的連線目標——兩道門之間不再有「驗證用一個 IP、連線用另一個 IP」的落差，因為傳輸層自己的解析結果就是它自己拿去連線的那個。
+- **已知限制**：`_resolve_pinned_ips()` 每次呼叫只解析一次，但 `fetch_with_cap_response()` 對每個 redirect hop 都會重新進入這個傳輸層（每個 hop 都是新的一次 `client.stream()` 呼叫），所以每個 hop 各自有自己的單次解析——這是預期行為，不是遺漏。
+- **附帶修掉 `routers/discover.py:41`**（#24 附帶記錄的既存暴露，當時未改）：`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出的第三方字串，原本整批塞進 `.in_("url", feed_urls)`，與 #14 修的 `.or_()` 注入同一類問題（只是經由 `.in_()` 的 list 序列化而非手拼字串）。改為逐一 `.eq("url", feed_url).maybe_single()`，match `services/discovery_candidates.py` 既有的作法，第三方字串完全不進 PostgREST filter 語法。
+- **PR review（自動化 code review，九輪）抓出十二個問題，同一輪補上**：
+
+  第一輪：
+
+  1. **P1 — 連線池的 key 被換成了 IP**。`PinnedTransport` 把 `request.url.host` 換成解析出的 IP 再交給底層 transport，這連帶讓 httpcore 的連線池 key 也變成那個 IP。兩個**不同的原始 hostname**如果剛好指到同一個共用主機 / CDN IP（同 IP、不同租戶），就會在池裡撞在一起——第二個 hostname 的請求可能被送進一條「TLS session 是用第一個 hostname 的 SNI 建立的」既有連線，等於繞過了以 hostname 為單位的 TLS 身分驗證。修法：`ssrf_safe_client()` 把 `PinnedTransport(limits=httpx.Limits(max_keepalive_connections=0))` 接上——關掉 keep-alive 重用後，沒有連線會活過它服務的那一個請求，池裡不會留下任何東西可以撞。（`limits` 必須傳進 `PinnedTransport(...)` 建構子本身，不能傳給 `httpx.AsyncClient(**kwargs)`——一旦 `transport` 是明確給的，`AsyncClient` 會完全略過 `limits`／`verify`／`cert`／`http2`／`proxy` 這些參數，只有它自己組預設 transport 時才會套用；這是實作時另外抓到的一個坑，記在 `ssrf_safe_client()` 的 docstring 裡。）
+  2. **P1 — `routers/discover.py` 的逐 URL 查詢沒有上限**。把 `.in_()` 改成逐 URL `.eq().maybe_single()` 解決了 filter 注入，但候選數量本身沒有上限——`_extract_feed_links()` 對 `<link rel="alternate">` 的掃描不設限，惡意頁面可以塞進成千上萬個宣告，讓公開免認證的 `/api/discover` 一次觸發同樣多次的驗證抓取（`discover_feeds()` 既有行為）加上（本次新增的）DB 查詢。第一輪修法是 `soup.find_all("link", limit=...)`（見下方第二輪第 4 點，這個做法本身又被抓出問題，第二輪換掉了）。
+  3. **P2 — 只取第一筆解析位址會丟失 dual-stack 的 fallback**。未 pin 之前，httpx/httpcore 的預設連線邏輯會依序嘗試 `getaddrinfo()` 回傳的每一筆位址；只回傳 `ips[0]` 等於拿掉了這個 fallback——例如某環境 IPv6 實際不通但仍解析得出 AAAA，若那筆剛好排在前面，抓取會直接失敗而不會退回還可用的 IPv4。修法：`_resolve_pinned_ip()` 改名 `_resolve_pinned_ips()`，回傳**全部**驗證過的位址（驗證邏輯不變：任何一筆不安全就整個拒絕）；`PinnedTransport.handle_async_request()` 依序嘗試，只有連線層失敗才換下一筆重試（見第二輪第 5 點——第一輪只接 `httpx.ConnectError` 沒接對）。全站每個請求都是不帶 body 的 GET（見 `fetch_with_cap_response`），重試沿用同一個 `Request` 物件是安全的——沒有已被消耗一部分的 request stream 需要顧慮。
+
+  第二輪（對第一輪修法的 review）：
+
+  4. **P2 — 用 `find_all("link", limit=50)` 限制掃描數，會在真正的 feed 宣告前就停手**。BeautifulSoup 用 `"html.parser"` 解析時，整份文件（已受 `MAX_FEED_BYTES` 位元組上限約束）在 `find_all` 執行前就已經全部解析進記憶體——`limit=` 只影響回傳幾個元素，不影響解析成本，所以拿它限制掃描數量並沒有真的省到什麼，卻會讓一個 `<head>` 裡有 50 個以上 stylesheet / icon / preload 之類無關 `<link>` 標籤、真正 feed 宣告排在更後面的正常頁面，直接漏掉那個宣告。修法：把 cap 從「掃描的 `<link>` 標籤數」改成「篩選後、符合 `rel="alternate"` 且是 feed content-type 的候選數」——迴圈照樣跑過所有標籤（便宜，反正已經解析好了），只在候選數蒐集到 `MAX_FEED_LINK_CANDIDATES` 時才 `break`，惡意頁面全部標籤都合格的最壞情況仍然一樣被限制住。
+  5. **P2 — 位址 fallback 沒接住連線逾時**。`PinnedTransport` 第一輪只 `except httpx.ConnectError`，但 `httpx.ConnectTimeout` 不是 `ConnectError` 的子類——兩者是 `httpx.TransportError` 下的兩個平行分支（`TimeoutException` vs `NetworkError`），不是父子關係。而「封包被默默丟棄」（逾時）其實比「立刻拒絕連線」更是「這條路由實際不通」（例如壞掉的 IPv6）在真實世界最常見的樣子，第一輪的 fallback 因此漏接了它原本要解決的那個情境裡最典型的失敗形態。修法：`except (httpx.ConnectError, httpx.ConnectTimeout)`。
+
+  第三輪（對第二輪修法本身又抓出的問題）：
+
+  6. **P1 — 位址 fallback 沒有共用一個 deadline，攻擊者可用 DNS answer 放大單次請求耗時**。`PinnedTransport` 依序嘗試每個驗證過的位址，但每次呼叫底層 transport 都拿到**完整**的連線逾時設定——沒有東西在嘗試之間遞減剩餘時間。惡意 DNS 可以讓一個 hostname 解析出一長串「公開但打不通」的位址（都通過 SSRF 檢查，因為每個都是真正的公開 IP，只是連不上），一次公開免認證的 `/api/discover` 請求就可能被拖到約「位址數 × 逾時秒數」那麼久——比 pin 之前的行為差。真正正確的修法是共用一個 deadline、逐次遞減每次嘗試分到的剩餘時間，但那需要正確組出 httpx 內部 `timeout` extension 的 dict 形狀，這個 sandbox 沒有網路能裝 httpx 對著真正的函式庫驗證，做錯的後果是每個請求的逾時設定被默默弄壞（比現在這個問題更糟，而且無聲無息）。改採風險小很多的作法：新增 `MAX_PINNED_CONNECT_ATTEMPTS = 2`，最多只嘗試前兩筆驗證過的位址——涵蓋這個 fallback 原本要處理的現實情境（一筆 AAAA、一筆 A），把最壞情況的放大倍率從「攻擊者控制的任意位址數」壓到一個固定的小常數。
+
+  第四輪（對第三輪修法本身又抓出的問題）：
+
+  7. **P2 — 位址上限的截斷沒有顧到位址族**。第三輪的 `ips[:MAX_PINNED_CONNECT_ATTEMPTS]` 是照 `getaddrinfo()` 回傳順序直接截斷——如果一個 resolver 對同一個 hostname 回傳兩筆以上 AAAA 記錄、排在唯一一筆 A 記錄前面，兩個嘗試名額會被 IPv6 佔滿，在 IPv6 實際不通的環境裡，又把第 3 點（dual-stack fallback）原本要解決的情境重新弄壞一次——只是這次不是「只回傳一筆」，而是「回傳的順序讓上限截斷到同一個族」。修法：新增 `_pick_pinned_ips(ips, limit)`，依「先出現的族優先」交錯排列（例如 IPv6、IPv4、IPv6、IPv4……，各自保留族內原始順序）後再截斷，確保只要有兩個以上族存在，上限之內一定各占到至少一個名額。這是純函式、不涉及任何 httpx／httpcore 內部細節，可以在沒有網路的環境裡放心驗證正確性。
+
+  第五輪：
+
+  8. **P2 — 回傳前沒有還原 `request.url`**。`httpx.Client._send_single_request()` 拿到 transport 回傳的 response 後才設定 `response.request = request`，然後才用 `response.request.url` 的 host 當 cookie domain 去解析回應帶的 `Set-Cookie`——這一步發生在 `PinnedTransport.handle_async_request()` **回傳之後**，而 `request` 是同一個被本函式改過 `url` 的物件。如果回傳前沒把 `request.url` 還原成原始 hostname，Set-Cookie 就會被歸檔到那次連線用的 IP 底下；`fetch_with_cap_response()` 手動 redirect 迴圈的下一 hop 用同一個 `client`、對真正的 hostname 建立新請求時，找不到存在 IP 底下的 cookie，帶 cookie 才能過關的重新導向鏈（例如某些反爬蟲挑戰）就會在這裡斷掉。修法：整個重試迴圈包進 `try/finally`，在 `finally` 裡把 `request.url` 還原成 `original_url`——`finally` 保證在 `return`／`raise` 真正把控制權交還呼叫端之前執行，所以呼叫端（不管是拿到 response 還是抓到例外）看到的 `request.url` 永遠是原始 hostname，不會是曾經用過的 pinned IP。
+
+  第六輪：
+
+  9. **P2 — 明確 `transport=` 可能讓環境代理設定失效或被繞過**。`httpx.AsyncClient` 是否要走 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，取決於 `trust_env` 這個 client 層級參數——這一步和 `limits`／`verify`／`cert` 不同，**不會**因為給了明確的 `transport=` 就被跳過：`Client.__init__` 會照樣讀環境變數組出 `self._mounts`，而 `_transport_for_url()` 對命中 pattern 的 URL 一律回傳 mount 到的 proxy transport，優先於 `self._transport`（也就是 `PinnedTransport`）。這代表如果某個部署在容器／host 層級自己設了代理環境變數（Driftread 自身完全沒有文件記載或支援這件事），這次 PR 修的整個 pin-and-connect 可能在那個環境裡被靜靜繞過——因為實際命中 mount 時走的是 httpx 自己組出來的、沒有 pinning 的 proxy transport，而不是 `PinnedTransport`。修法：`ssrf_safe_client()` 補上 `trust_env=False`——`trust_env` 是唯一一個「即使給了明確 transport 仍然有效」的 client 層級參數，關掉它讓這批 fetch 完全不依賴環境代理設定，把行為變成明確、可預期的：永遠直連。這符合專案目前本來就沒有記載代理支援的現實，而不是依賴對 httpx 內部 mount 與 transport 優先順序的準確理解（這個 sandbox 沒有網路能對著真正的函式庫驗證那個細節）。
+
+  第七輪：
+
+  10. **P2 — `_resolve_pinned_ips()` 在事件迴圈裡做同步阻塞的 DNS 查詢**。`socket.getaddrinfo()` 是阻塞呼叫；直接在 `async def` 函式裡呼叫它並不會把控制權交還事件迴圈，而是整個卡住——不只卡住這次請求所在的 coroutine，是卡住這個 worker process 裡**所有**並發中的請求與背景迴圈，直到 DNS 查詢回來為止（或逾時）。`PinnedTransport.handle_async_request()` 對每個候選 feed 連結、每個 fallback path 都各呼叫一次，而這條路徑正是完全公開、免認證的 `POST /api/discover` 會觸發的——攻擊者只要指向一個回應很慢（或乾脆不回應）的 DNS 伺服器，一次請求就能讓整個 worker 的事件迴圈卡住數秒到數十秒，波及所有其他使用者的請求，是真正的服務層級 DoS。`validate_fetch_url()`／`_is_safe_host()` 呼叫 `socket.getaddrinfo()` 也有同樣的既有問題，但那是本 PR 之前就存在、呼叫點遍布整個專案（把它們改成 async 會牽動每一個呼叫端）的既有型態，不在本次修法範圍——只處理本 PR 新增、範圍完全自足的 `_resolve_pinned_ips()`。修法：改成 `async def`，用 `await asyncio.to_thread(socket.getaddrinfo, host, None)` 把阻塞呼叫丟到執行緒池，讓事件迴圈在等待期間可以繼續處理其他工作；唯一呼叫端 `PinnedTransport.handle_async_request()` 已經是 `async def`，補上 `await` 即可，不需要改動任何其他呼叫路徑。
+
+  第八輪（對第七輪修法本身又抓出的問題）：
+
+  11. **P1 — `asyncio.to_thread()` 把阻塞的 DNS 查詢丟到執行緒池後，等待本身沒有上限**。第七輪把同步的 `socket.getaddrinfo()` 換成 `await asyncio.to_thread(...)`，解決了「卡住整個事件迴圈」的問題，但 `to_thread()` 本身不帶任何逾時——在 pin-and-connect 之前，DNS 解析是 httpcore 在連線階段內部做的，天生就受連線逾時約束；換成獨立的一次解析後，這層約束消失了。攻擊者控制、回應很慢（或乾脆不回）的 DNS 伺服器，可以讓 `_resolve_pinned_ips()` 卡到系統 resolver 自己的逾時（往往遠長於 httpx 配置的 12–15 秒），而且是對每個候選 feed 連結、每個 fallback path 各卡一次，公開免認證的 `/api/discover` 因此仍能被單一請求佔用遠超預期的時間。修法：`_resolve_pinned_ips()` 加上可選的 `timeout` 參數，把 `to_thread()` 呼叫包進 `asyncio.wait_for(..., timeout)`，逾時就拋 `DiscoveryError`。`PinnedTransport.handle_async_request()` 從 `request.extensions["timeout"]["connect"]` 取值傳進去——這正是 `httpx.Client.build_request()` 幫每個請求組好的 `Timeout.as_dict()`，也就是呼叫端原本設定的那個連線逾時，而不是另外發明一個新常數；沒有這個 extension 的請求（例如測試手動建構的 `httpx.Request`）維持原本的不設限行為。已對著實際安裝的 httpx（0.28.1）驗證過 `build_request()` 確實會填好這個 extension，外加涵蓋「逾時會提前中止」與「transport 正確把值傳給 resolver」兩條回歸測試。
+
+  第九輪（對第八輪修法本身又抓出的問題）：
+
+  12. **P1 — `asyncio.wait_for()` 逾時後，執行緒池裡的阻塞查詢還在跑，會塞滿整個執行緒池**。第八輪的 `asyncio.wait_for(to_thread(...), timeout)` 只是不再*等待*那個 `to_thread()` 工作——`socket.getaddrinfo()` 沒有任何合作式取消點，逾時後它仍在原本被丟進去的那個執行緒裡繼續跑，直到系統 resolver 自己放棄為止。`asyncio.to_thread()` 一律把工作丟進 process 共用的預設執行緒池（大小通常是 `min(32, cpu核數+4)`），而這個池是全 app 每一處 `to_thread()` 呼叫共用的。攻擊者只要開多個並發的公開 `/api/discover` 請求、各自指向回應很慢或乾脆不回的 DNS，被放棄的查詢就會逐一佔滿那個共用池的每一條執行緒——之後不管是同一支程式碼對健康 feed 的解析，還是 app 裡任何其他呼叫 `asyncio.to_thread()` 的阻塞工作，都會被排在那些已被放棄、卻還占著執行緒的查詢後面，遲遲拿不到執行緒可以真正開始跑。修法：新增專屬、大小固定（`DNS_RESOLVER_MAX_WORKERS = 8`）的 `concurrent.futures.ThreadPoolExecutor`（`_dns_resolver_executor`），`_resolve_pinned_ips()` 改用 `loop.run_in_executor(_dns_resolver_executor, socket.getaddrinfo, host, None)` 而非 `asyncio.to_thread()`（後者固定用預設執行緒池，沒有指定 executor 的介面）。這不能讓被放棄的查詢真正消失——沒有任何純 Python 手段能安全中斷一個正在執行的 blocking 系統呼叫——但把占用範圍限制在這一個小池子裡，不會波及 app 裡其他所有共用預設執行緒池的阻塞工作。新增回歸測試：先用 `threading.Barrier` 讓 `DNS_RESOLVER_MAX_WORKERS` 個假造的慢查詢確實佔滿專屬池的每一條執行緒，再斷言一個不相關的 `asyncio.to_thread()` 呼叫仍然立刻完成，證明兩個池互不影響。
 
 ## 目前的防線總覽
 
@@ -207,7 +253,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 | Request 入口 | `Content-Length` > 6 MiB → 413（最外層 middleware） | `main.py::MaxBodySizeMiddleware` |
 | Client 識別 | `ProxyHeadersMiddleware(trusted_hosts="*")` + nginx `X-Forwarded-For $remote_addr` | `main.py`、`frontend/nginx.conf` |
 | 濫用防護 | 每 IP 每端點 20 req / 60s，追蹤上限 10k clients | `rate_limit.py` |
-| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local（⚠ 仍可被 DNS rebinding 繞過，見 #22 的已知限制與 #24 第 2 點） | `services/feed_discovery.py` |
+| 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local；傳輸層 `PinnedTransport` 對實際連線目標做獨立的單次解析並驗證，關閉 #22 記載的 DNS rebinding check-then-fetch 缺口；該解析受呼叫端配置的連線逾時約束，且在專屬、固定大小的執行緒池執行，逾時後即使查詢仍在跑也不會佔用 app 其他地方共用的預設執行緒池（見 #25） | `services/feed_discovery.py` |
 | 爬取政策 | `allow_url` hook 掛在同一個 choke point，對初始 URL 與每個 hop 評估 denylist ∧ robots（在 SSRF gate 之後）| `services/feed_discovery.py`、`discovery_probe.py::_make_gate` |
 | 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用）；robots.txt 另限 512 KiB | `services/feed_discovery.py`、`services/robots.py` |
 | 自主爬取 | 總開關預設關；批次 / 並發 / per-host 延遲上限；robots 遵循；`POST /admin/discovery/run` 在停用時回 503 | `services/discovery_config.py`、`routers/admin_discovery.py` |
@@ -230,3 +276,5 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 8. **新增任何「自主」（非使用者觸發）的外連迴圈** → 必須有獨立的 enable flag 且**預設關閉**、批次與並發上限、per-host 延遲，並經過 robots 檢查。對應的手動觸發端點要一起尊重那個 flag，否則「已停用」是個沒有意義的說法。
 9. **新增任何抓取政策**（denylist、robots、allowlist）→ 掛在 `fetch_with_cap_response()` 的 `allow_url` hook 上，不要在各 call site 各寫一份。#22 與 #24 第 4 點是同一個教訓的兩次出現。
 10. **任何寫入公開表的第三方文字** → 先過 `sanitize_text()` / `sanitize_http_url()`，前端只能用插值呈現，並且把我們自己算出的識別資訊（host）顯示在旁邊。
+11. **任何用 `asyncio.to_thread()` 把阻塞呼叫丟到執行緒池的地方，若原本的呼叫受某個逾時約束** → 記得把那個逾時一併帶進 `asyncio.wait_for(...)`，不要假設「換成 to_thread 就自動安全」（#25 第八輪的教訓：卡住事件迴圈的問題解決了，但無界等待的問題還在，只是換了個形狀）。
+12. **任何 `asyncio.wait_for(...)` 包住的阻塞工作，若逾時後底層呼叫仍可能繼續佔用執行緒** → 評估是否該走專屬、大小固定的 `ThreadPoolExecutor`（`loop.run_in_executor(executor, ...)`）而非 `asyncio.to_thread()`（一律用 process 共用的預設池），把可能累積的占用範圍限制在一個小池子裡，而不是波及 app 其他所有共用預設執行緒池的阻塞工作（#25 第九輪的教訓）。
