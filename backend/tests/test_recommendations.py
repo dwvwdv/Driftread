@@ -85,30 +85,43 @@ def test_anonymous_no_signals_fetches_a_single_unfiltered_pool(client, monkeypat
     feeds_chain.not_.in_.assert_not_called()
 
 
-def test_category_signal_splits_into_preferred_and_exploratory_pools(client):
-    """Regression test for the Codex P1 finding on PR #26: naively dropping
-    the category predicate meant that on a catalog bigger than the fetch
-    limit, the unfiltered first batch could contain zero matches for the
-    caller's known categories and personalization silently vanished. The
-    fix queries a category-matching slice and a category-excluded slice
-    separately so both a relevant match and a novel-category candidate are
-    guaranteed to reach the scorer regardless of table order."""
+def test_category_signal_splits_into_three_pools(client):
+    """Regression test for two Codex findings on PR #26's first pass at
+    this fix:
+    - naively dropping the category predicate meant that on a catalog
+      bigger than the fetch limit, the unfiltered first batch could
+      contain zero matches for the caller's known categories, silently
+      killing personalization;
+    - `not_.in_("category", known)` compiles to SQL's NOT IN, which never
+      matches a NULL column, so a feed with no category at all (a normal
+      catalog state) was invisible to every personalized caller.
+    Candidates now come from three independent queries: category-matching
+    (preferred), a different known category, and no category at all (the
+    latter two both count as exploratory)."""
     c, mock_db = client
     liked_id = str(uuid4())
     matching_feed = _feed_row(category="tech")
     other_category_feed = _feed_row(category="art")
+    uncategorized_feed = _feed_row(category=None)
 
     liked_lookup = _chain(
         MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
     )
     preferred_pool = _chain(MagicMock(data=[matching_feed]))
-    exploratory_pool = _chain(MagicMock(data=[other_category_feed]))
+    other_category_pool = _chain(MagicMock(data=[other_category_feed]))
+    uncategorized_pool = _chain(MagicMock(data=[uncategorized_feed]))
     calls = {"n": 0}
+    pools = {
+        1: liked_lookup,
+        2: preferred_pool,
+        3: other_category_pool,
+        4: uncategorized_pool,
+    }
 
     def _table(name):
         assert name == "feeds"
         calls["n"] += 1
-        return {1: liked_lookup, 2: preferred_pool, 3: exploratory_pool}[calls["n"]]
+        return pools[calls["n"]]
 
     mock_db.table.side_effect = _table
 
@@ -118,17 +131,70 @@ def test_category_signal_splits_into_preferred_and_exploratory_pools(client):
     ids = [row["id"] for row in resp.json()]
     assert matching_feed["id"] in ids
     assert other_category_feed["id"] in ids
+    assert uncategorized_feed["id"] in ids
 
     # preferred slice: positive category match, plus the usual id exclusion
     preferred_pool.in_.assert_called_once_with("category", ["tech"])
     preferred_pool.not_.in_.assert_called_once_with("id", [liked_id])
 
-    # exploratory slice: never a positive category filter, but it does
-    # carry both the id exclusion and the negated category predicate
-    exploratory_pool.in_.assert_not_called()
-    exploratory_pool.not_.in_.assert_any_call("id", [liked_id])
-    exploratory_pool.not_.in_.assert_any_call("category", ["tech"])
-    assert exploratory_pool.not_.in_.call_count == 2
+    # exploratory slice #1: negated category, never a positive one
+    other_category_pool.in_.assert_not_called()
+    other_category_pool.not_.in_.assert_any_call("category", ["tech"])
+
+    # exploratory slice #2: explicit IS NULL, not folded into the negated
+    # .in_() above (which would silently drop NULL rows) or into an
+    # .or_() (which would concatenate caller-controlled category strings
+    # into a single filter — the class of bug SECURITY.md #14 fixed)
+    uncategorized_pool.is_.assert_any_call("category", "null")
+    uncategorized_pool.in_.assert_not_called()
+    uncategorized_pool.not_.in_.assert_called_once_with("id", [liked_id])
+
+
+def test_exploration_slots_survive_scoring_on_a_populated_catalog(client):
+    """P1 regression: reserving exploration slots only in the candidate
+    *pool* isn't enough. A preferred row always outscores an exploratory
+    one with no other matching signal (+3 vs 0), so once every pool is
+    merged and re-sorted by score, `top[:limit]` would be 100% preferred
+    rows whenever the preferred pool alone already has >= limit matches —
+    the pool-level split would never actually reach the caller. Slots must
+    be reserved on the scored output too."""
+    c, mock_db = client
+    limit = 5
+    liked_id = str(uuid4())
+    # far more preferred matches than `limit`, so naive score-and-slice
+    # would fill the entire page before an exploratory row is ever reached
+    preferred_matches = [_feed_row(category="tech") for _ in range(limit * 4)]
+    exploratory_match = _feed_row(category="art")
+
+    liked_lookup = _chain(
+        MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
+    )
+    preferred_pool = _chain(MagicMock(data=preferred_matches))
+    other_category_pool = _chain(MagicMock(data=[exploratory_match]))
+    uncategorized_pool = _chain(MagicMock(data=[]))
+    calls = {"n": 0}
+    pools = {
+        1: liked_lookup,
+        2: preferred_pool,
+        3: other_category_pool,
+        4: uncategorized_pool,
+    }
+
+    def _table(name):
+        assert name == "feeds"
+        calls["n"] += 1
+        return pools[calls["n"]]
+
+    mock_db.table.side_effect = _table
+
+    resp = c.get(
+        "/api/recommendations", params={"liked": [liked_id], "limit": limit}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == limit
+    assert exploratory_match["id"] in [row["id"] for row in body]
 
 
 def test_authenticated_user_excludes_their_subscriptions(client):
@@ -151,9 +217,9 @@ def test_authenticated_user_excludes_their_subscriptions(client):
         if name == "user_preferences":
             return _chain(MagicMock(data=[]))
         if name == "feeds":
-            # both the preferred and the exploratory pool query hit `feeds`;
-            # returning the same candidate for either is enough to check
-            # that the subscribed feed itself never comes back.
+            # all three candidate-pool queries hit `feeds`; returning the
+            # same candidate for each is enough to check that the
+            # subscribed feed itself never comes back.
             return _chain(MagicMock(data=[candidate]))
         raise AssertionError(f"unexpected table {name}")
 
