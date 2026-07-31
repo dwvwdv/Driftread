@@ -314,6 +314,45 @@ def test_uncategorized_candidates_are_not_starved_when_other_category_fills_the_
     assert result_ids & uncategorized_ids
 
 
+def test_final_order_reflects_score_not_quota_origin(client):
+    """P2 regression: the preferred/exploratory quota decides *which* rows
+    make the page, not their display order — concatenating "all preferred
+    slots, then all exploratory slots" ignores that an exploratory row
+    matching several tags can genuinely outscore a preferred row that only
+    matches category. The response order must reflect the real score."""
+    c, mock_db = client
+    liked_id = str(uuid4())
+    weak_preferred = _feed_row(category="tech")
+    strong_exploratory = _feed_row(category="art", tags=["a", "b"])
+
+    liked_lookup = _chain(
+        MagicMock(data=[{"category": "tech", "tags": ["a", "b"], "language": None}])
+    )
+    preferred_pool = _chain(MagicMock(data=[weak_preferred]))
+    other_category_pool = _chain(MagicMock(data=[strong_exploratory]))
+    uncategorized_pool = _chain(MagicMock(data=[]))
+    calls = {"n": 0}
+    pools = {
+        1: liked_lookup,
+        2: preferred_pool,
+        3: other_category_pool,
+        4: uncategorized_pool,
+    }
+
+    def _table(name):
+        assert name == "feeds"
+        calls["n"] += 1
+        return pools[calls["n"]]
+
+    mock_db.table.side_effect = _table
+
+    resp = c.get("/api/recommendations", params={"liked": [liked_id]})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body[0]["id"] == strong_exploratory["id"]
+
+
 def test_authenticated_user_excludes_their_subscriptions(client):
     c, mock_db = client
     subscribed_id = str(uuid4())

@@ -29,23 +29,25 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 _EXPLORATION_SHARE = 0.3
 
 
+def _score(row: dict, categories: set[str], tags: set[str], languages: set[str]) -> int:
+    score = 0
+    if row.get("category") and row["category"] in categories:
+        score += 3
+    for t in row.get("tags") or []:
+        if t in tags:
+            score += 2
+    if row.get("language") and row["language"] in languages:
+        score += 1
+    return score
+
+
 def _score_candidates(
     candidates: list[dict],
     categories: set[str],
     tags: set[str],
     languages: set[str],
 ) -> list[dict]:
-    scored: list[tuple[int, dict]] = []
-    for row in candidates:
-        score = 0
-        if row.get("category") and row["category"] in categories:
-            score += 3
-        for t in row.get("tags") or []:
-            if t in tags:
-                score += 2
-        if row.get("language") and row["language"] in languages:
-            score += 1
-        scored.append((score, row))
+    scored = [(_score(row, categories, tags, languages), row) for row in candidates]
     scored.sort(key=lambda x: x[0], reverse=True)
     return [row for _, row in scored]
 
@@ -222,6 +224,13 @@ async def get_recommendations(
             # left over rather than returning fewer than `limit` results.
             leftover = scored_preferred[preferred_slots:] + scored_exploratory[exploration_slots:]
             top += leftover[: limit - len(top)]
+        # The quota above picks *which* rows make the page — every
+        # preferred row before every exploratory one — but that's not a
+        # score ordering: an exploratory row matching several tags can
+        # outscore a preferred row that only matches category. Re-sort
+        # the selected rows by their real score so the response order
+        # actually reflects it, without disturbing which rows were picked.
+        top.sort(key=lambda row: _score(row, categories, tags, languages), reverse=True)
     else:
         random.shuffle(candidates)
         top = candidates[:limit]
