@@ -261,6 +261,59 @@ def test_exploratory_subpool_can_use_the_full_budget_when_the_other_is_empty(cli
     assert len(resp.json()) == limit
 
 
+def test_uncategorized_candidates_are_not_starved_when_other_category_fills_the_budget(
+    client, monkeypatch
+):
+    """P2 regression (round 2): `other_category` is fetched — and listed —
+    before `uncategorized`, so a plain (other_category + uncategorized)
+    [:exploration_n] deterministically drops every uncategorized row
+    whenever other_category alone already fills the budget, which is the
+    common case in a populated catalog. The fix shuffles the combined list
+    *before* applying the cap. Monkeypatch `random.shuffle` to a
+    deterministic reversal: this only recovers tail rows (here,
+    `uncategorized`) if the shuffle genuinely runs before the cap — a
+    shuffle applied after slicing could never bring back rows the cap
+    already dropped, which is exactly the ordering mistake this pins."""
+    c, mock_db = client
+    limit = 10
+    liked_id = str(uuid4())
+    other_category_matches = [_feed_row(category="art") for _ in range(30)]
+    uncategorized_matches = [_feed_row(category=None) for _ in range(5)]
+    monkeypatch.setattr(
+        "routers.recommendations.random.shuffle", lambda seq: seq.reverse()
+    )
+
+    liked_lookup = _chain(
+        MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
+    )
+    preferred_pool = _chain(MagicMock(data=[]))
+    other_category_pool = _limited_chain(other_category_matches)
+    uncategorized_pool = _limited_chain(uncategorized_matches)
+    calls = {"n": 0}
+    pools = {
+        1: liked_lookup,
+        2: preferred_pool,
+        3: other_category_pool,
+        4: uncategorized_pool,
+    }
+
+    def _table(name):
+        assert name == "feeds"
+        calls["n"] += 1
+        return pools[calls["n"]]
+
+    mock_db.table.side_effect = _table
+
+    resp = c.get(
+        "/api/recommendations", params={"liked": [liked_id], "limit": limit}
+    )
+
+    assert resp.status_code == 200
+    result_ids = {row["id"] for row in resp.json()}
+    uncategorized_ids = {row["id"] for row in uncategorized_matches}
+    assert result_ids & uncategorized_ids
+
+
 def test_authenticated_user_excludes_their_subscriptions(client):
     c, mock_db = client
     subscribed_id = str(uuid4())

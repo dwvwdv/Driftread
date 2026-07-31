@@ -130,7 +130,7 @@ def _fetch_candidate_pool(
     # half each: if one source is empty (e.g. a catalog with no
     # uncategorized feeds at all), the other must still be able to fill
     # the whole budget on its own, or `limit` results go undelivered even
-    # though enough eligible feeds exist. Combine and re-cap afterward.
+    # though enough eligible feeds exist.
     other_category = (
         _base_feed_query(db, excluded)
         .not_.in_("category", list(categories))
@@ -145,8 +145,19 @@ def _fetch_candidate_pool(
         .execute()
         .data
     )
-    exploratory = (other_category + uncategorized)[:exploration_n]
-    return preferred, exploratory
+    # `other_category` is listed first, so a plain concatenate-then-cap
+    # — (other_category + uncategorized)[:exploration_n] — would
+    # deterministically drop every uncategorized row whenever
+    # other_category alone already fills exploration_n (the common case
+    # in a populated catalog): the exact "personalized users never see
+    # uncategorized feeds" bug the .is_() query above exists to fix, just
+    # reappearing one step later. Shuffling *before* capping (not after —
+    # shuffling post-cap can't recover rows the cap already dropped) gives
+    # every combined row an equal chance regardless of which subtype
+    # query happened to list it first.
+    combined = other_category + uncategorized
+    random.shuffle(combined)
+    return preferred, combined[:exploration_n]
 
 
 @router.get("", response_model=list[Feed])
