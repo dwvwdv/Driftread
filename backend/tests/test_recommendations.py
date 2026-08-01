@@ -33,22 +33,28 @@ def _chain(execute_return):
     return chain
 
 
-def _limited_chain(full_data):
-    """Like _chain(), but .limit(n) actually truncates the configured
-    dataset to its first n rows — simulating a real DB LIMIT instead of
-    ignoring the argument — so a test can catch a request that under-asks
-    for rows even though more are available."""
+def _rpc_chain(execute_return):
+    """A MagicMock node for a single `db.rpc(...)` call — `.execute()` is
+    the only thing the caller does with it."""
     chain = MagicMock()
-    for name in ("select", "is_", "in_", "eq"):
-        getattr(chain, name).return_value = chain
-    chain.not_.in_.return_value = chain
-
-    def _limit(n):
-        chain.execute.return_value = MagicMock(data=full_data[:n])
-        return chain
-
-    chain.limit.side_effect = _limit
+    chain.execute.return_value = execute_return
     return chain
+
+
+def _sampling_rpc(pools):
+    """Fake `db.rpc("sample_feed_candidates", params)` that truncates each
+    mode's configured dataset to `p_limit` rows — simulating the DB's real
+    `LIMIT` (which migration 007's `ORDER BY random()` makes a true random
+    sample, not just "first N") — so a test can catch a request that
+    under-asks for rows even though more are available. `pools` maps
+    `p_mode` -> full dataset for that mode."""
+
+    def _rpc(name, params):
+        assert name == "sample_feed_candidates"
+        data = pools[params["p_mode"]][: params["p_limit"]]
+        return _rpc_chain(MagicMock(data=data))
+
+    return _rpc
 
 
 def _feed_row(feed_id=None, category=None, tags=None, language=None):
@@ -88,19 +94,22 @@ class TestScoreCandidates:
         assert scored[0] is strong
 
 
-def test_anonymous_no_signals_fetches_a_single_unfiltered_pool(client, monkeypatch):
+def test_anonymous_no_signals_fetches_a_single_unfiltered_pool(client):
     """With no category/tag/language signal at all there's nothing to split
-    the pool for — one plain query, no category predicate either way."""
+    the pool for — one plain RPC call in "unfiltered" mode, no category
+    predicate either way."""
     c, mock_db = client
-    feeds_chain = _chain(MagicMock(data=[_feed_row() for _ in range(3)]))
-    mock_db.table.side_effect = lambda name: {"feeds": feeds_chain}[name]
-    monkeypatch.setattr("routers.recommendations.random.shuffle", lambda seq: None)
+    mock_db.rpc.side_effect = _sampling_rpc(
+        {"unfiltered": [_feed_row() for _ in range(3)]}
+    )
 
     resp = c.get("/api/recommendations")
 
     assert resp.status_code == 200
-    feeds_chain.in_.assert_not_called()
-    feeds_chain.not_.in_.assert_not_called()
+    mock_db.rpc.assert_called_once()
+    name, params = mock_db.rpc.call_args[0]
+    assert name == "sample_feed_candidates"
+    assert params["p_mode"] == "unfiltered"
 
 
 def test_category_signal_splits_into_three_pools(client):
@@ -110,12 +119,13 @@ def test_category_signal_splits_into_three_pools(client):
       bigger than the fetch limit, the unfiltered first batch could
       contain zero matches for the caller's known categories, silently
       killing personalization;
-    - `not_.in_("category", known)` compiles to SQL's NOT IN, which never
-      matches a NULL column, so a feed with no category at all (a normal
-      catalog state) was invisible to every personalized caller.
-    Candidates now come from three independent queries: category-matching
-    (preferred), a different known category, and no category at all (the
-    latter two both count as exploratory)."""
+    - a plain "not in known categories" predicate never matches a NULL
+      column, so a feed with no category at all (a normal catalog state)
+      was invisible to every personalized caller.
+    Candidates now come from three independent DB-function calls
+    (migration 007's `sample_feed_candidates`, one per `p_mode`):
+    category-matching (preferred), a different known category, and no
+    category at all (the latter two both count as exploratory)."""
     c, mock_db = client
     liked_id = str(uuid4())
     matching_feed = _feed_row(category="tech")
@@ -125,23 +135,14 @@ def test_category_signal_splits_into_three_pools(client):
     liked_lookup = _chain(
         MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
     )
-    preferred_pool = _chain(MagicMock(data=[matching_feed]))
-    other_category_pool = _chain(MagicMock(data=[other_category_feed]))
-    uncategorized_pool = _chain(MagicMock(data=[uncategorized_feed]))
-    calls = {"n": 0}
-    pools = {
-        1: liked_lookup,
-        2: preferred_pool,
-        3: other_category_pool,
-        4: uncategorized_pool,
-    }
-
-    def _table(name):
-        assert name == "feeds"
-        calls["n"] += 1
-        return pools[calls["n"]]
-
-    mock_db.table.side_effect = _table
+    mock_db.table.side_effect = lambda name: {"feeds": liked_lookup}[name]
+    mock_db.rpc.side_effect = _sampling_rpc(
+        {
+            "in_categories": [matching_feed],
+            "not_in_categories": [other_category_feed],
+            "uncategorized": [uncategorized_feed],
+        }
+    )
 
     resp = c.get("/api/recommendations", params={"liked": [liked_id]})
 
@@ -151,21 +152,17 @@ def test_category_signal_splits_into_three_pools(client):
     assert other_category_feed["id"] in ids
     assert uncategorized_feed["id"] in ids
 
+    calls_by_mode = {
+        call.args[1]["p_mode"]: call.args[1] for call in mock_db.rpc.call_args_list
+    }
     # preferred slice: positive category match, plus the usual id exclusion
-    preferred_pool.in_.assert_called_once_with("category", ["tech"])
-    preferred_pool.not_.in_.assert_called_once_with("id", [liked_id])
-
-    # exploratory slice #1: negated category, never a positive one
-    other_category_pool.in_.assert_not_called()
-    other_category_pool.not_.in_.assert_any_call("category", ["tech"])
-
-    # exploratory slice #2: explicit IS NULL, not folded into the negated
-    # .in_() above (which would silently drop NULL rows) or into an
-    # .or_() (which would concatenate caller-controlled category strings
-    # into a single filter — the class of bug SECURITY.md #14 fixed)
-    uncategorized_pool.is_.assert_any_call("category", "null")
-    uncategorized_pool.in_.assert_not_called()
-    uncategorized_pool.not_.in_.assert_called_once_with("id", [liked_id])
+    assert calls_by_mode["in_categories"]["p_categories"] == ["tech"]
+    assert calls_by_mode["in_categories"]["p_excluded_ids"] == [liked_id]
+    # exploratory slices carry the same category set for their own (negated
+    # / null) predicate, and the same id exclusion
+    assert calls_by_mode["not_in_categories"]["p_categories"] == ["tech"]
+    assert calls_by_mode["not_in_categories"]["p_excluded_ids"] == [liked_id]
+    assert calls_by_mode["uncategorized"]["p_excluded_ids"] == [liked_id]
 
 
 def test_exploration_slots_survive_scoring_on_a_populated_catalog(client):
@@ -187,23 +184,14 @@ def test_exploration_slots_survive_scoring_on_a_populated_catalog(client):
     liked_lookup = _chain(
         MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
     )
-    preferred_pool = _chain(MagicMock(data=preferred_matches))
-    other_category_pool = _chain(MagicMock(data=[exploratory_match]))
-    uncategorized_pool = _chain(MagicMock(data=[]))
-    calls = {"n": 0}
-    pools = {
-        1: liked_lookup,
-        2: preferred_pool,
-        3: other_category_pool,
-        4: uncategorized_pool,
-    }
-
-    def _table(name):
-        assert name == "feeds"
-        calls["n"] += 1
-        return pools[calls["n"]]
-
-    mock_db.table.side_effect = _table
+    mock_db.table.side_effect = lambda name: {"feeds": liked_lookup}[name]
+    mock_db.rpc.side_effect = _sampling_rpc(
+        {
+            "in_categories": preferred_matches,
+            "not_in_categories": [exploratory_match],
+            "uncategorized": [],
+        }
+    )
 
     resp = c.get(
         "/api/recommendations", params={"liked": [liked_id], "limit": limit}
@@ -235,23 +223,14 @@ def test_exploratory_subpool_can_use_the_full_budget_when_the_other_is_empty(cli
     liked_lookup = _chain(
         MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
     )
-    preferred_pool = _chain(MagicMock(data=[]))
-    other_category_pool = _limited_chain(other_category_matches)
-    uncategorized_pool = _limited_chain([])
-    calls = {"n": 0}
-    pools = {
-        1: liked_lookup,
-        2: preferred_pool,
-        3: other_category_pool,
-        4: uncategorized_pool,
-    }
-
-    def _table(name):
-        assert name == "feeds"
-        calls["n"] += 1
-        return pools[calls["n"]]
-
-    mock_db.table.side_effect = _table
+    mock_db.table.side_effect = lambda name: {"feeds": liked_lookup}[name]
+    mock_db.rpc.side_effect = _sampling_rpc(
+        {
+            "in_categories": [],
+            "not_in_categories": other_category_matches,
+            "uncategorized": [],
+        }
+    )
 
     resp = c.get(
         "/api/recommendations", params={"liked": [liked_id], "limit": limit}
@@ -265,7 +244,8 @@ def test_uncategorized_candidates_are_not_starved_when_other_category_fills_the_
     client, monkeypatch
 ):
     """P2 regression (round 2): `other_category` is fetched — and listed —
-    before `uncategorized`, so a plain (other_category + uncategorized)
+    before `uncategorized`, and each is independently capped at the full
+    exploration budget, so a plain (other_category + uncategorized)
     [:exploration_n] deterministically drops every uncategorized row
     whenever other_category alone already fills the budget, which is the
     common case in a populated catalog. The fix shuffles the combined list
@@ -286,23 +266,14 @@ def test_uncategorized_candidates_are_not_starved_when_other_category_fills_the_
     liked_lookup = _chain(
         MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
     )
-    preferred_pool = _chain(MagicMock(data=[]))
-    other_category_pool = _limited_chain(other_category_matches)
-    uncategorized_pool = _limited_chain(uncategorized_matches)
-    calls = {"n": 0}
-    pools = {
-        1: liked_lookup,
-        2: preferred_pool,
-        3: other_category_pool,
-        4: uncategorized_pool,
-    }
-
-    def _table(name):
-        assert name == "feeds"
-        calls["n"] += 1
-        return pools[calls["n"]]
-
-    mock_db.table.side_effect = _table
+    mock_db.table.side_effect = lambda name: {"feeds": liked_lookup}[name]
+    mock_db.rpc.side_effect = _sampling_rpc(
+        {
+            "in_categories": [],
+            "not_in_categories": other_category_matches,
+            "uncategorized": uncategorized_matches,
+        }
+    )
 
     resp = c.get(
         "/api/recommendations", params={"liked": [liked_id], "limit": limit}
@@ -328,23 +299,14 @@ def test_final_order_reflects_score_not_quota_origin(client):
     liked_lookup = _chain(
         MagicMock(data=[{"category": "tech", "tags": ["a", "b"], "language": None}])
     )
-    preferred_pool = _chain(MagicMock(data=[weak_preferred]))
-    other_category_pool = _chain(MagicMock(data=[strong_exploratory]))
-    uncategorized_pool = _chain(MagicMock(data=[]))
-    calls = {"n": 0}
-    pools = {
-        1: liked_lookup,
-        2: preferred_pool,
-        3: other_category_pool,
-        4: uncategorized_pool,
-    }
-
-    def _table(name):
-        assert name == "feeds"
-        calls["n"] += 1
-        return pools[calls["n"]]
-
-    mock_db.table.side_effect = _table
+    mock_db.table.side_effect = lambda name: {"feeds": liked_lookup}[name]
+    mock_db.rpc.side_effect = _sampling_rpc(
+        {
+            "in_categories": [weak_preferred],
+            "not_in_categories": [strong_exploratory],
+            "uncategorized": [],
+        }
+    )
 
     resp = c.get("/api/recommendations", params={"liked": [liked_id]})
 
@@ -372,14 +334,15 @@ def test_authenticated_user_excludes_their_subscriptions(client):
             )
         if name == "user_preferences":
             return _chain(MagicMock(data=[]))
-        if name == "feeds":
-            # all three candidate-pool queries hit `feeds`; returning the
-            # same candidate for each is enough to check that the
-            # subscribed feed itself never comes back.
-            return _chain(MagicMock(data=[candidate]))
         raise AssertionError(f"unexpected table {name}")
 
     mock_db.table.side_effect = _table
+
+    def _rpc(name, params):
+        assert subscribed_id in params["p_excluded_ids"]
+        return _rpc_chain(MagicMock(data=[candidate]))
+
+    mock_db.rpc.side_effect = _rpc
 
     resp = c.get(
         "/api/recommendations",

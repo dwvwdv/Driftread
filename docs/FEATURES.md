@@ -37,6 +37,13 @@
 未登入者只吃 query 帶的 `liked`。已訂閱與 `liked` / `disliked` 內的 feed 會被排除。
 `liked` / `disliked` 各上限 50 筆，`limit` 為 1–50（預設 10）。
 
+候選池的抽樣透過 DB function `sample_feed_candidates()`（migration 007）做 `ORDER BY random()`，
+而非應用層 `.limit()` 後才 shuffle —— PostgREST 的 query builder 沒有 random order，單純
+`.limit(n)` 在候選數大於抓取量的目錄上永遠只會拿到同一批「預設排序的前 n 筆」，應用層 shuffle
+只能重排這固定的一批，永遠碰不到表裡其餘的列。四種候選池形狀（無過濾 / category 命中 /
+category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後端程式碼決定、不接受呼叫端輸入，
+不會重開 SECURITY.md #14 修過的 PostgREST filter injection 那類洞。
+
 ## 2b. 自動抓取管道
 
 匯入後不需要任何人介入，feed 會持續進新文章。
@@ -328,6 +335,9 @@ image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時
 | `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制；`approved_category` / `approved_tags` 讓核准決定在寫 `feeds` 失敗時不會遺失 |
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名 |
+
+Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
+（不建新表）：供 `routers/recommendations.py` 以 `ORDER BY random()` 抽樣候選池，見上方第 2 節。
 
 RLS：四張 `user_*` 表為 owner-only policy（002）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。
 **四張 `discovery_*` 表開 RLS 但刻意不建任何 policy（006）** —— 連 SELECT 都沒有，所以 anon 與

@@ -237,3 +237,16 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 `backend/routers/recommendations.py` 先前完全沒有測試檔案——核心功能反而是測試覆蓋率的空白，這個 bug 也是因此才留到現在。`backend/tests/test_recommendations.py`：`_score_candidates()` 的 category / tag / language 個別加分與疊加排序；無任何訊號時只送一次不帶 category 篩選的查詢；有 category 訊號時斷言候選拆成三次獨立查詢——`in_("category", ...)` 的 preferred、`not_.in_("category", ...)` 的同類排除、`is_("category", "null")` 的無分類——且三者都正確帶上 id 排除條件（釘住第三版修法）；在 preferred 候選數遠超過 `limit` 的情境下，斷言 exploratory 候選仍會出現在最終回傳的分頁裡（釘住 P1 迴歸）；新增一個會真的依 `.limit(n)` 引數截斷資料的假 query builder（先前的假物件會忽略引數，測不出「要求的筆數不夠」這類 bug），斷言其中一種 exploratory 子類型完全無資料時，另一種仍能單獨湊滿 `limit`（釘住第四版修的 P2 迴歸）；monkeypatch `random.shuffle` 成確定性反轉，斷言 `other_category` 遠多於 `exploration_n` 時，排在尾端的 `uncategorized` 候選仍能出現在最終結果裡（釘住第五版修的 P2 迴歸，且對「截斷後才 shuffle」這種錯誤順序會失敗）；一個命中多個 tag 的 exploratory 候選對上只命中 category 的 preferred 候選，斷言前者出現在回傳陣列的第一位（釘住第六版修的 P2 迴歸）；已登入使用者的訂閱會被排除；`limit` 超出 1–50 範圍回 422。測試總數 474 → 487。
 
 沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，交由 CI 跑完整測試。
+
+## 階段十三：猜你喜歡的候選池改成資料庫端真隨機抽樣（PR #27，2026-08-01）
+
+同一個「持續改善專案」排程任務，接續 PR #26「範圍以外」記下的已知限制：候選池子查詢個別仍不帶 `.order()`，在超過抓取上限的 catalog 上永遠只拿到 PostgREST 預設順序的前 N 筆，應用層的 `random.shuffle()` 只能重排這固定的一批，永遠碰不到表裡其餘的列——早期版本一直沒做，是因為 `supabase-py` 的 query builder 沒有 `ORDER BY random()`，必須換一顆 DB function。
+
+- **修法**：`backend/migrations/007_random_feed_sampling.sql` 新增 `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`，`ORDER BY random() LIMIT p_limit` 一次覆蓋 `_fetch_candidate_pool()` 需要的四種候選池形狀（`unfiltered` / `in_categories` / `not_in_categories` / `uncategorized`），用同一顆 function 而非四顆幾乎重複的，靠 `p_mode` 用 `=` 比對固定字面值切換分支——這個字面值由後端程式碼決定、從不是使用者輸入拼字串，不會重開 SECURITY.md #14 修過的 PostgREST filter injection 那類洞。`routers/recommendations.py` 把原本的 `db.table("feeds")...limit(n)` 四種查詢組合，換成呼叫這顆 function 的 `db.rpc(...)`（新的 `_sample_feeds()` 輔助函式），拆分候選池 / 選 preferred vs exploratory / 事後補滿 / 最終依分數重排的既有邏輯完全不動。
+- **順手清掉一處連帶變成多餘的程式碼**：`get_recommendations()` 在完全沒有任何訊號（無 category / tag / language）時走的 fallback 分支，原本會對候選池再做一次 `random.shuffle()`——這在候選池本來就是 PostgREST 預設順序時是必要的，但候選池現在改由 `sample_feed_candidates()` 以 `ORDER BY random()` 抽出，這次應用層 shuffle 已經是對已經隨機過的資料再洗一次，純粹浪費，直接移除。
+
+### 測試
+
+`backend/tests/test_recommendations.py` 改寫既有測試的 mock 層，從模擬 `db.table("feeds")` 的 query-builder chain 改成模擬 `db.rpc("sample_feed_candidates", params)`：新增 `_sampling_rpc()` 假物件，依 `params["p_mode"]` 分派到對應的假資料集，並依 `params["p_limit"]` 真的截斷回傳筆數（取代原本會忽略引數的假 `.limit()`），讓「要求的筆數不夠」這類 bug 仍測得出來。測試涵蓋的行為（三池拆分、exploration 名額存活到最終輸出、任一子池獨自撐滿名額、shuffle 必須在截斷前發生、依分數而非 quota 來源排序、已登入使用者排除自己的訂閱、`limit` 邊界）本身不變，只是斷言的對象從 query-builder 呼叫換成 `db.rpc` 呼叫參數；測試總數不變（474 → 487，PR #26 已經記過）。
+
+沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25、#26 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，並手動逐一推演每個測試案例的資料流確認邏輯正確，交由 CI 跑完整測試套件驗證。

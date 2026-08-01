@@ -88,11 +88,33 @@ def _signals_from_subscriptions(
     return subscribed_ids, categories, tags, languages
 
 
-def _base_feed_query(db: Client, excluded: set[str]):
-    query = db.table("feeds").select("*").is_("archived_at", "null")
-    if excluded:
-        query = query.not_.in_("id", list(excluded))
-    return query
+def _sample_feeds(
+    db: Client,
+    excluded: set[str],
+    categories: set[str],
+    mode: str,
+    sample_limit: int,
+) -> list[dict]:
+    """Random sample of up to `sample_limit` feed rows matching one of the
+    four pool shapes `_fetch_candidate_pool` needs, via the
+    `sample_feed_candidates` DB function (migration 007). PostgREST's query
+    builder has no `ORDER BY random()`, so a plain `.table(...).limit(n)`
+    always returns the same default-ordered first N rows on a catalog
+    bigger than the fetch size — the downstream `random.shuffle()` can only
+    reshuffle whichever N rows that happened to be, never reach further
+    into the table. `mode` is one of a fixed set of literals this function
+    controls, never caller-supplied text, so this doesn't reopen the
+    PostgREST filter-injection class SECURITY.md #14 fixed."""
+    result = db.rpc(
+        "sample_feed_candidates",
+        {
+            "p_excluded_ids": list(excluded),
+            "p_categories": list(categories),
+            "p_mode": mode,
+            "p_limit": sample_limit,
+        },
+    ).execute()
+    return result.data
 
 
 def _fetch_candidate_pool(
@@ -102,59 +124,41 @@ def _fetch_candidate_pool(
     kept apart (rather than merged here) so the caller can enforce the
     exploration share on the scored output too, not just on this fetch."""
     if not categories:
-        pool = _base_feed_query(db, excluded).limit(pool_size).execute().data
+        pool = _sample_feeds(db, excluded, categories, "unfiltered", pool_size)
         return pool, []
 
     exploration_n = max(1, round(pool_size * _EXPLORATION_SHARE))
     preferred_n = pool_size - exploration_n
 
-    preferred = (
-        _base_feed_query(db, excluded)
-        .in_("category", list(categories))
-        .limit(preferred_n)
-        .execute()
-        .data
-    )
+    preferred = _sample_feeds(db, excluded, categories, "in_categories", preferred_n)
     # Exploratory candidates come from two sources: a known-but-different
-    # category, and no category at all. `not_.in_("category", ...)`
-    # compiles to SQL's NOT IN, which never matches a NULL column, so a
-    # feed with no category (a normal catalog state — nullable per
-    # migration 001, and discovery promotion writes it when no category
-    # was approved) would otherwise be invisible to every personalized
-    # caller — hence the separate .is_("category", "null") query rather
-    # than relying on the first to cover it. Folding both into one query
-    # via .or_() instead would mean concatenating `categories` — which can
-    # include a caller's own free-text `preferred_categories` — into a
-    # single filter string, reopening the PostgREST filter-injection class
-    # SECURITY.md #14 fixed.
+    # category, and no category at all. The `not_in_categories` mode never
+    # matches a NULL category column, so a feed with no category (a normal
+    # catalog state — nullable per migration 001, and discovery promotion
+    # writes it when no category was approved) would otherwise be invisible
+    # to every personalized caller — hence the separate `uncategorized`
+    # query rather than relying on the first to cover it.
     #
     # Each is capped at the *full* exploration_n rather than a pre-split
     # half each: if one source is empty (e.g. a catalog with no
     # uncategorized feeds at all), the other must still be able to fill
     # the whole budget on its own, or `limit` results go undelivered even
     # though enough eligible feeds exist.
-    other_category = (
-        _base_feed_query(db, excluded)
-        .not_.in_("category", list(categories))
-        .limit(exploration_n)
-        .execute()
-        .data
+    other_category = _sample_feeds(
+        db, excluded, categories, "not_in_categories", exploration_n
     )
-    uncategorized = (
-        _base_feed_query(db, excluded)
-        .is_("category", "null")
-        .limit(exploration_n)
-        .execute()
-        .data
+    uncategorized = _sample_feeds(
+        db, excluded, categories, "uncategorized", exploration_n
     )
     # `other_category` is listed first, so a plain concatenate-then-cap
     # — (other_category + uncategorized)[:exploration_n] — would
     # deterministically drop every uncategorized row whenever
     # other_category alone already fills exploration_n (the common case
     # in a populated catalog): the exact "personalized users never see
-    # uncategorized feeds" bug the .is_() query above exists to fix, just
-    # reappearing one step later. Shuffling *before* capping (not after —
-    # shuffling post-cap can't recover rows the cap already dropped) gives
+    # uncategorized feeds" bug the separate `uncategorized` query above
+    # exists to fix, just reappearing one step later. Shuffling *before*
+    # capping (not after — shuffling post-cap can't recover rows the cap
+    # already dropped) gives
     # every combined row an equal chance regardless of which subtype
     # query happened to list it first.
     combined = other_category + uncategorized
@@ -232,7 +236,9 @@ async def get_recommendations(
         # actually reflects it, without disturbing which rows were picked.
         top.sort(key=lambda row: _score(row, categories, tags, languages), reverse=True)
     else:
-        random.shuffle(candidates)
+        # No signal at all means `_fetch_candidate_pool` ran in "unfiltered"
+        # mode, which is already `ORDER BY random()` server-side (migration
+        # 007) — no need to reshuffle client-side on top of that.
         top = candidates[:limit]
 
     return [Feed(**row) for row in top]
