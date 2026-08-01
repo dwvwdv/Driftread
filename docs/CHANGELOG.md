@@ -244,6 +244,7 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 
 - **修法**：`backend/migrations/007_random_feed_sampling.sql` 新增 `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`，`ORDER BY random() LIMIT p_limit` 一次覆蓋 `_fetch_candidate_pool()` 需要的四種候選池形狀（`unfiltered` / `in_categories` / `not_in_categories` / `uncategorized`），用同一顆 function 而非四顆幾乎重複的，靠 `p_mode` 用 `=` 比對固定字面值切換分支——這個字面值由後端程式碼決定、從不是使用者輸入拼字串，不會重開 SECURITY.md #14 修過的 PostgREST filter injection 那類洞。`routers/recommendations.py` 把原本的 `db.table("feeds")...limit(n)` 四種查詢組合，換成呼叫這顆 function 的 `db.rpc(...)`（新的 `_sample_feeds()` 輔助函式），拆分候選池 / 選 preferred vs exploratory / 事後補滿 / 最終依分數重排的既有邏輯完全不動。
 - **順手清掉一處連帶變成多餘的程式碼**：`get_recommendations()` 在完全沒有任何訊號（無 category / tag / language）時走的 fallback 分支，原本會對候選池再做一次 `random.shuffle()`——這在候選池本來就是 PostgREST 預設順序時是必要的，但候選池現在改由 `sample_feed_candidates()` 以 `ORDER BY random()` 抽出，這次應用層 shuffle 已經是對已經隨機過的資料再洗一次，純粹浪費，直接移除。
+- **PR review（Codex，P1）**：新函式建在 `public` schema，Postgres 對新函式預設把 `EXECUTE` 授權給 `PUBLIC`，而 PostgREST 的 `anon` / `authenticated` 角色會繼承這個授權——意味著只要持有瀏覽器就看得到的 anon key，就能繞過後端直接呼叫這顆 RPC，帶入超出 API 限制（`limit` 1–50、id/category 陣列各上限 50）的巨大 `p_limit` 或陣列，反覆觸發整張 `feeds` 表的 `ORDER BY random()` 掃描，且完全不吃 `rate_limit.py` 的配額——一個未認證的資料庫資源耗盡路徑。修法：`REVOKE EXECUTE ... FROM PUBLIC` + `GRANT EXECUTE ... TO service_role`，比照專案裡其他寫入路徑（見 004、006）一律只信任 service_role 的既有原則；並在 function 內部加 `LIMIT LEAST(p_limit, 250)` 當 defense-in-depth——即使日後哪個呼叫路徑忘記做邊界檢查，這顆 function 本身也不會被騙去掃全表。
 
 ### 測試
 

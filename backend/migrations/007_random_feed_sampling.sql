@@ -37,5 +37,21 @@ AS $$
       OR (p_mode = 'uncategorized' AND category IS NULL)
     )
   ORDER BY random()
-  LIMIT p_limit
+  -- Defense in depth: the only caller (`_sample_feeds` in
+  -- routers/recommendations.py) never asks for more than `limit * 5` rows
+  -- with `limit` capped at 50 by the API (so <= 250) — clamp here too so a
+  -- direct RPC call (see grants below) can't force an unbounded
+  -- `ORDER BY random()` pass over the whole table.
+  LIMIT LEAST(p_limit, 250)
 $$;
+
+-- New functions in the `public` schema get EXECUTE granted to PUBLIC by
+-- default, which PostgREST's `anon`/`authenticated` roles inherit — so
+-- without this, a caller holding only the browser-visible anon key could
+-- invoke this function directly (bypassing the API's rate limiting and its
+-- 50-item id/category array caps entirely, `LIMIT` clamp above notwithstanding)
+-- and repeatedly drive an `ORDER BY random()` pass over `feeds`. The backend
+-- only ever calls this via the service_role client (database.py), same as
+-- every other write path in this project, so lock it down the same way.
+REVOKE EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) TO service_role;
