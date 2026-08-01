@@ -7,6 +7,7 @@ from uuid import uuid4
 import jwt
 import pytest
 
+from rate_limit import DEFAULT_MAX_REQUESTS
 from routers.recommendations import _score_candidates
 
 os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-please-change")
@@ -110,6 +111,24 @@ def test_anonymous_no_signals_fetches_a_single_unfiltered_pool(client):
     name, params = mock_db.rpc.call_args[0]
     assert name == "sample_feed_candidates"
     assert params["p_mode"] == "unfiltered"
+
+
+def test_recommendations_rate_limited_after_threshold(client):
+    """Codex review (P1): migration 007 makes each call to this endpoint run
+    up to three `ORDER BY random()` full-table passes via
+    sample_feed_candidates — restricting who can call that RPC directly
+    doesn't stop plain request-volume flooding straight at this route, which
+    (unlike /discover and /discover/import, rate-limited since
+    SECURITY.md #18) had no limiter of its own until now."""
+    c, mock_db = client
+    mock_db.rpc.side_effect = _sampling_rpc({"unfiltered": []})
+
+    for _ in range(DEFAULT_MAX_REQUESTS):
+        resp = c.get("/api/recommendations")
+        assert resp.status_code == 200
+    resp = c.get("/api/recommendations")
+    assert resp.status_code == 429
+    assert "Retry-After" in resp.headers
 
 
 def test_category_signal_splits_into_three_pools(client):

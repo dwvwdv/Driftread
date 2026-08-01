@@ -234,7 +234,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/feeds/{feed_id}` | feed 詳情 + 文章（不存在回 404） |
 | GET | `/feeds/{feed_id}/articles` | 該 feed 的文章分頁 |
 | GET | `/articles/{article_id}` | 單篇文章全文（不存在回 404） |
-| GET | `/recommendations` | 猜你喜歡（帶 token 時個人化） |
+| GET | `/recommendations` | 猜你喜歡（帶 token 時個人化）。**有 rate limit**：每個 client IP 20 requests / 60 秒，獨立配額，超過回 `429` 並帶 `Retry-After`（migration 007 起每次呼叫最多對 `feeds` 做三次 `ORDER BY random()` 全表掃描，比原本單純的 `.limit()` 貴得多，因此補上）|
 | GET | `/health` | 健康檢查（compose healthcheck 使用） |
 
 ### Discover（公開，有 rate limit）

@@ -6,6 +6,7 @@ from supabase import Client
 from auth import AuthUser, get_optional_user
 from database import get_client
 from models import Feed
+from rate_limit import rate_limit
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
@@ -166,7 +167,18 @@ def _fetch_candidate_pool(
     return preferred, combined[:exploration_n]
 
 
-@router.get("", response_model=list[Feed])
+# Public and unauthenticated, and (since migration 007) each call can run up
+# to three `ORDER BY random()` passes over `feeds` via sample_feed_candidates
+# — a full scan-and-sort per pool, not an indexed point lookup. Restricting
+# the RPC's own grants (migration 007) stops a caller bypassing this endpoint
+# entirely, but does nothing about plain request-volume flooding straight at
+# this route, unlike /discover and /discover/import (rate-limited since
+# SECURITY.md #18) which this endpoint had been missing.
+@router.get(
+    "",
+    response_model=list[Feed],
+    dependencies=[Depends(rate_limit("recommendations"))],
+)
 async def get_recommendations(
     liked: list[str] = Query(default=[], max_length=50),
     disliked: list[str] = Query(default=[], max_length=50),
