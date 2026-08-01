@@ -50,8 +50,15 @@ $$;
 -- without this, a caller holding only the browser-visible anon key could
 -- invoke this function directly (bypassing the API's rate limiting and its
 -- 50-item id/category array caps entirely, `LIMIT` clamp above notwithstanding)
--- and repeatedly drive an `ORDER BY random()` pass over `feeds`. The backend
--- only ever calls this via the service_role client (database.py), same as
--- every other write path in this project, so lock it down the same way.
+-- and repeatedly drive an `ORDER BY random()` pass over `feeds`. Hosted
+-- Supabase projects additionally configure default privileges so that new
+-- objects created by the `postgres` role grant EXECUTE directly to `anon`
+-- and `authenticated`, not just through PUBLIC — revoking PUBLIC alone
+-- would leave those direct grants in place, so each is revoked explicitly.
+-- The backend only ever calls this via the service_role client
+-- (database.py), same as every other write path in this project, so lock
+-- it down the same way.
 REVOKE EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) FROM anon;
+REVOKE EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) FROM authenticated;
 GRANT EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) TO service_role;
