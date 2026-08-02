@@ -196,7 +196,7 @@ async def test_discover_feeds_rejects_redirect_to_private_ip():
             302, headers={"location": "http://169.254.169.254/latest/meta-data/"}
         )
 
-    def fake_is_safe_host(host: str) -> bool:
+    def fake_is_safe_host(host: str, timeout: float | None = None) -> bool:
         return host != "169.254.169.254"
 
     with (
@@ -228,7 +228,7 @@ async def test_discover_feeds_rejects_private_alternate_link():
         requested_hosts.append(request.url.host)
         return httpx.Response(200, text=html, headers={"content-type": "text/html"})
 
-    def fake_is_safe_host(host: str) -> bool:
+    def fake_is_safe_host(host: str, timeout: float | None = None) -> bool:
         return host != "169.254.169.254"
 
     with (

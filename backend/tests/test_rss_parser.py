@@ -139,7 +139,7 @@ async def test_fetch_and_parse_rejects_redirect_to_private_ip():
             302, headers={"location": "http://169.254.169.254/latest/meta-data/"}
         )
 
-    def fake_is_safe_host(host: str) -> bool:
+    def fake_is_safe_host(host: str, timeout: float | None = None) -> bool:
         return host != "169.254.169.254"
 
     with (
@@ -296,7 +296,7 @@ async def test_fetch_and_parse_conditional_still_guards_redirects_to_private_ips
             302, headers={"location": "http://169.254.169.254/latest/meta-data/"}
         )
 
-    def fake_is_safe_host(host: str) -> bool:
+    def fake_is_safe_host(host: str, timeout: float | None = None) -> bool:
         return host != "169.254.169.254"
 
     with (
