@@ -87,7 +87,7 @@ async def seed_targets(
 
     for raw in body.urls:
         try:
-            safe_url = validate_fetch_url(raw)
+            safe_url = await validate_fetch_url(raw)
         except DiscoveryError as e:
             rejected.append(f"{raw}: {e}")
             continue
@@ -294,7 +294,7 @@ async def add_sources(
     payload = []
     for item in body.items:
         try:
-            safe_url = validate_fetch_url(item.url)
+            safe_url = await validate_fetch_url(item.url)
         except DiscoveryError as e:
             raise HTTPException(status_code=400, detail=f"{item.url}: {e}")
         payload.append({"url": safe_url, "kind": item.kind, "label": item.label})

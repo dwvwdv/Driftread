@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import socket
 import threading
 import time
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from services.feed_discovery import (
     PinnedTransport,
     _dns_resolver_executor,
     _extract_feed_links,
+    _is_safe_host,
     _pick_pinned_ips,
     _resolve_pinned_ips,
     discover_feeds,
@@ -74,50 +76,102 @@ def test_extract_feed_links_empty_when_none():
     assert _extract_feed_links(html, "https://example.com") == []
 
 
-def test_normalize_url_adds_scheme():
+@pytest.mark.asyncio
+async def test_normalize_url_adds_scheme():
     with patch("services.feed_discovery._is_safe_host", return_value=True):
-        assert validate_fetch_url("example.com") == "https://example.com"
+        assert await validate_fetch_url("example.com") == "https://example.com"
 
 
-def test_normalize_url_rejects_loopback():
+@pytest.mark.asyncio
+async def test_normalize_url_rejects_loopback():
     with pytest.raises(DiscoveryError):
-        validate_fetch_url("http://localhost")
+        await validate_fetch_url("http://localhost")
 
 
-def test_normalize_url_rejects_private():
+@pytest.mark.asyncio
+async def test_normalize_url_rejects_private():
     with patch(
         "services.feed_discovery._is_safe_host", return_value=False
     ):
         with pytest.raises(DiscoveryError):
-            validate_fetch_url("https://10.0.0.1")
+            await validate_fetch_url("https://10.0.0.1")
 
 
-def test_normalize_url_rejects_ftp():
+@pytest.mark.asyncio
+async def test_normalize_url_rejects_ftp():
     with pytest.raises(DiscoveryError):
-        validate_fetch_url("ftp://example.com")
+        await validate_fetch_url("ftp://example.com")
 
 
-def test_normalize_url_rejects_metadata_ip():
+@pytest.mark.asyncio
+async def test_normalize_url_rejects_metadata_ip():
     # 169.254.169.254 is the cloud-metadata link-local address — must be
     # blocked the same way loopback/private ranges are (SSRF guard).
     with pytest.raises(DiscoveryError):
-        validate_fetch_url("http://169.254.169.254/latest/meta-data/")
+        await validate_fetch_url("http://169.254.169.254/latest/meta-data/")
 
 
-def test_normalize_url_accepts_mixed_case_scheme():
+@pytest.mark.asyncio
+async def test_normalize_url_accepts_mixed_case_scheme():
     # URI schemes are case-insensitive (RFC 3986); "HTTP://" must not fall
     # through to the https:// prepend, which would corrupt the URL into one
     # whose "hostname" is the literal string "http".
     with patch("services.feed_discovery._is_safe_host", return_value=True):
-        assert validate_fetch_url("HTTP://Example.com/feed") == "HTTP://Example.com/feed"
+        assert await validate_fetch_url("HTTP://Example.com/feed") == "HTTP://Example.com/feed"
 
 
-def test_is_safe_host_rejects_oversized_label_without_crashing():
+@pytest.mark.asyncio
+async def test_is_safe_host_rejects_oversized_label_without_crashing():
     # socket.getaddrinfo raises UnicodeError (not gaierror) for a host that
     # fails idna encoding, e.g. a DNS label over 63 bytes — must be treated
     # as unsafe, not propagate as an unhandled exception.
     with pytest.raises(DiscoveryError):
-        validate_fetch_url("https://" + "a" * 64 + ".com")
+        await validate_fetch_url("https://" + "a" * 64 + ".com")
+
+
+@pytest.mark.asyncio
+async def test_is_safe_host_runs_dns_resolution_off_the_event_loop():
+    """_is_safe_host() must resolve through _dns_resolver_executor (like
+    _resolve_pinned_ips), not by calling socket.getaddrinfo() directly on the
+    event loop — validate_fetch_url() is the first thing every fetch path
+    does, including the fully public, unauthenticated POST /api/discover, so
+    a blocking resolve here would stall every other in-flight request for as
+    long as an attacker-controlled or slow DNS server takes to answer."""
+    resolve_thread_name = None
+    ready = threading.Event()
+    release = threading.Event()
+
+    def blocking_getaddrinfo(host, port):
+        nonlocal resolve_thread_name
+        resolve_thread_name = threading.current_thread().name
+        ready.set()
+        release.wait(timeout=5)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    async def other_work():
+        # Only reachable while the resolution above is truly suspended off
+        # the event loop, not blocking it in-line.
+        await asyncio.wait_for(asyncio.to_thread(ready.wait, 5), timeout=5)
+        return "ran"
+
+    with patch("services.feed_discovery.socket.getaddrinfo", side_effect=blocking_getaddrinfo):
+        safe_task = asyncio.ensure_future(_is_safe_host("example.com"))
+        other = await other_work()
+        release.set()
+        assert await safe_task is True
+
+    assert other == "ran"
+    assert resolve_thread_name is not None and resolve_thread_name.startswith("pinned-dns-resolve")
+
+
+@pytest.mark.asyncio
+async def test_is_safe_host_rejects_dns_timeout():
+    def slow_getaddrinfo(host, port):
+        time.sleep(0.2)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    with patch("services.feed_discovery.socket.getaddrinfo", side_effect=slow_getaddrinfo):
+        assert await _is_safe_host("example.com", timeout=0.01) is False
 
 
 _RealAsyncClient = httpx.AsyncClient

@@ -149,7 +149,7 @@ async def probe_one(db: "Client", target: dict) -> ProbeResult:
     #    A host that has since started resolving to a private address is a
     #    failure, exactly as feed_refresh treats the same rejection.
     try:
-        safe_url = validate_fetch_url(target["url"])
+        safe_url = await validate_fetch_url(target["url"])
     except DiscoveryError as e:
         exhausted, _ = _record_failure(db, target, str(e))
         return ProbeResult(target_id, host, "failed", error=str(e)[:500],

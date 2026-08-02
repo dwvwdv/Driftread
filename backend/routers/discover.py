@@ -76,7 +76,7 @@ async def discover_and_import(
     db: Client = Depends(get_client),
 ) -> Feed:
     try:
-        safe_url = validate_fetch_url(body.feed_url)
+        safe_url = await validate_fetch_url(body.feed_url)
     except DiscoveryError as e:
         raise HTTPException(status_code=400, detail=str(e))
     try:

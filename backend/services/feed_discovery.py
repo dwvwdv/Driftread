@@ -74,6 +74,14 @@ DNS_RESOLVER_MAX_WORKERS = 8
 _dns_resolver_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=DNS_RESOLVER_MAX_WORKERS, thread_name_prefix="pinned-dns-resolve"
 )
+# validate_fetch_url() has no in-flight httpx request to borrow a connect
+# timeout from (it runs before any client/request exists — some callers, like
+# routers/opml.py's per-outline loop, don't even have a timeout variable in
+# scope) — see the module docstring on _is_safe_host for why it needs a bound
+# at all. 10s matches the shorter end of the fetch timeouts already in use
+# elsewhere (discover_feeds's 12s, fetch_and_parse's 15s) without being
+# fetch-specific itself.
+DNS_VALIDATION_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass
@@ -112,14 +120,33 @@ def user_agent() -> str:
     return os.getenv("DISCOVERY_USER_AGENT", "Driftread/1.0")
 
 
-def _is_safe_host(host: str) -> bool:
+async def _is_safe_host(host: str, timeout: float | None = None) -> bool:
+    """Resolve `host` and reject it if any answer is private/loopback/etc.
+
+    Runs socket.getaddrinfo() through the same dedicated _dns_resolver_executor
+    _resolve_pinned_ips() uses, rather than calling it directly on the event
+    loop. validate_fetch_url() (the only caller) runs at the very start of
+    every fetch path, including the fully public, unauthenticated
+    POST /api/discover — a synchronous call here would stall the *entire*
+    event loop, not just this request, for however long an attacker-controlled
+    or slow-to-answer DNS server takes to respond, once per call. This mirrors
+    _resolve_pinned_ips's reasoning exactly; that fix (SECURITY.md round 7)
+    only ever covered the *second*, pin-and-connect lookup PinnedTransport
+    performs, not this earlier gate.
+    """
     if not host:
         return False
+    loop = asyncio.get_running_loop()
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = await asyncio.wait_for(
+            loop.run_in_executor(_dns_resolver_executor, socket.getaddrinfo, host, None),
+            timeout,
+        )
     except (socket.gaierror, UnicodeError):
         # UnicodeError: a malformed host (e.g. a DNS label > 63 bytes) fails
         # idna encoding before any lookup is attempted — not a gaierror.
+        return False
+    except TimeoutError:
         return False
     for info in infos:
         ip_str = info[4][0]
@@ -132,7 +159,7 @@ def _is_safe_host(host: str) -> bool:
     return True
 
 
-def validate_fetch_url(url: str) -> str:
+async def validate_fetch_url(url: str, timeout: float | None = DNS_VALIDATION_TIMEOUT_SECONDS) -> str:
     """Normalize a user-supplied URL and reject private/loopback/link-local
     hosts. Any code path that fetches an arbitrary URL supplied by a client
     (feed discovery, manual import, OPML import, admin refresh) must call
@@ -151,7 +178,7 @@ def validate_fetch_url(url: str) -> str:
         raise DiscoveryError(f"Unsupported scheme: {parsed.scheme}")
     if not parsed.netloc:
         raise DiscoveryError("URL missing host")
-    if not _is_safe_host(parsed.hostname or ""):
+    if not await _is_safe_host(parsed.hostname or "", timeout):
         raise DiscoveryError("Refusing to fetch private/loopback address")
     return url
 
@@ -433,7 +460,7 @@ async def fetch_with_cap_response(
     # site had already been forgotten once for that path, so the guard lives
     # at the single choke point every fetch goes through instead. Re-checking
     # an already-validated URL only costs one extra DNS lookup.
-    current_url = validate_fetch_url(url)
+    current_url = await validate_fetch_url(url)
     for _ in range(max_redirects + 1):
         # After the SSRF gate, never before it: crawl policy is a layer stacked
         # on top of the security boundary, not a replacement for it. Inside the
@@ -460,7 +487,7 @@ async def fetch_with_cap_response(
                 location = resp.headers.get("location")
                 if not location:
                     raise DiscoveryError(f"Redirect ({resp.status_code}) missing Location header")
-                current_url = validate_fetch_url(
+                current_url = await validate_fetch_url(
                     str(httpx.URL(current_url).join(location))
                 )
                 continue
@@ -600,7 +627,7 @@ async def discover_feeds(
     down" must be retried; passing True re-raises instead, leaving `[]` to mean
     unambiguously "we fetched the page and it advertises no feed".
     """
-    safe_url = validate_fetch_url(url)
+    safe_url = await validate_fetch_url(url, timeout=timeout)
     headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
     async with ssrf_safe_client(
