@@ -109,8 +109,26 @@ export class AdminCandidates implements OnInit {
       });
   }
 
+  /**
+   * Drops a reviewed row from the rendered page.
+   *
+   * Removing locally keeps the queue responsive — one refetch per approval would
+   * make bulk review crawl. But clearing the *last* row on a page cannot just
+   * leave the list empty: the template's empty branch says "沒有待審核的候選" and
+   * hides the paginator with it, so an operator who worked through page 1 of 5
+   * would be told the queue was empty with no control left to prove otherwise.
+   *
+   * Approving also shifts every page boundary server-side, so the current index
+   * can end up past the end. Clamp it before refetching.
+   */
   private remove(id: string): void {
     this.candidates.update((list) => list.filter((c) => c.id !== id));
     this.total.update((n) => Math.max(0, n - 1));
+
+    if (this.candidates().length > 0 || this.total() === 0) return;
+
+    const lastPage = Math.max(1, Math.ceil(this.total() / this.pageSize()));
+    this.page.set(Math.min(this.page(), lastPage));
+    this.load();
   }
 }
