@@ -1,0 +1,164 @@
+<ob-page-header
+  kicker="FRONTIER"
+  heading="探測與目錄"
+  subtitle="種子網址、待探測佇列，以及餵給它的目錄來源"
+/>
+
+<div class="cols">
+  <!-- ── Seeding ──────────────────────────────────────────────────────────── -->
+  <ob-card heading="種子網址" meta="SEED">
+    <p class="hint">一行一個，用來讓空資料庫有起點。</p>
+    <label class="field">
+      <span class="ob-visually-hidden">網址，每行一個</span>
+      <textarea
+        class="ob-textarea"
+        name="seedUrls"
+        rows="6"
+        placeholder="https://example.com&#10;https://another.example"
+        [(ngModel)]="seedUrls"
+      ></textarea>
+    </label>
+    <div cardActions>
+      <button
+        type="button"
+        class="ob-btn ob-btn--primary ob-btn--sm"
+        [disabled]="seeding()"
+        (click)="seed()"
+      >
+        {{ seeding() ? '加入中…' : '加入待探測佇列' }}
+      </button>
+    </div>
+  </ob-card>
+
+  <!-- ── Directory sources ────────────────────────────────────────────────── -->
+  <ob-card heading="目錄來源" meta="DIRECTORIES">
+    <p class="hint">awesome 清單、blogroll 目錄或 OPML 目錄。</p>
+
+    <div class="add-row">
+      <label class="field grow">
+        <span class="ob-visually-hidden">目錄網址</span>
+        <input
+          class="ob-input"
+          name="newSourceUrl"
+          placeholder="https://example.com/awesome-feeds"
+          [(ngModel)]="newSourceUrl"
+        />
+      </label>
+      <label class="field">
+        <span class="ob-visually-hidden">類型</span>
+        <select class="ob-select" name="newSourceKind" [(ngModel)]="newSourceKind">
+          <option value="links_page">HTML 連結頁</option>
+          <option value="opml">OPML</option>
+        </select>
+      </label>
+      <button type="button" class="ob-btn ob-btn--primary ob-btn--sm" (click)="addSource()">
+        新增
+      </button>
+    </div>
+
+    @if (loadingSources()) {
+      <ob-loading label="讀取目錄來源中" />
+    } @else if (sources().length === 0) {
+      <ob-empty message="尚無目錄來源。" />
+    } @else {
+      <div class="inner-list">
+        @for (source of sources(); track source.id) {
+          <ob-list-row>
+            <span rowTitle>{{ source.label || source.url }}</span>
+            <div rowLines>
+              <span>{{ source.url }}</span>
+              <span>
+                {{ source.kind }}・已產生 {{ source.targets_created }} 個待探測網域・每
+                {{ source.interval_hours }} 小時
+                @if (source.last_failure_reason) {
+                  <span class="bad">・最近失敗：{{ source.last_failure_reason }}</span>
+                }
+              </span>
+            </div>
+            <div rowMeta>
+              <span class="ob-chip" [class.ob-chip--success]="source.enabled">
+                {{ source.enabled ? 'ENABLED' : 'DISABLED' }}
+              </span>
+              <button
+                type="button"
+                class="ob-btn ob-btn--ghost ob-btn--sm"
+                (click)="toggleSource(source)"
+              >
+                {{ source.enabled ? '停用' : '啟用' }}
+              </button>
+            </div>
+          </ob-list-row>
+        }
+      </div>
+    }
+
+    <div cardActions>
+      <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="loadSources()">
+        <ob-icon name="refresh" [size]="14" />
+        重新整理
+      </button>
+      <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="reloadDefaults()">
+        載入預設來源
+      </button>
+    </div>
+  </ob-card>
+</div>
+
+<!-- ── Probe queue ────────────────────────────────────────────────────────── -->
+<section class="queue-section" aria-labelledby="queue-heading">
+  <div class="queue-head">
+    <h2 id="queue-heading" class="ob-label">待探測佇列</h2>
+    <label class="field">
+      <span class="ob-visually-hidden">狀態篩選</span>
+      <select class="ob-select" [value]="status()" (change)="onStatus($event)">
+        @for (option of statuses; track option) {
+          <option [value]="option">{{ option }}</option>
+        }
+      </select>
+    </label>
+  </div>
+
+  @if (loadingTargets()) {
+    <ob-loading label="讀取佇列中" />
+  } @else if (targets().length === 0) {
+    <ob-empty message="這個狀態下沒有項目。" />
+  } @else {
+    <div class="list">
+      @for (target of targets(); track target.id) {
+        <ob-list-row>
+          <div rowTitle class="ttitle">
+            <!-- host is ours; url came from a crawled page. Interpolation only. -->
+            <span class="host">{{ target.host }}</span>
+            <span class="url">{{ target.url }}</span>
+          </div>
+          <div rowLines>
+            <span>
+              來源 {{ target.source }}・嘗試 {{ target.attempts }} 次・找到
+              {{ target.feeds_found }} 個・{{ target.referring_feed_count }} 個既有來源連到這裡
+            </span>
+            @if (target.last_failure_reason) {
+              <span class="bad">最近失敗：{{ target.last_failure_reason }}</span>
+            }
+          </div>
+          <div rowMeta>
+            <span class="ob-chip ob-chip--neutral">{{ target.status }}</span>
+            @if (target.status !== 'blocked') {
+              <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="block(target)">
+                <ob-icon name="block" [size]="14" />
+                封鎖網域
+              </button>
+            }
+          </div>
+        </ob-list-row>
+      }
+    </div>
+
+    <ob-paginator
+      [total]="targetsTotal()"
+      [page]="page()"
+      [pageSize]="pageSize()"
+      (pageChange)="onPage($event)"
+      (pageSizeChange)="onPageSize($event)"
+    />
+  }
+</section>

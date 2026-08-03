@@ -1,7 +1,7 @@
 <div class="controls">
   <mat-form-field appearance="outline" class="search-field">
     <mat-label>搜尋信息源</mat-label>
-    <input matInput [(ngModel)]="search" (keyup.enter)="onSearch()" placeholder="標題或描述...">
+    <input matInput [(ngModel)]="search" (keyup.enter)="onSearch()" placeholder="標題或描述..." />
   </mat-form-field>
 
   <mat-form-field appearance="outline" class="category-field">
@@ -60,4 +60,5 @@
   [pageSize]="pageSize()"
   [pageSizeOptions]="[10, 20, 50]"
   (page)="onPage($event)"
-  showFirstLastButtons />
+  showFirstLastButtons
+/>

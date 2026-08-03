@@ -1,0 +1,91 @@
+.cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--sp-5);
+  padding-right: var(--offset);
+  padding-bottom: var(--offset);
+}
+
+.hint {
+  margin-bottom: var(--sp-3);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.grow {
+  flex: 1;
+}
+
+.add-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+
+.add-row .ob-select {
+  width: auto;
+}
+
+// Nested inside a card, so it gets a rule above rather than its own frame.
+.inner-list {
+  border-top: var(--border-width-thin) solid var(--border);
+}
+
+.queue-section {
+  margin-top: var(--sp-8);
+}
+
+.queue-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-3);
+}
+
+.queue-head .ob-select {
+  width: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.list {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+}
+
+.ttitle {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.host {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  padding: 1px var(--sp-2);
+  background: var(--surface-sunken);
+  color: var(--accent);
+}
+
+.url {
+  font-weight: 400;
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.bad {
+  color: var(--caution-ink);
+}

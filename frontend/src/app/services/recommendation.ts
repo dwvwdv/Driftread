@@ -29,7 +29,7 @@ export class RecommendationService {
   like(feedId: string): void {
     const next = [...new Set([...this._liked(), feedId])];
     this._liked.set(next);
-    this._disliked.set(this._disliked().filter(id => id !== feedId));
+    this._disliked.set(this._disliked().filter((id) => id !== feedId));
     localStorage.setItem(LIKED_KEY, JSON.stringify(next));
     localStorage.setItem(DISLIKED_KEY, JSON.stringify(this._disliked()));
   }
@@ -37,7 +37,7 @@ export class RecommendationService {
   dislike(feedId: string): void {
     const next = [...new Set([...this._disliked(), feedId])];
     this._disliked.set(next);
-    this._liked.set(this._liked().filter(id => id !== feedId));
+    this._liked.set(this._liked().filter((id) => id !== feedId));
     localStorage.setItem(DISLIKED_KEY, JSON.stringify(next));
     localStorage.setItem(LIKED_KEY, JSON.stringify(this._liked()));
   }

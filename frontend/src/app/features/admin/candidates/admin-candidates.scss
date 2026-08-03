@@ -1,0 +1,50 @@
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--sp-4);
+  align-items: end;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.block {
+  grid-column: 1 / -1;
+}
+
+.queue {
+  margin-top: var(--sp-6);
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+}
+
+.ctitle {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+// The host is rendered as a code token so it reads as machine-derived fact rather
+// than as part of the remote-supplied title sitting next to it.
+.host {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px var(--sp-2);
+  background: var(--surface-sunken);
+  color: var(--accent);
+}
+
+.name {
+  overflow-wrap: anywhere;
+}
+
+ob-paginator {
+  display: block;
+  padding: 0 var(--sp-4) var(--sp-4);
+}

@@ -1,0 +1,246 @@
+@use 'mixins' as *;
+
+// STRUCTURE_WEIGHT 6 for the whole console: the offset drops from 4px to 3px and
+// spacing tightens. Operator screens want density over presence.
+:host {
+  --offset: var(--offset-sm);
+
+  display: grid;
+  grid-template-columns: var(--admin-sidebar) 1fr;
+  min-height: 100vh;
+  background: var(--surface-base);
+}
+
+// ── Sidebar ─────────────────────────────────────────────────────────────────
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding: var(--sp-5) var(--sp-3);
+  background: var(--surface-raised);
+  border-right: var(--border-width) solid var(--border);
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 var(--sp-2);
+}
+
+.mark {
+  font-size: var(--text-base);
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: var(--text-strong);
+}
+
+.sub {
+  color: var(--accent);
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  a {
+    @include focus-ring;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-2);
+    // Reserved so selecting an item shifts nothing sideways.
+    border-left: var(--accent-bar) solid transparent;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    text-decoration: none;
+    transition: color var(--dur) var(--ease);
+
+    &:hover {
+      background: var(--surface-sunken);
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    &.is-active {
+      background: var(--surface-sunken);
+      border-left-color: var(--accent);
+      color: var(--accent);
+    }
+  }
+}
+
+.foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-4);
+  border-top: var(--border-width-thin) solid var(--border);
+}
+
+.unlocked {
+  padding: 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 1px;
+  color: var(--success-ink);
+}
+
+.foot-row {
+  padding: 0 var(--sp-2);
+}
+
+.quiet {
+  @include focus-ring;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  background: transparent;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text);
+    text-decoration: none;
+  }
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+main {
+  width: 100%;
+  max-width: var(--admin-max);
+  padding: var(--sp-6) clamp(var(--sp-4), 3vw, var(--sp-8));
+
+  &:focus {
+    outline: none;
+  }
+}
+
+// ── Mobile chrome ───────────────────────────────────────────────────────────
+.topbar {
+  display: none;
+  align-items: center;
+  gap: var(--sp-3);
+  grid-column: 1 / -1;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface-raised);
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.hamburger {
+  @include focus-ring;
+  display: grid;
+  place-items: center;
+  width: var(--tap-target);
+  height: var(--tap-target);
+  background: transparent;
+  border: var(--border-width) solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.topbar .mark {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 1.5px;
+}
+
+// ── Responsive ──────────────────────────────────────────────────────────────
+// 768–1023px: icon rail. Labels go, titles and aria-labels carry the meaning.
+@media (max-width: 1023px) and (min-width: 768px) {
+  :host {
+    grid-template-columns: var(--admin-rail) 1fr;
+  }
+
+  .sidebar {
+    padding-inline: var(--sp-1);
+    align-items: center;
+  }
+
+  .head .sub,
+  .items .text,
+  .quiet .text,
+  .unlocked,
+  .foot-row {
+    display: none;
+  }
+
+  .items a {
+    justify-content: center;
+    border-left: none;
+    border-bottom: var(--border-width) solid transparent;
+
+    &.is-active {
+      border-bottom-color: var(--accent);
+    }
+  }
+
+  .mark {
+    font-size: var(--text-xs);
+    writing-mode: vertical-rl;
+    letter-spacing: 2px;
+  }
+}
+
+// Below 768px the sidebar becomes an off-canvas drawer behind the top bar.
+@media (max-width: 767px) {
+  :host {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .topbar {
+    display: flex;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: calc(var(--z-overlay) + 1);
+    width: min(80vw, 260px);
+    transform: translateX(-100%);
+    // visibility, not just transform: an off-screen element is still in the tab
+    // order, so without this a keyboard user tabs into an invisible menu.
+    // Delayed on the way out so the slide-away is still seen.
+    visibility: hidden;
+    transition:
+      transform var(--dur) var(--ease),
+      visibility 0s linear var(--dur);
+    overflow-y: auto;
+  }
+
+  .sidebar--open {
+    transform: translateX(0);
+    visibility: visible;
+    transition:
+      transform var(--dur) var(--ease),
+      visibility 0s;
+  }
+
+  .items a,
+  .quiet {
+    min-height: var(--tap-target);
+    font-size: var(--text-sm);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar {
+      transition: none;
+    }
+  }
+}

@@ -11,7 +11,14 @@ import { Article, BookmarkType } from '../../models';
 
 @Component({
   selector: 'app-bookmarks',
-  imports: [RouterLink, DatePipe, MatCardModule, MatButtonModule, MatTabsModule, MatProgressSpinnerModule],
+  imports: [
+    RouterLink,
+    DatePipe,
+    MatCardModule,
+    MatButtonModule,
+    MatTabsModule,
+    MatProgressSpinnerModule,
+  ],
   template: `
     @if (!auth.session()) {
       <p>請先 <a routerLink="/login">登入</a>。</p>
@@ -21,7 +28,9 @@ import { Article, BookmarkType } from '../../models';
         <mat-tab label="稍後閱讀"></mat-tab>
       </mat-tab-group>
 
-      @if (loading()) { <mat-spinner /> }
+      @if (loading()) {
+        <mat-spinner />
+      }
 
       <div class="grid">
         @for (a of items(); track a.id) {
@@ -31,11 +40,13 @@ import { Article, BookmarkType } from '../../models';
                 <a [routerLink]="['/articles', a.id]">{{ a.title }}</a>
               </mat-card-title>
               @if (a.published_at) {
-                <mat-card-subtitle>{{ a.published_at | date:'yyyy-MM-dd' }}</mat-card-subtitle>
+                <mat-card-subtitle>{{ a.published_at | date: 'yyyy-MM-dd' }}</mat-card-subtitle>
               }
             </mat-card-header>
             @if (a.summary) {
-              <mat-card-content><p>{{ a.summary }}</p></mat-card-content>
+              <mat-card-content
+                ><p>{{ a.summary }}</p></mat-card-content
+              >
             }
             <mat-card-actions>
               <button mat-button (click)="remove(a.id)">移除</button>
@@ -49,9 +60,16 @@ import { Article, BookmarkType } from '../../models';
       }
     }
   `,
-  styles: [`
-    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:12px; margin-top:12px; }
-  `],
+  styles: [
+    `
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+      }
+    `,
+  ],
 })
 export class Bookmarks implements OnInit {
   protected auth = inject(AuthService);
@@ -73,7 +91,10 @@ export class Bookmarks implements OnInit {
   load(): void {
     this.loading.set(true);
     this.me.listBookmarks(this.tab()).subscribe({
-      next: (a) => { this.items.set(a); this.loading.set(false); },
+      next: (a) => {
+        this.items.set(a);
+        this.loading.set(false);
+      },
       error: () => this.loading.set(false),
     });
   }

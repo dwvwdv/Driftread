@@ -9,7 +9,13 @@ export class FeedService {
   private http = inject(HttpClient);
   private base = environment.apiUrl;
 
-  getFeeds(page = 1, pageSize = 20, category?: string, tag?: string, search?: string): Observable<PaginatedFeeds> {
+  getFeeds(
+    page = 1,
+    pageSize = 20,
+    category?: string,
+    tag?: string,
+    search?: string,
+  ): Observable<PaginatedFeeds> {
     let params = new HttpParams().set('page', page).set('page_size', pageSize);
     if (category) params = params.set('category', category);
     if (tag) params = params.set('tag', tag);

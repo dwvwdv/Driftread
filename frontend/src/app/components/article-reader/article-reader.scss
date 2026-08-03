@@ -1,11 +1,29 @@
-.header { margin-bottom: 16px; }
-.article-card { max-width: 780px; margin: 0 auto; }
+.header {
+  margin-bottom: 16px;
+}
+.article-card {
+  max-width: 780px;
+  margin: 0 auto;
+}
 .article-body {
   line-height: 1.8;
   font-size: 1rem;
-  img { max-width: 100%; height: auto; }
+  img {
+    max-width: 100%;
+    height: auto;
+  }
 }
-.read-more { margin-top: 16px; }
-.center { display: flex; justify-content: center; padding: 40px; }
-.error { color: red; }
-.empty { color: rgba(0,0,0,0.5); }
+.read-more {
+  margin-top: 16px;
+}
+.center {
+  display: flex;
+  justify-content: center;
+  padding: 40px;
+}
+.error {
+  color: red;
+}
+.empty {
+  color: rgba(0, 0, 0, 0.5);
+}

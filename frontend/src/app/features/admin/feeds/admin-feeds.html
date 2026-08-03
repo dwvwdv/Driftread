@@ -1,0 +1,140 @@
+<ob-page-header kicker="INVENTORY" heading="信息源管理" subtitle="封存、恢復與單筆更新">
+  <button
+    type="button"
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    [disabled]="loading()"
+    (click)="reload()"
+  >
+    <ob-icon name="refresh" [size]="14" />
+    重新整理
+  </button>
+</ob-page-header>
+
+<ob-tabs [tabs]="tabs" [selected]="tab()" (selectedChange)="onTab($event)">
+  @if (loading()) {
+    <ob-loading label="讀取中" />
+  } @else {
+    <!-- 使用中 -->
+    @if (tab() === 0) {
+      @if (active().length === 0) {
+        <ob-empty message="沒有使用中的信息源。" />
+      } @else {
+        <div class="list">
+          @for (feed of active(); track feed.id) {
+            <ob-list-row>
+              <span rowTitle>{{ feed.title }}</span>
+              <div rowLines>
+                <span>{{ feed.url }}</span>
+                <span>
+                  {{ feed.article_count }} 篇文章
+                  @if (feed.last_fetched_at) {
+                    ・最近抓取 {{ feed.last_fetched_at | date: 'yyyy-MM-dd HH:mm' }}
+                  }
+                </span>
+              </div>
+              <div rowMeta>
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  [disabled]="isBusy(feed.id)"
+                  (click)="refresh(feed.id, feed.title)"
+                >
+                  {{ isBusy(feed.id) ? '更新中…' : '更新文章' }}
+                </button>
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  (click)="archive(feed)"
+                >
+                  封存
+                </button>
+              </div>
+            </ob-list-row>
+          }
+        </div>
+
+        <ob-paginator
+          [total]="activeTotal()"
+          [page]="page()"
+          [pageSize]="pageSize()"
+          [pageSizeOptions]="[25, 50, 100]"
+          (pageChange)="onPage($event)"
+          (pageSizeChange)="onPageSize($event)"
+        />
+      }
+    }
+
+    <!-- 已封存 -->
+    @if (tab() === 1) {
+      @if (archived().length === 0) {
+        <ob-empty message="沒有封存的信息源。" />
+      } @else {
+        <div class="list">
+          @for (feed of archived(); track feed.id) {
+            <ob-list-row>
+              <span rowTitle>{{ feed.title }}</span>
+              <div rowLines>
+                <span>{{ feed.url }}</span>
+                @if (feed.archived_at) {
+                  <span>封存於 {{ feed.archived_at | date: 'yyyy-MM-dd' }}</span>
+                }
+              </div>
+              <div rowMeta>
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  [disabled]="isBusy(feed.id)"
+                  (click)="refresh(feed.id, feed.title)"
+                >
+                  {{ isBusy(feed.id) ? '更新中…' : '更新文章' }}
+                </button>
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--primary ob-btn--sm"
+                  (click)="unarchive(feed)"
+                >
+                  恢復
+                </button>
+              </div>
+            </ob-list-row>
+          }
+        </div>
+      }
+    }
+
+    <!-- 健康度偏低 -->
+    @if (tab() === 2) {
+      @if (unhealthy().length === 0) {
+        <ob-empty message="沒有健康度偏低的信息源。" />
+      } @else {
+        <div class="list">
+          @for (feed of unhealthy(); track feed.id) {
+            <ob-list-row>
+              <span rowTitle>{{ feed.title }}</span>
+              <div rowLines>
+                <span>{{ feed.url }}</span>
+                <span class="bad">
+                  健康度 {{ feed.health_score }}・連續失敗 {{ feed.consecutive_failures }} 次
+                  @if (feed.last_failure_reason) {
+                    ・{{ feed.last_failure_reason }}
+                  }
+                </span>
+              </div>
+              <div rowMeta>
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  [disabled]="isBusy(feed.id)"
+                  (click)="refresh(feed.id, feed.title)"
+                >
+                  {{ isBusy(feed.id) ? '重試中…' : '立即重試' }}
+                </button>
+              </div>
+            </ob-list-row>
+          }
+        </div>
+        <p class="note">連續失敗達 10 次的來源會由排程器自動封存，這裡是在那之前先看到問題。</p>
+      }
+    }
+  }
+</ob-tabs>

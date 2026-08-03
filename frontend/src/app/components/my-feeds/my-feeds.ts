@@ -22,22 +22,33 @@ import { Feed, OpmlImportResult } from '../../models';
       </div>
 
       @if (importResult(); as r) {
-        <p class="info">已匯入 {{ r.imported }} 個 feed（成功訂閱 {{ r.subscribed }}）。
-          @if (r.failed.length > 0) { 失敗 {{ r.failed.length }} 個。 }
+        <p class="info">
+          已匯入 {{ r.imported }} 個 feed（成功訂閱 {{ r.subscribed }}）。
+          @if (r.failed.length > 0) {
+            失敗 {{ r.failed.length }} 個。
+          }
         </p>
       }
 
-      @if (loading()) { <mat-spinner /> }
+      @if (loading()) {
+        <mat-spinner />
+      }
 
       <div class="grid">
         @for (f of feeds(); track f.id) {
           <mat-card class="feed-card">
             <mat-card-header>
-              <mat-card-title><a [routerLink]="['/feeds', f.id]">{{ f.title }}</a></mat-card-title>
-              @if (f.category) { <mat-card-subtitle>{{ f.category }}</mat-card-subtitle> }
+              <mat-card-title
+                ><a [routerLink]="['/feeds', f.id]">{{ f.title }}</a></mat-card-title
+              >
+              @if (f.category) {
+                <mat-card-subtitle>{{ f.category }}</mat-card-subtitle>
+              }
             </mat-card-header>
             <mat-card-content>
-              @if (f.description) { <p>{{ f.description }}</p> }
+              @if (f.description) {
+                <p>{{ f.description }}</p>
+              }
             </mat-card-content>
             <mat-card-actions>
               <button mat-button color="warn" (click)="unsubscribe(f.id)">取消訂閱</button>
@@ -51,11 +62,23 @@ import { Feed, OpmlImportResult } from '../../models';
       }
     }
   `,
-  styles: [`
-    .actions { display:flex; gap:8px; margin-bottom:16px; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:12px; }
-    .info { color: #2e7d32; }
-  `],
+  styles: [
+    `
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 12px;
+      }
+      .info {
+        color: #2e7d32;
+      }
+    `,
+  ],
 })
 export class MyFeeds implements OnInit {
   protected auth = inject(AuthService);
@@ -73,7 +96,10 @@ export class MyFeeds implements OnInit {
   load(): void {
     this.loading.set(true);
     this.me.listSubscriptions().subscribe({
-      next: (f) => { this.feeds.set(f); this.loading.set(false); },
+      next: (f) => {
+        this.feeds.set(f);
+        this.loading.set(false);
+      },
       error: () => this.loading.set(false),
     });
   }
@@ -86,7 +112,10 @@ export class MyFeeds implements OnInit {
     const file = (ev.target as HTMLInputElement).files?.[0];
     if (!file) return;
     this.me.importOpml(file).subscribe({
-      next: (r) => { this.importResult.set(r); this.load(); },
+      next: (r) => {
+        this.importResult.set(r);
+        this.load();
+      },
     });
   }
 }

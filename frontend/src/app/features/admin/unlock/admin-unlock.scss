@@ -1,0 +1,60 @@
+.shell {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: var(--sp-6) var(--sp-4);
+  background: var(--surface-base);
+}
+
+.panel {
+  width: min(100%, 460px);
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  box-shadow: var(--offset) var(--offset) 0 0 var(--shadow-offset);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface-sunken);
+  border-bottom: var(--border-width) solid var(--border);
+  color: var(--accent);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-6) var(--sp-5);
+}
+
+h1 {
+  font-size: var(--text-xl);
+}
+
+.lede {
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.err {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--danger-ink);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  border-top: var(--border-width-thin) solid var(--border);
+}

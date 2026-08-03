@@ -13,8 +13,12 @@ import { Article, BookmarkType } from '../../models';
 @Component({
   selector: 'app-article-reader',
   imports: [
-    RouterLink, DatePipe, MatCardModule, MatButtonModule,
-    MatIconModule, MatProgressSpinnerModule,
+    RouterLink,
+    DatePipe,
+    MatCardModule,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressSpinnerModule,
   ],
   templateUrl: './article-reader.html',
   styleUrl: './article-reader.scss',
@@ -34,14 +38,17 @@ export class ArticleReader implements OnInit {
   ngOnInit(): void {
     const id = this.route.snapshot.paramMap.get('id') ?? '';
     this.articleService.getArticle(id).subscribe({
-      next: a => {
+      next: (a) => {
         this.article.set(a);
         this.loading.set(false);
         if (this.auth.session()) {
           this.me.markRead(a.id).subscribe({ error: () => {} });
         }
       },
-      error: () => { this.error.set('無法載入文章。'); this.loading.set(false); },
+      error: () => {
+        this.error.set('無法載入文章。');
+        this.loading.set(false);
+      },
     });
   }
 
@@ -50,9 +57,7 @@ export class ArticleReader implements OnInit {
     if (!a || !this.auth.session()) return;
     const flag = type === 'favorite' ? this.favorited : this.readLater;
     const next = !flag();
-    const obs = next
-      ? this.me.addBookmark(a.id, type)
-      : this.me.removeBookmark(a.id, type);
+    const obs = next ? this.me.addBookmark(a.id, type) : this.me.removeBookmark(a.id, type);
     obs.subscribe({ next: () => flag.set(next) });
   }
 }

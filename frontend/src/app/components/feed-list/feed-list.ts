@@ -15,10 +15,16 @@ import { Feed, PaginatedFeeds } from '../../models';
 @Component({
   selector: 'app-feed-list',
   imports: [
-    RouterLink, FormsModule,
-    MatCardModule, MatChipsModule, MatInputModule,
-    MatFormFieldModule, MatSelectModule, MatButtonModule,
-    MatPaginatorModule, MatProgressSpinnerModule,
+    RouterLink,
+    FormsModule,
+    MatCardModule,
+    MatChipsModule,
+    MatInputModule,
+    MatFormFieldModule,
+    MatSelectModule,
+    MatButtonModule,
+    MatPaginatorModule,
+    MatProgressSpinnerModule,
   ],
   templateUrl: './feed-list.html',
   styleUrl: './feed-list.scss',
@@ -43,28 +49,31 @@ export class FeedList implements OnInit {
   }
 
   loadCategories(): void {
-    this.feedService.getCategories().subscribe({ next: c => this.categories.set(c) });
+    this.feedService.getCategories().subscribe({ next: (c) => this.categories.set(c) });
   }
 
   loadFeeds(): void {
     this.loading.set(true);
     this.error.set('');
-    this.feedService.getFeeds(
-      this.page(), this.pageSize(),
-      this.category() || undefined,
-      undefined,
-      this.search() || undefined,
-    ).subscribe({
-      next: (res: PaginatedFeeds) => {
-        this.feeds.set(res.items);
-        this.total.set(res.total);
-        this.loading.set(false);
-      },
-      error: () => {
-        this.error.set('載入失敗，請稍後再試。');
-        this.loading.set(false);
-      },
-    });
+    this.feedService
+      .getFeeds(
+        this.page(),
+        this.pageSize(),
+        this.category() || undefined,
+        undefined,
+        this.search() || undefined,
+      )
+      .subscribe({
+        next: (res: PaginatedFeeds) => {
+          this.feeds.set(res.items);
+          this.total.set(res.total);
+          this.loading.set(false);
+        },
+        error: () => {
+          this.error.set('載入失敗，請稍後再試。');
+          this.loading.set(false);
+        },
+      });
   }
 
   onSearch(): void {

@@ -15,9 +15,15 @@ import { FeedWithArticles } from '../../models';
 @Component({
   selector: 'app-feed-detail',
   imports: [
-    RouterLink, DatePipe,
-    MatCardModule, MatButtonModule, MatChipsModule,
-    MatListModule, MatDividerModule, MatProgressSpinnerModule, MatIconModule,
+    RouterLink,
+    DatePipe,
+    MatCardModule,
+    MatButtonModule,
+    MatChipsModule,
+    MatListModule,
+    MatDividerModule,
+    MatProgressSpinnerModule,
+    MatIconModule,
   ],
   templateUrl: './feed-detail.html',
   styleUrl: './feed-detail.scss',
@@ -31,18 +37,34 @@ export class FeedDetail implements OnInit {
   loading = signal(true);
   error = signal('');
 
-  get feedId(): string { return this.route.snapshot.paramMap.get('id') ?? ''; }
+  get feedId(): string {
+    return this.route.snapshot.paramMap.get('id') ?? '';
+  }
 
-  get isLiked(): boolean { return this.rec.liked().includes(this.feedId); }
-  get isDisliked(): boolean { return this.rec.disliked().includes(this.feedId); }
+  get isLiked(): boolean {
+    return this.rec.liked().includes(this.feedId);
+  }
+  get isDisliked(): boolean {
+    return this.rec.disliked().includes(this.feedId);
+  }
 
   ngOnInit(): void {
     this.feedService.getFeed(this.feedId).subscribe({
-      next: f => { this.feed.set(f); this.loading.set(false); },
-      error: () => { this.error.set('無法載入信息源。'); this.loading.set(false); },
+      next: (f) => {
+        this.feed.set(f);
+        this.loading.set(false);
+      },
+      error: () => {
+        this.error.set('無法載入信息源。');
+        this.loading.set(false);
+      },
     });
   }
 
-  like(): void { this.rec.like(this.feedId); }
-  dislike(): void { this.rec.dislike(this.feedId); }
+  like(): void {
+    this.rec.like(this.feedId);
+  }
+  dislike(): void {
+    this.rec.dislike(this.feedId);
+  }
 }

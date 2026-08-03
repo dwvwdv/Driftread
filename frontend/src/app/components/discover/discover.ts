@@ -14,8 +14,13 @@ import { DiscoveredFeed } from '../../models';
 @Component({
   selector: 'app-discover',
   imports: [
-    RouterLink, FormsModule, MatCardModule, MatFormFieldModule,
-    MatInputModule, MatButtonModule, MatProgressSpinnerModule,
+    RouterLink,
+    FormsModule,
+    MatCardModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatButtonModule,
+    MatProgressSpinnerModule,
   ],
   template: `
     <h2>從網址發現 RSS</h2>
@@ -24,13 +29,22 @@ import { DiscoveredFeed } from '../../models';
     <div class="row">
       <mat-form-field appearance="outline" class="grow">
         <mat-label>網址</mat-label>
-        <input matInput [(ngModel)]="url" placeholder="https://example.com 或 example.com" (keyup.enter)="run()" />
+        <input
+          matInput
+          [(ngModel)]="url"
+          placeholder="https://example.com 或 example.com"
+          (keyup.enter)="run()"
+        />
       </mat-form-field>
       <button mat-flat-button color="primary" (click)="run()" [disabled]="busy()">發現</button>
     </div>
 
-    @if (busy()) { <mat-spinner diameter="32" /> }
-    @if (error()) { <p class="error">{{ error() }}</p> }
+    @if (busy()) {
+      <mat-spinner diameter="32" />
+    }
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    }
 
     @if (candidates() !== null) {
       @if (candidates()!.length === 0) {
@@ -60,13 +74,30 @@ import { DiscoveredFeed } from '../../models';
       }
     }
   `,
-  styles: [`
-    .row { display:flex; gap:8px; align-items:center; }
-    .grow { flex: 1; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:12px; margin-top:12px; }
-    .hint { color: #555; }
-    .error { color: #d32f2f; }
-  `],
+  styles: [
+    `
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .grow {
+        flex: 1;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .hint {
+        color: #555;
+      }
+      .error {
+        color: #d32f2f;
+      }
+    `,
+  ],
 })
 export class Discover {
   protected auth = inject(AuthService);
@@ -85,7 +116,10 @@ export class Discover {
     this.error.set('');
     this.candidates.set(null);
     this.discoverService.discover(this.url.trim()).subscribe({
-      next: (r) => { this.candidates.set(r.candidates); this.busy.set(false); },
+      next: (r) => {
+        this.candidates.set(r.candidates);
+        this.busy.set(false);
+      },
       error: (e) => {
         this.error.set(e?.error?.detail || '發現失敗');
         this.busy.set(false);

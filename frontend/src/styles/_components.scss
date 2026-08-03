@@ -161,7 +161,8 @@
   appearance: none;
   padding-right: var(--sp-8);
   cursor: pointer;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
     linear-gradient(135deg, currentColor 50%, transparent 50%);
   background-position:
     calc(100% - 18px) calc(50% + 2px),
@@ -310,6 +311,46 @@
 
 .ob-visually-hidden {
   @include visually-hidden;
+}
+
+// ── Overlay scrim ───────────────────────────────────────────────────────────
+// Shared by the public drawer, the account menu and the admin drawer. A button
+// rather than a div so dismiss-on-click is reachable by keyboard as well as mouse.
+.ob-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  background: transparent;
+  border: none;
+  cursor: default;
+}
+
+.ob-scrim--dim {
+  background: rgb(0 0 0 / 55%);
+}
+
+// ── Menu / drawer item ──────────────────────────────────────────────────────
+// The link-or-button row used inside both layouts' popovers and drawers.
+.ob-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  background: transparent;
+  border: none;
+  font-size: var(--text-sm);
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--surface-sunken);
+    color: var(--text-strong);
+    text-decoration: none;
+  }
+
+  @include focus-ring;
 }
 
 // ── Overlays ────────────────────────────────────────────────────────────────

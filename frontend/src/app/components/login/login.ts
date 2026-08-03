@@ -27,8 +27,12 @@ import { AuthService } from '../../services/auth';
           <mat-label>密碼</mat-label>
           <input matInput type="password" [(ngModel)]="password" autocomplete="current-password" />
         </mat-form-field>
-        @if (error()) { <p class="error">{{ error() }}</p> }
-        @if (info()) { <p class="info">{{ info() }}</p> }
+        @if (error()) {
+          <p class="error">{{ error() }}</p>
+        }
+        @if (info()) {
+          <p class="info">{{ info() }}</p>
+        }
       </mat-card-content>
       <mat-card-actions>
         <button mat-flat-button color="primary" (click)="submit()" [disabled]="busy()">
@@ -40,13 +44,26 @@ import { AuthService } from '../../services/auth';
       </mat-card-actions>
     </mat-card>
   `,
-  styles: [`
-    .auth-card { max-width: 420px; margin: 40px auto; }
-    .full { width: 100%; }
-    .error { color: #d32f2f; }
-    .info { color: #2e7d32; }
-    .warn { color: #ed6c02; }
-  `],
+  styles: [
+    `
+      .auth-card {
+        max-width: 420px;
+        margin: 40px auto;
+      }
+      .full {
+        width: 100%;
+      }
+      .error {
+        color: #d32f2f;
+      }
+      .info {
+        color: #2e7d32;
+      }
+      .warn {
+        color: #ed6c02;
+      }
+    `,
+  ],
 })
 export class Login {
   protected auth = inject(AuthService);

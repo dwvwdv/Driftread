@@ -10,7 +10,14 @@ import { Feed } from '../../models';
 
 @Component({
   selector: 'app-recommendations',
-  imports: [RouterLink, MatCardModule, MatButtonModule, MatChipsModule, MatProgressSpinnerModule, MatIconModule],
+  imports: [
+    RouterLink,
+    MatCardModule,
+    MatButtonModule,
+    MatChipsModule,
+    MatProgressSpinnerModule,
+    MatIconModule,
+  ],
   templateUrl: './recommendations.html',
   styleUrl: './recommendations.scss',
 })
@@ -28,20 +35,27 @@ export class Recommendations implements OnInit {
     return idx < list.length ? list[idx] : null;
   }
 
-  get likedCount(): number { return this.rec.liked().length; }
+  get likedCount(): number {
+    return this.rec.liked().length;
+  }
 
-  ngOnInit(): void { this.loadMore(); }
+  ngOnInit(): void {
+    this.loadMore();
+  }
 
   loadMore(): void {
     this.loading.set(true);
     this.error.set('');
     this.rec.getRecommendations(15).subscribe({
-      next: feeds => {
+      next: (feeds) => {
         this.feeds.set(feeds);
         this.currentIndex.set(0);
         this.loading.set(false);
       },
-      error: () => { this.error.set('無法載入推薦。'); this.loading.set(false); },
+      error: () => {
+        this.error.set('無法載入推薦。');
+        this.loading.set(false);
+      },
     });
   }
 

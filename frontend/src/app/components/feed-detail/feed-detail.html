@@ -23,7 +23,9 @@
         <p>{{ f.description }}</p>
       }
       @if (f.website_url) {
-        <p><a [href]="f.website_url" target="_blank" rel="noopener">{{ f.website_url }}</a></p>
+        <p>
+          <a [href]="f.website_url" target="_blank" rel="noopener">{{ f.website_url }}</a>
+        </p>
       }
       <mat-chip-set>
         @for (tag of f.tags; track tag) {
@@ -48,13 +50,14 @@
       <mat-list-item [routerLink]="['/articles', article.id]" class="article-item">
         <span matListItemTitle>{{ article.title }}</span>
         <span matListItemLine>
-          @if (article.author) { {{ article.author }} · }
-          {{ article.published_at | date:'yyyy-MM-dd' }}
+          @if (article.author) {
+            {{ article.author }} ·
+          }
+          {{ article.published_at | date: 'yyyy-MM-dd' }}
         </span>
       </mat-list-item>
       <mat-divider />
-    }
-    @empty {
+    } @empty {
       <p class="empty">尚無文章。</p>
     }
   </mat-list>

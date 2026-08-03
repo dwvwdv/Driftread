@@ -129,15 +129,14 @@
   // stack names real CJK families — but always *after* the Latin ones, otherwise
   // Latin glyphs get pulled from the CJK font's poor proportional Latin.
   --font-sans:
-    system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', 'PingFang TC',
-    'Hiragino Sans TC', 'Microsoft JhengHei', 'Source Han Sans TC', sans-serif;
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', 'PingFang TC', 'Hiragino Sans TC',
+    'Microsoft JhengHei', 'Source Han Sans TC', sans-serif;
   --font-mono:
     'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas,
     'Noto Sans Mono CJK TC', monospace;
   // Long-form article body only — see _prose.scss.
   --font-read:
-    Georgia, 'Iowan Old Style', 'Noto Serif TC', 'Source Han Serif TC', 'Songti TC',
-    serif;
+    Georgia, 'Iowan Old Style', 'Noto Serif TC', 'Source Han Serif TC', 'Songti TC', serif;
 
   // Base is 15px rather than the usual 14px: CJK glyphs carry far more strokes per
   // em than Latin and need the extra size for the same legibility.
