@@ -151,7 +151,12 @@ export class AdminFeeds implements OnInit {
     this.admin.refreshFeed(id).subscribe({
       next: (result) => {
         this.setBusy(id, false);
-        this.toast.success(`${title}：新增 ${result.inserted} 篇`);
+        // new_articles, not inserted. `inserted` is rows touched by the upsert —
+        // for an unchanged feed that is its whole item list, so reporting it told
+        // the operator dozens of articles arrived when nothing had. The backend
+        // returns both and documents the distinction at
+        // backend/routers/admin.py::refresh_feed.
+        this.toast.success(`${title}：新增 ${result.new_articles} 篇`);
       },
       // A 502 here means the remote feed did not answer — reported by
       // AdminService as a warning, and it must not stop the other rows.
