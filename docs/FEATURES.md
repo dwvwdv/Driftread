@@ -297,6 +297,11 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 ## 4. 前端路由
 
+前後台是兩棵獨立的路由樹，掛在兩個不同的 layout 下。前台完全不知道後台存在——
+公開導覽列沒有任何通往 `/admin` 的連結。
+
+### 前台（`PublicLayout`）
+
 | 路徑 | 元件 |
 |------|------|
 | `/` | `feed-list` |
@@ -307,8 +312,36 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/login` | `login` |
 | `/me/feeds` | `my-feeds` |
 | `/me/bookmarks` | `bookmarks` |
-| `/admin` | `admin` |
 | `**` | 轉回 `/` |
+
+### 後台（`AdminLayout`，`canMatch: [adminGuard]`）
+
+| 路徑 | 元件 | 內容 |
+|------|------|------|
+| `/admin/unlock` | `admin-unlock` | 輸入 API Key。**必須排在 `/admin` 之前**——一旦有金鑰 guard 就會通過，`admin` 會吃掉 `admin/**` 前綴，`unlock` 會被當成未知的 admin 子路由 |
+| `/admin` | → `/admin/dashboard` | |
+| `/admin/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示 |
+| `/admin/candidates` | `admin-candidates` | 候選審核 |
+| `/admin/feeds` | `admin-feeds` | 使用中 / 已封存 / 健康度偏低 |
+| `/admin/frontier` | `admin-frontier` | 種子網址、待探測佇列與封鎖、目錄來源 |
+| `/admin/import` | `admin-import` | 單一網址匯入、JSON 批次匯入 |
+
+⚠ `adminGuard`（`frontend/src/app/guards/admin.guard.ts`）**只檢查這個分頁有沒有輸入過
+金鑰，不是認證**。它無法驗證金鑰——能驗的只有後端的 `_require_api_key`。後台身分是一把
+獨立的共用密鑰，無法由 Supabase 登入推導。guard 買到的是 UX（不會整頁面板一起 403），
+不是安全邊界。
+
+金鑰存在 `sessionStorage['driftread_admin_key']`：分頁關閉即失效，但撐得過重新整理，
+所以各子頁可以直接在 `ngOnInit` 載入，不需要每個面板一顆「載入」按鈕。金鑰不會出現在
+網址、不會被記錄、也不會被畫回畫面上（側欄只顯示「已解鎖」狀態點）。
+
+### 佈景主題
+
+深色為預設（Offbeat 的原生形態），淺色以 Nord Snow Storm 當表面、Polar Night 當文字，
+刻意不使用純白。優先序：`:root`（深）→ `@media (prefers-color-scheme: light)`（僅在
+使用者未明確選擇時）→ `:root[data-theme='light'|'dark']`（使用者選擇，永遠最優先）。
+選擇存在 `localStorage['driftread_theme']`，並由 `index.html` 的 inline script 在
+first paint 前套用，避免淺色使用者每次載入都閃一下深色。
 
 前端設定在 `frontend/src/environments/`：`apiUrl` 正式為 `/api`（走 nginx 代理），
 `supabaseUrl` / `supabaseAnonKey` 供瀏覽器端 Supabase Auth 使用（**anon key，不是 service_role**）。
@@ -412,7 +445,7 @@ DELETE FROM discovery_targets
 
 | 層 | 內容 |
 |----|------|
-| Frontend | Angular 21（Material + CDK）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
+| Frontend | Angular 21（**僅 `@angular/cdk`**：overlay / a11y；UI 為自建 Offbeat 元件庫，見 `frontend/src/app/ui/` 與 `frontend/src/styles/`）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
 | 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試） |

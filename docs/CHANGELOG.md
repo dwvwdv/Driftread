@@ -264,3 +264,63 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 ### 測試
 
 `backend/tests/test_feed_discovery.py` 新增 2 個測試：`test_is_safe_host_runs_dns_resolution_off_the_event_loop`（沿用 #25 第九輪驗證阻塞行為的手法，斷言解析發生在 `pinned-dns-resolve` 執行緒、事件迴圈期間仍能完成無關的 `asyncio.to_thread()` 工作）、`test_is_safe_host_rejects_dns_timeout`（逾時回傳 `False` 而非掛住或洩漏例外）。既有的 `test_normalize_url_*` 系列改成 `async def` + `await`——`unittest.mock.patch()` 對已改成 `async def` 的目標會自動改用 `AsyncMock`，既有的 `return_value=`/`side_effect=` 不必跟著改寫。沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25/#27 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，交由 CI 跑完整測試。
+
+## 階段十五：web 端全面重設計——Offbeat 設計系統與前後台結構分離（PR #29，2026-08-03）
+
+前端從 `ng new` 的骨架長成一套有識別度的設計系統，並把前台與後台在結構上真正拆開。
+
+### 起點
+
+- 全站 CSS 約 150 行。`styles.scss` 43 行裡有 38 行是 Angular CLI 原始 boilerplate——未更動的 `mat.theme()`、stock azure palette、寫死的 `color-scheme: light`，沒有任何 token 層。
+- `.center` / `.error { color: red }` / `.empty` 三條規則在四個元件的 SCSS 裡逐字重複。中性色一律寫成 `rgba(0,0,0,.x)`，另有 `#f5f5f5`、`#e3f2fd`、`#d32f2f` 等硬編碼散落 8 個檔案——任何深色主題都會直接壞掉。
+- `app.html` 是未刪的 344 行 Angular 起始頁（Angular logo、`Hello, {{ title() }}`），沒有被引用；`app.scss` 是空檔；`app.spec.ts` 對著那個死掉的模板斷言。`index.html` 標題還是 `DriftreadFrontend`，`lang="en"`，整個 UI 卻是繁體中文且沒有任何 CJK 字型堆疊。
+- **前後台沒有分離**：14 行扁平路由，`/admin` 只是其中一個 leaf，與前台共用同一個 shell；`nav.html` 把「後台」連結永久顯示給所有訪客；`/admin` 完全沒有 guard。後台是單一頁面塞 6 個 `mat-card`，直接呼叫 `HttpClient` 並手工組 `x-api-key` header 共 12 次。
+
+### 設計系統（Offbeat：Nord × Brutalism）
+
+兩層 token：raw palette 只出現在 `_tokens.scss`，其餘一律走語意別名，換主題只是 `<html>` 上換一個屬性。
+
+**關於對比度**——Nord 是為語法高亮設計的低對比色票，數個自然搭配在 UI 文字上達不到 WCAG AA。逐一量測並在檔案內記錄：
+
+- frost3 `#5E81AC` 配 snow2 文字只有 **3.47:1**，不能當主要按鈕底。主要按鈕改用 frost1 + polar0（**6.25:1**），兩個主題共用同一組值。
+- aurora_red 是中間調，在 polar0（3.06:1）與 snow2（3.53:1）上都不合格。Aurora 因此拆成兩種形式：原色供填色 / 狀態點 / 邊框（≥3:1 即可），另加每主題的 `-ink` 變體供文字。
+- polar3 在 polar0 上是 2.3:1（禁用為文字），在 snow2 上卻是 **6.7:1**——禁令是跟背景綁定的，淺色模式正好是它合法的地方。
+
+偏移陰影改用 `box-shadow: Npx Npx 0 0` 而非參考文件的 `::after` + `z-index:-1`。視覺完全相同（零模糊零擴散＝實心位移矩形），但不需定位脈絡、不會被 stacking context 裁掉——sticky header 與 drawer transform 都會破壞後者。
+
+### 元件庫
+
+移除 `@angular/material` 與 `@angular/animations`，只留 `@angular/cdk`（overlay / a11y）。
+
+分界不是隨意的：「原生元素加上塗裝」的東西（button / input / textarea / select / checkbox / chip / divider）留在原生元素上，樣式放全域 recipe class；只有真的有結構或行為的才做成元件。兩個理由——放棄 Material 等於放棄它的無障礙成果，靠平台把鍵盤操作、type-ahead 與行動裝置原生選單買回來比重寫一套 combobox ARIA 可靠得多；而且 `anyComponentStyle` 是每元件 4kB，mixin 被 12 個元件 include 就是 12 份各自計費，全域 class 只算一次。
+
+無障礙補回的重點：`ob-tabs` 實作完整 WAI-ARIA tabs（roving tabindex、左右鍵與 Home/End，且焦點必須跟著選取移動，否則焦點會留在 `tabindex="-1"` 的 tab 上導致下一次 Tab 跳出整組）；`ob-icon` 用 `@switch` 選 literal `<path>`，不經 `innerHTML`、不碰 `bypassSecurityTrust`；`ob-error` 帶 `role="alert"`——它取代的 `<p class="error">` 對輔助技術完全隱形；toast 一律同步送 `LiveAnnouncer`。行動版側欄除了 transform 位移還要 `visibility: hidden`，否則鍵盤使用者會 Tab 進一個看不見的選單。
+
+### 前後台分離
+
+`/admin/**` 自成子路由樹掛在獨立的 `AdminLayout` 下（側欄、更緊的間距、STRUCTURE 6），前台移除「後台」連結。`adminGuard` 只檢查金鑰是否存在，註解裡寫死它不是認證。金鑰改存 `sessionStorage`——原本存在非持久化的 signal，重新整理就消失，所以每個面板都需要手動按「載入」，改成撐得過 F5 之後那個 workaround 連同解釋它的註解一起消失。
+
+`AdminService` 收掉 12 處手工 header，並把原本一律 `失敗：<detail>` 的錯誤處理拆開：0（沒到達後端）、403 / 422（金鑰無效或遺漏 → 清除並送回 unlock）、409（狀態衝突不是失敗）、502（遠端 feed 抓取失敗，用 warning 不用 danger）、503（設定狀態，用 info）。
+
+`auth.interceptor` 從「無條件貼在所有請求上」收斂為只貼自家 API 且跳過 `/admin/*`。
+
+後台拆成 5 個子頁，並接上 5 個後端早就存在但前台從未呼叫的端點：`feeds/unhealthy`（健康度只存在資料庫裡沒人看得到）、`feeds/refresh-due`、`feeds/from-url`（原本加一個來源要手寫 JSON 陣列）、`discovery/targets` 清單與 `targets/{id}/block`（探測佇列原本是唯寫的）。
+
+### 順手修掉的既有 bug
+
+1. **猜你喜歡在收藏第 51 個之後永久失效**——`services/recommendation.ts` 無上限 append 所有 liked/disliked，後端上限 `max_length=50`，超過就 422。越常用這個功能的人越早壞掉。
+2. **OPML 匯出必定 401**——`exportOpmlUrl()` 回傳的字串被塞進 `<a [href]>`，跟著連結走是瀏覽器導覽而不是 HttpClient 請求，interceptor 看不到它、不會帶 `Authorization`，但端點需要 JWT。
+3. **未設定 Supabase 時登入表單仍可送出**——原本只有警告文字，輸入框和按鈕照常可用，送出後靜默失敗。
+4. **登入頁按 Enter 沒反應**——原本只有 click handler，沒有 `<form>`。
+5. **已收藏的文章重新打開時星號永遠是空的**——`favorited` / `readLater` 從來沒有從伺服器初始化過。
+6. **猜你喜歡快速點擊會撞 429 且毫無說明**——`next()` 在翻完 15 張時自動重抓，一分鐘內就能燒光 20 次配額。deck 改為 50（後端上限）、重抓改為顯式操作、429 讀 `Retry-After` 倒數顯示。
+
+### 驗證
+
+`npm run build`（production config，`strictTemplates` 與樣式預算全開）與 `npm test`（vitest，30 個測試）通過，`prettier --check` 乾淨。
+
+另以 Playwright 驅動 **production build**（非 `ng serve`）跑 30 項檢查全數通過，並攔截所有 `/api/` 回應以精確回傳狀態碼：`/admin` 無金鑰時導向 unlock、金鑰撐過重新整理、403 清除金鑰並退回 unlock、429 顯示 `Retry-After` 倒數、503 說明 kill switch、tabs 方向鍵、焦點環可見、drawer 的 Escape 與 `aria-expanded`、三個斷點皆無水平溢出、淺色表面不是純白、文章欄寬 720px。截圖涵蓋 14 個頁面 × 深/淺 × 三個斷點。
+
+登入相關流程在這個環境**無法端到端驗證**——`environment.ts` 的 Supabase 設定是空字串（build 時寫死），`AuthService.isConfigured()` 回 `false`。
+
+initial bundle 從 607 kB 降到 503 kB，仍超出預設 500 kB 預算 3.31 kB。已確認原因與本次改版無關：203 kB 的 `@supabase/supabase-js` 被 `app.config.ts` 的 auth interceptor 靜態引入而進了 initial bundle。改成延遲載入可省下這 203 kB，但那會動到完全無法在此驗證的登入流程，因此不放進這個 PR。
