@@ -137,7 +137,7 @@ def test_seed_targets_bad_entries_do_not_sink_the_batch(client):
     fake = FakeDB(discovery_targets=[])
     _fake_db_client(c, fake)
 
-    def safe(host: str) -> bool:
+    def safe(host: str, timeout: float | None = None) -> bool:
         return host != "10.0.0.5"
 
     with patch("services.feed_discovery._is_safe_host", side_effect=safe):

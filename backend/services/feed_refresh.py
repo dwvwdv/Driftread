@@ -158,7 +158,7 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
     current_interval: int = feed.get("fetch_interval_minutes") or DEFAULT_INTERVAL_MINUTES
 
     try:
-        safe_url = validate_fetch_url(feed_url)
+        safe_url = await validate_fetch_url(feed_url)
         fetched = await fetch_and_parse_conditional(
             safe_url,
             etag=feed.get("etag"),

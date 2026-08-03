@@ -221,7 +221,7 @@ async def fetch_and_parse_conditional(
     if last_modified:
         conditional["If-Modified-Since"] = last_modified
 
-    current_url = validate_fetch_url(url)
+    current_url = await validate_fetch_url(url, timeout=timeout)
     async with ssrf_safe_client(follow_redirects=False, timeout=timeout, headers=headers) as client:
         resp = await fetch_with_cap_response(
             client,
@@ -266,7 +266,7 @@ async def fetch_and_parse(url: str, timeout: float = 15.0, max_redirects: int = 
     )
 
     headers = {"User-Agent": user_agent()}
-    current_url = validate_fetch_url(url)
+    current_url = await validate_fetch_url(url, timeout=timeout)
     async with ssrf_safe_client(follow_redirects=False, timeout=timeout, headers=headers) as client:
         text, _ctype = await fetch_with_cap(client, current_url, MAX_FEED_BYTES, max_redirects=max_redirects)
     return parse_feed(text)

@@ -253,3 +253,14 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 `backend/tests/test_recommendations.py` 改寫既有測試的 mock 層，從模擬 `db.table("feeds")` 的 query-builder chain 改成模擬 `db.rpc("sample_feed_candidates", params)`：新增 `_sampling_rpc()` 假物件，依 `params["p_mode"]` 分派到對應的假資料集，並依 `params["p_limit"]` 真的截斷回傳筆數（取代原本會忽略引數的假 `.limit()`），讓「要求的筆數不夠」這類 bug 仍測得出來。測試涵蓋的行為（三池拆分、exploration 名額存活到最終輸出、任一子池獨自撐滿名額、shuffle 必須在截斷前發生、依分數而非 quota 來源排序、已登入使用者排除自己的訂閱、`limit` 邊界）本身不變，只是斷言的對象從 query-builder 呼叫換成 `db.rpc` 呼叫參數。新增 `test_recommendations_rate_limited_after_threshold`，仿照 `test_discover.py` 的既有寫法：連打 `DEFAULT_MAX_REQUESTS` 次都拿 200，第 `DEFAULT_MAX_REQUESTS + 1` 次應回 429 並帶 `Retry-After`。測試總數 487 → 488。
 
 沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25、#26 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，並手動逐一推演每個測試案例的資料流確認邏輯正確，交由 CI 跑完整測試套件驗證。
+
+## 階段十四：`validate_fetch_url()` 補上 #25 第七輪明確記下、當時未修的既有問題（PR #28，2026-08-02）
+
+同一個「持續改善專案」排程任務。完整說明見 [SECURITY.md #26](SECURITY.md)。
+
+- **問題**：#25 第七輪把 `PinnedTransport` 新增的第二道 DNS 解析（pin-and-connect 用的那次）從同步改成非同步，並在紀錄裡明確寫下「`validate_fetch_url()`/`_is_safe_host()` 有同樣的既有問題，但… 呼叫點遍布全專案… 不在本次範圍」——那次修法沒有動到**第一道**：`validate_fetch_url()` 本身，它在每一條抓取路徑最前面（包括完全公開免認證的 `POST /api/discover`）同步呼叫 `socket.getaddrinfo()`，攻擊者指向回應很慢的 DNS 就能卡住整個 worker 的事件迴圈——與 #25 第七輪修的是同一個服務層級 DoS，只是換了個尚未補上的呼叫點。
+- **修法**：`_is_safe_host()` 改成 `async def`，解析借用 `_resolve_pinned_ips()` 已在用的同一個專屬、固定大小的 `_dns_resolver_executor`，並帶上新常數 `DNS_VALIDATION_TIMEOUT_SECONDS = 10.0`（`validate_fetch_url()` 執行時通常還沒有 client/request 存在、部分呼叫端如 `routers/opml.py` 也沒有現成 `timeout` 變數可借）。`validate_fetch_url()` 隨之改成 `async def`；`fetch_with_cap_response()` 與 `discover_feeds()` 改傳入各自函式簽章上原本就有的 `timeout`，其餘 10 個呼叫端（`rss_parser.py` 兩處、`services/feed_refresh.py`、`services/discovery_probe.py`、`routers/admin.py`、`routers/admin_discovery.py` 兩處、`routers/discover.py`、`routers/opml.py`）維持預設值——全部呼叫點都已在 `async def` 函式裡，只需加上 `await`。判斷邏輯（private / loopback / link-local / multicast / reserved）與 #25 的 pin-and-connect 完全不動，這次只是把既有的第一道門從同步搬成非同步。
+
+### 測試
+
+`backend/tests/test_feed_discovery.py` 新增 2 個測試：`test_is_safe_host_runs_dns_resolution_off_the_event_loop`（沿用 #25 第九輪驗證阻塞行為的手法，斷言解析發生在 `pinned-dns-resolve` 執行緒、事件迴圈期間仍能完成無關的 `asyncio.to_thread()` 工作）、`test_is_safe_host_rejects_dns_timeout`（逾時回傳 `False` 而非掛住或洩漏例外）。既有的 `test_normalize_url_*` 系列改成 `async def` + `await`——`unittest.mock.patch()` 對已改成 `async def` 的目標會自動改用 `AsyncMock`，既有的 `return_value=`/`side_effect=` 不必跟著改寫。沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25/#27 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，交由 CI 跑完整測試。

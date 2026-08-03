@@ -68,7 +68,7 @@ async def import_opml(
         if not raw_url:
             continue
         try:
-            feed_url = validate_fetch_url(raw_url)
+            feed_url = await validate_fetch_url(raw_url)
             parsed = await fetch_and_parse(feed_url)
         except DiscoveryError as e:
             failed.append(f"{raw_url}: {e}")
