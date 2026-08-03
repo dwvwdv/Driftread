@@ -66,9 +66,19 @@ export class Bookmarks implements OnInit {
   }
 
   remove(article: Article): void {
-    this.me.removeBookmark(article.id, this.tab).subscribe({
+    // Captured up front. An article may be both a favourite and read-later, so if
+    // the reader switches tabs while the delete is in flight, filtering whatever
+    // list is on screen when it lands would hide a still-valid entry from the
+    // other tab. The delete itself is already scoped to `from`; the local update
+    // has to be too.
+    const from = this.tab;
+
+    this.me.removeBookmark(article.id, from).subscribe({
       next: () => {
         this.toast.info('已移除');
+        // Moved on: the visible list was never the one this touched, and it was
+        // reloaded on the tab switch anyway.
+        if (this.tab !== from) return;
         this.items.update((list) => list.filter((a) => a.id !== article.id));
       },
       error: (e: unknown) => this.toast.danger(apiMessage(e, '移除失敗')),
