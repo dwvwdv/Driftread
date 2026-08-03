@@ -47,6 +47,20 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER feeds_updated_at
-  BEFORE UPDATE ON feeds
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+-- CREATE TRIGGER has no IF NOT EXISTS, and a raised migration aborts backend
+-- startup (main.py's lifespan calls run_migrations before serving). Guard it
+-- so re-running this file against a database that already has the trigger —
+-- e.g. after a hand-cleared _migrations table — doesn't wedge the container
+-- on boot (see migration 006 for the same pattern).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+     WHERE tgname = 'feeds_updated_at'
+       AND tgrelid = 'feeds'::regclass
+  ) THEN
+    CREATE TRIGGER feeds_updated_at
+      BEFORE UPDATE ON feeds
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
