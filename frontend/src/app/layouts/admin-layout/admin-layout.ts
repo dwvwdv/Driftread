@@ -1,5 +1,5 @@
 import { A11yModule } from '@angular/cdk/a11y';
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, inject, signal } from '@angular/core';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 import { AdminKeyStore } from '../../services/admin-key';
@@ -34,6 +34,10 @@ interface AdminNavItem {
 export class AdminLayout {
   private keys = inject(AdminKeyStore);
   private router = inject(Router);
+  // Typed on inject() rather than as inject(ElementRef<HTMLElement>): the latter
+  // resolves to ElementRef<any>, which makes nativeElement untyped and rejects the
+  // generic querySelector call below.
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   protected drawerOpen = signal(false);
 
@@ -46,6 +50,9 @@ export class AdminLayout {
   ];
 
   constructor() {
+    // Navigating closes the drawer, but focus is not restored here: the click
+    // that navigated already moved the user on, and the destination should own
+    // focus rather than the trigger they came from.
     this.router.events.pipe(filter((e) => e instanceof NavigationEnd)).subscribe(() => {
       this.drawerOpen.set(false);
     });
@@ -55,8 +62,22 @@ export class AdminLayout {
     this.drawerOpen.update((open) => !open);
   }
 
+  /**
+   * Dismisses the drawer and puts focus back on the hamburger.
+   *
+   * The restore has to be explicit here. Unlike the public layout — whose drawer
+   * lives inside an @if, so CDK destroys the trap and restores focus itself —
+   * this sidebar is always in the DOM (it doubles as the desktop navigation), so
+   * closing only *disables* the trap. Without this the keyboard user is left
+   * focused on a link inside a now-hidden panel.
+   */
   protected closeDrawer(): void {
+    if (!this.drawerOpen()) return;
     this.drawerOpen.set(false);
+    // After the class change has been applied, so the hamburger is focusable.
+    queueMicrotask(() => {
+      this.host.nativeElement.querySelector<HTMLButtonElement>('.hamburger')?.focus();
+    });
   }
 
   protected onKeydown(event: KeyboardEvent): void {
