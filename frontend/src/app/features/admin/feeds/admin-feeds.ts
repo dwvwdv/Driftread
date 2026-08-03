@@ -10,6 +10,7 @@ import { ObPaginator } from '../../../ui/paginator/paginator';
 import { ObTabs } from '../../../ui/tabs/tabs';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
+import { clampPage } from '../../../shared/paging';
 
 /**
  * Feed inventory: active, archived, and unhealthy.
@@ -122,6 +123,14 @@ export class AdminFeeds implements OnInit {
         this.toast.success(`已封存：${feed.title}`);
         this.active.update((list) => list.filter((f) => f.id !== feed.id));
         this.activeTotal.update((n) => Math.max(0, n - 1));
+
+        // Archiving the last row on a page must not read as "no active feeds":
+        // the empty branch hides the paginator with it, so the remaining feeds
+        // would be unreachable without a manual reload.
+        if (this.active().length === 0 && this.activeTotal() > 0) {
+          this.page.set(clampPage(this.page(), this.activeTotal(), this.pageSize()));
+          this.loadActive();
+        }
       },
       error: () => undefined,
     });

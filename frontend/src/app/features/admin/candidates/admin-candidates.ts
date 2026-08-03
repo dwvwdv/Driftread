@@ -10,6 +10,7 @@ import { ObPageHeader } from '../../../ui/page-header/page-header';
 import { ObPaginator } from '../../../ui/paginator/paginator';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
+import { clampPage } from '../../../shared/paging';
 
 /**
  * Review queue for feeds the platform discovered on its own.
@@ -127,8 +128,7 @@ export class AdminCandidates implements OnInit {
 
     if (this.candidates().length > 0 || this.total() === 0) return;
 
-    const lastPage = Math.max(1, Math.ceil(this.total() / this.pageSize()));
-    this.page.set(Math.min(this.page(), lastPage));
+    this.page.set(clampPage(this.page(), this.total(), this.pageSize()));
     this.load();
   }
 }

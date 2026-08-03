@@ -10,6 +10,7 @@ import { ObPageHeader } from '../../../ui/page-header/page-header';
 import { ObPaginator } from '../../../ui/paginator/paginator';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
+import { clampPage } from '../../../shared/paging';
 
 const TARGET_STATUSES = ['pending', 'done', 'blocked', 'exhausted', 'rejected'] as const;
 
@@ -99,6 +100,20 @@ export class AdminFrontier implements OnInit {
         this.targets.set(result.items);
         this.targetsTotal.set(result.total);
         this.loadingTargets.set(false);
+
+        // Self-correcting, because the new total is only known once the response
+        // lands. Blocking a host can drop several targets at once, so the page
+        // just requested may already be past the end — and the backend answers an
+        // out-of-range page with an empty list rather than an error, which the
+        // template renders as "nothing here" while hiding the paginator.
+        //
+        // Terminates: clampPage only ever returns a *lower* page, so at most one
+        // correction happens per load.
+        const clamped = clampPage(this.page(), result.total, this.pageSize());
+        if (result.items.length === 0 && result.total > 0 && clamped !== this.page()) {
+          this.page.set(clamped);
+          this.loadTargets();
+        }
       },
       error: () => this.loadingTargets.set(false),
     });
