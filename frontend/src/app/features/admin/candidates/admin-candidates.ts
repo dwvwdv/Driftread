@@ -1,5 +1,13 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnInit,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { Observable } from 'rxjs';
 import { AdminService } from '../../../services/admin';
 import { FeedCandidate } from '../../../models';
 import { ObCard } from '../../../ui/card/card';
@@ -32,6 +40,17 @@ export class AdminCandidates implements OnInit {
 
   protected candidates = signal<FeedCandidate[]>([]);
   protected total = signal(0);
+  protected status = signal<'pending' | 'held'>('pending');
+  protected selected = signal<Set<string>>(new Set());
+  protected reviewing = signal(false);
+  protected groups = computed(() => {
+    const groups = new Map<string, FeedCandidate[]>();
+    for (const candidate of this.candidates()) {
+      const domain = this.primaryDomain(candidate.source_host);
+      groups.set(domain, [...(groups.get(domain) ?? []), candidate]);
+    }
+    return [...groups.entries()].map(([domain, items]) => ({ domain, items }));
+  });
   protected page = signal(1);
   protected pageSize = signal(20);
   protected loading = signal(true);
@@ -66,10 +85,11 @@ export class AdminCandidates implements OnInit {
     const seq = ++this.loadSeq;
     if (!quiet) this.loading.set(true);
 
-    this.admin.listCandidates(this.page(), this.pageSize()).subscribe({
+    this.admin.listCandidates(this.page(), this.pageSize(), this.status()).subscribe({
       next: (result) => {
         if (seq !== this.loadSeq) return;
         this.candidates.set(result.items);
+        this.selected.set(new Set());
         this.total.set(result.total);
         this.loading.set(false);
       },
@@ -78,6 +98,95 @@ export class AdminCandidates implements OnInit {
         this.loading.set(false);
       },
     });
+  }
+
+  protected changeStatus(status: 'pending' | 'held'): void {
+    if (status === this.status()) return;
+    this.status.set(status);
+    this.page.set(1);
+    this.load();
+  }
+
+  protected toggle(id: string, checked: boolean): void {
+    this.selected.update((current) => {
+      const next = new Set(current);
+      checked ? next.add(id) : next.delete(id);
+      return next;
+    });
+  }
+
+  protected toggleGroup(items: FeedCandidate[], checked: boolean): void {
+    this.selected.update((current) => {
+      const next = new Set(current);
+      for (const item of items) checked ? next.add(item.id) : next.delete(item.id);
+      return next;
+    });
+  }
+
+  protected allSelected(items: FeedCandidate[]): boolean {
+    return items.every((item) => this.selected().has(item.id));
+  }
+
+  protected async bulk(action: 'approve' | 'hold' | 'reject'): Promise<void> {
+    const items = this.candidates().filter((candidate) => this.selected().has(candidate.id));
+    if (!items.length || this.reviewing()) return;
+
+    if (action === 'reject' && this.blockHostOnReject) {
+      const ok = await this.confirm.ask({
+        heading: `拒絕並封鎖 ${items.length} 個候選？`,
+        body: '將封鎖所選候選的所有網域，之後不會再探測這些網域。',
+        confirmLabel: '批量拒絕並封鎖',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+
+    const tags = this.parsedTags();
+    const requests: Observable<unknown>[] = items.map((candidate) =>
+      action === 'approve'
+        ? this.admin.approveCandidate(candidate.id, {
+            category: this.category.trim() || null,
+            tags,
+          })
+        : action === 'hold'
+          ? this.admin.holdCandidate(candidate.id, { note: null })
+          : this.admin.rejectCandidate(candidate.id, {
+              note: null,
+              block_host: this.blockHostOnReject,
+            }),
+    );
+
+    this.reviewing.set(true);
+    let finished = 0;
+    let succeeded = 0;
+    const completeOne = (ok: boolean) => {
+      finished += 1;
+      if (ok) succeeded += 1;
+      if (finished !== requests.length) return;
+      this.reviewing.set(false);
+      this.toast.info(`批量作業完成：${succeeded}/${items.length}`);
+      this.load();
+    };
+    for (const request of requests) {
+      request.subscribe({ next: () => completeOne(true), error: () => completeOne(false) });
+    }
+  }
+
+  private primaryDomain(host: string | null): string {
+    if (!host) return '(未知網域)';
+    const labels = host.toLowerCase().replace(/\.$/, '').split('.');
+    if (labels.length <= 2) return labels.join('.');
+    const compoundSuffixes = new Set([
+      'co.uk',
+      'org.uk',
+      'com.au',
+      'com.cn',
+      'com.hk',
+      'com.tw',
+      'co.jp',
+    ]);
+    const suffix = labels.slice(-2).join('.');
+    return labels.slice(compoundSuffixes.has(suffix) ? -3 : -2).join('.');
   }
 
   protected onPage(page: number): void {
@@ -92,10 +201,7 @@ export class AdminCandidates implements OnInit {
   }
 
   protected approve(candidate: FeedCandidate): void {
-    const tags = this.tags
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
+    const tags = this.parsedTags();
 
     this.admin
       .approveCandidate(candidate.id, { category: this.category.trim() || null, tags })
@@ -108,6 +214,23 @@ export class AdminCandidates implements OnInit {
         // stale. AdminService has explained it; reload so it disappears.
         error: () => this.load(),
       });
+  }
+
+  protected hold(candidate: FeedCandidate): void {
+    this.admin.holdCandidate(candidate.id, { note: null }).subscribe({
+      next: () => {
+        this.toast.info('已保留為備用 RSS 節點');
+        this.remove(candidate.id);
+      },
+      error: () => this.load(),
+    });
+  }
+
+  private parsedTags(): string[] {
+    return this.tags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
   }
 
   protected async reject(candidate: FeedCandidate): Promise<void> {

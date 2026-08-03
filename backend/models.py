@@ -277,6 +277,10 @@ class ApproveCandidateRequest(BaseModel):
     )
 
 
+class HoldCandidateRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
 class RejectCandidateRequest(BaseModel):
     note: str | None = Field(default=None, max_length=500)
     # Also mark the parent target rejected, so the host never re-enters the
@@ -327,6 +331,7 @@ class DiscoveryStats(BaseModel):
     targets_exhausted: int = 0
     targets_rejected: int = 0
     candidates_pending: int = 0
+    candidates_held: int = 0
     candidates_approved: int = 0
     candidates_rejected: int = 0
     candidates_imported: int = 0

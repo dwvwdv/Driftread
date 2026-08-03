@@ -28,6 +28,10 @@ export interface ApproveCandidateBody {
 }
 
 /** Body accepted by POST /admin/discovery/candidates/{id}/reject. */
+export interface HoldCandidateBody {
+  note: string | null;
+}
+
 export interface RejectCandidateBody {
   note: string | null;
   block_host: boolean;
@@ -140,16 +144,24 @@ export class AdminService {
     return this.post<DiscoveryCycleSummary>('/admin/discovery/run', {}, '執行失敗');
   }
 
-  listCandidates(page = 1, pageSize = 50): Observable<PaginatedFeedCandidates> {
+  listCandidates(
+    page = 1,
+    pageSize = 50,
+    status: 'pending' | 'held' = 'pending',
+  ): Observable<PaginatedFeedCandidates> {
     return this.get<PaginatedFeedCandidates>(
       '/admin/discovery/candidates',
       '讀取候選失敗',
-      new HttpParams().set('status', 'pending').set('page', page).set('page_size', pageSize),
+      new HttpParams().set('status', status).set('page', page).set('page_size', pageSize),
     );
   }
 
   approveCandidate(id: string, body: ApproveCandidateBody): Observable<Feed> {
     return this.post<Feed>(`/admin/discovery/candidates/${id}/approve`, body, '核准失敗');
+  }
+
+  holdCandidate(id: string, body: HoldCandidateBody): Observable<FeedCandidate> {
+    return this.post<FeedCandidate>(`/admin/discovery/candidates/${id}/hold`, body, '保留失敗');
   }
 
   rejectCandidate(id: string, body: RejectCandidateBody): Observable<FeedCandidate> {

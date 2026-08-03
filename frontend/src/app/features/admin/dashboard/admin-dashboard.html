@@ -18,6 +18,7 @@
     <div class="stats">
       <ob-stat label="待審核候選" [value]="s.candidates_pending" tone="accent" />
       <ob-stat label="已入庫" [value]="s.candidates_imported" tone="success" />
+      <ob-stat label="已保留" [value]="s.candidates_held" />
       <ob-stat label="已核准" [value]="s.candidates_approved" />
       <ob-stat label="已拒絕" [value]="s.candidates_rejected" />
       <ob-stat label="啟用中目錄" [value]="s.sources_enabled" />

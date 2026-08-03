@@ -1,7 +1,7 @@
 <ob-page-header
   kicker="REVIEW"
   heading="候選審核"
-  subtitle="核准後只寫入來源資料，文章由排程器抓取"
+  subtitle="同一主域名集中審核；保留的節點可在現有 RSS 失效時替換"
 >
   <button
     type="button"
@@ -9,66 +9,147 @@
     [disabled]="loading()"
     (click)="load()"
   >
-    <ob-icon name="refresh" [size]="14" />
-    重新整理
+    <ob-icon name="refresh" [size]="14" /> 重新整理
   </button>
 </ob-page-header>
 
-<ob-card heading="核准時套用" meta="APPLIED ON APPROVE">
+<ob-card heading="審核設定" meta="REVIEW OPTIONS">
   <div class="controls">
-    <label class="field">
-      <span class="ob-label">分類</span>
-      <input class="ob-input" name="category" [(ngModel)]="category" placeholder="例如 技術" />
-    </label>
-    <label class="field">
-      <span class="ob-label">標籤（逗號分隔）</span>
-      <input class="ob-input" name="tags" [(ngModel)]="tags" placeholder="rss, 開發" />
-    </label>
-    <label class="ob-checkbox block">
-      <input type="checkbox" name="blockHost" [(ngModel)]="blockHostOnReject" />
-      拒絕時一併封鎖整個網域
-    </label>
+    <label class="field"
+      ><span class="ob-label">分類</span
+      ><input class="ob-input" name="category" [(ngModel)]="category" placeholder="例如 技術"
+    /></label>
+    <label class="field"
+      ><span class="ob-label">標籤（逗號分隔）</span
+      ><input class="ob-input" name="tags" [(ngModel)]="tags" placeholder="rss, 開發"
+    /></label>
+    <label class="ob-checkbox block"
+      ><input
+        type="checkbox"
+        name="blockHost"
+        [(ngModel)]="blockHostOnReject"
+      />拒絕時一併封鎖整個網域</label
+    >
   </div>
 </ob-card>
+
+<div class="toolbar" aria-label="候選狀態與批量作業">
+  <div class="status-tabs">
+    <button
+      type="button"
+      class="ob-btn ob-btn--sm"
+      [class.ob-btn--primary]="status() === 'pending'"
+      [class.ob-btn--ghost]="status() !== 'pending'"
+      (click)="changeStatus('pending')"
+    >
+      待審核
+    </button>
+    <button
+      type="button"
+      class="ob-btn ob-btn--sm"
+      [class.ob-btn--primary]="status() === 'held'"
+      [class.ob-btn--ghost]="status() !== 'held'"
+      (click)="changeStatus('held')"
+    >
+      已保留
+    </button>
+  </div>
+  <div class="bulk-actions">
+    <strong>已選 {{ selected().size }} 項</strong>
+    <button
+      type="button"
+      class="ob-btn ob-btn--primary ob-btn--sm"
+      [disabled]="!selected().size || reviewing()"
+      (click)="bulk('approve')"
+    >
+      批量核准
+    </button>
+    @if (status() === 'pending') {
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="!selected().size || reviewing()"
+        (click)="bulk('hold')"
+      >
+        批量保留
+      </button>
+    }
+    <button
+      type="button"
+      class="ob-btn ob-btn--ghost ob-btn--sm"
+      [disabled]="!selected().size || reviewing()"
+      (click)="bulk('reject')"
+    >
+      批量拒絕
+    </button>
+  </div>
+</div>
 
 <div class="queue">
   @if (loading()) {
     <ob-loading label="讀取候選中" />
   } @else if (candidates().length === 0) {
-    <ob-empty message="沒有待審核的候選。" />
+    <ob-empty [message]="status() === 'held' ? '沒有已保留的備用節點。' : '沒有待審核的候選。'" />
   } @else {
-    @for (candidate of candidates(); track candidate.id) {
-      <ob-list-row>
-        <div rowTitle class="ctitle">
-          <!--
-            source_host is ours — we normalised it — while title comes from the
-            remote feed. Showing the host next to the title is what stops a
-            crafted title (bidi overrides, lookalike domains) from misleading
-            whoever is approving it. Interpolation only, never [innerHTML].
-            See docs/SECURITY.md rule 10.
-          -->
-          <span class="host">{{ candidate.source_host || '(未知網域)' }}</span>
-          <span class="name">{{ candidate.title || '(無標題)' }}</span>
-        </div>
-        <div rowLines>
-          <span>{{ candidate.feed_url }}</span>
-          <span>{{ candidate.referring_feed_count }} 個既有來源連到這裡</span>
-        </div>
-        <div rowMeta>
-          <button
-            type="button"
-            class="ob-btn ob-btn--primary ob-btn--sm"
-            (click)="approve(candidate)"
+    @for (group of groups(); track group.domain) {
+      <section class="domain-group">
+        <header class="domain-header">
+          <label class="ob-checkbox"
+            ><input
+              type="checkbox"
+              [checked]="allSelected(group.items)"
+              (change)="toggleGroup(group.items, $any($event.target).checked)"
+            />
+            <strong>{{ group.domain }}</strong></label
           >
-            核准
-          </button>
-          <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="reject(candidate)">
-            拒絕
-          </button>
-        </div>
-      </ob-list-row>
+          <span>{{ group.items.length }} 個 RSS 節點</span>
+        </header>
+        @for (candidate of group.items; track candidate.id) {
+          <ob-list-row>
+            <div rowTitle class="ctitle">
+              <input
+                class="candidate-check"
+                type="checkbox"
+                [checked]="selected().has(candidate.id)"
+                [attr.aria-label]="'選取 ' + (candidate.title || candidate.feed_url)"
+                (change)="toggle(candidate.id, $any($event.target).checked)"
+              />
+              <span class="host">{{ candidate.source_host || '(未知網域)' }}</span
+              ><span class="name">{{ candidate.title || '(無標題)' }}</span>
+            </div>
+            <div rowLines>
+              <span>{{ candidate.feed_url }}</span
+              ><span>{{ candidate.referring_feed_count }} 個既有來源連到這裡</span>
+            </div>
+            <div rowMeta>
+              <button
+                type="button"
+                class="ob-btn ob-btn--primary ob-btn--sm"
+                (click)="approve(candidate)"
+              >
+                核准
+              </button>
+              @if (status() === 'pending') {
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  (click)="hold(candidate)"
+                >
+                  保留
+                </button>
+              }
+              <button
+                type="button"
+                class="ob-btn ob-btn--ghost ob-btn--sm"
+                (click)="reject(candidate)"
+              >
+                拒絕
+              </button>
+            </div>
+          </ob-list-row>
+        }
+      </section>
     }
-
     <ob-paginator
       [total]="total()"
       [page]="page()"

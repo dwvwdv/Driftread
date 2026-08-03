@@ -17,6 +17,7 @@ ENDPOINTS = [
     ("get", f"{BASE}/candidates", None),
     ("post", f"{BASE}/candidates/{uuid4()}/approve", {}),
     ("post", f"{BASE}/candidates/{uuid4()}/reject", {}),
+    ("post", f"{BASE}/candidates/{uuid4()}/hold", {}),
     ("get", f"{BASE}/sources", None),
     ("post", f"{BASE}/sources", {"items": [{"url": "https://d.example.com/"}]}),
     ("patch", f"{BASE}/sources/{uuid4()}", {"enabled": False}),
@@ -243,6 +244,32 @@ def test_approve_a_rejected_candidate_is_409(client):
     resp = c.post(f"{BASE}/candidates/{row['id']}/approve", json={}, headers=KEY)
     assert resp.status_code == 409
     assert row["status"] == "rejected"
+
+
+def test_hold_keeps_candidate_as_a_replacement_without_blocking_host(client):
+    c, _mock = client
+    row = _candidate()
+    target = {"id": row["target_id"], "host": "blog.example.org", "status": "done"}
+    _fake_db_client(c, FakeDB(discovery_candidates=[row], discovery_targets=[target]))
+
+    resp = c.post(f"{BASE}/candidates/{row['id']}/hold",
+                  json={"note": "backup endpoint"}, headers=KEY)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "held"
+    assert resp.json()["review_note"] == "backup endpoint"
+    assert target["status"] == "done"
+
+
+def test_approve_a_held_candidate_imports_the_replacement(client):
+    c, _mock = client
+    row = _candidate(status="held")
+    _fake_db_client(c, FakeDB(discovery_candidates=[row], feeds=[]))
+
+    resp = c.post(f"{BASE}/candidates/{row['id']}/approve", json={}, headers=KEY)
+
+    assert resp.status_code == 200
+    assert row["status"] == "imported"
 
 
 def test_reject_with_block_host_also_rejects_the_target(client):
