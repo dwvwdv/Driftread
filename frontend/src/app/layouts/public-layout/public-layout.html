@@ -41,8 +41,9 @@
           <button
             type="button"
             class="ob-scrim"
+            tabindex="-1"
             aria-label="關閉帳號選單"
-            (click)="toggleAccount()"
+            (click)="closeAccount()"
           ></button>
           <div class="menu" id="account-menu" role="menu" (keydown)="onAccountKeydown($event)">
             <a class="ob-menu-item" role="menuitem" routerLink="/me/feeds">我的訂閱</a>

@@ -1,5 +1,6 @@
 import { A11yModule } from '@angular/cdk/a11y';
 import { ChangeDetectionStrategy, Component, ElementRef, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 import { AdminKeyStore } from '../../services/admin-key';
@@ -53,9 +54,14 @@ export class AdminLayout {
     // Navigating closes the drawer, but focus is not restored here: the click
     // that navigated already moved the user on, and the destination should own
     // focus rather than the trigger they came from.
-    this.router.events.pipe(filter((e) => e instanceof NavigationEnd)).subscribe(() => {
-      this.drawerOpen.set(false);
-    });
+    this.router.events
+      .pipe(
+        filter((e) => e instanceof NavigationEnd),
+        takeUntilDestroyed(),
+      )
+      .subscribe(() => {
+        this.drawerOpen.set(false);
+      });
   }
 
   protected toggleDrawer(): void {

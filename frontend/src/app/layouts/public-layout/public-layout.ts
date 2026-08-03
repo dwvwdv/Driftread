@@ -1,5 +1,6 @@
 import { A11yModule } from '@angular/cdk/a11y';
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 import { AuthService } from '../../services/auth';
@@ -30,6 +31,7 @@ import { ObThemeToggle } from '../../ui/theme-toggle/theme-toggle';
 export class PublicLayout {
   protected auth = inject(AuthService);
   private router = inject(Router);
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   protected drawerOpen = signal(false);
   protected accountOpen = signal(false);
@@ -37,10 +39,15 @@ export class PublicLayout {
   constructor() {
     // Navigating with the drawer or account menu open should close it — otherwise
     // the panel stays over the page the reader just asked for.
-    this.router.events.pipe(filter((e) => e instanceof NavigationEnd)).subscribe(() => {
-      this.drawerOpen.set(false);
-      this.accountOpen.set(false);
-    });
+    this.router.events
+      .pipe(
+        filter((e) => e instanceof NavigationEnd),
+        takeUntilDestroyed(),
+      )
+      .subscribe(() => {
+        this.drawerOpen.set(false);
+        this.accountOpen.set(false);
+      });
   }
 
   protected toggleDrawer(): void {
@@ -52,7 +59,28 @@ export class PublicLayout {
   }
 
   protected toggleAccount(): void {
-    this.accountOpen.update((open) => !open);
+    if (this.accountOpen()) {
+      this.closeAccount(false);
+      return;
+    }
+
+    this.accountOpen.set(true);
+    queueMicrotask(() => {
+      this.host.nativeElement
+        .querySelector<HTMLElement>('#account-menu [role="menuitem"]')
+        ?.focus();
+    });
+  }
+
+  /** Dismisses the account menu, optionally restoring focus to its trigger. */
+  protected closeAccount(restoreFocus = true): void {
+    if (!this.accountOpen()) return;
+    this.accountOpen.set(false);
+    if (restoreFocus) {
+      queueMicrotask(() => {
+        this.host.nativeElement.querySelector<HTMLButtonElement>('.account-trigger')?.focus();
+      });
+    }
   }
 
   protected onDrawerKeydown(event: KeyboardEvent): void {
@@ -71,11 +99,7 @@ export class PublicLayout {
   protected onAccountKeydown(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
     event.stopPropagation();
-    this.accountOpen.set(false);
-    const trigger = (event.currentTarget as HTMLElement)
-      .closest('.account')
-      ?.querySelector<HTMLButtonElement>('.account-trigger');
-    trigger?.focus();
+    this.closeAccount();
   }
 
   async signOut(): Promise<void> {
