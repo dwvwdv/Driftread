@@ -45,15 +45,38 @@ export class AdminCandidates implements OnInit {
     this.load();
   }
 
-  protected load(): void {
-    this.loading.set(true);
+  /**
+   * Generation counter for list requests.
+   *
+   * Reviewing a row triggers a backfill, so several loads can be in flight after
+   * a quick run of approvals. They are not interchangeable: an earlier one
+   * observed the queue before later approvals landed, so applying it out of order
+   * resurrects rows that are already gone. Only the newest response is applied.
+   */
+  private loadSeq = 0;
+
+  /**
+   * @param quiet keeps the rendered rows up while refetching. A backfill after a
+   * review must not swap the list for a spinner — that is a full teardown between
+   * every two decisions, and the row the operator is reading vanishes underneath
+   * them. Navigation and first load still show the spinner, because there is
+   * genuinely nothing valid to keep on screen.
+   */
+  protected load(quiet = false): void {
+    const seq = ++this.loadSeq;
+    if (!quiet) this.loading.set(true);
+
     this.admin.listCandidates(this.page(), this.pageSize()).subscribe({
       next: (result) => {
+        if (seq !== this.loadSeq) return;
         this.candidates.set(result.items);
         this.total.set(result.total);
         this.loading.set(false);
       },
-      error: () => this.loading.set(false),
+      error: () => {
+        if (seq !== this.loadSeq) return;
+        this.loading.set(false);
+      },
     });
   }
 
@@ -111,24 +134,31 @@ export class AdminCandidates implements OnInit {
   }
 
   /**
-   * Drops a reviewed row from the rendered page.
+   * Drops a reviewed row and refills the page from the server.
    *
-   * Removing locally keeps the queue responsive — one refetch per approval would
-   * make bulk review crawl. But clearing the *last* row on a page cannot just
-   * leave the list empty: the template's empty branch says "沒有待審核的候選" and
-   * hides the paginator with it, so an operator who worked through page 1 of 5
-   * would be told the queue was empty with no control left to prove otherwise.
+   * The local removal is what makes the click feel instant, but it cannot be the
+   * whole story. The backend paginates with `.range(offset, …)` over rows filtered
+   * to `status = 'pending'`, and reviewing a row takes it out of that filter — so
+   * every candidate after it shifts down one index. Drop a row from page 1 without
+   * refetching and the first candidate of page 2 has silently moved onto page 1,
+   * which we are no longer showing; press Next and it is skipped. One row per
+   * review, never seen, with nothing on screen to suggest anything was missed.
+   * That is a bad failure for a queue whose entire job is "look at every row".
    *
-   * Approving also shifts every page boundary server-side, so the current index
-   * can end up past the end. Clamp it before refetching.
+   * A page-based API cannot express "resume from offset 19", so compensating at
+   * navigation time is not available: the only way to stay aligned is to refetch
+   * while still on the page. Quietly, so the list does not blink between decisions.
+   *
+   * Clamped first because reviewing shifts the boundaries: the current index can
+   * end up past the end, and the empty branch hides the paginator with it.
    */
   private remove(id: string): void {
     this.candidates.update((list) => list.filter((c) => c.id !== id));
     this.total.update((n) => Math.max(0, n - 1));
 
-    if (this.candidates().length > 0 || this.total() === 0) return;
+    if (this.total() === 0) return;
 
     this.page.set(clampPage(this.page(), this.total(), this.pageSize()));
-    this.load();
+    this.load(this.candidates().length > 0);
   }
 }

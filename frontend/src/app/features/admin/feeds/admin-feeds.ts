@@ -61,15 +61,29 @@ export class AdminFeeds implements OnInit {
     this.onTab(this.tab());
   }
 
-  protected loadActive(): void {
-    this.loading.set(true);
+  /**
+   * Generation counter for the active list — see the note on archive(). Several
+   * backfills can overlap during a run of archives, and an earlier response
+   * describes a list that later archives have already changed.
+   */
+  private activeSeq = 0;
+
+  /** @param quiet keeps the current rows up while refetching; see archive(). */
+  protected loadActive(quiet = false): void {
+    const seq = ++this.activeSeq;
+    if (!quiet) this.loading.set(true);
+
     this.admin.listFeeds(this.page(), this.pageSize(), false).subscribe({
       next: (result) => {
+        if (seq !== this.activeSeq) return;
         this.active.set(result.items);
         this.activeTotal.set(result.total);
         this.loading.set(false);
       },
-      error: () => this.loading.set(false),
+      error: () => {
+        if (seq !== this.activeSeq) return;
+        this.loading.set(false);
+      },
     });
   }
 
@@ -124,13 +138,19 @@ export class AdminFeeds implements OnInit {
         this.active.update((list) => list.filter((f) => f.id !== feed.id));
         this.activeTotal.update((n) => Math.max(0, n - 1));
 
-        // Archiving the last row on a page must not read as "no active feeds":
-        // the empty branch hides the paginator with it, so the remaining feeds
-        // would be unreachable without a manual reload.
-        if (this.active().length === 0 && this.activeTotal() > 0) {
-          this.page.set(clampPage(this.page(), this.activeTotal(), this.pageSize()));
-          this.loadActive();
-        }
+        // Refetch, not just a local splice. GET /admin/feeds pages with
+        // `.range(offset, …)` over rows filtered by `archived`, so archiving one
+        // feed shifts every later feed down an index. Leave the short page up and
+        // the first feed of page 2 has already moved onto page 1 server-side —
+        // pressing Next then steps straight over it, once per archive, silently.
+        //
+        // Quiet while rows remain so the list does not blink between actions; loud
+        // when the page emptied, since there is nothing valid left to keep up and
+        // the empty branch would otherwise hide the paginator along with it.
+        if (this.activeTotal() === 0) return;
+
+        this.page.set(clampPage(this.page(), this.activeTotal(), this.pageSize()));
+        this.loadActive(this.active().length > 0);
       },
       error: () => undefined,
     });
