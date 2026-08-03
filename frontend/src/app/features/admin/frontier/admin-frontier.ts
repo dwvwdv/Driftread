@@ -48,6 +48,7 @@ export class AdminFrontier implements OnInit {
   protected page = signal(1);
   protected pageSize = signal(20);
   protected loadingTargets = signal(true);
+  private targetLoadSeq = 0;
 
   // ── Directory sources ─────────────────────────────────────────────────────
   protected sources = signal<DiscoverySource[]>([]);
@@ -94,9 +95,11 @@ export class AdminFrontier implements OnInit {
   // ── Probe queue ───────────────────────────────────────────────────────────
 
   protected loadTargets(): void {
+    const seq = ++this.targetLoadSeq;
     this.loadingTargets.set(true);
     this.admin.listTargets(this.status(), this.page(), this.pageSize()).subscribe({
       next: (result) => {
+        if (seq !== this.targetLoadSeq) return;
         this.targets.set(result.items);
         this.targetsTotal.set(result.total);
         this.loadingTargets.set(false);
@@ -115,7 +118,10 @@ export class AdminFrontier implements OnInit {
           this.loadTargets();
         }
       },
-      error: () => this.loadingTargets.set(false),
+      error: () => {
+        if (seq !== this.targetLoadSeq) return;
+        this.loadingTargets.set(false);
+      },
     });
   }
 
