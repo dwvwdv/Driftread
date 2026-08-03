@@ -1,0 +1,313 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Offbeat recipe classes.
+//
+// Why these are global classes rather than mixins or components:
+//
+//   angular.json caps `anyComponentStyle` at 4kB warn / 8kB error, and that
+//   budget is per component. A mixin @included in twelve components emits twelve
+//   copies, each charged separately. A global class emits once and costs the
+//   component nothing.
+//
+//   These are also all "a native element with paint on it" — button, input,
+//   select, checkbox. Keeping them native means keeping native keyboard handling,
+//   native form semantics and the platform's own mobile pickers, which is exactly
+//   what is lost by reimplementing them on top of CDK Overlay. Dropping Angular
+//   Material removes its accessibility work; leaning on the platform is how that
+//   is bought back rather than rewritten.
+//
+// Components in src/app/ui/ exist only for things with real structure or
+// behaviour: cards, tabs, paginator, toasts, icons, state blocks.
+// ─────────────────────────────────────────────────────────────────────────────
+
+@use 'mixins' as *;
+
+// ── Micro-label ─────────────────────────────────────────────────────────────
+.ob-label {
+  @include mono-label;
+}
+
+// ── Buttons ─────────────────────────────────────────────────────────────────
+.ob-btn {
+  @include offset-press;
+  @include focus-ring;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 38px;
+  padding: var(--sp-2) var(--sp-5);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+
+  &:hover {
+    text-decoration: none;
+  }
+
+  &:disabled,
+  &[aria-disabled='true'] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  // Touch devices get the full 44px recommendation; pointer devices do not need
+  // buttons that large.
+  @media (pointer: coarse) {
+    min-height: var(--tap-target);
+  }
+}
+
+.ob-btn--sm {
+  min-height: 30px;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--text-xs);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.ob-btn--block {
+  width: 100%;
+}
+
+.ob-btn--primary {
+  @include offset-shadow(var(--shadow-offset));
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  border-color: var(--accent-soft);
+
+  &:hover:not(:disabled) {
+    background: var(--accent-soft);
+  }
+}
+
+.ob-btn--ghost {
+  @include offset-shadow(var(--border));
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+
+  &:hover:not(:disabled) {
+    background: var(--surface-sunken);
+    color: var(--text-strong);
+  }
+}
+
+.ob-btn--danger {
+  @include offset-shadow(var(--danger));
+  background: var(--danger-fill);
+  color: var(--danger-fill-ink);
+  border-color: var(--danger-fill);
+
+  &:hover:not(:disabled) {
+    background: var(--danger);
+  }
+}
+
+// Text-only action. No border, no shadow — for tertiary actions that should not
+// compete with the primary one.
+.ob-btn--subtle {
+  background: transparent;
+  color: var(--accent);
+  border-color: transparent;
+  padding-inline: var(--sp-2);
+  box-shadow: none;
+
+  &:hover:not(:disabled) {
+    background: var(--surface-sunken);
+  }
+}
+
+// Square icon-only button. Always needs an aria-label at the call site.
+.ob-btn--icon {
+  padding: 0;
+  width: 38px;
+  min-width: 38px;
+
+  @media (pointer: coarse) {
+    width: var(--tap-target);
+    min-width: var(--tap-target);
+  }
+}
+
+// ── Fields ──────────────────────────────────────────────────────────────────
+.ob-input,
+.ob-textarea,
+.ob-select {
+  @include field-surface;
+  @include focus-ring;
+}
+
+.ob-textarea {
+  min-height: 96px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+// Native <select> with the platform arrow suppressed and our own drawn in.
+// Native is deliberate: it brings keyboard navigation, type-ahead and the mobile
+// OS picker at no cost, none of which a hand-rolled listbox gets for free.
+.ob-select {
+  appearance: none;
+  padding-right: var(--sp-8);
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% + 2px),
+    calc(100% - 12px) calc(50% + 2px);
+  background-size: 6px 6px;
+  background-repeat: no-repeat;
+}
+
+// The dropdown list itself is painted by the OS, which uses `color-scheme` —
+// already set per theme in _tokens.scss — so options follow the theme.
+.ob-select option {
+  background: var(--surface-raised);
+  color: var(--text-strong);
+}
+
+// ── Checkbox ────────────────────────────────────────────────────────────────
+.ob-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  font-size: var(--text-sm);
+
+  input[type='checkbox'] {
+    @include focus-ring;
+    appearance: none;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    background: var(--surface-raised);
+    border: var(--border-width) solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    display: grid;
+    place-content: center;
+    transition:
+      background-color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+
+    // Checkmark drawn with a rotated box rather than a glyph, so it needs no font
+    // and stays crisp at any zoom.
+    &::before {
+      content: '';
+      width: 10px;
+      height: 5px;
+      border-left: 2px solid var(--accent-ink);
+      border-bottom: 2px solid var(--accent-ink);
+      transform: rotate(-45deg) translate(1px, -1px);
+      opacity: 0;
+      transition: opacity var(--dur-fast) var(--ease);
+    }
+
+    &:checked {
+      background: var(--accent-fill);
+      border-color: var(--accent-fill);
+    }
+
+    &:checked::before {
+      opacity: 1;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+}
+
+// ── Chips / badges ──────────────────────────────────────────────────────────
+.ob-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  background: var(--surface-sunken);
+  color: var(--accent);
+  border: var(--border-width-thin) solid transparent;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.ob-chip--success {
+  background: transparent;
+  color: var(--success-ink);
+  border-color: var(--success);
+}
+.ob-chip--warning {
+  background: transparent;
+  color: var(--warning-ink);
+  border-color: var(--warning);
+}
+.ob-chip--danger {
+  background: transparent;
+  color: var(--danger-ink);
+  border-color: var(--danger);
+}
+.ob-chip--special {
+  background: transparent;
+  color: var(--special-ink);
+  border-color: var(--special);
+}
+.ob-chip--neutral {
+  color: var(--text-dim);
+}
+
+// Status dot, e.g. `● ONLINE`.
+.ob-dot::before {
+  content: '●';
+  margin-right: var(--sp-1);
+}
+
+// ── Dividers ────────────────────────────────────────────────────────────────
+.ob-divider {
+  border: none;
+  border-top: var(--border-width-thin) solid var(--border);
+  margin: var(--sp-4) 0;
+}
+
+// ── Layout utilities ────────────────────────────────────────────────────────
+.ob-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.ob-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+// Card grids. The trailing padding is not decoration: offset shadows are drawn
+// outside the border box and get clipped by the container without it.
+.ob-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-5);
+  @include offset-gutter;
+}
+
+.ob-visually-hidden {
+  @include visually-hidden;
+}

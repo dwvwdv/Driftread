@@ -1,43 +1,72 @@
-// Include theming for Angular Material with `mat.theme()`.
-// This Sass mixin will define CSS variables that are used for styling Angular Material
-// components according to the Material 3 design spec.
-// Learn more about theming and how to use it for your application's
-// custom components at https://material.angular.dev/guide/theming
-@use '@angular/material' as mat;
+// ─────────────────────────────────────────────────────────────────────────────
+// Driftread global stylesheet — Offbeat (Nord × Brutalism)
+//
+// The only place that emits global CSS. Everything visual beyond this file lives
+// in src/app/ui/ components, which reach these tokens through var().
+// ─────────────────────────────────────────────────────────────────────────────
 
-html {
-  height: 100%;
-  @include mat.theme(
-    (
-      color: (
-        primary: mat.$azure-palette,
-        tertiary: mat.$blue-palette,
-      ),
-      typography: Roboto,
-      density: 0,
-    )
-  );
+@use 'styles/tokens';
+@use 'styles/reset';
+@use 'styles/components';
+@use 'styles/prose';
+
+// ── Links ───────────────────────────────────────────────────────────────────
+a {
+  color: var(--accent);
+  text-decoration: none;
 }
 
-body {
-  // Default the application to a light color theme. This can be changed to
-  // `dark` to enable the dark color theme, or to `light dark` to defer to the
-  // user's system settings.
-  color-scheme: light;
-
-  // Set a default background, font and text colors for the application using
-  // Angular Material's system-level CSS variables. Learn more about these
-  // variables at https://material.angular.dev/guide/system-variables
-  background-color: var(--mat-sys-surface);
-  color: var(--mat-sys-on-surface);
-  font: var(--mat-sys-body-medium);
-
-  // Reset the user agent margin.
-  margin: 0;
-  height: 100%;
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
-/* You can add global styles to this file, and also import other style files */
 
-a { color: var(--mat-sys-primary); text-decoration: none; }
-a:hover { text-decoration: underline; }
-mat-toolbar { position: sticky; top: 0; z-index: 100; }
+// ── Selection ───────────────────────────────────────────────────────────────
+::selection {
+  background: var(--accent-strong);
+  color: var(--nord-snow2);
+}
+
+// ── Scrollbars ──────────────────────────────────────────────────────────────
+// Squared off to match the zero-radius language, and themed so a dark page does
+// not get a bright default scrollbar bolted to its edge.
+* {
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 2px solid var(--surface-base);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-strong);
+}
+
+// ── Skip link ───────────────────────────────────────────────────────────────
+// Keyboard users land here first and can jump past the nav.
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: var(--sp-4);
+  z-index: var(--z-toast);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--accent-strong);
+  color: var(--nord-snow2);
+  font-weight: 700;
+  border: var(--border-width) solid var(--accent-soft);
+}
+
+.skip-link:focus {
+  top: var(--sp-2);
+}
