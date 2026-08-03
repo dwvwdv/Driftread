@@ -2,9 +2,18 @@
 
 <div class="stack">
   <ob-card heading="單一網址" meta="FROM URL">
-    <p class="hint">直接給 feed 網址或網站首頁，後端會自行探測。適合一次加一個。</p>
+    <!--
+      Deliberately does NOT promise homepage discovery. /admin/feeds/from-url
+      passes the URL straight to fetch_and_parse(), which only parses RSS/Atom —
+      unlike /discover, it never inspects HTML for feed links. A homepage here
+      just 400s.
+    -->
+    <p class="hint">
+      需要是 RSS / Atom feed 本身的網址，這個端點不會去解析網站首頁。只有首頁網址的話，
+      請改用前台的「<a routerLink="/discover">發現</a>」，它會從 HTML 找出 feed。
+    </p>
     <label class="field">
-      <span class="ob-label">Feed 或網站網址</span>
+      <span class="ob-label">Feed 網址（RSS / Atom）</span>
       <input
         class="ob-input"
         name="feedUrl"

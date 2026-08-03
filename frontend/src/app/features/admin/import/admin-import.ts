@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { AdminService } from '../../../services/admin';
 import { ObCallout } from '../../../ui/callout/callout';
 import { ObCard } from '../../../ui/card/card';
@@ -16,7 +17,7 @@ import { ToastService } from '../../../ui/toast/toast';
 @Component({
   selector: 'app-admin-import',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, ObCallout, ObCard, ObPageHeader],
+  imports: [FormsModule, RouterLink, ObCallout, ObCard, ObPageHeader],
   templateUrl: './admin-import.html',
   styleUrl: './admin-import.scss',
 })
