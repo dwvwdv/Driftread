@@ -210,6 +210,34 @@ def block_host(db: "Client", host: str) -> int:
     return len(result.data or [])
 
 
+def hold_candidate(
+    db: "Client",
+    candidate_id: str,
+    note: str | None = None,
+) -> dict | None:
+    """Keep a viable alternate out of the catalog without discarding it.
+
+    Held candidates remain reviewable and can later be approved if the active
+    feed for their domain stops working. Unlike rejection, holding never blocks
+    the discovery target.
+    """
+    candidate = get_candidate(db, candidate_id)
+    if not candidate:
+        return None
+
+    updated = (
+        db.table("discovery_candidates")
+        .update({
+            "status": "held",
+            "review_note": sanitize_text(note, 500),
+            "reviewed_at": _now(),
+        })
+        .eq("id", str(candidate_id))
+        .execute()
+    )
+    return updated.data[0] if updated.data else None
+
+
 def reject_candidate(
     db: "Client",
     candidate_id: str,
@@ -418,6 +446,7 @@ def stats(db: "Client") -> dict[str, int]:
         "targets_exhausted": count("discovery_targets", "status", "exhausted"),
         "targets_rejected": count("discovery_targets", "status", "rejected"),
         "candidates_pending": count("discovery_candidates", "status", "pending"),
+        "candidates_held": count("discovery_candidates", "status", "held"),
         "candidates_approved": count("discovery_candidates", "status", "approved"),
         "candidates_rejected": count("discovery_candidates", "status", "rejected"),
         "candidates_imported": count("discovery_candidates", "status", "imported"),

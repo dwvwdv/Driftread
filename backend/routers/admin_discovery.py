@@ -15,6 +15,7 @@ from models import (
     DiscoveryTarget,
     Feed,
     FeedCandidate,
+    HoldCandidateRequest,
     PaginatedDiscoveryTargets,
     PaginatedFeedCandidates,
     RejectCandidateRequest,
@@ -28,6 +29,7 @@ from services.discovery import run_cycle
 from services.discovery_candidates import (
     approve_candidate,
     block_host,
+    hold_candidate,
     list_candidates,
     reject_candidate,
     stats,
@@ -248,6 +250,23 @@ async def approve(
     if not feed:
         raise HTTPException(status_code=500, detail="Failed to create feed")
     return Feed(**feed)
+
+
+@router.post(
+    "/candidates/{candidate_id}/hold",
+    response_model=FeedCandidate,
+    dependencies=[Depends(require_api_key)],
+)
+async def hold(
+    candidate_id: UUID,
+    body: HoldCandidateRequest,
+    db: Client = Depends(get_client),
+) -> FeedCandidate:
+    """Reserve a candidate as a possible replacement RSS endpoint."""
+    row = hold_candidate(db, str(candidate_id), body.note)
+    if not row:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return FeedCandidate(**row)
 
 
 @router.post(

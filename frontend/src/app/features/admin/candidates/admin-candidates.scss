@@ -48,3 +48,37 @@ ob-paginator {
   display: block;
   padding: 0 var(--sp-4) var(--sp-4);
 }
+
+.toolbar,
+.domain-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.toolbar {
+  margin-top: var(--sp-6);
+}
+.status-tabs,
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.queue {
+  margin-top: var(--sp-3);
+}
+.domain-group + .domain-group {
+  border-top: var(--border-width) solid var(--border);
+}
+.domain-header {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+}
+.candidate-check {
+  flex: 0 0 auto;
+}

@@ -124,7 +124,7 @@ export interface FeedCandidate {
   website_url: string | null;
   source_host: string | null;
   referring_feed_count: number;
-  status: 'pending' | 'approved' | 'rejected' | 'imported';
+  status: 'pending' | 'held' | 'approved' | 'rejected' | 'imported';
   feed_id: string | null;
   review_note: string | null;
   discovered_at: string;
@@ -193,6 +193,7 @@ export interface DiscoveryStats {
   targets_exhausted: number;
   targets_rejected: number;
   candidates_pending: number;
+  candidates_held: number;
   candidates_approved: number;
   candidates_rejected: number;
   candidates_imported: number;
