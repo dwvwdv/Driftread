@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
@@ -24,7 +24,7 @@ import { ToastService } from '../../ui/toast/toast';
   templateUrl: './bookmarks.html',
   styleUrl: './bookmarks.scss',
 })
-export class Bookmarks implements OnInit {
+export class Bookmarks {
   protected auth = inject(AuthService);
   private me = inject(MeService);
   private toast = inject(ToastService);
@@ -42,13 +42,30 @@ export class Bookmarks implements OnInit {
     return this.tabIndex() === 0 ? '還沒有收藏任何文章。' : '稍後閱讀清單是空的。';
   }
 
-  ngOnInit(): void {
-    if (this.auth.session()) this.load();
+  /** User id the current tab has already been loaded for. */
+  private loadedFor: string | null = null;
+
+  constructor() {
+    // Same reason as my-feeds: AuthService restores the persisted session
+    // asynchronously, so a one-shot `if (session())` in ngOnInit runs too early
+    // on a direct visit and never runs again — the tabs would render with an
+    // empty list and claim there were no bookmarks.
+    effect(() => {
+      const userId = this.auth.session()?.user?.id ?? null;
+      if (!userId) {
+        this.loadedFor = null;
+        return;
+      }
+      if (this.loadedFor === userId) return;
+      this.loadedFor = userId;
+      this.load();
+    });
   }
 
   onTab(index: number): void {
     this.tabIndex.set(index);
-    this.load();
+    // Tab changes load directly: the effect is keyed on identity, not on the tab.
+    if (this.auth.session()) this.load();
   }
 
   load(): void {

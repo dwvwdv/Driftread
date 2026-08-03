@@ -41,7 +41,9 @@ describe('Bookmarks tab scoping', () => {
       imports: [Bookmarks],
       providers: [
         provideRouter([]),
-        { provide: AuthService, useValue: { session: () => ({ user: {} }) } },
+        // Needs a real user.id: the load effect keys on it so that switching
+        // accounts reloads rather than showing the previous user's list.
+        { provide: AuthService, useValue: { session: () => ({ user: { id: 'user-1' } }) } },
         { provide: MeService, useValue: me },
         {
           provide: ToastService,

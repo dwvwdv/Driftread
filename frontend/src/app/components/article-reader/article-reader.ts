@@ -4,6 +4,7 @@ import {
   Component,
   OnInit,
   WritableSignal,
+  effect,
   inject,
   signal,
 } from '@angular/core';
@@ -45,6 +46,32 @@ export class ArticleReader implements OnInit {
   /** Bookmark types the reader has toggled — see applyBookmarkState. */
   private touched = new Set<BookmarkType>();
 
+  /** Article id the signed-in extras have already been run for. */
+  private syncedFor: string | null = null;
+
+  constructor() {
+    // Reactive rather than sampled once inside the article callback.
+    //
+    // AuthService restores the persisted Supabase session asynchronously, and the
+    // article itself is a public request that can easily win that race. Checking
+    // `session()` once at article-load time therefore saw null on a direct visit,
+    // and nothing re-ran when the session arrived a moment later: the bookmark
+    // buttons appeared with both states reading "off" even for a saved article,
+    // and the read receipt was never sent.
+    //
+    // As an effect it fires whenever *both* are available, in either order — and
+    // also covers signing in while the article is already open.
+    effect(() => {
+      const session = this.auth.session();
+      const article = this.article();
+      if (!session || !article || this.syncedFor === article.id) return;
+
+      this.syncedFor = article.id;
+      this.me.markRead(article.id).subscribe({ error: () => undefined });
+      this.loadBookmarkState(article.id);
+    });
+  }
+
   ngOnInit(): void {
     this.load();
   }
@@ -60,10 +87,8 @@ export class ArticleReader implements OnInit {
       next: (a) => {
         this.article.set(a);
         this.loading.set(false);
-        if (this.auth.session()) {
-          this.me.markRead(a.id).subscribe({ error: () => undefined });
-          this.loadBookmarkState(a.id);
-        }
+        // The signed-in extras (read receipt, bookmark state) are driven by the
+        // effect in the constructor, which waits for the session too.
       },
       error: () => {
         this.error.set('無法載入文章。');

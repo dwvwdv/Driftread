@@ -1,3 +1,4 @@
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap } from '@angular/router';
 import { Subject, of } from 'rxjs';
@@ -18,6 +19,58 @@ const ARTICLE = {
   content: '<p>內容</p>',
   fetched_at: '2026-08-01T00:00:00Z',
 } as Article;
+
+describe('ArticleReader session restore race', () => {
+  it('loads bookmark state when the session arrives after the article', async () => {
+    // AuthService restores the persisted session asynchronously and the article
+    // is a public request, so the article routinely wins. Sampling session()
+    // once in the article callback missed it and never retried.
+    const session = signal<{ user: { id: string } } | null>(null);
+    const favorites = new Subject<Article[]>();
+    const marked: string[] = [];
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [ArticleReader],
+      providers: [
+        { provide: ArticleService, useValue: { getArticle: () => of(ARTICLE) } },
+        { provide: AuthService, useValue: { session } },
+        {
+          provide: MeService,
+          useValue: {
+            markRead: (id: string) => {
+              marked.push(id);
+              return of(undefined);
+            },
+            listBookmarks: (type: BookmarkType) =>
+              type === 'favorite' ? favorites : of([] as Article[]),
+            addBookmark: () => of(undefined),
+            removeBookmark: () => of(undefined),
+          },
+        },
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { paramMap: convertToParamMap({ id: 'article-1' }) } },
+        },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(ArticleReader);
+    fixture.detectChanges();
+
+    // Article has landed; session has not. Nothing signed-in should have run.
+    expect(marked).toEqual([]);
+
+    session.set({ user: { id: 'user-1' } });
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(marked).toEqual(['article-1']);
+
+    favorites.next([ARTICLE]);
+    expect(fixture.componentInstance.favorited()).toBe(true);
+  });
+});
 
 describe('ArticleReader bookmark state', () => {
   /** Membership reads are held open so the race window can be driven by hand. */

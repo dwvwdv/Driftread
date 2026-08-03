@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
@@ -18,7 +18,7 @@ import { ToastService } from '../../ui/toast/toast';
   templateUrl: './my-feeds.html',
   styleUrl: './my-feeds.scss',
 })
-export class MyFeeds implements OnInit {
+export class MyFeeds {
   protected auth = inject(AuthService);
   private me = inject(MeService);
   private toast = inject(ToastService);
@@ -30,8 +30,27 @@ export class MyFeeds implements OnInit {
   exporting = signal(false);
   importing = signal(false);
 
-  ngOnInit(): void {
-    if (this.auth.session()) this.load();
+  /** User id the subscriptions have already been loaded for. */
+  private loadedFor: string | null = null;
+
+  constructor() {
+    // Not `if (session()) load()` in ngOnInit: AuthService restores the persisted
+    // session asynchronously, so on a direct visit that check runs before the
+    // session exists and never runs again. The template would then flip from
+    // "please sign in" to an empty subscription list once the session landed.
+    //
+    // Keyed on the user id so signing out and back in — or switching accounts —
+    // reloads rather than showing the previous user's list.
+    effect(() => {
+      const userId = this.auth.session()?.user?.id ?? null;
+      if (!userId) {
+        this.loadedFor = null;
+        return;
+      }
+      if (this.loadedFor === userId) return;
+      this.loadedFor = userId;
+      this.load();
+    });
   }
 
   load(): void {
