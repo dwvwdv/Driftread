@@ -1,30 +1,18 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
-import { ActivatedRoute, RouterLink } from '@angular/router';
-import { MatCardModule } from '@angular/material/card';
-import { MatButtonModule } from '@angular/material/button';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatListModule } from '@angular/material/list';
-import { MatDividerModule } from '@angular/material/divider';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatIconModule } from '@angular/material/icon';
 import { DatePipe } from '@angular/common';
+import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { FeedService } from '../../services/feed';
 import { RecommendationService } from '../../services/recommendation';
 import { FeedWithArticles } from '../../models';
+import { ObIcon } from '../../ui/icon/icon';
+import { ObListRow } from '../../ui/list-row/list-row';
+import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
 
+/** One feed: its metadata, a like/dislike control, and its latest articles. */
 @Component({
   selector: 'app-feed-detail',
-  imports: [
-    RouterLink,
-    DatePipe,
-    MatCardModule,
-    MatButtonModule,
-    MatChipsModule,
-    MatListModule,
-    MatDividerModule,
-    MatProgressSpinnerModule,
-    MatIconModule,
-  ],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [RouterLink, DatePipe, ObIcon, ObListRow, ObLoading, ObError, ObEmpty],
   templateUrl: './feed-detail.html',
   styleUrl: './feed-detail.scss',
 })
@@ -44,11 +32,18 @@ export class FeedDetail implements OnInit {
   get isLiked(): boolean {
     return this.rec.liked().includes(this.feedId);
   }
+
   get isDisliked(): boolean {
     return this.rec.disliked().includes(this.feedId);
   }
 
   ngOnInit(): void {
+    this.load();
+  }
+
+  load(): void {
+    this.loading.set(true);
+    this.error.set('');
     this.feedService.getFeed(this.feedId).subscribe({
       next: (f) => {
         this.feed.set(f);
@@ -64,6 +59,7 @@ export class FeedDetail implements OnInit {
   like(): void {
     this.rec.like(this.feedId);
   }
+
   dislike(): void {
     this.rec.dislike(this.feedId);
   }

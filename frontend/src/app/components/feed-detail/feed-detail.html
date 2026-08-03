@@ -1,64 +1,102 @@
 @if (loading()) {
-  <div class="center"><mat-spinner /></div>
-}
+  <ob-loading label="讀取信息源中" />
+} @else if (error()) {
+  <ob-error [message]="error()">
+    <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="load()">重試</button>
+  </ob-error>
+} @else if (feed(); as f) {
+  <a class="back" routerLink="/">
+    <ob-icon name="arrow-left" [size]="14" />
+    返回信息源
+  </a>
 
-@if (error()) {
-  <p class="error">{{ error() }}</p>
-}
-
-@if (feed(); as f) {
-  <div class="header">
-    <a mat-button routerLink="/">← 返回列表</a>
-  </div>
-
-  <mat-card class="feed-card">
-    <mat-card-header>
-      <mat-card-title>{{ f.title }}</mat-card-title>
+  <header class="head">
+    <div class="head-text">
       @if (f.category) {
-        <mat-card-subtitle>{{ f.category }}</mat-card-subtitle>
+        <p class="ob-label cat">{{ f.category }}</p>
       }
-    </mat-card-header>
-    <mat-card-content>
+      <h1>{{ f.title }}</h1>
+
       @if (f.description) {
-        <p>{{ f.description }}</p>
+        <p class="desc">{{ f.description }}</p>
       }
-      @if (f.website_url) {
-        <p>
-          <a [href]="f.website_url" target="_blank" rel="noopener">{{ f.website_url }}</a>
-        </p>
-      }
-      <mat-chip-set>
-        @for (tag of f.tags; track tag) {
-          <mat-chip>{{ tag }}</mat-chip>
+
+      <div class="meta">
+        @if (f.website_url) {
+          <a class="site" [href]="f.website_url" target="_blank" rel="noopener">
+            {{ f.website_url }}
+            <ob-icon name="external" [size]="12" />
+          </a>
         }
-      </mat-chip-set>
-    </mat-card-content>
-    <mat-card-actions>
-      <button mat-button [color]="isLiked ? 'primary' : ''" (click)="like()">
-        <mat-icon>thumb_up</mat-icon> 喜歡
-      </button>
-      <button mat-button [color]="isDisliked ? 'warn' : ''" (click)="dislike()">
-        <mat-icon>thumb_down</mat-icon> 不喜歡
-      </button>
-    </mat-card-actions>
-  </mat-card>
+        <span class="count">{{ f.article_count }} 篇文章</span>
+        @if (f.language) {
+          <span class="count">{{ f.language }}</span>
+        }
+      </div>
 
-  <h2 class="articles-title">最新文章</h2>
-
-  <mat-list>
-    @for (article of f.articles; track article.id) {
-      <mat-list-item [routerLink]="['/articles', article.id]" class="article-item">
-        <span matListItemTitle>{{ article.title }}</span>
-        <span matListItemLine>
-          @if (article.author) {
-            {{ article.author }} ·
+      @if (f.tags.length) {
+        <ul class="tags">
+          @for (tag of f.tags; track tag) {
+            <li class="ob-chip">{{ tag }}</li>
           }
-          {{ article.published_at | date: 'yyyy-MM-dd' }}
-        </span>
-      </mat-list-item>
-      <mat-divider />
-    } @empty {
-      <p class="empty">尚無文章。</p>
+        </ul>
+      }
+    </div>
+
+    <!--
+      Signals for 猜你喜歡. Stored locally by RecommendationService, so these work
+      signed out — which is what makes recommendations usable without an account.
+    -->
+    <div class="votes">
+      <p class="ob-label">回饋給「猜你喜歡」</p>
+      <div class="vote-row">
+        <button
+          type="button"
+          class="ob-btn ob-btn--sm"
+          [class.ob-btn--primary]="isLiked"
+          [class.ob-btn--ghost]="!isLiked"
+          [attr.aria-pressed]="isLiked"
+          (click)="like()"
+        >
+          <ob-icon name="heart" [size]="14" [filled]="isLiked" />
+          喜歡
+        </button>
+        <button
+          type="button"
+          class="ob-btn ob-btn--sm"
+          [class.ob-btn--danger]="isDisliked"
+          [class.ob-btn--ghost]="!isDisliked"
+          [attr.aria-pressed]="isDisliked"
+          (click)="dislike()"
+        >
+          <ob-icon name="close" [size]="14" />
+          不喜歡
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <section aria-labelledby="articles-heading">
+    <h2 id="articles-heading" class="ob-label section">最新文章</h2>
+
+    @if (f.articles.length === 0) {
+      <ob-empty message="這個來源目前還沒有抓到文章。" />
+    } @else {
+      <div class="list">
+        @for (article of f.articles; track article.id) {
+          <ob-list-row>
+            <a rowTitle [routerLink]="['/articles', article.id]">{{ article.title }}</a>
+            <div rowLines>
+              <span>
+                @if (article.author) {
+                  {{ article.author }} ・
+                }
+                {{ article.published_at | date: 'yyyy-MM-dd' }}
+              </span>
+            </div>
+          </ob-list-row>
+        }
+      </div>
     }
-  </mat-list>
+  </section>
 }

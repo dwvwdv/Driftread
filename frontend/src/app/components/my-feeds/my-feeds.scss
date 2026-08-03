@@ -1,0 +1,84 @@
+@use 'mixins' as *;
+
+.result {
+  display: flex;
+  margin-bottom: var(--sp-6);
+}
+
+.fail-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.failures {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--surface-inset);
+  border-left: var(--border-width) solid var(--border);
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+
+  li {
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.cards {
+  list-style: none;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  @include offset-shadow;
+}
+
+.title {
+  font-size: var(--text-md);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+
+  a {
+    color: var(--text-strong);
+
+    &:hover {
+      color: var(--accent);
+      text-decoration: none;
+    }
+  }
+}
+
+.cat {
+  color: var(--accent);
+}
+
+.desc {
+  @include line-clamp(2);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: auto;
+  padding-top: var(--sp-3);
+}
+
+.count {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}

@@ -60,7 +60,19 @@ export class MeService {
     return this.http.post<OpmlImportResult>(`${this.base}/me/import/opml`, form);
   }
 
-  exportOpmlUrl(): string {
-    return `${this.base}/me/export/opml`;
+  /**
+   * Downloads the subscription OPML.
+   *
+   * This used to be `exportOpmlUrl()`, a plain string dropped into an
+   * `<a [href]>`. Following that link is a browser navigation, not an HttpClient
+   * request, so the auth interceptor never saw it and no Authorization header was
+   * sent — while GET /api/me/export/opml requires a JWT. The export therefore
+   * 401'd for every user, every time.
+   *
+   * Going through HttpClient gets the token attached; the caller turns the blob
+   * into a download.
+   */
+  exportOpml(): Observable<Blob> {
+    return this.http.get(`${this.base}/me/export/opml`, { responseType: 'blob' });
   }
 }

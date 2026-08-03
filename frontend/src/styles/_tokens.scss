@@ -102,6 +102,11 @@
   --shadow-offset: var(--nord-frost3);
   --shadow-offset-soft: var(--nord-frost2);
 
+  // Modal scrim. Genuinely black rather than a Nord swatch — this dims the page
+  // behind a dialog, it is not a shadow, so the "never use grey rgba for shadows"
+  // rule does not apply. Same value in both themes.
+  --scrim: rgb(0 0 0 / 55%);
+
   // Aurora — raw swatches, for fills, status dots and borders (≥3:1 needed).
   --success: var(--nord-green);
   --warning: var(--nord-yellow);

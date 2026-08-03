@@ -1,93 +1,34 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { MatCardModule } from '@angular/material/card';
-import { MatButtonModule } from '@angular/material/button';
-import { MatIconModule } from '@angular/material/icon';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
 import { Feed, OpmlImportResult } from '../../models';
+import { apiMessage } from '../../shared/http-errors';
+import { ObCallout } from '../../ui/callout/callout';
+import { ObIcon } from '../../ui/icon/icon';
+import { ObLoading, ObEmpty } from '../../ui/state/state';
+import { ObPageHeader } from '../../ui/page-header/page-header';
+import { ToastService } from '../../ui/toast/toast';
 
+/** Subscriptions, plus OPML interchange with other readers. */
 @Component({
   selector: 'app-my-feeds',
-  imports: [RouterLink, MatCardModule, MatButtonModule, MatIconModule, MatProgressSpinnerModule],
-  template: `
-    @if (!auth.session()) {
-      <p>請先 <a routerLink="/login">登入</a>。</p>
-    } @else {
-      <div class="actions">
-        <input #opml type="file" accept=".opml,.xml" hidden (change)="onOpml($event)" />
-        <button mat-stroked-button (click)="opml.click()">匯入 OPML</button>
-        <a mat-stroked-button [href]="exportUrl()">匯出 OPML</a>
-      </div>
-
-      @if (importResult(); as r) {
-        <p class="info">
-          已匯入 {{ r.imported }} 個 feed（成功訂閱 {{ r.subscribed }}）。
-          @if (r.failed.length > 0) {
-            失敗 {{ r.failed.length }} 個。
-          }
-        </p>
-      }
-
-      @if (loading()) {
-        <mat-spinner />
-      }
-
-      <div class="grid">
-        @for (f of feeds(); track f.id) {
-          <mat-card class="feed-card">
-            <mat-card-header>
-              <mat-card-title
-                ><a [routerLink]="['/feeds', f.id]">{{ f.title }}</a></mat-card-title
-              >
-              @if (f.category) {
-                <mat-card-subtitle>{{ f.category }}</mat-card-subtitle>
-              }
-            </mat-card-header>
-            <mat-card-content>
-              @if (f.description) {
-                <p>{{ f.description }}</p>
-              }
-            </mat-card-content>
-            <mat-card-actions>
-              <button mat-button color="warn" (click)="unsubscribe(f.id)">取消訂閱</button>
-            </mat-card-actions>
-          </mat-card>
-        }
-      </div>
-
-      @if (!loading() && feeds().length === 0) {
-        <p class="empty">尚未訂閱任何 feed，到 <a routerLink="/">信息源</a> 找找看吧。</p>
-      }
-    }
-  `,
-  styles: [
-    `
-      .actions {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 16px;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-        gap: 12px;
-      }
-      .info {
-        color: #2e7d32;
-      }
-    `,
-  ],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [RouterLink, ObCallout, ObIcon, ObLoading, ObEmpty, ObPageHeader],
+  templateUrl: './my-feeds.html',
+  styleUrl: './my-feeds.scss',
 })
 export class MyFeeds implements OnInit {
   protected auth = inject(AuthService);
   private me = inject(MeService);
+  private toast = inject(ToastService);
 
   feeds = signal<Feed[]>([]);
   loading = signal(false);
   importResult = signal<OpmlImportResult | null>(null);
-  exportUrl = signal(this.me.exportOpmlUrl());
+  showFailures = signal(false);
+  exporting = signal(false);
+  importing = signal(false);
 
   ngOnInit(): void {
     if (this.auth.session()) this.load();
@@ -96,26 +37,90 @@ export class MyFeeds implements OnInit {
   load(): void {
     this.loading.set(true);
     this.me.listSubscriptions().subscribe({
-      next: (f) => {
-        this.feeds.set(f);
+      next: (feeds) => {
+        this.feeds.set(feeds);
         this.loading.set(false);
       },
-      error: () => this.loading.set(false),
-    });
-  }
-
-  unsubscribe(id: string): void {
-    this.me.unsubscribe(id).subscribe(() => this.load());
-  }
-
-  onOpml(ev: Event): void {
-    const file = (ev.target as HTMLInputElement).files?.[0];
-    if (!file) return;
-    this.me.importOpml(file).subscribe({
-      next: (r) => {
-        this.importResult.set(r);
-        this.load();
+      error: (e: unknown) => {
+        this.loading.set(false);
+        this.toast.danger(apiMessage(e, '讀取訂閱失敗'));
       },
     });
+  }
+
+  unsubscribe(feed: Feed): void {
+    this.me.unsubscribe(feed.id).subscribe({
+      next: () => {
+        this.toast.info(`已取消訂閱：${feed.title}`);
+        this.feeds.update((list) => list.filter((f) => f.id !== feed.id));
+      },
+      error: (e: unknown) => this.toast.danger(apiMessage(e, '取消訂閱失敗')),
+    });
+  }
+
+  onOpml(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    this.importing.set(true);
+    this.showFailures.set(false);
+    this.me.importOpml(file).subscribe({
+      next: (result) => {
+        this.importing.set(false);
+        this.importResult.set(result);
+        this.load();
+      },
+      error: (e: unknown) => {
+        this.importing.set(false);
+        this.toast.danger(apiMessage(e, 'OPML 匯入失敗'));
+      },
+    });
+
+    // Lets the same file be picked again after a failed attempt; without this the
+    // change event never fires a second time for an identical selection.
+    input.value = '';
+  }
+
+  /**
+   * Fetches the OPML through HttpClient so the auth interceptor attaches the
+   * token, then saves it. See MeService.exportOpml — the old <a href> always 401'd.
+   */
+  exportOpml(): void {
+    this.exporting.set(true);
+    this.me.exportOpml().subscribe({
+      next: (blob) => {
+        this.exporting.set(false);
+        const url = URL.createObjectURL(blob);
+        try {
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'driftread.opml';
+          link.click();
+        } finally {
+          // Released either way; a retained object URL pins the blob in memory.
+          URL.revokeObjectURL(url);
+        }
+      },
+      error: (e: unknown) => {
+        this.exporting.set(false);
+        this.toast.danger(apiMessage(e, 'OPML 匯出失敗'));
+      },
+    });
+  }
+
+  toggleFailures(): void {
+    this.showFailures.update((open) => !open);
+  }
+
+  async copyFailures(): Promise<void> {
+    const failed = this.importResult()?.failed ?? [];
+    try {
+      await navigator.clipboard.writeText(failed.join('\n'));
+      this.toast.success('已複製失敗清單');
+    } catch {
+      // Clipboard access needs a secure context and can be denied outright.
+      this.toast.warning('無法存取剪貼簿，請手動選取複製');
+    }
   }
 }

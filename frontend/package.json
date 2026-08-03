@@ -11,13 +11,11 @@
   "private": true,
   "packageManager": "npm@10.9.7",
   "dependencies": {
-    "@angular/animations": "^21.2.12",
     "@angular/cdk": "^21.2.10",
     "@angular/common": "^21.2.0",
     "@angular/compiler": "^21.2.0",
     "@angular/core": "^21.2.0",
     "@angular/forms": "^21.2.0",
-    "@angular/material": "^21.2.10",
     "@angular/platform-browser": "^21.2.0",
     "@angular/router": "^21.2.0",
     "@supabase/supabase-js": "^2.45.0",

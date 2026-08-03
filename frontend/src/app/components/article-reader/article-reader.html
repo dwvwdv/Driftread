@@ -1,50 +1,90 @@
 @if (loading()) {
-  <div class="center"><mat-spinner /></div>
-}
+  <ob-loading label="讀取文章中" />
+} @else if (error()) {
+  <ob-error [message]="error()">
+    <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="load()">重試</button>
+  </ob-error>
+} @else if (article(); as a) {
+  <div class="bar">
+    <a class="back" [routerLink]="['/feeds', a.feed_id]">
+      <ob-icon name="arrow-left" [size]="14" />
+      返回信息源
+    </a>
 
-@if (error()) {
-  <p class="error">{{ error() }}</p>
-}
-
-@if (article(); as a) {
-  <div class="header">
-    <a mat-button [routerLink]="['/feeds', a.feed_id]">← 返回信息源</a>
     @if (auth.session()) {
-      <button mat-button (click)="toggle('favorite')">
-        <mat-icon>{{ favorited() ? 'star' : 'star_border' }}</mat-icon>
-        收藏
-      </button>
-      <button mat-button (click)="toggle('read_later')">
-        <mat-icon>{{ readLater() ? 'bookmark' : 'bookmark_border' }}</mat-icon>
-        稍後讀
-      </button>
+      <div class="actions">
+        <button
+          type="button"
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [attr.aria-pressed]="favorited()"
+          (click)="toggle('favorite')"
+        >
+          <ob-icon name="star" [size]="14" [filled]="favorited()" />
+          {{ favorited() ? '已收藏' : '收藏' }}
+        </button>
+        <button
+          type="button"
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [attr.aria-pressed]="readLater()"
+          (click)="toggle('read_later')"
+        >
+          <ob-icon name="bookmark" [size]="14" [filled]="readLater()" />
+          {{ readLater() ? '已加入稍後讀' : '稍後讀' }}
+        </button>
+      </div>
     }
   </div>
 
-  <mat-card class="article-card">
-    <mat-card-header>
-      <mat-card-title>{{ a.title }}</mat-card-title>
-      <mat-card-subtitle>
+  <article class="reader">
+    <header class="head">
+      <h1>{{ a.title }}</h1>
+      <p class="meta">
         @if (a.author) {
-          {{ a.author }} ·
+          <span>{{ a.author }}</span>
+          <span class="sep">・</span>
         }
-        {{ a.published_at | date: 'yyyy年MM月dd日' }}
-      </mat-card-subtitle>
-    </mat-card-header>
-    <mat-card-content>
-      @if (a.content) {
-        <div class="article-body" [innerHTML]="a.content"></div>
-      } @else if (a.summary) {
+        @if (a.published_at) {
+          <time [attr.datetime]="a.published_at">
+            {{ a.published_at | date: 'yyyy 年 MM 月 dd 日' }}
+          </time>
+        }
+      </p>
+    </header>
+
+    @if (a.content) {
+      <!--
+        Remote HTML. It goes through [innerHTML] so Angular's DomSanitizer strips
+        scripts and event handlers on the way in — never bypassSecurityTrustHtml.
+        The .prose rules that style what survives live in src/styles/_prose.scss,
+        globally: view encapsulation tags component styles with an _ngcontent
+        attribute that injected HTML never receives.
+      -->
+      <div class="prose" [innerHTML]="a.content"></div>
+    } @else if (a.summary) {
+      <div class="prose">
         <p>{{ a.summary }}</p>
-        <p class="read-more">
-          <a [href]="a.url" target="_blank" rel="noopener">前往原文閱讀 →</a>
-        </p>
-      } @else {
-        <p class="empty">無文章內容，請前往原文閱讀。</p>
-        <p>
-          <a [href]="a.url" target="_blank" rel="noopener">{{ a.url }}</a>
-        </p>
-      }
-    </mat-card-content>
-  </mat-card>
+      </div>
+      <p class="jump">
+        <a class="ob-btn ob-btn--primary" [href]="a.url" target="_blank" rel="noopener">
+          前往原文閱讀
+          <ob-icon name="external" [size]="14" />
+        </a>
+      </p>
+    } @else {
+      <p class="none">這篇文章沒有快取內容。</p>
+      <p class="jump">
+        <a class="ob-btn ob-btn--primary" [href]="a.url" target="_blank" rel="noopener">
+          前往原文閱讀
+          <ob-icon name="external" [size]="14" />
+        </a>
+      </p>
+    }
+
+    <footer class="foot">
+      <a class="source" [href]="a.url" target="_blank" rel="noopener">
+        {{ a.url }}
+        <ob-icon name="external" [size]="12" />
+      </a>
+    </footer>
+  </article>
 }

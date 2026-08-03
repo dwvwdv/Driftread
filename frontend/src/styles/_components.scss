@@ -326,7 +326,7 @@
 }
 
 .ob-scrim--dim {
-  background: rgb(0 0 0 / 55%);
+  background: var(--scrim);
 }
 
 // ── Menu / drawer item ──────────────────────────────────────────────────────
@@ -357,5 +357,5 @@
 // Applied by ConfirmService through the CDK overlay's backdropClass, so it has to
 // be global — the dialog component's own styles cannot reach the backdrop.
 .ob-confirm-backdrop {
-  background: rgb(0 0 0 / 55%);
+  background: var(--scrim);
 }

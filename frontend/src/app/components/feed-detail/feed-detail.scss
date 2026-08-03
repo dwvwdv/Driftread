@@ -1,28 +1,109 @@
-.header {
-  margin-bottom: 16px;
-}
-.feed-card {
-  margin-bottom: 24px;
-}
-.articles-title {
-  font-size: 1.25rem;
-  margin: 16px 0 8px;
-}
-.article-item {
-  cursor: pointer;
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-5);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+
   &:hover {
-    background: rgba(0, 0, 0, 0.04);
+    color: var(--accent);
+    text-decoration: none;
   }
 }
-.center {
+
+.head {
   display: flex;
-  justify-content: center;
-  padding: 40px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+  padding-bottom: var(--sp-5);
+  margin-bottom: var(--sp-6);
+  border-bottom: var(--border-width) solid var(--border);
 }
-.error {
-  color: red;
+
+.head-text {
+  flex: 1;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
 }
-.empty {
-  color: rgba(0, 0, 0, 0.5);
-  padding: 16px;
+
+.cat {
+  color: var(--accent);
+}
+
+h1 {
+  font-size: var(--text-xl);
+  // Feed titles are third-party text and can be a single unbroken string.
+  overflow-wrap: anywhere;
+}
+
+.desc {
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+.site {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  overflow-wrap: anywhere;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  list-style: none;
+  margin-top: var(--sp-1);
+}
+
+.votes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: none;
+  padding: var(--sp-3);
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+}
+
+.vote-row {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.section {
+  display: block;
+  margin-bottom: var(--sp-3);
+}
+
+.list {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+}
+
+.list a {
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+
+  &:hover {
+    color: var(--accent);
+  }
 }

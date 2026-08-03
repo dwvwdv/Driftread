@@ -1,53 +1,71 @@
-<div class="rec-header">
-  <h1>猜你喜歡</h1>
-  <p>已收藏 {{ likedCount }} 個信息源。</p>
-</div>
+<ob-page-header
+  kicker="DISCOVERY"
+  heading="猜你喜歡"
+  [subtitle]="'已喜歡 ' + likedCount + ' 個信息源・這一批還有 ' + remaining + ' 個'"
+/>
 
 @if (loading()) {
-  <div class="center"><mat-spinner /></div>
-}
-
-@if (error()) {
-  <p class="error">{{ error() }}</p>
-}
-
-@if (!loading() && current; as feed) {
-  <div class="card-wrapper">
-    <mat-card class="rec-card">
-      <mat-card-header>
-        <mat-card-title>{{ feed.title }}</mat-card-title>
-        @if (feed.category) {
-          <mat-card-subtitle>{{ feed.category }}</mat-card-subtitle>
+  <ob-loading label="挑選推薦中" />
+} @else if (cooldown() > 0) {
+  <!--
+    429 from the shared 20-per-60s bucket. Told as a wait with a countdown rather
+    than as a failure, because it is one.
+  -->
+  <ob-empty [message]="'請求太頻繁，請於 ' + cooldown() + ' 秒後再試。'">
+    <p class="hint">這個限制是以 IP 計算的，和你點得多快有關，不是出錯了。</p>
+  </ob-empty>
+} @else if (error()) {
+  <ob-error [message]="error()">
+    <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="loadMore()">重試</button>
+  </ob-error>
+} @else if (current; as feed) {
+  <div class="stage">
+    <article class="card">
+      <div class="card-head">
+        <span class="ob-label">{{ feed.category || '未分類' }}</span>
+        @if (feed.language) {
+          <span class="ob-label">{{ feed.language }}</span>
         }
-      </mat-card-header>
-      <mat-card-content>
+      </div>
+
+      <div class="card-body">
+        <h2>{{ feed.title }}</h2>
+
         @if (feed.description) {
           <p class="desc">{{ feed.description }}</p>
         }
-        <mat-chip-set>
-          @for (tag of feed.tags; track tag) {
-            <mat-chip>{{ tag }}</mat-chip>
-          }
-        </mat-chip-set>
-      </mat-card-content>
-      <mat-card-actions align="end">
-        <button mat-stroked-button color="warn" (click)="skip(feed)">
-          <mat-icon>close</mat-icon> 跳過
-        </button>
-        <a mat-stroked-button [routerLink]="['/feeds', feed.id]">詳細</a>
-        <button mat-flat-button color="primary" (click)="like(feed)">
-          <mat-icon>favorite</mat-icon> 喜歡
-        </button>
-      </mat-card-actions>
-    </mat-card>
-  </div>
-}
 
-@if (!loading() && !current && !error()) {
-  <div class="center">
-    <div>
-      <p>已探索所有推薦！</p>
-      <button mat-flat-button color="primary" (click)="loadMore()">再推薦一批</button>
+        @if (feed.tags.length) {
+          <ul class="tags">
+            @for (tag of feed.tags; track tag) {
+              <li class="ob-chip">{{ tag }}</li>
+            }
+          </ul>
+        }
+
+        <p class="count">{{ feed.article_count }} 篇文章</p>
+      </div>
+    </article>
+
+    <div class="controls">
+      <button type="button" class="ob-btn ob-btn--ghost" (click)="skip(feed)">
+        <ob-icon name="close" [size]="16" />
+        跳過
+      </button>
+
+      <a class="ob-btn ob-btn--ghost" [routerLink]="['/feeds', feed.id]">看詳細</a>
+
+      <button type="button" class="ob-btn ob-btn--primary" (click)="like(feed)">
+        <ob-icon name="heart" [size]="16" />
+        喜歡
+      </button>
     </div>
   </div>
+} @else {
+  <ob-empty message="這一批看完了。">
+    <button type="button" class="ob-btn ob-btn--primary" (click)="loadMore()">
+      <ob-icon name="refresh" [size]="16" />
+      再推薦一批
+    </button>
+  </ob-empty>
 }
