@@ -22,9 +22,11 @@ a:hover {
 }
 
 // ── Selection ───────────────────────────────────────────────────────────────
+// accent-fill / accent-ink is the contrast-verified pair (6.25:1) and is the same
+// in both themes, so selected text stays legible either way.
 ::selection {
-  background: var(--accent-strong);
-  color: var(--nord-snow2);
+  background: var(--accent-fill);
+  color: var(--accent-ink);
 }
 
 // ── Scrollbars ──────────────────────────────────────────────────────────────
@@ -50,7 +52,7 @@ a:hover {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-strong);
+  background: var(--accent-fill);
 }
 
 // ── Skip link ───────────────────────────────────────────────────────────────
@@ -61,8 +63,8 @@ a:hover {
   left: var(--sp-4);
   z-index: var(--z-toast);
   padding: var(--sp-2) var(--sp-4);
-  background: var(--accent-strong);
-  color: var(--nord-snow2);
+  background: var(--accent-fill);
+  color: var(--accent-ink);
   font-weight: 700;
   border: var(--border-width) solid var(--accent-soft);
 }

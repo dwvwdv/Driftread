@@ -44,7 +44,7 @@
             aria-label="關閉帳號選單"
             (click)="toggleAccount()"
           ></button>
-          <div class="menu" id="account-menu" role="menu" (keydown)="onDrawerKeydown($event)">
+          <div class="menu" id="account-menu" role="menu" (keydown)="onAccountKeydown($event)">
             <a class="ob-menu-item" role="menuitem" routerLink="/me/feeds">我的訂閱</a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/bookmarks">收藏</a>
             <button class="ob-menu-item" type="button" role="menuitem" (click)="signOut()">

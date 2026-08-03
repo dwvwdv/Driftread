@@ -59,6 +59,25 @@ export class PublicLayout {
     if (event.key === 'Escape') this.closeDrawer();
   }
 
+  /**
+   * Escape inside the account popover.
+   *
+   * Separate from onDrawerKeydown: that only closes the drawer, so reusing it here
+   * left the menu open with focus still inside it.
+   *
+   * Focus goes back to the trigger, otherwise dismissing the menu drops the
+   * keyboard user at the top of the document.
+   */
+  protected onAccountKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape') return;
+    event.stopPropagation();
+    this.accountOpen.set(false);
+    const trigger = (event.currentTarget as HTMLElement)
+      .closest('.account')
+      ?.querySelector<HTMLButtonElement>('.account-trigger');
+    trigger?.focus();
+  }
+
   async signOut(): Promise<void> {
     await this.auth.signOut();
     this.accountOpen.set(false);

@@ -18,7 +18,7 @@ import {
   SeedTargetsResult,
 } from '../models';
 import { ToastService } from '../ui/toast/toast';
-import { apiMessage } from '../shared/http-errors';
+import { apiMessage, isMissingApiKeyHeader, validationMessage } from '../shared/http-errors';
 import { AdminKeyStore } from './admin-key';
 
 /** Body accepted by POST /admin/discovery/candidates/{id}/approve. */
@@ -240,14 +240,23 @@ export class AdminService {
         this.toast.danger('無法連線到後端服務');
         break;
 
-      // 403 = wrong key, 422 = no key header at all. Both mean this tab can no
-      // longer talk to the admin API, so drop the bad key and go re-enter it
-      // rather than leaving every panel to fail one at a time.
+      // Wrong key. This tab can no longer talk to the admin API, so drop it and
+      // go re-enter rather than leaving every panel to fail one at a time.
       case 403:
+        this.lockOut();
+        break;
+
+      // 422 is ambiguous: FastAPI returns it both for a missing X-API-Key header
+      // (Header(...) is required) and for *any* schema violation — a feed import
+      // whose JSON lacks a `title`, for instance. Only the former is an auth
+      // problem. Clearing the key on the latter would log the operator out
+      // because they pasted malformed JSON.
       case 422:
-        this.keys.clear();
-        this.toast.danger('Admin API Key 無效，請重新輸入');
-        void this.router.navigate(['/admin/unlock']);
+        if (isMissingApiKeyHeader(error)) {
+          this.lockOut();
+        } else {
+          this.toast.danger(`${context}：${validationMessage(error) || '請求內容格式錯誤'}`);
+        }
         break;
 
       case 409:
@@ -268,5 +277,12 @@ export class AdminService {
     }
 
     return throwError(() => error);
+  }
+
+  /** Drops the key for this tab and sends the operator back to re-enter it. */
+  private lockOut(): void {
+    this.keys.clear();
+    this.toast.danger('Admin API Key 無效，請重新輸入');
+    void this.router.navigate(['/admin/unlock']);
   }
 }
