@@ -1,0 +1,138 @@
+<a class="skip-link" href="#main">跳到主要內容</a>
+
+<header class="bar">
+  <a class="brand" routerLink="/">
+    <span class="brand-name">漂流閱讀</span>
+    <span class="brand-sub">DRIFTREAD</span>
+  </a>
+
+  <!-- Primary destinations, inline on wide screens. -->
+  <nav class="links" aria-label="主要導覽">
+    <a routerLink="/" routerLinkActive="is-active" [routerLinkActiveOptions]="{ exact: true }">
+      信息源
+    </a>
+    <a routerLink="/discover" routerLinkActive="is-active">發現</a>
+    <a routerLink="/recommendations" routerLinkActive="is-active">猜你喜歡</a>
+  </nav>
+
+  <div class="right">
+    <ob-theme-toggle />
+
+    @if (auth.session()) {
+      <!--
+        Personal destinations live behind a menu rather than in the bar. Inline they
+        pushed the item count to seven and the signed-in email had no width limit,
+        which is what used to overflow the toolbar.
+      -->
+      <div class="account">
+        <button
+          type="button"
+          class="account-trigger"
+          [attr.aria-expanded]="accountOpen()"
+          aria-haspopup="menu"
+          aria-controls="account-menu"
+          (click)="toggleAccount()"
+        >
+          <span class="email">{{ auth.userEmail }}</span>
+          <ob-icon name="chevron-right" [size]="14" />
+        </button>
+
+        @if (accountOpen()) {
+          <button
+            type="button"
+            class="ob-scrim"
+            tabindex="-1"
+            aria-label="關閉帳號選單"
+            (click)="closeAccount()"
+          ></button>
+          <div class="menu" id="account-menu" role="menu" (keydown)="onAccountKeydown($event)">
+            <a class="ob-menu-item" role="menuitem" routerLink="/me/feeds">我的訂閱</a>
+            <a class="ob-menu-item" role="menuitem" routerLink="/me/bookmarks">收藏</a>
+            <button class="ob-menu-item" type="button" role="menuitem" (click)="signOut()">
+              登出
+            </button>
+          </div>
+        }
+      </div>
+    } @else {
+      <a class="ob-btn ob-btn--ghost ob-btn--sm" routerLink="/login">登入</a>
+    }
+
+    <button
+      type="button"
+      class="hamburger"
+      [attr.aria-expanded]="drawerOpen()"
+      aria-controls="mobile-drawer"
+      aria-label="開啟選單"
+      (click)="toggleDrawer()"
+    >
+      <ob-icon name="menu" [size]="20" />
+    </button>
+  </div>
+</header>
+
+@if (drawerOpen()) {
+  <div class="drawer-wrap" (keydown)="onDrawerKeydown($event)">
+    <button
+      type="button"
+      class="ob-scrim ob-scrim--dim"
+      aria-label="關閉選單"
+      (click)="closeDrawer()"
+    ></button>
+    <nav
+      class="drawer"
+      id="mobile-drawer"
+      aria-label="行動版導覽"
+      cdkTrapFocus
+      [cdkTrapFocusAutoCapture]="true"
+    >
+      <div class="drawer-head">
+        <span class="ob-label">選單</span>
+        <button
+          type="button"
+          class="ob-btn ob-btn--subtle ob-btn--icon"
+          aria-label="關閉選單"
+          (click)="closeDrawer()"
+        >
+          <ob-icon name="close" [size]="18" />
+        </button>
+      </div>
+
+      <a
+        class="ob-menu-item"
+        routerLink="/"
+        routerLinkActive="is-active"
+        [routerLinkActiveOptions]="{ exact: true }"
+        >信息源</a
+      >
+      <a class="ob-menu-item" routerLink="/discover" routerLinkActive="is-active">發現</a>
+      <a class="ob-menu-item" routerLink="/recommendations" routerLinkActive="is-active">
+        猜你喜歡
+      </a>
+
+      <hr class="ob-divider" />
+
+      @if (auth.session()) {
+        <a class="ob-menu-item" routerLink="/me/feeds" routerLinkActive="is-active">我的訂閱</a>
+        <a class="ob-menu-item" routerLink="/me/bookmarks" routerLinkActive="is-active">收藏</a>
+        <button type="button" class="ob-menu-item" (click)="signOut()">
+          登出（{{ auth.userEmail }}）
+        </button>
+      } @else {
+        <a class="ob-menu-item" routerLink="/login" routerLinkActive="is-active">登入</a>
+      }
+    </nav>
+  </div>
+}
+
+<main id="main" tabindex="-1">
+  <router-outlet />
+</main>
+
+<footer class="status">
+  <span class="ob-dot online">ONLINE</span>
+  <span class="sep">|</span>
+  <span>漂流閱讀 DRIFTREAD</span>
+  <span class="sep">|</span>
+  <span>RSS 推薦與閱讀</span>
+</footer>

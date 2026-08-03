@@ -28,6 +28,8 @@ RSS 推薦平台，核心功能為「猜你喜歡」，幫助用戶挖掘心儀�
 ```
 driftread/
 ├── frontend/          # Angular 應用（Dockerfile → GHCR）
+│   ├── src/styles/    # Offbeat design token 層（Nord × Brutalism）
+│   └── src/app/ui/    # 自建 Offbeat 元件庫 —— 不要重新引入 Angular Material
 ├── backend/           # Python FastAPI（Dockerfile → GHCR）
 ├── extension/         # 瀏覽器擴充（一鍵加入 feed）
 ├── docs/              # 專案文件

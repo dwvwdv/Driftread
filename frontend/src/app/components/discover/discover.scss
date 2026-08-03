@@ -1,0 +1,80 @@
+@use 'mixins' as *;
+
+.row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-6);
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.row .ob-input {
+  height: 100%;
+  font-family: var(--font-mono);
+}
+
+.results {
+  list-style: none;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  @include offset-shadow;
+}
+
+.card-head {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-sunken);
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.host {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-3);
+  flex: 1;
+}
+
+h2 {
+  font-size: var(--text-base);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.url {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-top: var(--border-width-thin) solid var(--border);
+}
+
+@media (max-width: 520px) {
+  .row {
+    flex-direction: column;
+  }
+}

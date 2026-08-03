@@ -1,0 +1,243 @@
+@use 'mixins' as *;
+
+:host {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+// ── Header ──────────────────────────────────────────────────────────────────
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  min-height: var(--nav-height);
+  padding: 0 clamp(var(--sp-4), 4vw, var(--sp-8));
+  background: var(--surface-raised);
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: none;
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: none;
+  }
+}
+
+.brand-name {
+  font-size: var(--text-md);
+  font-weight: 900;
+  letter-spacing: -0.5px;
+  color: var(--text-strong);
+}
+
+.brand-sub {
+  @include mono-label;
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--accent);
+}
+
+.links {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: var(--nav-height);
+  margin-right: auto;
+
+  a {
+    display: flex;
+    align-items: center;
+    height: 100%;
+    padding: 0 var(--sp-4);
+    font-size: var(--text-sm);
+    font-weight: 700;
+    color: var(--text-dim);
+    text-decoration: none;
+    // Reserved up front so the active underline does not shift the row.
+    border-bottom: var(--accent-bar) solid transparent;
+    transition: color var(--dur) var(--ease);
+
+    &:hover {
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    &.is-active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+  }
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-left: auto;
+}
+
+// ── Account menu ────────────────────────────────────────────────────────────
+.account {
+  position: relative;
+}
+
+.account-trigger {
+  @include focus-ring;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 200px;
+  padding: var(--sp-1) var(--sp-2);
+  background: transparent;
+  border: var(--border-width) solid var(--border);
+  color: var(--text);
+  font-size: var(--text-xs);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--surface-sunken);
+  }
+}
+
+.email {
+  // The address is user data and can be arbitrarily long; it used to sit
+  // unconstrained in the toolbar.
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+// Paint for the rows themselves is the global .ob-menu-item; only the panel
+// geometry is component-local.
+.menu {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  right: 0;
+  z-index: calc(var(--z-overlay) + 1);
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  box-shadow: var(--offset) var(--offset) 0 0 var(--shadow-offset);
+
+  > * + * {
+    border-top: var(--border-width-thin) solid var(--border);
+  }
+}
+
+// ── Mobile drawer ───────────────────────────────────────────────────────────
+.hamburger {
+  @include focus-ring;
+  display: none;
+  place-items: center;
+  width: var(--tap-target);
+  height: var(--tap-target);
+  background: transparent;
+  border: var(--border-width) solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: calc(var(--z-overlay) + 1);
+  display: flex;
+  flex-direction: column;
+  width: min(80vw, 300px);
+  padding: var(--sp-4);
+  background: var(--surface-raised);
+  border-left: var(--border-width) solid var(--border);
+  overflow-y: auto;
+
+  // Rows carry .ob-menu-item for paint; only the touch sizing and the active
+  // accent bar are specific to the drawer.
+  .ob-menu-item {
+    min-height: var(--tap-target);
+    border-left: var(--accent-bar) solid transparent;
+    font-size: var(--text-base);
+    font-weight: 700;
+
+    &.is-active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+    }
+  }
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+main {
+  flex: 1;
+  width: 100%;
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: var(--sp-8) clamp(var(--sp-4), 4vw, var(--sp-8));
+
+  // Focused programmatically by the skip link; it is a landmark, not a control.
+  &:focus {
+    outline: none;
+  }
+}
+
+// ── Status bar ──────────────────────────────────────────────────────────────
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) clamp(var(--sp-4), 4vw, var(--sp-8));
+  background: var(--surface-raised);
+  border-top: var(--border-width) solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+.online {
+  color: var(--success-ink);
+}
+
+.sep {
+  opacity: 0.5;
+}
+
+// ── Responsive ──────────────────────────────────────────────────────────────
+@media (max-width: 899px) {
+  .links,
+  .account,
+  .right > .ob-btn {
+    display: none;
+  }
+
+  .hamburger {
+    display: grid;
+  }
+}
+
+@media (max-width: 480px) {
+  .status {
+    flex-wrap: wrap;
+    row-gap: var(--sp-1);
+  }
+}

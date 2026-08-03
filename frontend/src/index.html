@@ -1,18 +1,34 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
-    <title>DriftreadFrontend</title>
+    <title>漂流閱讀 Driftread — RSS 推薦與閱讀平台</title>
     <base href="/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" type="image/x-icon" href="favicon.ico" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap"
-      rel="stylesheet"
+    <meta
+      name="description"
+      content="漂流閱讀 Driftread：以「猜你喜歡」為核心的 RSS 推薦平台，幫你挖掘還沒遇見的資訊源，並在站內直接讀完全文。"
     />
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#2e3440" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#eceff4" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <!--
+      Applies the saved theme before the first paint. Without it a light-mode user
+      sees a dark flash on every load, because the stylesheet defaults to dark and
+      ThemeService only runs once Angular has bootstrapped.
+
+      Kept deliberately tiny and inline. Storage key and attribute name must stay
+      in sync with src/app/services/theme.ts. Note this needs 'unsafe-inline' (or a
+      hash) if a CSP is ever added in frontend/nginx.conf.
+    -->
+    <script>
+      try {
+        var t = localStorage.getItem('driftread_theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <app-root></app-root>

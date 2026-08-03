@@ -1,0 +1,75 @@
+<ob-page-header kicker="IMPORT" heading="匯入" subtitle="手動把信息源加進資料庫" />
+
+<div class="stack">
+  <ob-card heading="單一網址" meta="FROM URL">
+    <!--
+      Deliberately does NOT promise homepage discovery. /admin/feeds/from-url
+      passes the URL straight to fetch_and_parse(), which only parses RSS/Atom —
+      unlike /discover, it never inspects HTML for feed links. A homepage here
+      just 400s.
+    -->
+    <p class="hint">
+      需要是 RSS / Atom feed 本身的網址，這個端點不會去解析網站首頁。只有首頁網址的話，
+      請改用前台的「<a routerLink="/discover">發現</a>」，它會從 HTML 找出 feed。
+    </p>
+    <label class="field">
+      <span class="ob-label">Feed 網址（RSS / Atom）</span>
+      <input
+        class="ob-input"
+        name="feedUrl"
+        type="url"
+        placeholder="https://example.com/feed.xml"
+        [(ngModel)]="feedUrl"
+      />
+    </label>
+    <div cardActions>
+      <button
+        type="button"
+        class="ob-btn ob-btn--primary ob-btn--sm"
+        [disabled]="importingUrl()"
+        (click)="importUrl()"
+      >
+        {{ importingUrl() ? '匯入中…' : '匯入' }}
+      </button>
+    </div>
+  </ob-card>
+
+  <ob-card heading="批次匯入" meta="JSON">
+    <p class="hint">
+      格式為陣列或
+      <code>&#123;"feeds": [...]&#125;</code>，兩種都接受。只寫入來源資料，文章由排程器抓取。
+    </p>
+
+    <ob-callout tone="info" heading="欄位">
+      <code>title</code> 與
+      <code>url</code> 為必填；<code>description</code>、<code>category</code>、
+      <code>tags</code>、<code>language</code>、<code>website_url</code> 選填。
+    </ob-callout>
+
+    <label class="field">
+      <span class="ob-label">JSON 內容</span>
+      <textarea
+        class="ob-textarea"
+        name="json"
+        rows="12"
+        placeholder='[{"title": "範例", "url": "https://example.com/feed.xml", "category": "技術", "tags": ["rss"]}]'
+        [(ngModel)]="json"
+      ></textarea>
+    </label>
+
+    @if (jsonError()) {
+      <p class="err" role="alert">{{ jsonError() }}</p>
+    }
+
+    <div cardActions>
+      <button
+        type="button"
+        class="ob-btn ob-btn--primary ob-btn--sm"
+        [disabled]="importing()"
+        (click)="importJson()"
+      >
+        {{ importing() ? '匯入中…' : '匯入' }}
+      </button>
+    </div>
+  </ob-card>
+</div>

@@ -1,0 +1,80 @@
+<ob-page-header
+  kicker="REVIEW"
+  heading="候選審核"
+  subtitle="核准後只寫入來源資料，文章由排程器抓取"
+>
+  <button
+    type="button"
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    [disabled]="loading()"
+    (click)="load()"
+  >
+    <ob-icon name="refresh" [size]="14" />
+    重新整理
+  </button>
+</ob-page-header>
+
+<ob-card heading="核准時套用" meta="APPLIED ON APPROVE">
+  <div class="controls">
+    <label class="field">
+      <span class="ob-label">分類</span>
+      <input class="ob-input" name="category" [(ngModel)]="category" placeholder="例如 技術" />
+    </label>
+    <label class="field">
+      <span class="ob-label">標籤（逗號分隔）</span>
+      <input class="ob-input" name="tags" [(ngModel)]="tags" placeholder="rss, 開發" />
+    </label>
+    <label class="ob-checkbox block">
+      <input type="checkbox" name="blockHost" [(ngModel)]="blockHostOnReject" />
+      拒絕時一併封鎖整個網域
+    </label>
+  </div>
+</ob-card>
+
+<div class="queue">
+  @if (loading()) {
+    <ob-loading label="讀取候選中" />
+  } @else if (candidates().length === 0) {
+    <ob-empty message="沒有待審核的候選。" />
+  } @else {
+    @for (candidate of candidates(); track candidate.id) {
+      <ob-list-row>
+        <div rowTitle class="ctitle">
+          <!--
+            source_host is ours — we normalised it — while title comes from the
+            remote feed. Showing the host next to the title is what stops a
+            crafted title (bidi overrides, lookalike domains) from misleading
+            whoever is approving it. Interpolation only, never [innerHTML].
+            See docs/SECURITY.md rule 10.
+          -->
+          <span class="host">{{ candidate.source_host || '(未知網域)' }}</span>
+          <span class="name">{{ candidate.title || '(無標題)' }}</span>
+        </div>
+        <div rowLines>
+          <span>{{ candidate.feed_url }}</span>
+          <span>{{ candidate.referring_feed_count }} 個既有來源連到這裡</span>
+        </div>
+        <div rowMeta>
+          <button
+            type="button"
+            class="ob-btn ob-btn--primary ob-btn--sm"
+            (click)="approve(candidate)"
+          >
+            核准
+          </button>
+          <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="reject(candidate)">
+            拒絕
+          </button>
+        </div>
+      </ob-list-row>
+    }
+
+    <ob-paginator
+      [total]="total()"
+      [page]="page()"
+      [pageSize]="pageSize()"
+      (pageChange)="onPage($event)"
+      (pageSizeChange)="onPageSize($event)"
+    />
+  }
+</div>

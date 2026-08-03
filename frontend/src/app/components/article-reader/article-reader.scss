@@ -1,11 +1,93 @@
-.header { margin-bottom: 16px; }
-.article-card { max-width: 780px; margin: 0 auto; }
-.article-body {
-  line-height: 1.8;
-  font-size: 1rem;
-  img { max-width: 100%; height: auto; }
+// STRUCTURE_WEIGHT 4 for the reading column: no offset shadow, hairlines instead
+// of 2px rules, monospace only on the metadata line. Radius still 0 — the skill
+// permits 6px this low, but mixing radii within one app reads as an accident.
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  max-width: var(--read-max);
+  margin: 0 auto var(--sp-6);
 }
-.read-more { margin-top: 16px; }
-.center { display: flex; justify-content: center; padding: 40px; }
-.error { color: red; }
-.empty { color: rgba(0,0,0,0.5); }
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+
+  &:hover {
+    color: var(--accent);
+    text-decoration: none;
+  }
+}
+
+.actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.reader {
+  max-width: var(--read-max);
+  margin: 0 auto;
+}
+
+.head {
+  padding-bottom: var(--sp-5);
+  margin-bottom: var(--sp-6);
+  border-bottom: var(--border-width-thin) solid var(--border);
+}
+
+h1 {
+  font-size: var(--text-xl);
+  line-height: 1.35;
+  // Article titles are third-party text and frequently have no spaces to break on.
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  margin-top: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+}
+
+.sep {
+  opacity: 0.6;
+}
+
+.jump {
+  margin-top: var(--sp-8);
+}
+
+.none {
+  font-size: var(--text-md);
+  color: var(--text-dim);
+}
+
+.foot {
+  margin-top: var(--sp-10);
+  padding-top: var(--sp-4);
+  border-top: var(--border-width-thin) solid var(--border);
+}
+
+.source {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+
+  &:hover {
+    color: var(--accent);
+  }
+}

@@ -1,24 +1,26 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatInputModule } from '@angular/material/input';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatSelectModule } from '@angular/material/select';
-import { MatButtonModule } from '@angular/material/button';
-import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { FeedService } from '../../services/feed';
 import { Feed, PaginatedFeeds } from '../../models';
+import { ObIcon } from '../../ui/icon/icon';
+import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
+import { ObPageHeader } from '../../ui/page-header/page-header';
+import { ObPaginator } from '../../ui/paginator/paginator';
 
+/** The feed catalogue. */
 @Component({
   selector: 'app-feed-list',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
-    RouterLink, FormsModule,
-    MatCardModule, MatChipsModule, MatInputModule,
-    MatFormFieldModule, MatSelectModule, MatButtonModule,
-    MatPaginatorModule, MatProgressSpinnerModule,
+    RouterLink,
+    FormsModule,
+    ObIcon,
+    ObLoading,
+    ObError,
+    ObEmpty,
+    ObPageHeader,
+    ObPaginator,
   ],
   templateUrl: './feed-list.html',
   styleUrl: './feed-list.scss',
@@ -33,8 +35,8 @@ export class FeedList implements OnInit {
 
   page = signal(1);
   pageSize = signal(20);
-  search = signal('');
-  category = signal('');
+  search = '';
+  category = '';
   categories = signal<string[]>([]);
 
   ngOnInit(): void {
@@ -43,28 +45,36 @@ export class FeedList implements OnInit {
   }
 
   loadCategories(): void {
-    this.feedService.getCategories().subscribe({ next: c => this.categories.set(c) });
+    this.feedService.getCategories().subscribe({
+      next: (c) => this.categories.set(c),
+      // A missing category list degrades the filter to "全部" but leaves the
+      // catalogue itself perfectly usable, so it does not surface as a page error.
+      error: () => this.categories.set([]),
+    });
   }
 
   loadFeeds(): void {
     this.loading.set(true);
     this.error.set('');
-    this.feedService.getFeeds(
-      this.page(), this.pageSize(),
-      this.category() || undefined,
-      undefined,
-      this.search() || undefined,
-    ).subscribe({
-      next: (res: PaginatedFeeds) => {
-        this.feeds.set(res.items);
-        this.total.set(res.total);
-        this.loading.set(false);
-      },
-      error: () => {
-        this.error.set('載入失敗，請稍後再試。');
-        this.loading.set(false);
-      },
-    });
+    this.feedService
+      .getFeeds(
+        this.page(),
+        this.pageSize(),
+        this.category || undefined,
+        undefined,
+        this.search || undefined,
+      )
+      .subscribe({
+        next: (res: PaginatedFeeds) => {
+          this.feeds.set(res.items);
+          this.total.set(res.total);
+          this.loading.set(false);
+        },
+        error: () => {
+          this.error.set('載入失敗，請稍後再試。');
+          this.loading.set(false);
+        },
+      });
   }
 
   onSearch(): void {
@@ -72,9 +82,24 @@ export class FeedList implements OnInit {
     this.loadFeeds();
   }
 
-  onPage(event: PageEvent): void {
-    this.page.set(event.pageIndex + 1);
-    this.pageSize.set(event.pageSize);
+  onPage(page: number): void {
+    this.page.set(page);
     this.loadFeeds();
+  }
+
+  onPageSize(size: number): void {
+    this.pageSize.set(size);
+    this.page.set(1);
+    this.loadFeeds();
+  }
+
+  clearFilters(): void {
+    this.search = '';
+    this.category = '';
+    this.onSearch();
+  }
+
+  get hasFilters(): boolean {
+    return Boolean(this.search || this.category);
   }
 }

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>Driftread</title>
+  <!--
+    The Offbeat mark: a square displaced from its own shadow. Same offset-shadow
+    move the whole UI is built on, reduced to its minimum. Deliberately only two
+    shapes and two colours so it survives being rasterised down to 16px.
+  -->
+  <rect x="10" y="10" width="20" height="20" fill="#5e81ac" />
+  <rect x="2" y="2" width="20" height="20" fill="#2e3440" stroke="#88c0d0" stroke-width="3" />
+</svg>

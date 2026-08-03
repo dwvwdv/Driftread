@@ -1,0 +1,20 @@
+@use 'mixins' as *;
+
+.list {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+}
+
+.list a {
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+
+  &:hover {
+    color: var(--accent);
+  }
+}
+
+.summary {
+  @include line-clamp(2);
+  color: var(--text-dim);
+}

@@ -1,0 +1,42 @@
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  max-width: 760px;
+  // Room for the offset shadows on the cards above.
+  padding-right: var(--offset);
+  padding-bottom: var(--offset);
+}
+
+.hint {
+  margin-bottom: var(--sp-4);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-4);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-inset);
+  color: var(--accent);
+  padding: 1px 4px;
+}
+
+.err {
+  margin-top: var(--sp-2);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--danger-ink);
+}
+
+textarea.ob-textarea {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}

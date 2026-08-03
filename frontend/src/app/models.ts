@@ -73,6 +73,43 @@ export interface OpmlImportResult {
   failed: string[];
 }
 
+// ── Admin feed operations ──────────────────────────────────────────────────
+
+/**
+ * Health fields live here rather than on Feed because the public GET /feeds
+ * response does not expose them — they only come back from
+ * GET /admin/feeds/unhealthy.
+ */
+export interface FeedHealthSummary {
+  id: string;
+  title: string;
+  url: string;
+  health_score: number;
+  consecutive_failures: number;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  last_fetched_at: string | null;
+}
+
+/** Outcome counts from POST /admin/feeds/refresh-due. */
+export interface RefreshDueSummary {
+  processed: number;
+  updated: number;
+  not_modified: number;
+  failed: number;
+  archived: number;
+  new_articles: number;
+}
+
+/** Result of refreshing a single feed via POST /admin/feeds/{id}/refresh. */
+export interface RefreshFeedResult {
+  inserted: number;
+  feed_id: string;
+  status: string;
+  new_articles: number;
+  total_articles: number;
+}
+
 // ── Autonomous discovery (admin only) ──────────────────────────────────────
 // `title` and `website_url` on a candidate are third-party text scraped from a
 // remote feed. Render them with interpolation only — never [innerHTML] — and

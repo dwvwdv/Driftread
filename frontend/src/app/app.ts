@@ -1,22 +1,22 @@
-import { Component } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
-import { Nav } from './components/nav/nav';
+import { ThemeService } from './services/theme';
 
+/**
+ * Root component.
+ *
+ * Holds nothing but the outlet now — chrome belongs to whichever layout the route
+ * selects, so the public site and the admin console no longer share a shell.
+ *
+ * ThemeService is injected purely so it is constructed at startup and applies the
+ * stored theme.
+ */
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, Nav],
-  template: `
-    <app-nav />
-    <main class="page-content">
-      <router-outlet />
-    </main>
-  `,
-  styles: [`
-    .page-content {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 24px 16px;
-    }
-  `]
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [RouterOutlet],
+  template: '<router-outlet />',
 })
-export class App {}
+export class App {
+  private theme = inject(ThemeService);
+}

@@ -1,21 +1,135 @@
+@use 'mixins' as *;
+
 .controls {
   display: flex;
-  gap: 12px;
-  align-items: center;
+  align-items: flex-end;
+  gap: var(--sp-3);
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-6);
 }
-.search-field { flex: 1 1 300px; }
-.category-field { flex: 0 1 200px; }
-.feed-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
+
+.search {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
 }
-.feed-card { cursor: pointer; &:hover { box-shadow: 0 4px 16px rgba(0,0,0,.15); } }
-.desc { font-size: 0.875rem; color: rgba(0,0,0,0.6); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.article-count { font-size: 0.75rem; color: rgba(0,0,0,0.5); padding: 8px 16px; }
-.center { display: flex; justify-content: center; padding: 40px; }
-.error { color: red; }
-.empty { color: rgba(0,0,0,0.5); text-align: center; padding: 40px; }
+
+.search-icon {
+  position: absolute;
+  left: var(--sp-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.search .ob-input {
+  padding-left: var(--sp-8);
+  font-family: var(--font-mono);
+}
+
+.category .ob-select {
+  width: auto;
+  min-width: 160px;
+}
+
+.cards {
+  list-style: none;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  @include offset-shadow;
+  transition:
+    transform var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+
+  &:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: calc(var(--offset) + 2px) calc(var(--offset) + 2px) 0 0 var(--accent);
+  }
+
+  // No hover lift where there is no hover to leave.
+  @media (hover: none), (prefers-reduced-motion: reduce) {
+    &:hover {
+      transform: none;
+      box-shadow: var(--offset) var(--offset) 0 0 var(--shadow-offset);
+    }
+  }
+}
+
+.title {
+  font-size: var(--text-md);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+
+  a {
+    color: var(--text-strong);
+
+    &:hover {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    // Stretches the link's hit area over the whole card without adding a second
+    // tab stop or nesting interactive elements.
+    &::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+    }
+
+    // Ring moves to the card below, so the indicator wraps the whole target
+    // rather than just the title text.
+    &:focus-visible {
+      outline: none;
+    }
+  }
+}
+
+.card:has(a:focus-visible) {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.cat {
+  color: var(--accent);
+}
+
+.desc {
+  @include line-clamp(3);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  list-style: none;
+}
+
+.count {
+  margin-top: auto;
+  padding-top: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+@media (max-width: 640px) {
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .category .ob-select {
+    width: 100%;
+  }
+}

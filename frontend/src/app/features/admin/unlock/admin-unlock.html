@@ -1,0 +1,40 @@
+<div class="shell">
+  <form class="panel" (ngSubmit)="submit()">
+    <div class="head">
+      <ob-icon name="lock" [size]="16" />
+      <span class="ob-label">DRIFTREAD ADMIN</span>
+    </div>
+
+    <div class="body">
+      <h1>後台管理</h1>
+      <p class="lede">請輸入 Admin API Key 以進入後台。金鑰只會保存在這個分頁，關閉後即失效。</p>
+
+      <label class="field">
+        <span class="ob-label">Admin API Key</span>
+        <input
+          class="ob-input"
+          type="password"
+          name="apiKey"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          [(ngModel)]="apiKey"
+        />
+      </label>
+
+      @if (error()) {
+        <p class="err" role="alert">{{ error() }}</p>
+      }
+
+      <ob-callout tone="info">
+        這道關卡只檢查金鑰是否存在，真正的驗證在後端。金鑰錯誤時第一個請求會回
+        403，屆時會自動清除並回到這個畫面。
+      </ob-callout>
+    </div>
+
+    <div class="actions">
+      <a class="ob-btn ob-btn--ghost" routerLink="/">回前台</a>
+      <button type="submit" class="ob-btn ob-btn--primary">進入後台</button>
+    </div>
+  </form>
+</div>

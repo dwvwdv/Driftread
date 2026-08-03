@@ -1,0 +1,94 @@
+<ob-page-header kicker="OVERVIEW" heading="總覽" subtitle="自主發現管線與信息源健康度">
+  <button
+    type="button"
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    [disabled]="loading()"
+    (click)="load()"
+  >
+    <ob-icon name="refresh" [size]="14" />
+    重新整理
+  </button>
+</ob-page-header>
+
+@if (loading()) {
+  <ob-loading label="讀取統計中" />
+} @else if (stats(); as s) {
+  <section class="block" aria-labelledby="pipeline-heading">
+    <h2 id="pipeline-heading" class="ob-label">發現管線</h2>
+    <div class="stats">
+      <ob-stat label="待審核候選" [value]="s.candidates_pending" tone="accent" />
+      <ob-stat label="已入庫" [value]="s.candidates_imported" tone="success" />
+      <ob-stat label="已核准" [value]="s.candidates_approved" />
+      <ob-stat label="已拒絕" [value]="s.candidates_rejected" />
+      <ob-stat label="啟用中目錄" [value]="s.sources_enabled" />
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="frontier-heading">
+    <h2 id="frontier-heading" class="ob-label">探測佇列</h2>
+    <div class="stats">
+      <ob-stat label="待探測" [value]="s.targets_pending" tone="accent" />
+      <ob-stat label="已探測" [value]="s.targets_done" />
+      <ob-stat label="已封鎖" [value]="s.targets_blocked" tone="danger" />
+      <ob-stat label="已耗盡" [value]="s.targets_exhausted" />
+      <ob-stat label="已拒絕" [value]="s.targets_rejected" />
+    </div>
+  </section>
+}
+
+<section class="block">
+  <ob-card heading="手動觸發" meta="ON DEMAND">
+    <p class="hint">
+      兩者平常由排程器自動執行，這裡只是讓你不必等下一輪。自主發現若以
+      <code>FEED_DISCOVERY_ENABLED=false</code> 停用，執行時會明確告知。
+    </p>
+    <div cardActions>
+      <button
+        type="button"
+        class="ob-btn ob-btn--primary ob-btn--sm"
+        [disabled]="running()"
+        (click)="runCycle()"
+      >
+        {{ running() ? '執行中…' : '執行一輪自主發現' }}
+      </button>
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="refreshing()"
+        (click)="refreshDue()"
+      >
+        {{ refreshing() ? '更新中…' : '更新所有到期信息源' }}
+      </button>
+    </div>
+  </ob-card>
+</section>
+
+<section class="block">
+  <ob-card heading="健康度警示" meta="HEALTH < 50" [flush]="true">
+    @if (unhealthy().length === 0) {
+      <ob-empty message="沒有健康度偏低的信息源。" />
+    } @else {
+      <ul class="health">
+        @for (feed of unhealthy(); track feed.id) {
+          <li>
+            <div class="hmain">
+              <!-- Third-party title: interpolation only. -->
+              <span class="htitle">{{ feed.title }}</span>
+              <span class="hurl">{{ feed.url }}</span>
+              @if (feed.last_failure_reason) {
+                <span class="hreason">最近失敗：{{ feed.last_failure_reason }}</span>
+              }
+            </div>
+            <div class="hscore">
+              <span class="num">{{ feed.health_score }}</span>
+              <span class="ob-label">連續失敗 {{ feed.consecutive_failures }}</span>
+            </div>
+          </li>
+        }
+      </ul>
+    }
+    <div cardActions>
+      <a class="ob-btn ob-btn--ghost ob-btn--sm" routerLink="../feeds">前往信息源管理</a>
+    </div>
+  </ob-card>
+</section>

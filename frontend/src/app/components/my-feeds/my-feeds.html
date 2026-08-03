@@ -1,0 +1,111 @@
+@if (!auth.session()) {
+  <ob-empty message="請先登入才能管理訂閱。">
+    <a class="ob-btn ob-btn--primary" routerLink="/login">前往登入</a>
+  </ob-empty>
+} @else {
+  <ob-page-header kicker="SUBSCRIPTIONS" heading="我的訂閱" subtitle="與其他閱讀器以 OPML 互通">
+    <input
+      #opmlInput
+      type="file"
+      accept=".opml,.xml,application/xml,text/xml"
+      hidden
+      (change)="onOpml($event)"
+    />
+    <button
+      type="button"
+      class="ob-btn ob-btn--ghost ob-btn--sm"
+      [disabled]="importing()"
+      (click)="opmlInput.click()"
+    >
+      <ob-icon name="upload" [size]="14" />
+      {{ importing() ? '匯入中…' : '匯入 OPML' }}
+    </button>
+    <button
+      type="button"
+      class="ob-btn ob-btn--ghost ob-btn--sm"
+      [disabled]="exporting()"
+      (click)="exportOpml()"
+    >
+      <ob-icon name="download" [size]="14" />
+      {{ exporting() ? '準備中…' : '匯出 OPML' }}
+    </button>
+  </ob-page-header>
+
+  @if (importResult(); as result) {
+    <!--
+      Partial success is the normal outcome, not an edge case: the backend caps an
+      import at 200 outlines and reports every per-URL problem in failed[]. The old
+      UI printed only a count, so there was no way to tell which feeds were missing
+      or why.
+    -->
+    <ob-callout
+      [tone]="result.failed.length ? 'warning' : 'success'"
+      heading="OPML 匯入結果"
+      class="result"
+    >
+      <p>
+        已匯入 {{ result.imported }} 個來源，成功訂閱 {{ result.subscribed }} 個。
+        @if (result.failed.length) {
+          有 {{ result.failed.length }} 筆失敗。
+        }
+      </p>
+
+      @if (result.failed.length) {
+        <div class="fail-actions">
+          <button type="button" class="ob-btn ob-btn--subtle ob-btn--sm" (click)="toggleFailures()">
+            {{ showFailures() ? '收合失敗清單' : '查看失敗清單' }}
+          </button>
+          <button type="button" class="ob-btn ob-btn--subtle ob-btn--sm" (click)="copyFailures()">
+            複製
+          </button>
+        </div>
+
+        @if (showFailures()) {
+          <!-- Third-party URLs and messages: interpolation only. -->
+          <ul class="failures">
+            @for (item of result.failed; track item) {
+              <li>{{ item }}</li>
+            }
+          </ul>
+        }
+      }
+    </ob-callout>
+  }
+
+  @if (loading()) {
+    <ob-loading label="讀取訂閱中" />
+  } @else if (feeds().length === 0) {
+    <ob-empty message="還沒有訂閱任何信息源。">
+      <a class="ob-btn ob-btn--primary" routerLink="/">去信息源看看</a>
+    </ob-empty>
+  } @else {
+    <ul class="ob-grid cards">
+      @for (feed of feeds(); track feed.id) {
+        <li class="card">
+          <h2 class="title">
+            <a [routerLink]="['/feeds', feed.id]">{{ feed.title }}</a>
+          </h2>
+
+          @if (feed.category) {
+            <span class="ob-label cat">{{ feed.category }}</span>
+          }
+
+          @if (feed.description) {
+            <p class="desc">{{ feed.description }}</p>
+          }
+
+          <div class="foot">
+            <span class="count">{{ feed.article_count }} 篇文章</span>
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              (click)="unsubscribe(feed)"
+            >
+              取消訂閱
+            </button>
+          </div>
+        </li>
+      }
+    </ul>
+  }
+}

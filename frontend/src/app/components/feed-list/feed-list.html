@@ -1,63 +1,94 @@
-<div class="controls">
-  <mat-form-field appearance="outline" class="search-field">
-    <mat-label>搜尋信息源</mat-label>
-    <input matInput [(ngModel)]="search" (keyup.enter)="onSearch()" placeholder="標題或描述...">
-  </mat-form-field>
+<ob-page-header
+  kicker="CATALOGUE"
+  heading="信息源"
+  subtitle="瀏覽收錄中的 RSS 源，或用「猜你喜歡」挖掘沒遇過的"
+/>
 
-  <mat-form-field appearance="outline" class="category-field">
-    <mat-label>分類</mat-label>
-    <mat-select [(ngModel)]="category" (selectionChange)="onSearch()">
-      <mat-option value="">全部</mat-option>
+<form class="controls" (ngSubmit)="onSearch()">
+  <label class="search">
+    <span class="ob-visually-hidden">搜尋信息源</span>
+    <ob-icon class="search-icon" name="search" [size]="15" />
+    <input
+      class="ob-input"
+      name="search"
+      type="search"
+      placeholder="搜尋標題或描述…"
+      maxlength="200"
+      [(ngModel)]="search"
+    />
+  </label>
+
+  <label class="category">
+    <span class="ob-visually-hidden">分類</span>
+    <select class="ob-select" name="category" [(ngModel)]="category" (change)="onSearch()">
+      <option value="">全部分類</option>
       @for (c of categories(); track c) {
-        <mat-option [value]="c">{{ c }}</mat-option>
+        <option [value]="c">{{ c }}</option>
       }
-    </mat-select>
-  </mat-form-field>
+    </select>
+  </label>
 
-  <button mat-flat-button color="primary" (click)="onSearch()">搜尋</button>
-</div>
+  <button type="submit" class="ob-btn ob-btn--primary">搜尋</button>
+
+  @if (hasFilters) {
+    <button type="button" class="ob-btn ob-btn--subtle" (click)="clearFilters()">清除條件</button>
+  }
+</form>
 
 @if (loading()) {
-  <div class="center"><mat-spinner /></div>
-}
+  <ob-loading label="讀取信息源中" />
+} @else if (error()) {
+  <ob-error [message]="error()">
+    <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="loadFeeds()">
+      重試
+    </button>
+  </ob-error>
+} @else if (feeds().length === 0) {
+  <ob-empty message="找不到符合條件的信息源。">
+    @if (hasFilters) {
+      <button type="button" class="ob-btn ob-btn--ghost" (click)="clearFilters()">清除條件</button>
+    }
+  </ob-empty>
+} @else {
+  <ul class="ob-grid cards">
+    @for (feed of feeds(); track feed.id) {
+      <li class="card">
+        <h2 class="title">
+          <!--
+            The whole card is a hit target via the stretched ::after on this
+            anchor, but there is still exactly one tab stop and it is a real link.
+            Previously [routerLink] sat on the <mat-card> itself, which produced a
+            clickable div: no keyboard access and no link semantics.
+          -->
+          <a [routerLink]="['/feeds', feed.id]">{{ feed.title }}</a>
+        </h2>
 
-@if (error()) {
-  <p class="error">{{ error() }}</p>
-}
-
-<div class="feed-grid">
-  @for (feed of feeds(); track feed.id) {
-    <mat-card class="feed-card" [routerLink]="['/feeds', feed.id]">
-      <mat-card-header>
-        <mat-card-title>{{ feed.title }}</mat-card-title>
         @if (feed.category) {
-          <mat-card-subtitle>{{ feed.category }}</mat-card-subtitle>
+          <span class="ob-label cat">{{ feed.category }}</span>
         }
-      </mat-card-header>
-      <mat-card-content>
+
         @if (feed.description) {
           <p class="desc">{{ feed.description }}</p>
         }
-        <mat-chip-set>
-          @for (tag of feed.tags; track tag) {
-            <mat-chip>{{ tag }}</mat-chip>
-          }
-        </mat-chip-set>
-      </mat-card-content>
-      <mat-card-footer>
-        <span class="article-count">{{ feed.article_count }} 篇文章</span>
-      </mat-card-footer>
-    </mat-card>
-  }
-</div>
 
-@if (!loading() && feeds().length === 0 && !error()) {
-  <p class="empty">找不到信息源。</p>
+        @if (feed.tags.length) {
+          <ul class="tags">
+            @for (tag of feed.tags; track tag) {
+              <li class="ob-chip">{{ tag }}</li>
+            }
+          </ul>
+        }
+
+        <p class="count">{{ feed.article_count }} 篇文章</p>
+      </li>
+    }
+  </ul>
+
+  <ob-paginator
+    [total]="total()"
+    [page]="page()"
+    [pageSize]="pageSize()"
+    (pageChange)="onPage($event)"
+    (pageSizeChange)="onPageSize($event)"
+  />
 }
-
-<mat-paginator
-  [length]="total()"
-  [pageSize]="pageSize()"
-  [pageSizeOptions]="[10, 20, 50]"
-  (page)="onPage($event)"
-  showFirstLastButtons />

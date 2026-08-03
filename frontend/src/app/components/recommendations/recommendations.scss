@@ -1,6 +1,90 @@
-.rec-header { text-align: center; margin-bottom: 24px; }
-.card-wrapper { display: flex; justify-content: center; }
-.rec-card { width: 100%; max-width: 480px; }
-.desc { font-size: 0.9rem; color: rgba(0,0,0,0.6); margin-bottom: 12px; }
-.center { display: flex; justify-content: center; align-items: center; padding: 40px; flex-direction: column; gap: 16px; }
-.error { color: red; text-align: center; }
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-6);
+  padding-top: var(--sp-4);
+}
+
+.card {
+  width: min(100%, 520px);
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  box-shadow: var(--offset) var(--offset) 0 0 var(--shadow-offset);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface-sunken);
+  border-bottom: var(--border-width) solid var(--border);
+  color: var(--accent);
+}
+
+.card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-6) var(--sp-5);
+  // Keeps the card a stable size as it swaps, so the buttons underneath do not
+  // jump between a terse feed and a wordy one.
+  min-height: 220px;
+}
+
+h2 {
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+
+.desc {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-dim);
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  list-style: none;
+}
+
+.count {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+// Like and skip are the whole interaction; they get real targets.
+.controls .ob-btn {
+  min-height: var(--tap-target);
+  min-width: 120px;
+}
+
+.hint {
+  max-width: 40ch;
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 520px) {
+  .controls {
+    width: 100%;
+  }
+
+  .controls .ob-btn {
+    flex: 1;
+    min-width: 0;
+  }
+}

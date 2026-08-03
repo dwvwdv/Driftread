@@ -1,0 +1,90 @@
+<div class="wrap">
+  <form class="panel" (ngSubmit)="submit()">
+    <div class="head">
+      <span class="ob-label">{{ mode() === 'login' ? 'SIGN IN' : 'SIGN UP' }}</span>
+    </div>
+
+    <div class="body">
+      <h1>{{ mode() === 'login' ? '登入' : '註冊' }}漂流閱讀</h1>
+
+      @if (!auth.isConfigured()) {
+        <!--
+          The frontend's Supabase URL and anon key are baked in at build time and
+          the published image ships them empty, so every signed-in feature is
+          inert there. Said plainly here, where someone is about to hit it.
+        -->
+        <ob-callout tone="warning" heading="這個部署沒有設定 Supabase">
+          登入相關功能需要在建置時填入 <code>supabaseUrl</code> 與
+          <code>supabaseAnonKey</code>。官方 GHCR image 這兩個值是空的，必須自行建置 image
+          才能使用。瀏覽信息源與「猜你喜歡」不需要登入，仍可正常使用。
+        </ob-callout>
+      }
+
+      <div class="segments" role="group" aria-label="登入或註冊">
+        <button
+          type="button"
+          class="segment"
+          [class.segment--active]="mode() === 'login'"
+          [attr.aria-pressed]="mode() === 'login'"
+          (click)="setMode('login')"
+        >
+          登入
+        </button>
+        <button
+          type="button"
+          class="segment"
+          [class.segment--active]="mode() === 'signup'"
+          [attr.aria-pressed]="mode() === 'signup'"
+          (click)="setMode('signup')"
+        >
+          註冊
+        </button>
+      </div>
+
+      <label class="field">
+        <span class="ob-label">Email</span>
+        <input
+          class="ob-input"
+          name="email"
+          type="email"
+          autocomplete="email"
+          [disabled]="!auth.isConfigured()"
+          [(ngModel)]="email"
+        />
+      </label>
+
+      <label class="field">
+        <span class="ob-label">密碼</span>
+        <input
+          class="ob-input"
+          name="password"
+          type="password"
+          [attr.autocomplete]="mode() === 'login' ? 'current-password' : 'new-password'"
+          [disabled]="!auth.isConfigured()"
+          [(ngModel)]="password"
+        />
+      </label>
+
+      @if (error()) {
+        <p class="err" role="alert">{{ error() }}</p>
+      }
+      @if (info()) {
+        <p class="ok" role="status">{{ info() }}</p>
+      }
+    </div>
+
+    <div class="actions">
+      <button
+        type="submit"
+        class="ob-btn ob-btn--primary ob-btn--block"
+        [disabled]="busy() || !auth.isConfigured()"
+      >
+        @if (busy()) {
+          處理中…
+        } @else {
+          {{ mode() === 'login' ? '登入' : '註冊' }}
+        }
+      </button>
+    </div>
+  </form>
+</div>

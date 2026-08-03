@@ -1,110 +1,137 @@
-import { Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatButtonModule } from '@angular/material/button';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { DiscoverService } from '../../services/discover';
 import { AuthService } from '../../services/auth';
-import { MeService } from '../../services/me';
 import { DiscoveredFeed } from '../../models';
+import { apiMessage, isRateLimited, retryAfterSeconds } from '../../shared/http-errors';
+import { ObIcon } from '../../ui/icon/icon';
+import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
+import { ObPageHeader } from '../../ui/page-header/page-header';
 
+/**
+ * Paste a URL, get the RSS/Atom feeds behind it.
+ *
+ * POST /api/discover and /discover/import are both rate limited at 20 requests per
+ * 60 seconds per IP, so a 429 is told as a countdown rather than as "發現失敗".
+ */
 @Component({
   selector: 'app-discover',
-  imports: [
-    RouterLink, FormsModule, MatCardModule, MatFormFieldModule,
-    MatInputModule, MatButtonModule, MatProgressSpinnerModule,
-  ],
-  template: `
-    <h2>從網址發現 RSS</h2>
-    <p class="hint">貼上任何網站、部落格、文章網址 — 我們會幫你找出可用的 RSS / Atom feed。</p>
-
-    <div class="row">
-      <mat-form-field appearance="outline" class="grow">
-        <mat-label>網址</mat-label>
-        <input matInput [(ngModel)]="url" placeholder="https://example.com 或 example.com" (keyup.enter)="run()" />
-      </mat-form-field>
-      <button mat-flat-button color="primary" (click)="run()" [disabled]="busy()">發現</button>
-    </div>
-
-    @if (busy()) { <mat-spinner diameter="32" /> }
-    @if (error()) { <p class="error">{{ error() }}</p> }
-
-    @if (candidates() !== null) {
-      @if (candidates()!.length === 0) {
-        <p class="empty">沒有找到 RSS / Atom feed。試試這個網站的首頁網址？</p>
-      } @else {
-        <div class="grid">
-          @for (c of candidates(); track c.feed_url) {
-            <mat-card>
-              <mat-card-header>
-                <mat-card-title>{{ c.title || '(無標題)' }}</mat-card-title>
-                <mat-card-subtitle>{{ c.feed_url }}</mat-card-subtitle>
-              </mat-card-header>
-              <mat-card-actions>
-                @if (c.already_exists && c.existing_feed_id) {
-                  <a mat-button [routerLink]="['/feeds', c.existing_feed_id]">已收錄，前往查看</a>
-                } @else if (importing() === c.feed_url) {
-                  <span>匯入中...</span>
-                } @else {
-                  <button mat-flat-button color="primary" (click)="importFeed(c)">
-                    {{ auth.session() ? '匯入並訂閱' : '匯入到資料庫' }}
-                  </button>
-                }
-              </mat-card-actions>
-            </mat-card>
-          }
-        </div>
-      }
-    }
-  `,
-  styles: [`
-    .row { display:flex; gap:8px; align-items:center; }
-    .grow { flex: 1; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:12px; margin-top:12px; }
-    .hint { color: #555; }
-    .error { color: #d32f2f; }
-  `],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [RouterLink, FormsModule, ObIcon, ObLoading, ObError, ObEmpty, ObPageHeader],
+  templateUrl: './discover.html',
+  styleUrl: './discover.scss',
 })
-export class Discover {
+export class Discover implements OnDestroy {
   protected auth = inject(AuthService);
   private discoverService = inject(DiscoverService);
-  private me = inject(MeService);
 
   url = '';
   busy = signal(false);
   error = signal('');
+  cooldown = signal(0);
   candidates = signal<DiscoveredFeed[] | null>(null);
   importing = signal<string | null>(null);
 
+  /**
+   * Feed URLs imported during this visit.
+   *
+   * Tracked separately rather than by flipping `already_exists` on the response
+   * object, so the rendered list stays a faithful record of what the server
+   * actually said.
+   */
+  imported = signal<ReadonlySet<string>>(new Set());
+
+  private timer: ReturnType<typeof setInterval> | null = null;
+
+  ngOnDestroy(): void {
+    this.stopCooldown();
+  }
+
   run(): void {
-    if (!this.url.trim()) return;
+    const url = this.url.trim();
+    if (!url || this.cooldown() > 0) return;
+
     this.busy.set(true);
     this.error.set('');
     this.candidates.set(null);
-    this.discoverService.discover(this.url.trim()).subscribe({
-      next: (r) => { this.candidates.set(r.candidates); this.busy.set(false); },
-      error: (e) => {
-        this.error.set(e?.error?.detail || '發現失敗');
+
+    this.discoverService.discover(url).subscribe({
+      next: (result) => {
+        this.candidates.set(result.candidates);
         this.busy.set(false);
+      },
+      error: (e: unknown) => {
+        this.busy.set(false);
+        if (isRateLimited(e)) {
+          this.startCooldown(retryAfterSeconds(e));
+          return;
+        }
+        this.error.set(apiMessage(e, '發現失敗'));
       },
     });
   }
 
-  importFeed(c: DiscoveredFeed): void {
-    this.importing.set(c.feed_url);
-    this.discoverService.importByUrl(c.feed_url).subscribe({
+  importFeed(candidate: DiscoveredFeed): void {
+    this.importing.set(candidate.feed_url);
+    this.error.set('');
+
+    this.discoverService.importByUrl(candidate.feed_url).subscribe({
       next: () => {
         this.importing.set(null);
-        c.already_exists = true;
-        this.candidates.set([...this.candidates()!]);
+        this.imported.update((set) => new Set(set).add(candidate.feed_url));
       },
-      error: (e) => {
+      error: (e: unknown) => {
         this.importing.set(null);
-        this.error.set(e?.error?.detail || '匯入失敗');
+        if (isRateLimited(e)) {
+          this.startCooldown(retryAfterSeconds(e));
+          return;
+        }
+        this.error.set(apiMessage(e, '匯入失敗'));
       },
     });
+  }
+
+  isImported(candidate: DiscoveredFeed): boolean {
+    return candidate.already_exists || this.imported().has(candidate.feed_url);
+  }
+
+  /**
+   * Host as the browser parses it, shown next to the remote-supplied title.
+   *
+   * Same reasoning as the admin candidate queue (docs/SECURITY.md rule 10): the
+   * title comes from a third party and can be crafted to look like it belongs to
+   * a domain it does not.
+   */
+  hostOf(feedUrl: string): string {
+    try {
+      return new URL(feedUrl).host;
+    } catch {
+      return feedUrl;
+    }
+  }
+
+  /**
+   * Starts (or restarts) the rate-limit countdown.
+   *
+   * Only ever one timer. Imports fire per candidate, so several can be in flight
+   * and each 429 lands here — a fresh interval per response would decrement the
+   * same signal two or three times a second, releasing the button well before
+   * Retry-After has actually elapsed and earning another 429 immediately.
+   */
+  private startCooldown(seconds: number): void {
+    this.stopCooldown();
+    this.cooldown.set(seconds);
+    this.timer = setInterval(() => {
+      this.cooldown.update((n) => n - 1);
+      if (this.cooldown() <= 0) this.stopCooldown();
+    }, 1000);
+  }
+
+  private stopCooldown(): void {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 }

@@ -1,0 +1,82 @@
+<ob-page-header
+  kicker="DISCOVER"
+  heading="從網址發現 RSS"
+  subtitle="貼上任何網站、部落格或文章網址，我們會找出可用的 RSS / Atom feed"
+/>
+
+<form class="row" (ngSubmit)="run()">
+  <label class="grow">
+    <span class="ob-visually-hidden">網址</span>
+    <input
+      class="ob-input"
+      name="url"
+      type="text"
+      inputmode="url"
+      placeholder="https://example.com 或 example.com"
+      maxlength="2048"
+      [(ngModel)]="url"
+    />
+  </label>
+  <button type="submit" class="ob-btn ob-btn--primary" [disabled]="busy() || cooldown() > 0">
+    <ob-icon name="search" [size]="15" />
+    發現
+  </button>
+</form>
+
+@if (cooldown() > 0) {
+  <ob-empty [message]="'請求太頻繁，請於 ' + cooldown() + ' 秒後再試。'" />
+} @else if (busy()) {
+  <ob-loading label="探測中" />
+} @else {
+  @if (error()) {
+    <ob-error [message]="error()" />
+  }
+
+  @if (candidates(); as list) {
+    @if (list.length === 0) {
+      <ob-empty message="沒有找到 RSS / Atom feed。試試這個網站的首頁網址？" />
+    } @else {
+      <ul class="ob-grid results">
+        @for (candidate of list; track candidate.feed_url) {
+          <li class="card">
+            <div class="card-head">
+              <!-- Host is computed here; the title came from the remote document. -->
+              <span class="host">{{ hostOf(candidate.feed_url) }}</span>
+            </div>
+
+            <div class="card-body">
+              <h2>{{ candidate.title || '(無標題)' }}</h2>
+              <p class="url">{{ candidate.feed_url }}</p>
+            </div>
+
+            <div class="card-actions">
+              @if (candidate.already_exists && candidate.existing_feed_id) {
+                <a
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  [routerLink]="['/feeds', candidate.existing_feed_id]"
+                >
+                  已收錄，前往查看
+                </a>
+              } @else if (isImported(candidate)) {
+                <span class="ob-chip ob-chip--success">
+                  <ob-icon name="check" [size]="12" />
+                  已匯入
+                </span>
+              } @else if (importing() === candidate.feed_url) {
+                <span class="ob-chip ob-chip--neutral">匯入中…</span>
+              } @else {
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--primary ob-btn--sm"
+                  (click)="importFeed(candidate)"
+                >
+                  {{ auth.session() ? '匯入並訂閱' : '匯入到資料庫' }}
+                </button>
+              }
+            </div>
+          </li>
+        }
+      </ul>
+    }
+  }
+}

@@ -1,0 +1,76 @@
+<a class="skip-link" href="#admin-main">跳到主要內容</a>
+
+<!-- Mobile-only top bar. The sidebar is the primary navigation everywhere else. -->
+<div class="topbar">
+  <button
+    type="button"
+    class="hamburger"
+    [attr.aria-expanded]="drawerOpen()"
+    aria-controls="admin-nav"
+    aria-label="開啟後台選單"
+    (click)="toggleDrawer()"
+  >
+    <ob-icon name="menu" [size]="20" />
+  </button>
+  <span class="mark">DRIFTREAD / ADMIN</span>
+  <ob-theme-toggle />
+</div>
+
+@if (drawerOpen()) {
+  <button
+    type="button"
+    class="ob-scrim ob-scrim--dim"
+    aria-label="關閉後台選單"
+    (click)="closeDrawer()"
+  ></button>
+}
+
+<nav
+  class="sidebar"
+  id="admin-nav"
+  aria-label="後台導覽"
+  [class.sidebar--open]="drawerOpen()"
+  (keydown)="onKeydown($event)"
+  [cdkTrapFocus]="drawerOpen()"
+  [cdkTrapFocusAutoCapture]="drawerOpen()"
+>
+  <div class="head">
+    <span class="mark">DRIFTREAD</span>
+    <span class="ob-label sub">ADMIN CONSOLE</span>
+  </div>
+
+  <div class="items">
+    @for (item of items; track item.path) {
+      <a [routerLink]="item.path" routerLinkActive="is-active" [title]="item.label">
+        <ob-icon [name]="item.icon" [size]="16" />
+        <span class="text">{{ item.label }}</span>
+      </a>
+    }
+  </div>
+
+  <div class="foot">
+    <!--
+      Shows only that a key is present, never the key itself. It is a shared
+      operator secret and there is no reason to paint it back onto the screen.
+    -->
+    <span class="ob-dot unlocked">已解鎖</span>
+
+    <div class="foot-row">
+      <ob-theme-toggle />
+    </div>
+
+    <a class="quiet" routerLink="/">
+      <ob-icon name="arrow-left" [size]="14" />
+      <span class="text">回前台</span>
+    </a>
+
+    <button type="button" class="quiet" (click)="lock()">
+      <ob-icon name="logout" [size]="14" />
+      <span class="text">清除金鑰</span>
+    </button>
+  </div>
+</nav>
+
+<main id="admin-main" tabindex="-1">
+  <router-outlet />
+</main>

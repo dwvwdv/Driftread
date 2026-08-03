@@ -1,0 +1,299 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Offbeat design tokens — Nord × Brutalism
+//
+// Two layers, and the distinction matters:
+//   1. Raw palette (--nord-*)   — the Nord colours. Never referenced outside this
+//                                 file.
+//   2. Semantic aliases         — what components actually use, and the only names
+//                                 allowed in component SCSS, because they are what
+//                                 flips between the light and dark themes.
+//
+// Emitted as CSS custom properties rather than Sass variables so a theme swap is a
+// single attribute change on <html> with no rebuild.
+//
+// This file emits CSS. Only styles.scss may @use it — pulling it into a component
+// stylesheet would duplicate the whole block into every bundle.
+//
+// ── On contrast ──────────────────────────────────────────────────────────────
+// Nord is a low-contrast palette designed for syntax highlighting, and several of
+// its natural pairings fail WCAG AA when used for UI text. Each pairing below was
+// measured; where a raw swatch failed, a derived value is used and the measurement
+// is recorded next to it. The rule applied throughout:
+//
+//   * text            ≥ 4.5:1   (WCAG AA, 1.4.3)
+//   * borders / icons  ≥ 3:1    (WCAG AA, 1.4.11)
+//
+// Notable consequences, so nobody "corrects" these back to the reference values:
+//   * frost3 #5E81AC behind snow2 text measures 3.47:1 — it FAILS as a button
+//     fill. Primary buttons use frost1 with polar0 text (6.25:1) in both themes.
+//   * aurora_red #BF616A is mid-tone: it fails as text on polar0 (3.06:1) AND on
+//     snow2 (3.53:1). Aurora colours therefore come in two forms — the raw swatch
+//     for fills, dots and borders, and a per-theme "-ink" variant for text.
+//   * polar3 as text is banned on polar0 (2.3:1) but measures 6.7:1 on snow2. The
+//     ban is background-specific, so light mode is exactly where it becomes legal.
+// ─────────────────────────────────────────────────────────────────────────────
+
+:root {
+  // ── Raw palette ───────────────────────────────────────────────────────────
+  // Polar Night
+  --nord-polar0: #2e3440;
+  --nord-polar1: #3b4252;
+  --nord-polar2: #434c5e;
+  --nord-polar3: #4c566a;
+
+  // Snow Storm
+  --nord-snow0: #d8dee9;
+  --nord-snow1: #e5e9f0;
+  --nord-snow2: #eceff4;
+
+  // Frost
+  --nord-frost0: #8fbcbb;
+  --nord-frost1: #88c0d0;
+  --nord-frost2: #81a1c1;
+  --nord-frost3: #5e81ac;
+
+  // Aurora — fills, dots and borders only. See --*-ink below for text.
+  --nord-red: #bf616a;
+  --nord-orange: #d08770;
+  --nord-yellow: #ebcb8b;
+  --nord-green: #a3be8c;
+  --nord-purple: #b48ead;
+
+  // Contrast-safe dim text for dark surfaces. Not part of the original Nord
+  // palette, because Nord has no swatch that both reads as "quiet" and passes AA
+  // on polar0. Measures 4.76:1.
+  --nord-dim: #9aa0ad;
+
+  // ── Derived values ────────────────────────────────────────────────────────
+  // Every one of these exists because a raw Nord swatch failed a contrast check.
+  // Hues are taken from the palette member they stand in for.
+  --nord-frost-deep: #456287; // darkened frost3 — 5.40:1 as text on snow2
+  --nord-border-light: #b8c0cc; // 2px borders need to be visible on snow2 too
+  --nord-red-deep: #a54049; // danger fill — 5.28:1 behind snow2 text
+  --nord-red-ink-dark: #e08b93; // danger text on polar0 — 4.93:1
+  --nord-red-ink-light: #96434b; // danger text on snow2 — 5.66:1
+  --nord-green-ink-light: #4f6b3b; // aurora_green is 1.76:1 on snow2
+  --nord-yellow-ink-light: #7a5e1e;
+  --nord-orange-ink-light: #8a5330;
+  --nord-purple-ink-light: #7a5b75;
+
+  // ── Semantic aliases — dark is the default theme ──────────────────────────
+  --surface-base: var(--nord-polar0);
+  --surface-raised: var(--nord-polar1);
+  --surface-sunken: var(--nord-polar2);
+  --surface-inset: #272c36; // recessed wells: progress rails, code blocks
+
+  --border: var(--nord-polar3);
+  --border-strong: var(--nord-frost3);
+
+  --text: var(--nord-snow0); // 9.25:1 on polar0
+  --text-strong: var(--nord-snow2);
+  --text-dim: var(--nord-dim); // 4.76:1 on polar0
+
+  --accent: var(--nord-frost1); // links, focus rings — 6.25:1 on polar0
+  --accent-soft: var(--nord-frost0);
+  --accent-muted: var(--nord-frost2);
+
+  // Primary button. frost1 fill + polar0 ink measures 6.25:1 and holds in BOTH
+  // themes, which is why it does not flip below.
+  --accent-fill: var(--nord-frost1);
+  --accent-ink: var(--nord-polar0);
+
+  --shadow-offset: var(--nord-frost3);
+  --shadow-offset-soft: var(--nord-frost2);
+
+  // Modal scrim. Genuinely black rather than a Nord swatch — this dims the page
+  // behind a dialog, it is not a shadow, so the "never use grey rgba for shadows"
+  // rule does not apply. Same value in both themes.
+  --scrim: rgb(0 0 0 / 55%);
+
+  // Aurora — raw swatches, for fills, status dots and borders (≥3:1 needed).
+  --success: var(--nord-green);
+  --warning: var(--nord-yellow);
+  --danger: var(--nord-red);
+  --caution: var(--nord-orange);
+  --special: var(--nord-purple);
+  --info: var(--nord-frost1);
+
+  // Aurora as text (≥4.5:1 needed). On polar0 the light Aurora swatches already
+  // pass, so only red needs substituting.
+  --success-ink: var(--nord-green);
+  --warning-ink: var(--nord-yellow);
+  --danger-ink: var(--nord-red-ink-dark);
+  --caution-ink: var(--nord-orange);
+  --special-ink: var(--nord-purple);
+  --info-ink: var(--nord-frost1);
+
+  // Destructive button: raw aurora_red behind snow2 is 3.53:1, so the fill is
+  // darkened to reach 5.28:1.
+  --danger-fill: var(--nord-red-deep);
+  --danger-fill-ink: var(--nord-snow2);
+
+  // ── Typography ────────────────────────────────────────────────────────────
+  // Zero webfont requests. The UI is Traditional Chinese throughout, so every
+  // stack names real CJK families — but always *after* the Latin ones, otherwise
+  // Latin glyphs get pulled from the CJK font's poor proportional Latin.
+  --font-sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', 'PingFang TC', 'Hiragino Sans TC',
+    'Microsoft JhengHei', 'Source Han Sans TC', sans-serif;
+  --font-mono:
+    'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas,
+    'Noto Sans Mono CJK TC', monospace;
+  // Long-form article body only — see _prose.scss.
+  --font-read:
+    Georgia, 'Iowan Old Style', 'Noto Serif TC', 'Source Han Serif TC', 'Songti TC', serif;
+
+  // Base is 15px rather than the usual 14px: CJK glyphs carry far more strokes per
+  // em than Latin and need the extra size for the same legibility.
+  --text-xs: 0.625rem; // 10px — mono micro-labels
+  --text-sm: 0.8125rem; // 13px
+  --text-base: 0.9375rem; // 15px
+  --text-md: 1.0625rem; // 17px — article body
+  --text-lg: 1.25rem; // 20px
+  --text-xl: 1.75rem; // 28px
+  --text-2xl: 2.25rem; // 36px
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.65;
+  --leading-read: 1.9; // CJK long-form wants noticeably more than Latin
+
+  // ── Spacing ───────────────────────────────────────────────────────────────
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  // ── Structure ─────────────────────────────────────────────────────────────
+  // Offbeat is zero-radius, in both themes and at every structure weight. Mixing
+  // radii within one app reads as an accident rather than a decision.
+  --radius: 0;
+  --border-width: 2px;
+  --border-width-thin: 1px;
+  --accent-bar: 4px;
+
+  // Offset-shadow distance, per STRUCTURE_WEIGHT. Chrome runs at 7, the admin
+  // console at 6, the article column at 4 (no shadow at all).
+  --offset: 4px;
+  --offset-sm: 3px;
+  --offset-lg: 6px;
+
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  // ── Layout ────────────────────────────────────────────────────────────────
+  --page-max: 1240px; // 1200 + room so right-edge offset shadows aren't clipped
+  --admin-max: 1400px; // admin tables want width
+  // Measure for the article column. Deliberately px, not ch: `ch` is the width of
+  // "0" in the current font, a Latin metric that badly misrepresents how many
+  // full-width CJK characters fit. 720px is ≈36 CJK characters at 17px.
+  --read-max: 720px;
+  --nav-height: 56px;
+  --admin-sidebar: 220px;
+  --admin-rail: 56px;
+  --tap-target: 44px; // minimum touch target
+
+  // ── Motion ────────────────────────────────────────────────────────────────
+  // MOTION_INTENSITY 3 — transitions confirm state changes, nothing decorative.
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  --dur-fast: 90ms;
+  --dur: 150ms;
+
+  --z-sticky: 100;
+  --z-overlay: 1000;
+  --z-toast: 1100;
+
+  color-scheme: dark;
+}
+
+// ── Light theme ─────────────────────────────────────────────────────────────
+// Nord Snow Storm as surfaces, Polar Night as text. Deliberately never #FFFFFF —
+// pure white breaks the cool temperature the whole system is built on.
+//
+// Written once as a mixin so the system-preference query and the explicit
+// [data-theme] override cannot drift apart.
+@mixin light-theme {
+  --surface-base: var(--nord-snow2);
+  --surface-raised: var(--nord-snow1);
+  --surface-sunken: var(--nord-snow0);
+  --surface-inset: #dde2ea;
+
+  --border: var(--nord-border-light);
+  --border-strong: var(--nord-frost3);
+
+  --text: var(--nord-polar1); // 8.67:1 on snow2
+  --text-strong: var(--nord-polar0);
+  --text-dim: var(--nord-polar3); // 6.70:1 on snow2 — legal here, unlike on polar0
+
+  // frost1 is a pale cyan: ~1.9:1 on snow2, unusable as light-mode text.
+  --accent: var(--nord-frost-deep); // 5.40:1 on snow2
+  --accent-soft: var(--nord-frost2);
+  --accent-muted: var(--nord-frost2);
+
+  // --accent-fill / --accent-ink intentionally NOT overridden: frost1 + polar0
+  // already measures 6.25:1 and keeps the primary button identical across themes.
+
+  --shadow-offset: var(--nord-frost2);
+  --shadow-offset-soft: var(--nord-frost1);
+
+  // Aurora raw swatches stay put for fills and dots; the text variants all need
+  // darkening, since every Aurora colour is lighter than snow2 demands.
+  --success-ink: var(--nord-green-ink-light);
+  --warning-ink: var(--nord-yellow-ink-light);
+  --danger-ink: var(--nord-red-ink-light);
+  --caution-ink: var(--nord-orange-ink-light);
+  --special-ink: var(--nord-purple-ink-light);
+  --info-ink: var(--nord-frost-deep);
+
+  color-scheme: light;
+}
+
+@mixin dark-theme {
+  --surface-base: var(--nord-polar0);
+  --surface-raised: var(--nord-polar1);
+  --surface-sunken: var(--nord-polar2);
+  --surface-inset: #272c36;
+
+  --border: var(--nord-polar3);
+  --border-strong: var(--nord-frost3);
+
+  --text: var(--nord-snow0);
+  --text-strong: var(--nord-snow2);
+  --text-dim: var(--nord-dim);
+
+  --accent: var(--nord-frost1);
+  --accent-soft: var(--nord-frost0);
+  --accent-muted: var(--nord-frost2);
+
+  --shadow-offset: var(--nord-frost3);
+  --shadow-offset-soft: var(--nord-frost2);
+
+  --success-ink: var(--nord-green);
+  --warning-ink: var(--nord-yellow);
+  --danger-ink: var(--nord-red-ink-dark);
+  --caution-ink: var(--nord-orange);
+  --special-ink: var(--nord-purple);
+  --info-ink: var(--nord-frost1);
+
+  color-scheme: dark;
+}
+
+// System preference, but only while the user has not chosen explicitly.
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    @include light-theme;
+  }
+}
+
+// Explicit user choice always wins, in both directions.
+:root[data-theme='light'] {
+  @include light-theme;
+}
+
+:root[data-theme='dark'] {
+  @include dark-theme;
+}

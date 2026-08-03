@@ -1,0 +1,47 @@
+@if (!auth.session()) {
+  <ob-empty message="請先登入才能查看收藏。">
+    <a class="ob-btn ob-btn--primary" routerLink="/login">前往登入</a>
+  </ob-empty>
+} @else {
+  <ob-page-header kicker="SAVED" heading="收藏" subtitle="收藏與稍後閱讀" />
+
+  <ob-tabs [tabs]="tabs" [selected]="tabIndex()" (selectedChange)="onTab($event)">
+    @if (loading()) {
+      <ob-loading label="讀取中" />
+    } @else if (items().length === 0) {
+      <ob-empty [message]="emptyMessage">
+        <a class="ob-btn ob-btn--ghost" routerLink="/">去找些東西讀</a>
+      </ob-empty>
+    } @else {
+      <div class="list">
+        @for (article of items(); track article.id) {
+          <ob-list-row>
+            <a rowTitle [routerLink]="['/articles', article.id]">{{ article.title }}</a>
+            <div rowLines>
+              <span>
+                @if (article.author) {
+                  {{ article.author }} ・
+                }
+                @if (article.published_at) {
+                  {{ article.published_at | date: 'yyyy-MM-dd' }}
+                }
+              </span>
+              @if (article.summary) {
+                <span class="summary">{{ article.summary }}</span>
+              }
+            </div>
+            <div rowMeta>
+              <button
+                type="button"
+                class="ob-btn ob-btn--ghost ob-btn--sm"
+                (click)="remove(article)"
+              >
+                移除
+              </button>
+            </div>
+          </ob-list-row>
+        }
+      </div>
+    }
+  </ob-tabs>
+}

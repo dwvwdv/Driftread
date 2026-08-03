@@ -8,7 +8,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 
 | 層級 | 技術 |
 |------|------|
-| Frontend | Angular 21（Material）+ nginx |
+| Frontend | Angular 21（僅 CDK，UI 為自建 Offbeat 元件庫）+ nginx |
 | Backend | Python 3.12 / FastAPI |
 | Database | Supabase Cloud（PostgreSQL + Auth）|
 | 部署 | Docker image 推至 GHCR，以 docker-compose 運行 |
