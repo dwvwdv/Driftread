@@ -159,7 +159,7 @@ main {
 }
 
 // ── Responsive ──────────────────────────────────────────────────────────────
-// 768–1023px: icon rail. Labels go, titles and aria-labels carry the meaning.
+// 768–1023px: icon rail.
 @media (max-width: 1023px) and (min-width: 768px) {
   :host {
     grid-template-columns: var(--admin-rail) 1fr;
@@ -170,10 +170,23 @@ main {
     align-items: center;
   }
 
+  // The labels are *clipped*, not removed. `display: none` takes them out of the
+  // accessibility tree too, and the icons beside them are aria-hidden — which
+  // left 回前台 and 清除金鑰 announced as unnamed controls. Clipping keeps each
+  // control's accessible name without duplicating the string into an aria-label
+  // that could drift from the visible text.
   .head .sub,
   .items .text,
   .quiet .text,
-  .unlocked,
+  .unlocked {
+    @include visually-hidden;
+  }
+
+  // The theme toggle is a 3-segment control ~90px wide and genuinely does not fit
+  // a 56px rail, so it is the one thing actually removed here rather than
+  // clipped. Known limitation: between 768 and 1023px the admin console offers no
+  // manual theme control — prefers-color-scheme still applies, and the front end
+  // (where the same toggle lives in the header) is one click away.
   .foot-row {
     display: none;
   }

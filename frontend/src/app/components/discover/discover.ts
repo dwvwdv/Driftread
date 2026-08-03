@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { DiscoverService } from '../../services/discover';
@@ -22,7 +22,7 @@ import { ObPageHeader } from '../../ui/page-header/page-header';
   templateUrl: './discover.html',
   styleUrl: './discover.scss',
 })
-export class Discover {
+export class Discover implements OnDestroy {
   protected auth = inject(AuthService);
   private discoverService = inject(DiscoverService);
 
@@ -41,6 +41,12 @@ export class Discover {
    * actually said.
    */
   imported = signal<ReadonlySet<string>>(new Set());
+
+  private timer: ReturnType<typeof setInterval> | null = null;
+
+  ngOnDestroy(): void {
+    this.stopCooldown();
+  }
 
   run(): void {
     const url = this.url.trim();
@@ -105,11 +111,27 @@ export class Discover {
     }
   }
 
+  /**
+   * Starts (or restarts) the rate-limit countdown.
+   *
+   * Only ever one timer. Imports fire per candidate, so several can be in flight
+   * and each 429 lands here — a fresh interval per response would decrement the
+   * same signal two or three times a second, releasing the button well before
+   * Retry-After has actually elapsed and earning another 429 immediately.
+   */
   private startCooldown(seconds: number): void {
+    this.stopCooldown();
     this.cooldown.set(seconds);
-    const timer = setInterval(() => {
+    this.timer = setInterval(() => {
       this.cooldown.update((n) => n - 1);
-      if (this.cooldown() <= 0) clearInterval(timer);
+      if (this.cooldown() <= 0) this.stopCooldown();
     }, 1000);
+  }
+
+  private stopCooldown(): void {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 }
