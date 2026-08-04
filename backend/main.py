@@ -31,12 +31,19 @@ logging.basicConfig(level=logging.INFO)
 MAX_REQUEST_BODY_BYTES = 6 * 1024 * 1024
 
 
+class _RequestBodyTooLarge(Exception):
+    """Raised from the wrapped `receive` once streamed body bytes exceed the
+    cap, so it's caught around the app call rather than needing every ASGI
+    message site downstream to check a size themselves."""
+
+
 class MaxBodySizeMiddleware:
-    """Rejects a request whose declared Content-Length exceeds the cap, before
-    its body is read. Only catches requests that send a Content-Length header
-    (which covers normal JSON/multipart clients, including httpx and
-    browsers); a request streamed via chunked transfer-encoding with no
-    Content-Length isn't covered by this check.
+    """Rejects a request whose body exceeds the cap. A declared
+    Content-Length over the cap is rejected up front, before the body is
+    read. Requests with no (or an understated) Content-Length — e.g. chunked
+    transfer-encoding — are instead capped by counting bytes as they stream
+    through `receive`, so they can't bypass the check FastAPI/Starlette
+    would otherwise only apply after buffering the full body in memory.
     """
 
     def __init__(self, app, max_body_size: int) -> None:
@@ -44,21 +51,44 @@ class MaxBodySizeMiddleware:
         self.max_body_size = max_body_size
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            for name, value in scope.get("headers", ()):
-                if name == b"content-length":
-                    try:
-                        too_large = int(value) > self.max_body_size
-                    except ValueError:
-                        too_large = False
-                    if too_large:
-                        response = PlainTextResponse(
-                            "Request body too large", status_code=413
-                        )
-                        await response(scope, receive, send)
-                        return
-                    break
-        await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", ()):
+            if name == b"content-length":
+                try:
+                    too_large = int(value) > self.max_body_size
+                except ValueError:
+                    too_large = False
+                if too_large:
+                    response = PlainTextResponse(
+                        "Request body too large", status_code=413
+                    )
+                    await response(scope, receive, send)
+                    return
+                break
+
+        total_size = 0
+
+        async def limited_receive():
+            nonlocal total_size
+            message = await receive()
+            if message["type"] == "http.request":
+                total_size += len(message.get("body", b""))
+                if total_size > self.max_body_size:
+                    raise _RequestBodyTooLarge()
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            # Only reachable before the app has sent a response: every route
+            # here fully consumes the body (JSON/multipart parsing) before
+            # producing a response, and none stream a response body, so no
+            # ASGI messages have gone out on `send` yet at this point.
+            response = PlainTextResponse("Request body too large", status_code=413)
+            await response(scope, receive, send)
 
 
 @asynccontextmanager

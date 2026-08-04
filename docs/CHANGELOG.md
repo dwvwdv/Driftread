@@ -325,6 +325,13 @@ migration 另外在真的 PostgreSQL 16 上跑過（起一個暫時 instance、�
 
 initial bundle 從 607 kB 降到 503 kB，仍超出預設 500 kB 預算 3.31 kB。已確認原因與本次改版無關：203 kB 的 `@supabase/supabase-js` 被 `app.config.ts` 的 auth interceptor 靜態引入而進了 initial bundle。改成延遲載入可省下這 203 kB，但那會動到完全無法在此驗證的登入流程，因此不放進這個 PR。
 
+## 階段十七：`MaxBodySizeMiddleware` 補上串流位元組計數，堵住 chunked body 繞過 6 MiB 上限的缺口（PR #32，2026-08-04）
+
+同一個「持續改善專案」排程任務，補完 [SECURITY.md #17](SECURITY.md) 上線時就記下的已知限制：`MaxBodySizeMiddleware` 只檢查請求宣告的 `Content-Length` header，以 chunked transfer-encoding 送出、不帶 `Content-Length` 的請求完全不受這道 6 MiB 上限約束，公開免認證的 `POST /api/discover`、`POST /api/discover/import` 因此仍是無上限的記憶體耗盡向量。
+
+- **修法**：`MaxBodySizeMiddleware.__call__` 包一層 `receive`，逐則 ASGI 訊息累加已收到的 body 位元組數，累計超過上限就拋出內部例外，在 `self.app(...)` 外層接住並回 `413`。`Content-Length` 過大時仍走原本「讀 body 前」的早期回絕；未宣告或宣告不實的請求則由新的串流計數兜底，兩條路徑互不取代。詳見 [SECURITY.md #27](SECURITY.md) 的完整分析（含為何在例外冒出當下送 413 是安全的——本專案沒有任何 streaming response，body 一定在任何回應位元組送出前就已讀完）。
+- **測試**：`backend/tests/test_main.py` 新增 `test_oversized_chunked_body_without_content_length_rejected`，用產生器當請求內容讓 `httpx` 不送出 `Content-Length`，斷言 413、請求確實沒有該 header、且 route 邏輯（`mock_db.table`）從未被觸發。沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25–#26 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證，並對照 Starlette 原始碼推理過例外的傳遞路徑。
+
 ## 階段十六：補齊 001 / 002 / 004 的 `CREATE TRIGGER` / `CREATE POLICY` 存在性防護（PR #31，2026-08-03）
 
 同一個「持續改善專案」排程任務，接續階段十「不在此 PR 範圍」記下的已知限制：`001_initial_schema.sql` 與 `002_user_features.sql` 的 `CREATE TRIGGER` / `CREATE POLICY` 語句沒有 `IF NOT EXISTS`，把 `_migrations` 整個清空後重跑會在 **001** 就因為「trigger 已存在」而中止——`main.py` 的 lifespan 在服務請求前呼叫 `run_migrations()`，中止的 migration 會讓容器開機失敗。005 其實已經替 `ADD CONSTRAINT` 補過同類 DO-guard，006 的四張新表也全套 guard，只是沒回頭補 001/002。

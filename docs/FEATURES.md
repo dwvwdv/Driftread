@@ -401,7 +401,7 @@ DELETE FROM discovery_targets
 
 | 項目 | 值 | 位置 |
 |------|-----|------|
-| Request body | 6 MiB（超過回 413） | `main.py::MAX_REQUEST_BODY_BYTES` |
+| Request body | 6 MiB（超過回 413，含未宣告 `Content-Length` 的 chunked 請求） | `main.py::MAX_REQUEST_BODY_BYTES` |
 | 對外抓取回應上限 | 5 MiB（feed 與 discover 的 HTML 共用同一個上限） | `services/feed_discovery.py::MAX_FEED_BYTES` |
 | OPML 檔案 | 5 MiB | `routers/opml.py::MAX_OPML_BYTES` |
 | OPML outline 數 | 200 | `routers/opml.py::MAX_OPML_OUTLINES` |
