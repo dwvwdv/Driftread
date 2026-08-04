@@ -329,8 +329,9 @@ initial bundle 從 607 kB 降到 503 kB，仍超出預設 500 kB 預算 3.31 kB�
 
 同一個「持續改善專案」排程任務，補完 [SECURITY.md #17](SECURITY.md) 上線時就記下的已知限制：`MaxBodySizeMiddleware` 只檢查請求宣告的 `Content-Length` header，以 chunked transfer-encoding 送出、不帶 `Content-Length` 的請求完全不受這道 6 MiB 上限約束，公開免認證的 `POST /api/discover`、`POST /api/discover/import` 因此仍是無上限的記憶體耗盡向量。
 
-- **修法**：`MaxBodySizeMiddleware.__call__` 包一層 `receive`，逐則 ASGI 訊息累加已收到的 body 位元組數，累計超過上限就拋出內部例外，在 `self.app(...)` 外層接住並回 `413`。`Content-Length` 過大時仍走原本「讀 body 前」的早期回絕；未宣告或宣告不實的請求則由新的串流計數兜底，兩條路徑互不取代。詳見 [SECURITY.md #27](SECURITY.md) 的完整分析（含為何在例外冒出當下送 413 是安全的——本專案沒有任何 streaming response，body 一定在任何回應位元組送出前就已讀完）。
-- **測試**：`backend/tests/test_main.py` 新增 `test_oversized_chunked_body_without_content_length_rejected`，用產生器當請求內容讓 `httpx` 不送出 `Content-Length`，斷言 413、請求確實沒有該 header、且 route 邏輯（`mock_db.table`）從未被觸發。沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25–#26 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證，並對照 Starlette 原始碼推理過例外的傳遞路徑。
+- **修法**：`MaxBodySizeMiddleware.__call__` 包一層 `receive`，逐則 ASGI 訊息累加已收到的 body 位元組數，累計超過上限就把 `receive` 之後一律回傳 `http.disconnect`，並同時包一層 `send` 吞掉 app 在那之後想送出的任何回應；`self.app(...)` 結束後，`finally` 區塊用**原始、未包裝**的 `send` 送出唯一真正抵達 client 的 `413`。`Content-Length` 過大時仍走原本「讀 body 前」的早期回絕；未宣告或宣告不實的請求則由新的串流計數兜底，兩條路徑互不取代。
+- **CI 這次真的抓到一個問題**：第一版實作原本是讓自訂例外從 `receive` 一路冒出到 `self.app(...)` 外層的 `try/except`，但 FastAPI 的 body 解析本身包了一層寬鬆的 `except Exception`，會把途中冒出的任何例外吞掉、轉成它自己的 `HTTPException(400)`。這個 sandbox 一直沒有網路能裝依賴跑 `pytest`，只能用 `py_compile` / `ruff` 驗證語法，這類「執行期才會現形」的框架內部行為因此一直沒被抓到；這次 GitHub Actions 的 `Test` job（有完整依賴）第一次真的跑了這個新測試，斷言 413 卻收到 400，當場失敗。改用上面「讓 `receive` 回報斷線、`send` 期間全吞掉，最後由外層自己送出唯一回應」的設計後重推，CI 轉綠。完整分析見 [SECURITY.md #27](SECURITY.md)。
+- **測試**：`backend/tests/test_main.py` 新增 `test_oversized_chunked_body_without_content_length_rejected`，用產生器當請求內容讓 `httpx` 不送出 `Content-Length`，斷言 413、請求確實沒有該 header、且 route 邏輯（`mock_db.table`）從未被觸發——這是這次唯一一段實際在裝有完整依賴的環境（CI）跑過、而非只靠推理驗證的變更。
 
 ## 階段十六：補齊 001 / 002 / 004 的 `CREATE TRIGGER` / `CREATE POLICY` 存在性防護（PR #31，2026-08-03）
 

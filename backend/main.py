@@ -31,12 +31,6 @@ logging.basicConfig(level=logging.INFO)
 MAX_REQUEST_BODY_BYTES = 6 * 1024 * 1024
 
 
-class _RequestBodyTooLarge(Exception):
-    """Raised from the wrapped `receive` once streamed body bytes exceed the
-    cap, so it's caught around the app call rather than needing every ASGI
-    message site downstream to check a size themselves."""
-
-
 class MaxBodySizeMiddleware:
     """Rejects a request whose body exceeds the cap. A declared
     Content-Length over the cap is rejected up front, before the body is
@@ -44,6 +38,16 @@ class MaxBodySizeMiddleware:
     transfer-encoding — are instead capped by counting bytes as they stream
     through `receive`, so they can't bypass the check FastAPI/Starlette
     would otherwise only apply after buffering the full body in memory.
+
+    Once the streamed cap is tripped, `receive` reports a client disconnect
+    to unwind whatever's reading the body, and `send` is muted so nothing
+    the app does in reaction (error handlers, FastAPI's own broad
+    except-Exception-around-body-parsing, ...) can reach the real ASGI
+    channel — this middleware sends the single authoritative 413 itself
+    once `self.app` returns or raises, from the untouched outer `send`.
+    Deliberately not relying on a specific exception type surviving
+    whatever FastAPI does internally with the disconnect: that's an
+    implementation detail of a dependency, not a contract this can pin to.
     """
 
     def __init__(self, app, max_body_size: int) -> None:
@@ -70,25 +74,40 @@ class MaxBodySizeMiddleware:
                 break
 
         total_size = 0
+        rejected = False
+        responded = False
 
         async def limited_receive():
-            nonlocal total_size
+            nonlocal total_size, rejected
+            if rejected:
+                return {"type": "http.disconnect"}
             message = await receive()
             if message["type"] == "http.request":
                 total_size += len(message.get("body", b""))
                 if total_size > self.max_body_size:
-                    raise _RequestBodyTooLarge()
+                    rejected = True
+                    return {"type": "http.disconnect"}
             return message
 
+        async def guarded_send(message):
+            nonlocal responded
+            if rejected:
+                return
+            if message["type"] == "http.response.start":
+                responded = True
+            await send(message)
+
         try:
-            await self.app(scope, limited_receive, send)
-        except _RequestBodyTooLarge:
-            # Only reachable before the app has sent a response: every route
-            # here fully consumes the body (JSON/multipart parsing) before
-            # producing a response, and none stream a response body, so no
-            # ASGI messages have gone out on `send` yet at this point.
-            response = PlainTextResponse("Request body too large", status_code=413)
-            await response(scope, receive, send)
+            await self.app(scope, limited_receive, guarded_send)
+        except Exception:
+            if not rejected:
+                raise
+        finally:
+            if rejected and not responded:
+                response = PlainTextResponse(
+                    "Request body too large", status_code=413
+                )
+                await response(scope, receive, send)
 
 
 @asynccontextmanager
