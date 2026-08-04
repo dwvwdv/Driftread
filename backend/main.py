@@ -39,6 +39,13 @@ class MaxBodySizeMiddleware:
     through `receive`, so they can't bypass the check FastAPI/Starlette
     would otherwise only apply after buffering the full body in memory.
 
+    The streamed check only sees bytes the route actually asks for: a route
+    with no body parameter (health check, anything rejected by an auth
+    dependency before a body field would be resolved) never calls `receive`
+    at all, so an oversized declared-but-unread body isn't turned into a 413
+    on its own. See SECURITY.md #27 for why that's an accepted, deliberately
+    scoped gap rather than something this also drains for.
+
     Once the streamed cap is tripped, `receive` reports a client disconnect
     to unwind whatever's reading the body, and `send` is muted so nothing
     the app does in reaction (error handlers, FastAPI's own broad
