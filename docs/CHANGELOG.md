@@ -365,9 +365,9 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 ### 驗證
 
-- `pytest`：537 passed（523 → 537，新增 14 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
-- `ng test`：78 passed（66 → 78，新增 `shared/html.spec.ts` 12 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
-- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 16 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+- `pytest`：539 passed（523 → 539，新增 16 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `ng test`：80 passed（66 → 80，新增 `shared/html.spec.ts` 14 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 21 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
 
 ### Codex review：不能把「引用了標籤的純文字」當成 HTML
 
@@ -408,6 +408,25 @@ prose：Use <strong>bold</strong> for emphasis
 反過來說，任何為了排除這句散文而收緊的規則，都會連帶排除 `Hello <b>world</b>, welcome` 這種 RSS 裡極常見的短內文，把它打回「畫面上顯示裸標籤」——那正是這個 PR 要修的原始 bug。三輪下來這條啟發式已經到達它的有效邊界，再收緊就是拿常見情況換罕見情況。
 
 決定寫成 `test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup`，把「知道、且刻意接受」釘在程式碼裡，而不是只留在 PR 討論串。
+
+### Codex review 第四輪：屬性值裡的 `>`（已修）
+
+這輪不是啟發式取捨，是實打實的字串處理 bug。`<p title="2 &gt; 1"&gt;` 是合法 HTML，但所有 tag pattern 都用 `[^>]*` 吃到第一個 `>` 為止——那個 `>` 在引號**裡面**，於是剩下的 `1">Hi` 被當成內文存進 `summary`：
+
+```
+修前：<p title="2 > 1">Hi</p>                    → summary='1">Hi'
+      <a href="x" title="a > b">link</a> tail    → summary='b">link tail'
+修後：                                            → 'Hi' / 'link tail'
+```
+
+改成走引號的 `_ATTRS = (?:[^>"']|"[^"]*"|'[^']*')*`，三處同步（`_TAG_RE` / `_DROP_WHOLE_RE` / `_MARKUP_RE`，前端與 migration 亦同）。兩個實作細節：
+
+- **三個分支的第一個字元互斥**（`"` 只由引號分支吃、`'` 同理、其餘由 `[^>"']`），所以星號是確定性的、不會指數回溯。feed 內容是遠端可控輸入，這是真的暴露面而非假想，因此補了計時測試（20000 字元的惡意輸入 < 1 秒）。
+- **保留原本的 `[^>]*` 當最後一個分支**，處理引號不成對的壞標籤（`<p title="unclosed>`）——走引號的版本比對不到它。順序不能反。
+
+順帶收緊了 void element 分支：改成 `[^><]*=[^><]*>`，要求標籤真的閉合且中間不能有 `<`。原本 `the <img tag is useful, x = 1` 這種沒閉合的散文會一路吃到後面不相干的 `=` 而被判成 markup。
+
+migration 在同一個 cluster 上用 21 列樣本重跑，新增的 5 列（引號內 `>`、`<pre>`、引號不成對、未閉合散文）三邊判定與 Python 端逐列一致。
 
 ### 已知未處理
 

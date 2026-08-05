@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from unittest.mock import patch
 
 import httpx
@@ -200,6 +201,34 @@ def test_prose_quoting_a_tag_is_not_markup():
     assert article.summary == 'Use <p> for paragraphs and <a href="…"> for links'
 
 
+def test_quoted_angle_bracket_in_an_attribute_does_not_leak_into_the_summary():
+    """`<p title="2 > 1">` is valid HTML. A `[^>]*` tag pattern stopped at the
+    `>` inside the quoted value and called the remainder text, so the summary
+    persisted as `1">Hi` — attribute source on screen as prose."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p title="2 &gt; 1"&gt;Hi&lt;/p&gt;</description>
+      </item></channel></rss>"""
+    assert parse_feed(xml).articles[0].summary == "Hi"
+
+    assert rss_parser._plain_text('<a href="x" title="a > b">link</a> tail') == "link tail"
+    assert rss_parser._plain_text("<p title='2 > 1'>Hi</p>") == "Hi"
+    # An unbalanced quote can't be walked, so a plain `[^>]*` branch still has to
+    # be there to catch it.
+    assert rss_parser._plain_text('<p title="unclosed>Hi</p>') == "Hi"
+
+
+def test_tag_stripping_does_not_backtrack_on_hostile_input():
+    """The quote-aware alternatives are mutually exclusive on their first
+    character, which is what keeps the star from going exponential. A feed body
+    is remote attacker-controlled input, so this is a real exposure, not
+    hypothetical."""
+    started = time.monotonic()
+    rss_parser._plain_text("<p " + 'a="' * 20000)
+    rss_parser._plain_text("<p " + "x" * 20000)
+    assert time.monotonic() - started < 1.0
+
+
 def test_what_makes_a_value_a_document():
     """The discriminator, stated directly: a closing tag, an explicitly
     self-closed tag, or a void element carrying an attribute."""
@@ -219,6 +248,11 @@ def test_what_makes_a_value_a_document():
     # quotes `<a href="…">` constantly, and treating that as markup is what
     # deletes the token the sentence is about.
     assert not rss_parser._looks_like_markup('quote <a href="https://x"> like so')
+    # The void branch needs the tag to close with no `<` in between, or an
+    # unrelated `=` further down an unclosed sentence counts as an attribute.
+    assert not rss_parser._looks_like_markup("the <img tag is useful, x = 1")
+    # …while a genuine one still counts even with a `>` inside the attribute.
+    assert rss_parser._looks_like_markup('<img alt="a > b">')
 
 
 def test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup():

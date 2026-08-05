@@ -19,6 +19,11 @@ describe('looksLikeHtml', () => {
     // Void-element attributes count; attributes in general do not. Tech writing
     // quotes `<a href="…">` constantly.
     expect(looksLikeHtml('quote <a href="https://x"> like so')).toBe(false);
+    // The void branch needs the tag to close with no `<` in between, or an
+    // unrelated `=` further down an unclosed sentence counts as an attribute.
+    expect(looksLikeHtml('the <img tag is useful, x = 1')).toBe(false);
+    // …while a genuine one still counts even with a `>` inside the attribute.
+    expect(looksLikeHtml('<img alt="a > b">')).toBe(true);
   });
 
   it('leaves a bare void tag as text', () => {
@@ -54,6 +59,23 @@ describe('stripHtml', () => {
       '第一段連結。 第二段',
     );
     expect(stripHtml('one<br>two<span>three</span>')).toBe('one twothree');
+  });
+
+  it('walks quoted attribute values containing a raw >', () => {
+    // `<p title="2 > 1">` is valid HTML. A `[^>]*` pattern stops at the inner
+    // `>` and leaves `1">Hi` behind as "text".
+    expect(stripHtml('<p title="2 > 1">Hi</p>')).toBe('Hi');
+    expect(stripHtml('<a href="x" title="a > b">link</a> tail')).toBe('link tail');
+    expect(stripHtml("<p title='2 > 1'>Hi</p>")).toBe('Hi');
+    // An unbalanced quote can't be walked, so the plain fallback branch matters.
+    expect(stripHtml('<p title="unclosed>Hi</p>')).toBe('Hi');
+  });
+
+  it('does not backtrack on hostile input', () => {
+    const started = Date.now();
+    stripHtml('<p ' + 'a="'.repeat(20000));
+    stripHtml('<p ' + 'x'.repeat(20000));
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it('drops script and style bodies whole', () => {

@@ -10,6 +10,12 @@
 -- scrolled out of its feed's window never will, so history has to be repaired here.
 -- Runs once, tracked by `_migrations` like every other file.
 --
+-- Attribute values may legally contain a raw `>` (`<p title="2 > 1">`), so every
+-- pattern here walks quoted runs rather than using a plain `[^>]*` — that form
+-- stopped at the inner `>` and left `1">Hi` in the summary. Written as
+-- `([^>"'']|"[^"]*"|''[^'']*'')*`: in SQL source a literal `'` is doubled, so
+-- that is the regex `([^>"']|"[^"]*"|'[^']*')*`. Mirrors _ATTRS in rss_parser.py.
+--
 -- The `~*` predicate below is the same discriminator _MARKUP_RE uses in
 -- rss_parser.py. Three shapes mean the value is a document: a closing tag, an
 -- explicitly self-closed tag, or a void element carrying an attribute (an
@@ -24,23 +30,23 @@
 UPDATE articles
 SET content = summary
 WHERE coalesce(content, '') = ''
-  AND summary ~* '</[a-zA-Z]|<[a-zA-Z][^>]*/>|<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\y[^>]*=[^>]*>';
+  AND summary ~* '</[a-zA-Z]|<[a-zA-Z]([^>"'']|"[^"]*"|''[^'']*'')*/>|<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\y[^><]*=[^><]*>';
 
 -- 2. Strip the tags, documents only.
 UPDATE articles
 SET summary = regexp_replace(
   regexp_replace(
     -- Markup source, not prose — these two go whole.
-    regexp_replace(summary, '<(script|style)\y.*?</\1[[:space:]]*>', ' ', 'gi'),
+    regexp_replace(summary, '<(script|style)\y([^>"'']|"[^"]*"|''[^'']*'')*>.*?</\1[[:space:]]*>', ' ', 'gi'),
     -- Tags that imply a break become a space; inline tags such as <a> and <em>
     -- sit inside a word and are removed outright below, or Chinese text comes
     -- back peppered with gaps ("这里记录 开源 。").
-    '</?[[:space:]]*(address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)([[:space:]][^>]*)?/?[[:space:]]*>',
+    '</?[[:space:]]*(address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)([[:space:]/]([^>"'']|"[^"]*"|''[^'']*'')*)?>',
     ' ', 'gi'
   ),
-  '<!--.*?-->|</?[a-zA-Z][^>]*>', '', 'g'
+  '<!--.*?-->|</?[a-zA-Z]([^>"'']|"[^"]*"|''[^'']*'')*>|</?[a-zA-Z][^>]*>', '', 'g'
 )
-WHERE summary ~* '</[a-zA-Z]|<[a-zA-Z][^>]*/>|<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\y[^>]*=[^>]*>';
+WHERE summary ~* '</[a-zA-Z]|<[a-zA-Z]([^>"'']|"[^"]*"|''[^'']*'')*/>|<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\y[^><]*=[^><]*>';
 
 -- 3. Decode entities and tidy whitespace, on tag-shaped prose as well as on what
 --    step 2 just flattened. `&amp;` goes last, so a double-escaped `&amp;lt;`

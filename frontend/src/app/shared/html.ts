@@ -12,10 +12,21 @@
  * this runs, and so it stays cheap enough to call from a template binding.
  */
 
+// Everything between a tag's name and its closing `>`, quote-aware.
+//
+// An attribute value may legally contain a raw `>` (`<p title="2 > 1">`), and a
+// plain `[^>]*` stopped at that inner one, leaving `1">Hi` behind as "text". The
+// three alternatives are mutually exclusive on their first character, so the
+// star is deterministic and cannot backtrack exponentially on hostile input.
+// Mirrors _ATTRS in backend/rss_parser.py.
+const ATTRS = `(?:[^>"']|"[^"]*"|'[^']*')*`;
+
 // The opening `<` must be followed by a letter or `/`, so prose like
-// "if x < 3 and y > 2" survives intact.
-const TAG_RE = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>/g;
-const DROP_WHOLE_RE = /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+// "if x < 3 and y > 2" survives intact. The plain `[^>]*` form is kept as a last
+// alternative for a tag with an unbalanced quote (`<p title="unclosed>`), which
+// the quote-aware form cannot match — it has to come second.
+const TAG_RE = new RegExp(`<!--[\\s\\S]*?-->|</?[a-zA-Z]${ATTRS}>|</?[a-zA-Z][^>]*>`, 'g');
+const DROP_WHOLE_RE = new RegExp(`<(script|style)\\b${ATTRS}>[\\s\\S]*?</\\1\\s*>`, 'gi');
 const TAG_NAME_RE = /^<\/?\s*([a-zA-Z][a-zA-Z0-9]*)/;
 const WS_RE = /\s+/g;
 
@@ -73,6 +84,8 @@ const ENTITIES: Record<string, string> = {
   '&nbsp;': ' ',
 };
 
+const VOID_ELEMENTS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr';
+
 /**
  * Tells an HTML *document* apart from prose that happens to mention a tag.
  *
@@ -98,12 +111,18 @@ const ENTITIES: Record<string, string> = {
  * <br> to break lines", and only the second one loses text if we guess wrong.
  * Misjudging the first only shows a `<br>` on screen: visible, and fixable.
  *
+ * The void-element branch requires the tag to actually close with no `<`
+ * intervening; without both, unclosed prose like "the <img tag is useful, x = 1"
+ * reaches an unrelated `=` further down the sentence and gets called markup.
+ *
  * Mirrors _MARKUP_RE in backend/rss_parser.py.
  *
  * Non-global on purpose: `.test()` on a /g regex carries lastIndex between calls.
  */
-const MARKUP_RE =
-  /<\/[a-zA-Z]|<[a-zA-Z][^>]*\/>|<(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\b[^>]*=[^>]*>/i;
+const MARKUP_RE = new RegExp(
+  `</[a-zA-Z]|<[a-zA-Z]${ATTRS}/>|<(?:${VOID_ELEMENTS})\\b[^><]*=[^><]*>`,
+  'i',
+);
 
 export function looksLikeHtml(value: string | null | undefined): boolean {
   return !!value && MARKUP_RE.test(value);
