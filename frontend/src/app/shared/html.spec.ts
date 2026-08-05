@@ -88,6 +88,19 @@ describe('stripHtml', () => {
     );
   });
 
+  it('decodes numeric character references', () => {
+    // Feeds are full of these: &#8217; for a curly apostrophe, &#8212;/&#x2014;
+    // for an em dash. Matches html.unescape() and migration 009 step 3.
+    expect(stripHtml('<p>It&#8217;s here &#8212; really&#x2014;yes</p>')).toBe(
+      'It’s here — really—yes',
+    );
+    expect(stripHtml('&#72;&#101;&#108;&#108;&#111;')).toBe('Hello');
+    // Out of range and lone surrogates become U+FFFD, same as Python.
+    expect(stripHtml('bad &#0; &#1114112; &#xD800; refs')).toBe('bad � � � refs');
+    // Single pass, so double-escaping stays visible rather than decoding twice.
+    expect(stripHtml('double escaped &amp;#8217; here')).toBe('double escaped &#8217; here');
+  });
+
   it('leaves plain text intact', () => {
     expect(stripHtml('if x < 3 and y > 2 then done')).toBe('if x < 3 and y > 2 then done');
   });

@@ -73,16 +73,42 @@ const BLOCK_TAGS = new Set([
   'ul',
 ]);
 
-/** Entities common enough in feed text to be worth decoding by hand. */
-const ENTITIES: Record<string, string> = {
+/** Named entities common enough in feed text to be worth decoding by hand. */
+const NAMED_ENTITIES: Record<string, string> = {
   '&amp;': '&',
   '&lt;': '<',
   '&gt;': '>',
   '&quot;': '"',
-  '&#39;': "'",
   '&apos;': "'",
   '&nbsp;': ' ',
 };
+
+/**
+ * Named entities plus numeric character references, in one alternation.
+ *
+ * One regex rather than a chain of replaces so the decode is a *single pass*,
+ * matching Python's html.unescape(): scanning resumes after each match, so a
+ * double-escaped `&amp;#8217;` yields the literal text `&#8217;` instead of
+ * being decoded twice.
+ *
+ * The numeric forms matter — feeds are full of `&#8217;` for a curly apostrophe
+ * and `&#8212;` / `&#x2014;` for an em dash. Mirrors rss_parser.py and step 3 of
+ * migration 009.
+ */
+const ENTITY_RE = /&(?:amp|lt|gt|quot|apos|nbsp|#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6});/g;
+
+function decodeEntity(entity: string): string {
+  const named = NAMED_ENTITIES[entity];
+  if (named !== undefined) return named;
+
+  const body = entity.slice(2, -1);
+  const code =
+    body[0] === 'x' || body[0] === 'X' ? parseInt(body.slice(1), 16) : parseInt(body, 10);
+  // Out of range or a lone surrogate: html.unescape() yields U+FFFD, and the
+  // migration was aligned to it, so do the same here.
+  if (code < 1 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '�';
+  return String.fromCodePoint(code);
+}
 
 const VOID_ELEMENTS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr';
 
@@ -145,8 +171,5 @@ export function stripHtml(value: string | null | undefined): string {
     : value;
   // Decoded last either way, so a `&lt;p&gt;` that survived double-escaping
   // upstream becomes visible text rather than a parsed tag.
-  return withoutTags
-    .replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (e) => ENTITIES[e] ?? e)
-    .replace(WS_RE, ' ')
-    .trim();
+  return withoutTags.replace(ENTITY_RE, decodeEntity).replace(WS_RE, ' ').trim();
 }

@@ -48,8 +48,60 @@ SET summary = regexp_replace(
 )
 WHERE summary ~* '</[a-zA-Z]|<[a-zA-Z]([^>"'']|"[^"]*"|''[^'']*'')*/>|<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\y[^><]*=[^><]*>';
 
--- 3. Decode entities and tidy whitespace, on tag-shaped prose as well as on what
---    step 2 just flattened. `&amp;` goes last, so a double-escaped `&amp;lt;`
+-- 3. Decode numeric character references (`&#8217;`, `&#x2014;`).
+--
+-- The parser calls html.unescape(), which handles every one of these; a fixed
+-- list of `replace()` calls cannot. Feeds are full of `&#8217;` for a curly
+-- apostrophe and `&#8212;`/`&#x2014;` for an em dash, and a row that never gets
+-- upserted again would show that source text in the bookmark preview forever.
+--
+-- Runs before step 4 so the pass matches html.unescape()'s single pass: a
+-- double-escaped `&amp;#8217;` has no `&#` for this step to find, and step 4
+-- then turns it into the visible text `&#8217;` — exactly what Python produces.
+DO $$
+DECLARE
+  row_id  uuid;
+  txt     text;
+  ent     text;
+  code    int;
+BEGIN
+  FOR row_id, txt IN
+    SELECT id, summary FROM articles WHERE summary ~ '&#[xX]?[0-9a-fA-F]{1,7};'
+  LOOP
+    FOR ent IN
+      SELECT DISTINCT m[1]
+      FROM regexp_matches(txt, '(&#[xX]?[0-9a-fA-F]{1,7};)', 'g') AS m
+    LOOP
+      BEGIN
+        IF ent ~* '^&#x' THEN
+          -- lpad is load-bearing: the text->bit cast pads on the *right*, so
+          -- ('x' || '2014')::bit(32) is 0x20140000, not 0x2014.
+          code := ('x' || lpad(substring(ent from 4 for length(ent) - 4), 8, '0'))::bit(32)::int;
+        ELSE
+          code := substring(ent from 3 for length(ent) - 3)::int;
+        END IF;
+        -- chr() rejects NUL and anything past the Unicode range, and a lone
+        -- surrogate is not encodable in UTF-8. html.unescape() turns all of
+        -- these into U+FFFD, so do the same rather than leaving the source
+        -- text: two articles from one feed, one migrated and one re-upserted,
+        -- must not end up displaying differently.
+        IF code < 1 OR code > 1114111 OR code BETWEEN 55296 AND 57343 THEN
+          txt := replace(txt, ent, chr(65533));
+        ELSE
+          txt := replace(txt, ent, chr(code));
+        END IF;
+      EXCEPTION WHEN others THEN
+        -- Never fail the whole migration over one malformed reference.
+        txt := replace(txt, ent, chr(65533));
+      END;
+    END LOOP;
+
+    UPDATE articles SET summary = txt WHERE id = row_id AND summary IS DISTINCT FROM txt;
+  END LOOP;
+END $$;
+
+-- 4. Decode named entities and tidy whitespace, on tag-shaped prose as well as
+--    on what step 2 flattened. `&amp;` goes last, so a double-escaped `&amp;lt;`
 --    ends up as the visible text `&lt;` instead of being re-read as a tag.
 UPDATE articles
 SET summary = nullif(
@@ -60,10 +112,7 @@ SET summary = nullif(
           replace(
             replace(
               replace(
-                replace(
-                  regexp_replace(summary, '&#(39|039);', '''', 'g'),
-                  '&nbsp;', ' '
-                ),
+                replace(summary, '&nbsp;', ' '),
                 '&apos;', ''''
               ),
               '&quot;', '"'
@@ -88,8 +137,8 @@ WHERE summary IS NOT NULL
     OR summary ~ '[[:space:]]$'
   );
 
--- 4. A summary that was nothing but tags (`<p></p>`, a lone <img>) is now the
---    empty string, which step 3's WHERE does not match. Both are falsy to every
+-- 5. A summary that was nothing but tags (`<p></p>`, a lone <img>) is now the
+--    empty string, which step 4's WHERE does not match. Both are falsy to every
 --    consumer, but the parser writes NULL, so store NULL here too.
 UPDATE articles
 SET summary = NULL

@@ -365,9 +365,9 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 ### 驗證
 
-- `pytest`：539 passed（523 → 539，新增 16 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
-- `ng test`：80 passed（66 → 80，新增 `shared/html.spec.ts` 14 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
-- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 21 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+- `pytest`：540 passed（523 → 540，新增 17 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `ng test`：81 passed（66 → 81，新增 `shared/html.spec.ts` 15 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 26 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
 
 ### Codex review：不能把「引用了標籤的純文字」當成 HTML
 
@@ -427,6 +427,18 @@ prose：Use <strong>bold</strong> for emphasis
 順帶收緊了 void element 分支：改成 `[^><]*=[^><]*>`，要求標籤真的閉合且中間不能有 `<`。原本 `the <img tag is useful, x = 1` 這種沒閉合的散文會一路吃到後面不相干的 `=` 而被判成 markup。
 
 migration 在同一個 cluster 上用 21 列樣本重跑，新增的 5 列（引號內 `>`、`<pre>`、引號不成對、未閉合散文）三邊判定與 Python 端逐列一致。
+
+### Codex review 第五輪：數字實體（已修）
+
+migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，但解析器走的是 `html.unescape()`——它認得所有形式。feed 裡 `&#8217;`（彎引號）和 `&#8212;` / `&#x2014;`（破折號）滿地都是，而永遠不會再被 upsert 的舊資料列會一直在預覽裡顯示那串原始碼。
+
+新增 step 3：一個 `DO` 區塊逐列掃出數字實體並轉成字元（`migrate.py` 是整份檔案一次 execute，且 001/002/004/005/006 早就在用 `DO $$`，不會有語句切割問題）。排在具名實體之前，讓整體維持 `html.unescape()` 的**單次掃描**語意——雙重轉義的 `&amp;#8217;` 在這步找不到 `&#`，到 step 4 才變成看得見的文字 `&#8217;`，與 Python 一致。
+
+實作時自己踩到並修掉一個坑：**十六進位分支原本靜默失效**。`('x' || '2014')::bit(32)` 在 Postgres 是向**右**補零，得到 `0x20140000` 而不是 `0x2014`，超出 Unicode 範圍後被例外處理吞掉，`&#x2014;` 原封不動留著。要 `lpad(hex, 8, '0')` 才對。是實跑 26 列樣本才看見的，不是推理出來的。
+
+另外把「無效碼位」的行為對齊 Python：`&#0;`、`&#1114112;`、`&#xD800;` 這些 `chr()` 不接受的值，`html.unescape()` 產出 U+FFFD，migration 也照做。原本打算保留原始文字（其實比 `�` 好看），但那會讓「同一個 feed 的兩篇文章，一篇走 migration、一篇被重新 upsert」顯示不一樣——這種細微不一致以後會害人查半天，不值得。
+
+前端 `stripHtml()` 有同一個缺口，一併補上，並把具名 + 數字合併成單一 regex 的**一次掃描**（原本是多次 `replace` 串接），語意才真的與 Python 相同。
 
 ### 已知未處理
 

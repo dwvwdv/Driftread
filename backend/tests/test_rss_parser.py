@@ -255,6 +255,29 @@ def test_what_makes_a_value_a_document():
     assert rss_parser._looks_like_markup('<img alt="a > b">')
 
 
+def test_numeric_character_references_are_decoded():
+    """Feeds are full of `&#8217;` for a curly apostrophe and `&#8212;` /
+    `&#x2014;` for an em dash. html.unescape() handles every form, which is what
+    migration 009's backfill has to reproduce for rows that never get upserted
+    again — a fixed list of replacements cannot."""
+    assert rss_parser._plain_text("<p>It&#8217;s here &#8212; really&#x2014;yes</p>") == (
+        "It’s here — really—yes"
+    )
+    assert rss_parser._plain_text("&#72;&#101;&#108;&#108;&#111;") == "Hello"
+
+    # Invalid references become U+FFFD, not the source text. The migration
+    # mirrors this so a migrated row and a re-upserted one agree.
+    assert rss_parser._plain_text("bad &#0; &#1114112; &#xD800; refs") == (
+        "bad � � � refs"
+    )
+
+    # Double-escaped stays visible, same as the named-entity case: the decoding
+    # is a single pass, so `&amp;#8217;` yields the literal text `&#8217;`.
+    assert rss_parser._plain_text("double escaped &amp;#8217; here") == (
+        "double escaped &#8217; here"
+    )
+
+
 def test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup():
     """A documented limit of the discriminator, not an oversight.
 
