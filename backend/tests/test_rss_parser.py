@@ -278,6 +278,30 @@ def test_numeric_character_references_are_decoded():
     )
 
 
+def test_c1_numeric_references_use_the_windows_1252_table():
+    """html.unescape() does not treat a numeric reference in 0x80..0x9F as a
+    control character — per the HTML5 spec it substitutes the Windows-1252
+    character. Older feeds (anything downstream of Word) emit these constantly,
+    and migration 009 carries the same table so a backfilled row and a
+    re-upserted one agree."""
+    assert rss_parser._plain_text("&#151;dash") == "—dash"
+    assert rss_parser._plain_text("&#145;quote&#146;") == "‘quote’"
+    assert rss_parser._plain_text("&#128;euro") == "€euro"
+    assert rss_parser._plain_text("&#149;bullet") == "•bullet"
+
+
+def test_disallowed_control_references_are_dropped():
+    """Control characters other than tab/LF/FF/CR are dropped outright rather
+    than stored invisibly — `&#1;` contributes nothing, while `&#9;` becomes
+    whitespace and collapses."""
+    assert rss_parser._plain_text("X&#1;Y") == "XY"
+    assert rss_parser._plain_text("X&#11;Y") == "XY"
+    assert rss_parser._plain_text("X&#9;Y") == "X Y"
+    # Unicode noncharacters, every plane.
+    assert rss_parser._plain_text("X&#xFFFE;Y") == "XY"
+    assert rss_parser._plain_text("X&#x10FFFF;Y") == "XY"
+
+
 def test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup():
     """A documented limit of the discriminator, not an oversight.
 

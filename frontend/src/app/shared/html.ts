@@ -97,6 +97,37 @@ const NAMED_ENTITIES: Record<string, string> = {
  */
 const ENTITY_RE = /&(?:amp|lt|gt|quot|apos|nbsp|#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6});/g;
 
+/**
+ * Code points for 0x80..0x9F, in order.
+ *
+ * html.unescape() does not treat a numeric reference in the C1 range as a
+ * control character: per the HTML5 spec it substitutes the Windows-1252
+ * character, so `&#151;` is an em dash and `&#128;` is a euro sign. Older feeds
+ * — anything downstream of Word — emit these constantly. Generated from Python's
+ * html._invalid_charrefs rather than transcribed; five slots (0x81, 0x8D, 0x8F,
+ * 0x90, 0x9D) map to themselves, as in Python. Mirrors c1_map in migration 009.
+ */
+const C1_REPLACEMENTS = [
+  8364, 129, 8218, 402, 8222, 8230, 8224, 8225, 710, 8240, 352, 8249, 338, 141, 381, 143, 144, 8216,
+  8217, 8220, 8221, 8226, 8211, 8212, 732, 8482, 353, 8250, 339, 157, 382, 376,
+];
+
+/**
+ * Code points html.unescape() drops the reference for outright: control
+ * characters other than tab/LF/FF/CR, and the Unicode noncharacters. The last
+ * test covers 0xFFFE/0xFFFF in every plane, which is 17 ranges in one line.
+ */
+function isDroppedCodePoint(code: number): boolean {
+  return (
+    (code >= 0x01 && code <= 0x08) ||
+    code === 0x0b ||
+    (code >= 0x0e && code <= 0x1f) ||
+    code === 0x7f ||
+    (code >= 0xfdd0 && code <= 0xfdef) ||
+    (code & 0xfffe) === 0xfffe
+  );
+}
+
 function decodeEntity(entity: string): string {
   const named = NAMED_ENTITIES[entity];
   if (named !== undefined) return named;
@@ -104,9 +135,14 @@ function decodeEntity(entity: string): string {
   const body = entity.slice(2, -1);
   const code =
     body[0] === 'x' || body[0] === 'X' ? parseInt(body.slice(1), 16) : parseInt(body, 10);
-  // Out of range or a lone surrogate: html.unescape() yields U+FFFD, and the
-  // migration was aligned to it, so do the same here.
-  if (code < 1 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '�';
+
+  // Branch order is html.unescape()'s own and it matters: 0x80..0x9F is in both
+  // the C1 table and the dropped set, and the table has to win.
+  if (code === 0) return '�';
+  if (code === 0x0d) return '\r';
+  if (code >= 0x80 && code <= 0x9f) return String.fromCodePoint(C1_REPLACEMENTS[code - 0x80]);
+  if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '�';
+  if (isDroppedCodePoint(code)) return '';
   return String.fromCodePoint(code);
 }
 

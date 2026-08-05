@@ -101,6 +101,23 @@ describe('stripHtml', () => {
     expect(stripHtml('double escaped &amp;#8217; here')).toBe('double escaped &#8217; here');
   });
 
+  it('maps C1 references through the Windows-1252 table', () => {
+    // Per the HTML5 spec, 0x80..0x9F is not a control character here — it is
+    // cp1252 punctuation. Older feeds emit these constantly.
+    expect(stripHtml('&#151;dash')).toBe('—dash');
+    expect(stripHtml('&#145;quote&#146;')).toBe('‘quote’');
+    expect(stripHtml('&#128;euro')).toBe('€euro');
+    expect(stripHtml('&#149;bullet')).toBe('•bullet');
+  });
+
+  it('drops disallowed control references', () => {
+    expect(stripHtml('X&#1;Y')).toBe('XY');
+    expect(stripHtml('X&#11;Y')).toBe('XY');
+    expect(stripHtml('X&#9;Y')).toBe('X Y');
+    expect(stripHtml('X&#xFFFE;Y')).toBe('XY');
+    expect(stripHtml('X&#x10FFFF;Y')).toBe('XY');
+  });
+
   it('leaves plain text intact', () => {
     expect(stripHtml('if x < 3 and y > 2 then done')).toBe('if x < 3 and y > 2 then done');
   });

@@ -64,6 +64,20 @@ DECLARE
   txt     text;
   ent     text;
   code    int;
+  -- Code points for 0x80..0x9F, in order. html.unescape() does not treat a
+  -- numeric reference in the C1 range as a control character: per the HTML5
+  -- spec it substitutes the Windows-1252 character instead, so `&#151;` is an
+  -- em dash and `&#128;` is a euro sign. Older feeds — anything downstream of
+  -- Word — emit these constantly, and without the table a migrated row would
+  -- hold an invisible control character where a re-upserted one holds `—`.
+  -- Generated from Python's html._invalid_charrefs rather than transcribed.
+  -- Five slots (0x81, 0x8D, 0x8F, 0x90, 0x9D) map to themselves, as in Python.
+  c1_map  CONSTANT int[] := ARRAY[
+    8364,  129, 8218,  402, 8222, 8230, 8224, 8225,
+     710, 8240,  352, 8249,  338,  141,  381,  143,
+     144, 8216, 8217, 8220, 8221, 8226, 8211, 8212,
+     732, 8482,  353, 8250,  339,  157,  382,  376
+  ];
 BEGIN
   FOR row_id, txt IN
     SELECT id, summary FROM articles WHERE summary ~ '&#[xX]?[0-9a-fA-F]{1,7};'
@@ -80,13 +94,31 @@ BEGIN
         ELSE
           code := substring(ent from 3 for length(ent) - 3)::int;
         END IF;
-        -- chr() rejects NUL and anything past the Unicode range, and a lone
-        -- surrogate is not encodable in UTF-8. html.unescape() turns all of
-        -- these into U+FFFD, so do the same rather than leaving the source
-        -- text: two articles from one feed, one migrated and one re-upserted,
-        -- must not end up displaying differently.
-        IF code < 1 OR code > 1114111 OR code BETWEEN 55296 AND 57343 THEN
+        -- The branch order below is html.unescape()'s own, and it matters:
+        -- 0x80..0x9F is in *both* the C1 table and the invalid-code-point set,
+        -- and the table has to win. Two articles from one feed — one migrated,
+        -- one re-upserted — must not end up displaying differently.
+        IF code = 0 THEN
           txt := replace(txt, ent, chr(65533));
+        ELSIF code = 13 THEN
+          txt := replace(txt, ent, chr(13));
+        ELSIF code BETWEEN 128 AND 159 THEN
+          -- Postgres arrays are 1-based, so 0x80 lives at index 1.
+          txt := replace(txt, ent, chr(c1_map[code - 127]));
+        ELSIF code > 1114111 OR code BETWEEN 55296 AND 57343 THEN
+          -- Past the Unicode range, or a lone surrogate: not encodable.
+          txt := replace(txt, ent, chr(65533));
+        ELSIF code BETWEEN 1 AND 8
+           OR code = 11
+           OR code BETWEEN 14 AND 31
+           OR code = 127
+           OR code BETWEEN 64976 AND 65007          -- 0xFDD0..0xFDEF
+           OR (code & 65534) = 65534                -- 0xFFFE/0xFFFF in every plane
+        THEN
+          -- Control characters other than tab/LF/FF/CR, and the Unicode
+          -- noncharacters. html.unescape() drops the reference entirely; chr()
+          -- would happily store an invisible control character instead.
+          txt := replace(txt, ent, '');
         ELSE
           txt := replace(txt, ent, chr(code));
         END IF;
@@ -123,19 +155,22 @@ SET summary = nullif(
         ),
         '&amp;', '&'
       ),
-      '[[:space:]]+', ' ', 'g'
+      -- Postgres's [[:space:]] is narrower than Python's `\s`: it has U+3000 but
+      -- not NBSP, and none of the separators below. The E-string turns each
+      -- escape into the literal character before the regex sees it.
+      E'[[:space:]\\u001C-\\u001F\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F]+',
+      ' ', 'g'
     )
   ),
   ''
 )
-WHERE summary IS NOT NULL
-  AND (
-    summary ~ '&[a-zA-Z#][a-zA-Z0-9]*;'
-    -- The gaps step 2 leaves behind where tags used to be.
-    OR summary ~ '[[:space:]]{2}'
-    OR summary ~ '^[[:space:]]'
-    OR summary ~ '[[:space:]]$'
-  );
+-- Every row, deliberately. An earlier version narrowed this to rows with an
+-- entity, doubled whitespace, or leading/trailing whitespace — and silently
+-- skipped `line one<TAB>line two`, which has none of those but still needs
+-- normalizing. A one-time full pass costs a table rewrite the steps above are
+-- already paying for, and removes a whole class of "does the predicate cover
+-- this?" reasoning.
+WHERE summary IS NOT NULL;
 
 -- 5. A summary that was nothing but tags (`<p></p>`, a lone <img>) is now the
 --    empty string, which step 4's WHERE does not match. Both are falsy to every

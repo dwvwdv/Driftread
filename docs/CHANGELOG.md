@@ -365,9 +365,9 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 ### 驗證
 
-- `pytest`：540 passed（523 → 540，新增 17 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
-- `ng test`：81 passed（66 → 81，新增 `shared/html.spec.ts` 15 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
-- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 26 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+- `pytest`：542 passed（523 → 542，新增 19 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `ng test`：83 passed（66 → 83，新增 `shared/html.spec.ts` 17 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 638 列窮舉樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
 
 ### Codex review：不能把「引用了標籤的純文字」當成 HTML
 
@@ -439,6 +439,21 @@ migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，
 另外把「無效碼位」的行為對齊 Python：`&#0;`、`&#1114112;`、`&#xD800;` 這些 `chr()` 不接受的值，`html.unescape()` 產出 U+FFFD，migration 也照做。原本打算保留原始文字（其實比 `�` 好看），但那會讓「同一個 feed 的兩篇文章，一篇走 migration、一篇被重新 upsert」顯示不一樣——這種細微不一致以後會害人查半天，不值得。
 
 前端 `stripHtml()` 有同一個缺口，一併補上，並把具名 + 數字合併成單一 regex 的**一次掃描**（原本是多次 `replace` 串接），語意才真的與 Python 相同。
+
+### Codex review 第六輪：C1 範圍的數字實體（已修，並窮舉驗證）
+
+`&#151;`、`&#145;`、`&#128;` 這些 0x80–0x9F 的數字實體，`html.unescape()` **不當成控制字元**——依 HTML5 規範改用 Windows-1252 對應字元，所以 `&#151;` 是破折號、`&#128;` 是歐元符號。舊 feed（凡是經過 Word 的）滿地都是。migration 存 `chr(151)` 會塞一個看不見的控制字元進去。
+
+修法是把 Python 的 `html._invalid_charrefs` **程式產生**成 32 格對照表寫進 migration 與前端，不手抄——這種表手抄一定會錯。
+
+**這輪真正的收穫是驗證方式改了。** 前五輪都是拿手挑的樣本比對，這次改成**窮舉**：0–255 全部碼位、0xFDCE–0xFDF1、各平面邊界、surrogate、noncharacter、超範圍值，每個都跑十進位與十六進位兩種寫法，加上字面空白字元，共 638 列，逐列 base64 匯出後與 Python 輸出**逐位元組**比對。
+
+結果是它抓到兩個 Codex 沒提、我也沒想到的差異：
+
+1. **`_invalid_codepoints` 沒實作**。除了 tab/LF/FF/CR 以外的控制字元，`html.unescape()` 是**整個丟掉**引用，不是轉成字元。這一組加上 Unicode noncharacter 共 126 個碼位、22 個區間，但最後 17 個是 `0xNFFFE/0xNFFFF` 的規律，可以縮成一行 `(code & 0xFFFE) = 0xFFFE`。
+2. **step 4 的 WHERE 條件漏選**。原本為了避免整表重寫，只選「含實體 / 連續空白 / 首尾空白」的列——`line one<TAB>line two` 三個條件都不符合，於是那個 tab 永遠不會被正規化。這是我自己為了微優化而製造的 bug。**改成 `WHERE summary IS NOT NULL` 掃全表**：前三步本來就已經在重寫了，省這一次沒有意義，卻換來一整類「這個條件涵蓋到了嗎」的推理負擔。順帶補上 Postgres `[[:space:]]` 比 Python `\s`少的字元（NBSP 等）。
+
+第 2 點特別值得記：**聰明的 WHERE 條件是這個 migration 唯一一個「我自己寫壞、而且五輪 review 都沒抓到」的地方**，是窮舉才逼出來的。
 
 ### 已知未處理
 
