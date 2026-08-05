@@ -34,7 +34,7 @@ PR #14–#21（2026-07-23 ~ 07-30）是一連串安全與正確性修補，來�
 
 - **問題**：FastAPI / Starlette 會在任何 route 或 pydantic 驗證執行**之前**就把 request body 完整緩衝進記憶體。#14–#16 加的欄位長度限制都是在那之後才生效。也就是說任何 JSON POST 端點——包含公開免認證的 `POST /api/discover`、`POST /api/discover/import`——完全沒有 payload 大小限制。
 - **修法**：`backend/main.py` 新增 `MaxBodySizeMiddleware`，在讀 body 之前檢查 `Content-Length`，超過 `MAX_REQUEST_BODY_BYTES`（6 MiB，比 OPML 的 5 MiB 上限寬鬆，不影響正常匯入）直接回 `413`。註冊在 `CORSMiddleware` **之後**，因此是最外層（Starlette 先執行最後加入的 middleware），在 CORS 與路由做任何事之前就擋掉。
-- **已知限制**：只檢查 `Content-Length` header，涵蓋一般 JSON / multipart client；以 chunked transfer-encoding 串流且不帶 `Content-Length` 的請求不在此檢查範圍。
+- **已知限制（#27 已修）**：只檢查 `Content-Length` header，涵蓋一般 JSON / multipart client；以 chunked transfer-encoding 串流且不帶 `Content-Length` 的請求不在此檢查範圍。
 
 ### #18 — 公開探索端點沒有 rate limit（07-27）
 
@@ -253,11 +253,19 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **不動的部分**：`_is_safe_host()` / `validate_fetch_url()` 的判斷邏輯（private / loopback / link-local / multicast / reserved 檢查）與 #25 記載的 pin-and-connect（`PinnedTransport` 的第二道獨立解析）完全不動——這次只是把既有的第一道門從同步搬成非同步，不改變它判斷什麼、也不改變它與 pin-and-connect 之間「兩道各自獨立的門」的關係。
 - **測試**：`backend/tests/test_feed_discovery.py` 新增兩個回歸測試，沿用 #25 第九輪驗證阻塞行為的手法——`test_is_safe_host_runs_dns_resolution_off_the_event_loop` 用 `threading.Event` 讓假造的慢 `getaddrinfo()` 卡住，斷言事件迴圈仍能同時完成一個無關的 `asyncio.to_thread()` 工作，並斷言解析確實發生在 `pinned-dns-resolve` 執行緒（`_dns_resolver_executor` 的 thread name prefix），不是事件迴圈本身；`test_is_safe_host_rejects_dns_timeout` 斷言逾時回傳 `False`（`validate_fetch_url()` 因此拋 `DiscoveryError`），不是掛住或洩漏例外。既有測試（`test_normalize_url_*`、`test_is_safe_host_rejects_oversized_label_without_crashing`）全部改成 `async def` + `await`——`unittest.mock.patch()` 對已改成 `async def` 的目標會自動改用 `AsyncMock`，既有的 `return_value=` / `side_effect=`（含同步函式與例外實例）不必跟著改寫就能繼續正確運作。沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格。
 
+### #27 — `MaxBodySizeMiddleware` 只擋 `Content-Length`，chunked body 能繞過 6 MiB 上限（08-04）
+
+- **問題**：#17 補上的 body size 上限只檢查請求宣告的 `Content-Length` header，在 body 被讀取前擋掉超額請求。它從一開始就記錄了這個已知限制：以 chunked transfer-encoding 送出、不帶 `Content-Length` 的請求完全不受這道檢查約束。FastAPI/Starlette 在任何 route 或 pydantic 驗證執行前，仍會把整個 body 緩衝進記憶體——公開免認證的 `POST /api/discover`、`POST /api/discover/import` 因此仍是無上限的記憶體耗盡向量，只是換了個不帶 `Content-Length` 的請求形狀而已。
+- **第一版修法（CI 抓到問題）**：最初讓包裝過的 `receive()` 逐則 ASGI `http.request` 訊息累加位元組數，超過 `MAX_REQUEST_BODY_BYTES` 就拋自訂例外，指望它一路冒出 `self.app(...)` 讓外層 `try/except` 接住並回 413。這個假設是錯的：FastAPI 的 body 解析（`request.json()` / `request.body()` 那段）本身包了一層寬鬆的 `except Exception`，把讀 body 過程中冒出的任何例外（含這個自訂例外）都吞掉、轉成它自己的 `HTTPException(400, "There was an error parsing the body")` 送出——這是本專案沒有網路裝 `pytest` 前一直沒能實際跑過這條路徑而漏看的細節。CI（`.github/workflows/backend.yml` 的 `Test` job）第一次真的裝了完整依賴跑測試，新測試斷言 413 卻收到 400，當場抓到。
+- **修法**：不再依賴例外能不能原封不動地穿過 FastAPI 內部、活到我們自己的 `except` 為止——那是依賴套件的實作細節，不是這個介面承諾過的行為。改成：`limited_receive()` 累計超過上限時，不拋例外，而是回傳 `{"type": "http.disconnect"}`（之後每次呼叫都直接回同一個訊息，不再碰真正的 `receive`）；同時包一層 `guarded_send()`，一旦進入「已超額」狀態就吞掉 app 想送出的每一則訊息（不管是 FastAPI 自己那個 400、或任何其他錯誤處理器的產物），確保它們都到不了真正的 ASGI channel。`self.app(...)` 呼叫外圍仍有 `try/except Exception`（超額時吞掉、非超額時照常往外拋，維持既有的錯誤處理行為不變），但 413 真正送出的地方是 `finally` 區塊：只要判定超額而 `guarded_send` 期間沒有任何回應真的送出去過，就用**原始、未包裝**的 `send` 送出唯一、真正抵達 client 的 413。`Content-Length` 過大時仍走原本「讀 body 前」的早期回絕路徑，不受此次改動影響。
+- **測試**：`backend/tests/test_main.py` 新增 `test_oversized_chunked_body_without_content_length_rejected`——用產生器（generator）當 `httpx` 的請求內容，讓 client 端不知道長度而不送出 `Content-Length`；斷言收到 `413`、送出的請求確實沒有 `content-length` header（證明真的走了新的路徑而非舊的 header 檢查），且 `mock_db.table` 從未被呼叫（route 邏輯沒被觸發）。這個測試在 CI 裡實際跑過兩次：第一版實作跑出 `assert 400 == 413` 失敗，改用 send-guard 設計後重推、CI 轉綠，是這一輪唯一一次能在裝有完整依賴的環境下驗證過（而非只靠推理）的部分。沒有網路能在本 sandbox 安裝依賴，改用 CI 本身當驗證環境，本機仍以 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格。
+- **已知且刻意的範圍界線（同一輪 code review 抓到）**：串流計數只看得到 route 真的去要的 bytes——沒有宣告 body 欄位的 route（`GET /api/health`、或任何在 body 欄位被解析**之前**就被 auth dependency 擋下的請求）從頭到尾不會呼叫 `receive()`，宣告了一個超大 chunked body 但沒人讀它，不會被這道檢查轉成 413。**沒有跟進到「不管 route 讀不讀都主動把 stream 榨乾」**，是刻意的取捨而非漏改：要做到那樣，這個 middleware 得在背景搶著把 ASGI 的 `receive`（原本是單一消費者的 channel）讀乾淨，同時還要跟 app 自己可能發生的 `receive()` 呼叫協調誰先拿到哪一則訊息——複雜度與潛在的訊息順序 bug，遠不成比例地換來一個已經被其他層擋住的風險：本專案的 `api` 容器從不對外開 port（見 `main.py` 的 `ProxyHeadersMiddleware` 註解），唯一入口是 nginx，而 `frontend/nginx.conf` 沒有覆寫 `client_max_body_size`，代表 nginx 用內建預設值 **1 MiB**（比這裡的 6 MiB 更嚴）先擋一輪，chunked 與一般請求一視同仁；本機開發或未來若有其他方式直接打中 backend，才會真的碰到這個邊界。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
 |----|------|------|
-| Request 入口 | `Content-Length` > 6 MiB → 413（最外層 middleware） | `main.py::MaxBodySizeMiddleware` |
+| Request 入口 | `Content-Length` > 6 MiB → 413（讀 body 前）；未宣告或宣告不實時改由串流位元組計數兜底，超額同樣 413（見 #27）——最外層 middleware | `main.py::MaxBodySizeMiddleware` |
 | Client 識別 | `ProxyHeadersMiddleware(trusted_hosts="*")` + nginx `X-Forwarded-For $remote_addr` | `main.py`、`frontend/nginx.conf` |
 | 濫用防護 | 每 IP 每端點 20 req / 60s，追蹤上限 10k clients | `rate_limit.py` |
 | 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local——本身是 `async def`，解析走專屬、固定大小的執行緒池且受逾時約束，不會卡住事件迴圈（見 #26）；傳輸層 `PinnedTransport` 對實際連線目標做獨立的單次解析並驗證，關閉 #22 記載的 DNS rebinding check-then-fetch 缺口；該解析同樣受呼叫端配置的連線逾時約束，且在同一個專屬、固定大小的執行緒池執行，逾時後即使查詢仍在跑也不會佔用 app 其他地方共用的預設執行緒池（見 #25） | `services/feed_discovery.py` |
