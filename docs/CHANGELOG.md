@@ -365,9 +365,21 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 ### 驗證
 
-- `pytest`：531 passed（523 → 531，新增 8 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序）。
-- `ng test`：75 passed（66 → 75，新增 `shared/html.spec.ts` 9 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
-- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 9 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+- `pytest`：534 passed（523 → 534，新增 11 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面那條 review 修正的判定規則）。
+- `ng test`：77 passed（66 → 77，新增 `shared/html.spec.ts` 11 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 12 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+
+### Codex review：不能把「引用了標籤的純文字」當成 HTML
+
+判定 markup 的規則原本是「含有標籤形狀的東西」，Codex 指出這條規則會反過來吃掉資料。XML 規定兩者都必須轉義，所以文章本體送成 `&lt;p&gt;text&lt;/p&gt;`、和一句在講 HTML 的散文寫成 `Use &lt;p&gt; for paragraphs`，經過 XML parser 之後**長得一模一樣**——都帶著真的 `<` 字元。舊規則把後者判成 markup，於是 `_plain_text()` 會把那個 `<p>` 剝掉，前端 reader 也會把它丟進 `[innerHTML]` 讓瀏覽器吞掉。錯的方向很糟：**文字直接從畫面上消失**，而不只是難看。
+
+本 PR 自己的測試就寫出了會被踩到的值——`test_summary_decodes_entities_after_stripping_tags` 斷言 summary 是 `Tom & Jerry wrote <p>`，那正好會被前端啟發式判成 legacy markup 而吞掉結尾。
+
+**改用「有沒有結束標籤或自閉合標籤」當判準**（`_MARKUP_RE` / `MARKUP_RE` / migration 的同一條 regex）：會包住東西的 markup 一定有 `</x>` 或 `<x …/>`，而引用標籤名的散文幾乎不可能有。**有屬性刻意不算數**——講 HTML 的文章成天引用 `<a href="…">`。同一條規則同時套在三個地方：是不是要升格成 `content`、要不要剝標籤、以及前端走哪個渲染分支。剝標籤與升格都改成只對「真的是文件」的值動手，entity 解碼與空白收斂則兩種情況都照做。
+
+現在誤判的方向也翻過來了：漏判（例如整段只用 `<br>` 分行的 legacy 內容）最多是標籤露在畫面上，看得見、修得掉，不會靜悄悄弄丟東西。
+
+migration 也跟著拆成四步（升格 / 剝標籤 / 解 entity 與收空白 / 把只剩空字串的 summary 正規化成 NULL），並在同一個 PostgreSQL 16 cluster 上用 12 列樣本重跑：`Use <p> for paragraphs and <a href="…"> for links` 與單獨一個 `<p>` 都原封不動且不升格，`<img src="a.png"/>` 則正確判成文件。
 
 ### 已知未處理
 

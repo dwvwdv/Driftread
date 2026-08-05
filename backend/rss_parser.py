@@ -19,6 +19,20 @@ DC_NS = "http://purl.org/dc/elements/1.1/"
 # `/`, so prose like "if x < 3 and y > 2" is left alone. A greedy `<[^>]+>`
 # would eat the middle of that sentence.
 _TAG_RE = re.compile(r"<!--.*?-->|</?[a-zA-Z][^>]*>", re.DOTALL)
+# Tells an HTML *document* apart from prose that happens to mention a tag.
+#
+# The two are genuinely indistinguishable by the time we see them: XML requires
+# both to be escaped, so a body sent as `&lt;p&gt;text&lt;/p&gt;` and a sentence
+# written as `Use &lt;p&gt; for paragraphs` both arrive from the XML parser with
+# real `<` characters. Deciding on "contains a tag" got the sentence wrong, and
+# the failure was the bad direction — the text was stripped or fed to a renderer
+# that swallowed it, so it vanished from the page instead of merely looking ugly.
+#
+# A closing or self-closing tag is the discriminator: markup that encloses
+# anything has one, and prose quoting a tag name essentially never does. Note
+# that having an *attribute* is deliberately not enough — prose about HTML quotes
+# `<a href="…">` all the time.
+_MARKUP_RE = re.compile(r"</[a-zA-Z]|<[a-zA-Z][^>]*/>")
 # Their text is markup source, not readable prose — it has to go before tags
 # are stripped, or a stylesheet ends up inside the summary.
 _DROP_WHOLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
@@ -121,7 +135,7 @@ def _inner_html(el: ET.Element | None) -> str | None:
 
 
 def _looks_like_markup(s: str | None) -> bool:
-    return bool(s) and _TAG_RE.search(s) is not None
+    return bool(s) and _MARKUP_RE.search(s) is not None
 
 
 def _plain_text(markup: str | None) -> str | None:
@@ -131,12 +145,18 @@ def _plain_text(markup: str | None) -> str | None:
     fallback), so storing raw markup in it meant the tags showed up on screen
     verbatim. Nothing is truncated here — callers that want a short preview clamp
     it in CSS, and the reader still needs the whole thing when it is all we have.
+
+    Tags are only stripped from something that is actually a document. A blurb
+    reading "Use <p> for paragraphs" is already the plain text we want, and
+    stripping it would delete the one token the sentence is about.
     """
     if not markup:
         return None
-    text = _DROP_WHOLE_RE.sub(" ", markup)
-    text = _TAG_RE.sub(_tag_to_space, text)
-    # After the tags are gone, so a `&lt;p&gt;` that survived double-escaping
+    if _looks_like_markup(markup):
+        text = _TAG_RE.sub(_tag_to_space, _DROP_WHOLE_RE.sub(" ", markup))
+    else:
+        text = markup
+    # Unescaped last either way, so a `&lt;p&gt;` that survived double-escaping
     # upstream becomes visible text rather than being re-parsed as a tag.
     text = html_lib.unescape(text)
     text = _WS_RE.sub(" ", text).strip()

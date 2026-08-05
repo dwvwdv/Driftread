@@ -73,22 +73,46 @@ const ENTITIES: Record<string, string> = {
   '&nbsp;': ' ',
 };
 
-/** Non-global twin of TAG_RE: `.test()` on a /g regex carries lastIndex between calls. */
-const HAS_TAG_RE = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>/;
+/**
+ * Tells an HTML *document* apart from prose that happens to mention a tag.
+ *
+ * A plain summary can legitimately contain tag-shaped text — the parser stores
+ * "Use <p> for paragraphs" exactly like that, because that is what the publisher
+ * wrote. Deciding on "contains a tag" classified that sentence as legacy markup,
+ * and the failure ran the bad direction: the reader fed it to [innerHTML] and the
+ * bookmark row stripped it, so the `<p>` vanished from the page instead of merely
+ * looking ugly.
+ *
+ * A closing or self-closing tag is the discriminator: markup that encloses
+ * anything has one, and prose quoting a tag name essentially never does. Having
+ * an *attribute* is deliberately not enough — prose about HTML quotes
+ * `<a href="…">` all the time. Mirrors _MARKUP_RE in backend/rss_parser.py.
+ *
+ * Non-global on purpose: `.test()` on a /g regex carries lastIndex between calls.
+ */
+const MARKUP_RE = /<\/[a-zA-Z]|<[a-zA-Z][^>]*\/>/;
 
 export function looksLikeHtml(value: string | null | undefined): boolean {
-  return !!value && HAS_TAG_RE.test(value);
+  return !!value && MARKUP_RE.test(value);
 }
 
-/** Flatten HTML source to readable text. Returns '' for null/undefined. */
+/**
+ * Flatten HTML source to readable text. Returns '' for null/undefined.
+ *
+ * Tags are only stripped from something that is actually a document, for the
+ * reason above: stripping "Use <p> for paragraphs" would delete the one token
+ * the sentence is about.
+ */
 export function stripHtml(value: string | null | undefined): string {
   if (!value) return '';
-  const withoutTags = value.replace(DROP_WHOLE_RE, ' ').replace(TAG_RE, (tag) => {
-    const name = TAG_NAME_RE.exec(tag);
-    return name && BLOCK_TAGS.has(name[1].toLowerCase()) ? ' ' : '';
-  });
-  // Decoded only after the tags are gone, so a `&lt;p&gt;` that survived
-  // double-escaping upstream becomes visible text rather than a parsed tag.
+  const withoutTags = looksLikeHtml(value)
+    ? value.replace(DROP_WHOLE_RE, ' ').replace(TAG_RE, (tag) => {
+        const name = TAG_NAME_RE.exec(tag);
+        return name && BLOCK_TAGS.has(name[1].toLowerCase()) ? ' ' : '';
+      })
+    : value;
+  // Decoded last either way, so a `&lt;p&gt;` that survived double-escaping
+  // upstream becomes visible text rather than a parsed tag.
   return withoutTags
     .replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (e) => ENTITIES[e] ?? e)
     .replace(WS_RE, ' ')

@@ -171,6 +171,39 @@ def test_summary_decodes_entities_after_stripping_tags():
     assert parse_feed(xml).articles[0].summary == "Tom & Jerry wrote <p>"
 
 
+def test_prose_quoting_a_tag_is_not_markup():
+    """XML forces both a real body and a sentence *about* HTML to arrive escaped,
+    so they are indistinguishable by "contains a tag". Getting this wrong runs the
+    destructive direction: the `<p>` would be stripped out of the summary, and the
+    reader would hand the rest to [innerHTML], which swallows it."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>Use &lt;p&gt; for paragraphs and &lt;a href="…"&gt; for links</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content is None
+    assert article.summary == 'Use <p> for paragraphs and <a href="…"> for links'
+
+
+def test_a_closing_tag_is_what_makes_it_a_document():
+    """The discriminator, stated directly. An attribute is deliberately not
+    enough — prose about HTML quotes `<a href="…">` all the time."""
+    assert rss_parser._looks_like_markup("<p>body</p>")
+    assert rss_parser._looks_like_markup('<div><img src="a.png"/></div>')
+    assert rss_parser._looks_like_markup('<img src="a.png"/>')
+
+    assert not rss_parser._looks_like_markup("Use <p> for paragraphs")
+    assert not rss_parser._looks_like_markup('quote <a href="https://x"> like so')
+    assert not rss_parser._looks_like_markup("if x < 3 and y > 2")
+    assert not rss_parser._looks_like_markup("")
+
+
+def test_plain_text_leaves_tag_shaped_prose_alone():
+    assert rss_parser._plain_text("Use <p> for paragraphs") == "Use <p> for paragraphs"
+    assert rss_parser._plain_text("<p>Use <b>bold</b></p>") == "Use bold"
+
+
 def test_parse_rss_no_articles():
     xml = """<rss version="2.0"><channel><title>Empty</title><link>https://x.com</link></channel></rss>"""
     feed = parse_feed(xml)

@@ -1,16 +1,23 @@
 import { looksLikeHtml, stripHtml } from './html';
 
 describe('looksLikeHtml', () => {
-  it('recognises markup', () => {
+  it('recognises a document by its closing or self-closing tag', () => {
     expect(looksLikeHtml('<p>hi</p>')).toBe(true);
-    expect(looksLikeHtml('a <br> b')).toBe(true);
-    expect(looksLikeHtml('<!-- note -->')).toBe(true);
+    expect(looksLikeHtml('<div><img src="a.png"/></div>')).toBe(true);
+    expect(looksLikeHtml('<img src="a.png"/>')).toBe(true);
+  });
+
+  it('leaves prose that merely quotes a tag alone', () => {
+    // The reader picks its rendering branch on this, and a false positive runs
+    // the destructive direction: [innerHTML] would swallow the `<p>` the
+    // sentence is about, so the text disappears rather than just looking ugly.
+    // An attribute is deliberately not enough — prose about HTML quotes
+    // `<a href="…">` constantly.
+    expect(looksLikeHtml('Use <p> for paragraphs')).toBe(false);
+    expect(looksLikeHtml('quote <a href="https://x"> like so')).toBe(false);
   });
 
   it('leaves comparisons alone', () => {
-    // The reader picks its rendering branch on this. A false positive here
-    // would send a plain summary through [innerHTML], and the sanitizer would
-    // swallow "< 3 and y >" as if it were a tag.
     expect(looksLikeHtml('if x < 3 and y > 2 then done')).toBe(false);
     expect(looksLikeHtml('5 > 3')).toBe(false);
   });
@@ -48,6 +55,14 @@ describe('stripHtml', () => {
 
   it('leaves plain text intact', () => {
     expect(stripHtml('if x < 3 and y > 2 then done')).toBe('if x < 3 and y > 2 then done');
+  });
+
+  it('does not strip tag-shaped prose', () => {
+    // Stripping here would delete the one token the sentence is about.
+    expect(stripHtml('Use <p> for paragraphs')).toBe('Use <p> for paragraphs');
+    expect(stripHtml('quote <a href="https://x"> like so')).toBe(
+      'quote <a href="https://x"> like so',
+    );
   });
 
   it('collapses whitespace and returns empty for nothing', () => {
