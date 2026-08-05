@@ -332,3 +332,152 @@ initial bundle 從 607 kB 降到 503 kB，仍超出預設 500 kB 預算 3.31 kB�
 - **範圍比原先記錄的稍大**：檢查全部 7 個 migration 檔後發現 `004_enable_rls_on_public_tables.sql` 的兩個 `CREATE POLICY`（`feeds_public_read` / `articles_public_read`）同樣沒有防護。只修 001/002 沒有意義——修完之後從頭重跑仍會在 004 中止，等於沒解決「`_migrations` 被清空後可以安全重跑到底」這個實際目標，因此一併補上。003/005/006/007 本來就已是 `IF NOT EXISTS` / `DO`-guard / 純 `CREATE OR REPLACE FUNCTION`，不需要改動。
 - **修法**：`CREATE TRIGGER` 比照 006 的既有寫法，用 `DO $$ ... IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = ... AND tgrelid = '<table>'::regclass) THEN CREATE TRIGGER ... END IF; END $$;` 包住（001 的 `feeds_updated_at`、002 的 `user_preferences_updated_at`）。`CREATE POLICY` 用同樣的 `DO` 結構改查 `pg_policies`（依 `schemaname` / `tablename` / `policyname` 判斷），包住 002 的四個 owner policy 與 004 的兩個 public-read policy。判斷邏輯與被包住的 DDL 本身完全不動，純粹加上存在性檢查。
 - **驗證**：這個 sandbox 剛好裝有本機 `postgresql-16` 且 `psql` / `sudo` 可用，因此沒有停在「改完只能靠推理」——實際起了一個暫時 cluster、建好 `anon` / `authenticated` / `service_role` 三個角色與 `auth.users` / `auth.uid()`，依序套用全部 7 個 migration 檔（成功），接著清空 `_migrations` 並從 001 重新整個跑一遍：修改前的版本會如預期在 001 的 `CREATE TRIGGER feeds_updated_at` 那行炸掉（`trigger "feeds_updated_at" for relation "feeds" already exists`），精確重現了階段十記錄的既知限制；修改後的版本 7 個檔案全數重跑成功，且 `pg_trigger` / `pg_policies` 查詢確認 `feeds_updated_at`、`user_preferences_updated_at` 兩個 trigger 與六個 policy 都仍然只有一份、沒有重複建立。過程沒有動到 `backend/tests/`——現有測試套件裡沒有任何測試對這幾個 migration 檔的原始內容做斷言，也沒有能連真實 PostgreSQL 的既有 migration 測試（`migrate.py` 需要 `DATABASE_URL` 才會執行，pytest 套件走的是 mock 掉 Supabase client 的路徑）。
+
+## 階段十七：文章全文顯示成 HTML 原始碼（PR #32，2026-08-05）
+
+使用者回報在 `/articles/:id` 讀文章時整頁都是 `<p>` `<a href="…">` 這類標籤字面值，貼了一篇阮一峰《科技爱好者周刊》第 406 期作為範例。
+
+### 根因
+
+不在渲染層。`article-reader.html` 的主要分支一直是 `<div class="prose" [innerHTML]="a.content">`，會正常渲染；問題是**那個分支根本沒被走到**。
+
+`rss_parser.py` 的 RSS 解析把 `<description>` 原封不動塞進 `summary`，`content` 只從 `content:encoded` 取。阮一峰的 feed（以及非常多 feed）整篇文章就放在 `<description>` 裡、完全不送 `content:encoded`——於是 `content` 是 NULL，reader 落到 `@else if (a.summary)` 這條 **`{{ }}` 插值**的後備分支，Angular 依約把那串 HTML 逐字轉義輸出，標籤就上了畫面。`components/bookmarks` 的預覽行是同一個 `{{ article.summary }}`，症狀相同。
+
+順帶找到第二條會壞掉的路徑：`_text()` 只讀 `el.text`，也就是第一個子元素之前的文字。Atom 的 `type="xhtml"` content 是**真的子元素**而不是轉義字串，`.text` 只有子元素前的空白，所以那類 feed 的 `content` 一律被截成空字串——症狀是文章顯示「沒有快取內容」。
+
+### 修法
+
+**`backend/rss_parser.py`**——把 `content`（HTML）與 `summary`（純文字）的職責分清楚：
+
+- `_inner_html()` 取代 content/description 欄位上的 `_text()`。CDATA／轉義的 HTML 仍然原樣從 `.text` 取出不動；有子元素時（Atom xhtml）改用 `_serialize()` 遞迴輸出，剝掉命名空間前綴、void element 不補結束標籤——輸出必須是瀏覽器認得的 HTML，不是 `ET.tostring()` 那種 `<ns0:p xmlns:ns0="…">` 的 XML round-trip。
+- 沒有 `content:encoded`／Atom `<content>` 而 description／summary 本身是 markup 時，把它升格為 `content`。判定用的 `_TAG_RE` 刻意保守——`<` 後面必須接字母或 `/`，所以 `if x < 3 and y > 2` 這種純文字摘要不會被誤判成 markup 而升格。
+- `summary` 一律經過 `_plain_text()`：先整段丟掉 `<script>` / `<style>`（那是原始碼不是文章），再把 block 標籤換成空格、inline 標籤直接刪掉，最後才解 entity。**不做截斷**——`summary` 是純 blurb 的 feed 仍然需要完整內容當 reader 的後備。
+
+block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡記錄<a>開源</a>。</p>` 變成「這裡記錄 開源 。」，讀起來像打錯字。entity 放在剝標籤**之後**解，是為了讓上游雙重轉義殘留的 `&lt;p&gt;` 變成看得見的文字，而不是被重新當成標籤刪掉。
+
+**`backend/backfill.py`**——解析器只修得到之後再 upsert 的資料列，已經滑出 feed 視窗的舊文章永遠不會被再寫一次，所以歷史資料要回填。**回填直接呼叫解析器本身**（`_looks_like_markup()` / `_plain_text()`），不在 SQL 裡重寫一份規則；在 `main.py` 的 lifespan 於 migration 之後執行，記在同一張 `_migrations` 表。這個設計是走了冤枉路才定下來的，理由見下面第七輪。
+
+**前端**——後端修完之後 `summary` 就是純文字了，但這兩處仍加了防禦，因為回填跑之前、或任何未來又混進 markup 的情況下畫面不該再出現裸標籤：
+
+- 新增 `shared/html.ts`（`looksLikeHtml()` / `stripHtml()`），規則與後端逐條對齊，純字串處理不碰 DOM。
+- `article-reader` 的 summary 後備改成先判斷 `summaryIsHtml()`：是 markup 才走 `[innerHTML]`（一樣經 DomSanitizer，不用 `bypassSecurityTrust`），否則維持 `{{ }}`。**不無條件用 `[innerHTML]`**——純文字摘要裡的 `if x < 3` 會被 sanitizer 當成標籤開頭吞掉後半句。
+- `bookmarks` 的預覽行改吃預先算好的 `rows()`，`stripHtml()` 一份清單只跑一次；列表列是單行預覽，殘留 markup 應該變成文字而不是版面。
+
+### 驗證
+
+- `pytest`：548 passed（523 → 548，新增 19 個解析器測試與 6 個回填測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `ng test`：85 passed（66 → 85，新增 `shared/html.spec.ts` 19 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- 回填在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 16 列涵蓋前六輪每一個爭議案例的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+
+### Codex review：不能把「引用了標籤的純文字」當成 HTML
+
+判定 markup 的規則原本是「含有標籤形狀的東西」，Codex 指出這條規則會反過來吃掉資料。XML 規定兩者都必須轉義，所以文章本體送成 `&lt;p&gt;text&lt;/p&gt;`、和一句在講 HTML 的散文寫成 `Use &lt;p&gt; for paragraphs`，經過 XML parser 之後**長得一模一樣**——都帶著真的 `<` 字元。舊規則把後者判成 markup，於是 `_plain_text()` 會把那個 `<p>` 剝掉，前端 reader 也會把它丟進 `[innerHTML]` 讓瀏覽器吞掉。錯的方向很糟：**文字直接從畫面上消失**，而不只是難看。
+
+本 PR 自己的測試就寫出了會被踩到的值——`test_summary_decodes_entities_after_stripping_tags` 斷言 summary 是 `Tom & Jerry wrote <p>`，那正好會被前端啟發式判成 legacy markup 而吞掉結尾。
+
+**改用「有沒有結束標籤或自閉合標籤」當判準**（`_MARKUP_RE` / `MARKUP_RE` / migration 的同一條 regex）：會包住東西的 markup 一定有 `</x>` 或 `<x …/>`，而引用標籤名的散文幾乎不可能有。**有屬性刻意不算數**——講 HTML 的文章成天引用 `<a href="…">`。同一條規則同時套在三個地方：是不是要升格成 `content`、要不要剝標籤、以及前端走哪個渲染分支。剝標籤與升格都改成只對「真的是文件」的值動手，entity 解碼與空白收斂則兩種情況都照做。
+
+現在誤判的方向也翻過來了：漏判（例如整段只用 `<br>` 分行的 legacy 內容）最多是標籤露在畫面上，看得見、修得掉，不會靜悄悄弄丟東西。
+
+migration 也跟著拆成四步（升格 / 剝標籤 / 解 entity 與收空白 / 把只剩空字串的 summary 正規化成 NULL）。
+
+### Codex review 第二輪：沒有斜線的 void 標籤
+
+同一個 bot 接著指出 `<br>` / `<img>` 這種合法但沒有結束標籤也沒有 `/>` 的 void element 會被判成純文字。這條只對了一半，而且**兩輪 review 的方向是相反的**——把 bare `<br>` 收進 markup，等於把第一輪修掉的洞照原樣開回來（`use <br> to break lines` 會被剝成 `use  to break lines`）。
+
+拆開處理：
+
+- **收進來**：void element **帶屬性**的形式（`<img src="…">`、`<hr class="…">`）。圖片型部落格與網路漫畫的 description 常常就是一個 bare `<img>`，那張圖就是整篇文章；判成純文字的話 reader 會把標籤當文字印出來、圖片完全不顯示，這是真的會弄丟內容。限定在 void element 是關鍵——「有屬性就算數」會把 `<a href="…">` 一起收進去，那正是第一輪的地雷。
+- **繼續排除**：**沒有屬性的** bare void 標籤。`one<br>two` 確實是 markup，但 `use <br> to break lines` 也長一樣，兩者無法區分；只有後者猜錯會弄丟文字，所以平手時判給「不動它」。前者猜錯只是畫面上多一個 `<br>`，看得見、修得掉。
+
+三處（parser、前端、migration）同步更新，並在 PostgreSQL 16 上用 16 列樣本重跑確認三邊判定一致：`<img src="…" alt="today">` 與 `<IMG SRC="a.png">` 正確升格，`use <br> to break lines`、`one<br>two`、`Use <p> for paragraphs and <a href="…"> for links`、單獨一個 `<p>` 全部原封不動。
+
+### Codex review 第三輪：引用成對標籤的散文（未採納，已寫成測試記錄）
+
+第三輪指出 `Use &lt;strong&gt;bold&lt;/strong&gt; for emphasis` 這種引用**成對**標籤的散文會被判成文件。機制上正確，但這次沒有改，理由是實測之後可以確定它落在安全那一側：
+
+```
+prose：Use <strong>bold</strong> for emphasis
+  → content='Use <strong>bold</strong> for emphasis'  summary='Use bold for emphasis'
+真body：Hello <b>world</b>, welcome
+  → content='Hello <b>world</b>, welcome'             summary='Hello world, welcome'
+```
+
+兩者是**完全相同的字串形狀**，沒有任何規則能分開。而且成對標籤被誤判時**一個字都不會少**——`bold` 完整保留，只有兩個標籤 token 被吃掉；這正是第一輪那個空的 `<p>` 被排除的原因（剝掉會變成 `Use  for paragraphs`，句子壞掉）。
+
+反過來說，任何為了排除這句散文而收緊的規則，都會連帶排除 `Hello <b>world</b>, welcome` 這種 RSS 裡極常見的短內文，把它打回「畫面上顯示裸標籤」——那正是這個 PR 要修的原始 bug。三輪下來這條啟發式已經到達它的有效邊界，再收緊就是拿常見情況換罕見情況。
+
+決定寫成 `test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup`，把「知道、且刻意接受」釘在程式碼裡，而不是只留在 PR 討論串。
+
+### Codex review 第四輪：屬性值裡的 `>`（已修）
+
+這輪不是啟發式取捨，是實打實的字串處理 bug。`<p title="2 &gt; 1"&gt;` 是合法 HTML，但所有 tag pattern 都用 `[^>]*` 吃到第一個 `>` 為止——那個 `>` 在引號**裡面**，於是剩下的 `1">Hi` 被當成內文存進 `summary`：
+
+```
+修前：<p title="2 > 1">Hi</p>                    → summary='1">Hi'
+      <a href="x" title="a > b">link</a> tail    → summary='b">link tail'
+修後：                                            → 'Hi' / 'link tail'
+```
+
+改成走引號的 `_ATTRS = (?:[^>"']|"[^"]*"|'[^']*')*`，三處同步（`_TAG_RE` / `_DROP_WHOLE_RE` / `_MARKUP_RE`，前端與 migration 亦同）。兩個實作細節：
+
+- **三個分支的第一個字元互斥**（`"` 只由引號分支吃、`'` 同理、其餘由 `[^>"']`），所以星號是確定性的、不會指數回溯。feed 內容是遠端可控輸入，這是真的暴露面而非假想，因此補了計時測試（20000 字元的惡意輸入 < 1 秒）。
+- **保留原本的 `[^>]*` 當最後一個分支**，處理引號不成對的壞標籤（`<p title="unclosed>`）——走引號的版本比對不到它。順序不能反。
+
+順帶收緊了 void element 分支：改成 `[^><]*=[^><]*>`，要求標籤真的閉合且中間不能有 `<`。原本 `the <img tag is useful, x = 1` 這種沒閉合的散文會一路吃到後面不相干的 `=` 而被判成 markup。
+
+migration 在同一個 cluster 上用 21 列樣本重跑，新增的 5 列（引號內 `>`、`<pre>`、引號不成對、未閉合散文）三邊判定與 Python 端逐列一致。
+
+### Codex review 第五輪：數字實體（已修）
+
+migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，但解析器走的是 `html.unescape()`——它認得所有形式。feed 裡 `&#8217;`（彎引號）和 `&#8212;` / `&#x2014;`（破折號）滿地都是，而永遠不會再被 upsert 的舊資料列會一直在預覽裡顯示那串原始碼。
+
+新增 step 3：一個 `DO` 區塊逐列掃出數字實體並轉成字元（`migrate.py` 是整份檔案一次 execute，且 001/002/004/005/006 早就在用 `DO $$`，不會有語句切割問題）。排在具名實體之前，讓整體維持 `html.unescape()` 的**單次掃描**語意——雙重轉義的 `&amp;#8217;` 在這步找不到 `&#`，到 step 4 才變成看得見的文字 `&#8217;`，與 Python 一致。
+
+實作時自己踩到並修掉一個坑：**十六進位分支原本靜默失效**。`('x' || '2014')::bit(32)` 在 Postgres 是向**右**補零，得到 `0x20140000` 而不是 `0x2014`，超出 Unicode 範圍後被例外處理吞掉，`&#x2014;` 原封不動留著。要 `lpad(hex, 8, '0')` 才對。是實跑 26 列樣本才看見的，不是推理出來的。
+
+另外把「無效碼位」的行為對齊 Python：`&#0;`、`&#1114112;`、`&#xD800;` 這些 `chr()` 不接受的值，`html.unescape()` 產出 U+FFFD，migration 也照做。原本打算保留原始文字（其實比 `�` 好看），但那會讓「同一個 feed 的兩篇文章，一篇走 migration、一篇被重新 upsert」顯示不一樣——這種細微不一致以後會害人查半天，不值得。
+
+前端 `stripHtml()` 有同一個缺口，一併補上，並把具名 + 數字合併成單一 regex 的**一次掃描**（原本是多次 `replace` 串接），語意才真的與 Python 相同。
+
+### Codex review 第六輪：C1 範圍的數字實體（已修，並窮舉驗證）
+
+`&#151;`、`&#145;`、`&#128;` 這些 0x80–0x9F 的數字實體，`html.unescape()` **不當成控制字元**——依 HTML5 規範改用 Windows-1252 對應字元，所以 `&#151;` 是破折號、`&#128;` 是歐元符號。舊 feed（凡是經過 Word 的）滿地都是。migration 存 `chr(151)` 會塞一個看不見的控制字元進去。
+
+修法是把 Python 的 `html._invalid_charrefs` **程式產生**成 32 格對照表寫進 migration 與前端，不手抄——這種表手抄一定會錯。
+
+**這輪真正的收穫是驗證方式改了。** 前五輪都是拿手挑的樣本比對，這次改成**窮舉**：0–255 全部碼位、0xFDCE–0xFDF1、各平面邊界、surrogate、noncharacter、超範圍值，每個都跑十進位與十六進位兩種寫法，加上字面空白字元，共 638 列，逐列 base64 匯出後與 Python 輸出**逐位元組**比對。
+
+結果是它抓到兩個 Codex 沒提、我也沒想到的差異：
+
+1. **`_invalid_codepoints` 沒實作**。除了 tab/LF/FF/CR 以外的控制字元，`html.unescape()` 是**整個丟掉**引用，不是轉成字元。這一組加上 Unicode noncharacter 共 126 個碼位、22 個區間，但最後 17 個是 `0xNFFFE/0xNFFFF` 的規律，可以縮成一行 `(code & 0xFFFE) = 0xFFFE`。
+2. **step 4 的 WHERE 條件漏選**。原本為了避免整表重寫，只選「含實體 / 連續空白 / 首尾空白」的列——`line one<TAB>line two` 三個條件都不符合，於是那個 tab 永遠不會被正規化。這是我自己為了微優化而製造的 bug。**改成 `WHERE summary IS NOT NULL` 掃全表**：前三步本來就已經在重寫了，省這一次沒有意義，卻換來一整類「這個條件涵蓋到了嗎」的推理負擔。順帶補上 Postgres `[[:space:]]` 比 Python `\s`少的字元（NBSP 等）。
+
+第 2 點特別值得記：**聰明的 WHERE 條件是這個 migration 唯一一個「我自己寫壞、而且五輪 review 都沒抓到」的地方**，是窮舉才逼出來的。
+
+### Codex review 第七輪：兩個發現，一個共同根因（架構改掉）
+
+第七輪指出兩件事：
+
+1. **具名實體只解了六個**。`&rsquo;`、`&mdash;`、`&hellip;`、`&copy;` 這些常見的都沒解——Python 的 `html.unescape()` 認得 **2231 個**。
+2. **我的數字實體解碼不是單次掃描**。`&#38;` 就是 `&`，解開它會**製造出**一個新的 `&#8217;`，而 `SELECT DISTINCT` 沒有順序保證，後面那輪會把它也解掉。`X&#38;#8217; and &#8217;Y` 應該是 `X&#8217; and ’Y`，我的版本會變成 `X’ and ’Y`。
+
+兩條都對。但**第五、六、七輪（共四個發現）是同一個根因**：我在 PL/pgSQL 裡重寫 `html.unescape()`。每一輪都在補症狀——先是實體表不全、然後十六進位分支靜默失效、然後 C1 範圍存成控制字元、然後解碼會重掃自己的輸出。「2231 個具名實體」這個數字是最後一根稻草：真要對齊就得把 2231 筆表格產生進 SQL，再手寫一個單次掃描器。
+
+**改掉架構：回填不再用 SQL，改成 Python 直接呼叫解析器。**
+
+- 刪掉 `migrations/009_plain_text_article_summaries.sql`（145 行 PL/pgSQL）。
+- 新增 `backend/backfill.py`：用 server-side cursor 分批走過 `articles`，每列丟進 `_repair()`，而 `_repair()` 直接呼叫 `_looks_like_markup()` 與 `_plain_text()`。與解析器的一致性**由建構保證**，不是靠比對維持。
+- 在 `main.py` 的 lifespan 於 `run_migrations()` 之後呼叫，沿用同一張 `_migrations` 表追蹤，語意與既有 migration 完全一致（缺 `DATABASE_URL` 時只警告不中斷）。
+
+**前端同一個根因，同一種解法**：`stripHtml()` 的六筆具名實體表 + 手寫數字解碼 + C1 對照表 + 丟棄碼位集合（共約 60 行），全部換成把字串交給瀏覽器自己的 HTML parser——它**就是** HTML 規範的實作，2231 個實體、C1 代換、單次掃描全都內建。先把 `<` 轉義再丟進去，這一步是關鍵：既擋住殘留的標籤形狀文字被當成元素吃掉（`Use <p> for paragraphs` 是要保留的散文），也保證餵進去的是惰性文字。
+
+淨效果是**刪掉的程式碼比新增的多**，而且前六輪每一個爭議案例都仍然正確——16 列端到端樣本在真 PostgreSQL 上驗證，全部與解析器輸出一致。
+
+**已知且刻意的差異**：控制字元引用（`&#1;`）在前端會被**輸出**而非丟棄。HTML 規範說輸出（附帶 parse error），`html.unescape()` 比規範更嚴格、選擇丟棄。要對齊就得把剛剛刪掉的碼位表加回來，而它換不到任何東西——後端根本不會存下這種值（解析器在寫入前就丟掉了），而且兩種寫法在畫面上都是看不見的。已寫成測試 `emits control-character references, where Python drops them` 記錄。
+
+### 已知未處理
+
+`<p></p>` 這種只有空標籤的 description 會被升格成 `content`，reader 於是渲染出一個空的 `.prose` 而不顯示「前往原文閱讀」。沒有加「必須有文字才升格」的條件是刻意的：那條件會連帶把 `<p><img src="…"></p>` 這種只有圖片的 description（圖片部落格、網路漫畫很常見，而且圖片就是內文）也擋掉，代價比它換到的好處大。
+
+009 的第二段 UPDATE **不是冪等的**——entity 解碼本質上不可能冪等，重跑一次會把上游雙重轉義殘留的 `&lt;p&gt;` 再解一層變成 `<p>`。正常路徑不會踩到（`_migrations` 保證只跑一次），但階段十六提到有人手動清空過 `_migrations`；那種情況下這個檔案會對已經乾淨的 `summary` 多解一層。沒有為此加防護，因為判斷「這個 entity 是原文還是殘留」本身就沒有正確答案，而 refresh worker 之後的 upsert 會把值蓋回解析器算出的正確結果。

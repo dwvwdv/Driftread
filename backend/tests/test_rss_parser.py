@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from unittest.mock import patch
 
 import httpx
@@ -74,6 +75,271 @@ def test_parse_atom_feed():
     assert feed.articles[0].url == "https://atom.example.com/entry1"
     assert feed.articles[0].author == "Bob"
     assert feed.articles[0].published_at is not None
+
+
+def test_rss_description_markup_becomes_the_body():
+    """A feed whose <description> *is* the article (very common — no
+    content:encoded anywhere) used to leave `content` NULL, so the reader fell
+    through to its text-only summary branch and printed the markup as literal
+    tags on screen."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p&gt;第一段&lt;a href="https://g.com"&gt;連結&lt;/a&gt;。&lt;/p&gt;&lt;p&gt;第二段&lt;/p&gt;</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == '<p>第一段<a href="https://g.com">連結</a>。</p><p>第二段</p>'
+    # Flattened for display, and no space wedged in around the inline <a> —
+    # that reads as a typo in Chinese ("第一段 連結 。").
+    assert article.summary == "第一段連結。 第二段"
+
+
+def test_rss_content_encoded_still_wins_over_description():
+    xml = """<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+      <channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p&gt;short blurb&lt;/p&gt;</description>
+        <content:encoded>&lt;p&gt;the whole article&lt;/p&gt;</content:encoded>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == "<p>the whole article</p>"
+    assert article.summary == "short blurb"
+
+
+def test_plain_text_description_is_left_alone():
+    """The `<` here opens no tag. A greedy tag-stripper would eat the middle of
+    the sentence, and promoting this to `content` would drop the reader's
+    "go read the original" fallback for a feed that only ships blurbs."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>if x &lt; 3 and y &gt; 2 then done</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content is None
+    assert article.summary == "if x < 3 and y > 2 then done"
+
+
+def test_image_only_description_becomes_the_body():
+    """Photo blogs and webcomics: the image *is* the article, and it routinely
+    arrives as a bare `<img>` with no closing or self-closing tag. Left
+    unpromoted, the reader would print the tag as text and show no picture."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;img src="https://x.com/today.png" alt="today"&gt;</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == '<img src="https://x.com/today.png" alt="today">'
+    assert article.summary is None
+
+
+def test_summary_drops_script_and_style_bodies():
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;style&gt;p{color:red}&lt;/style&gt;&lt;p&gt;Hi&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;</description>
+      </item></channel></rss>"""
+    assert parse_feed(xml).articles[0].summary == "Hi"
+
+
+def test_atom_xhtml_content_is_serialized_not_truncated():
+    """Atom's type="xhtml" delivers the body as real child elements. Reading
+    only `.text` returned the whitespace before the first child, i.e. nothing —
+    the article looked like it had no cached content at all."""
+    xml = """<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>
+      <entry><title>E</title><link href="https://a.com/1" rel="alternate"/>
+        <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Hello <b>world</b></p><br/><img src="a.png"/></div></content>
+      </entry></feed>"""
+    article = parse_feed(xml).articles[0]
+
+    # Namespaces stripped and void elements left unclosed: this has to be HTML a
+    # browser will render, not the XML round-trip ET.tostring() would produce.
+    assert article.content == '<div><p>Hello <b>world</b></p><br><img src="a.png"></div>'
+    assert article.summary == "Hello world"
+
+
+def test_atom_markup_summary_becomes_the_body():
+    xml = """<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>
+      <entry><title>E</title><link href="https://a.com/1" rel="alternate"/>
+        <summary>&lt;p&gt;the whole entry&lt;/p&gt;</summary>
+      </entry></feed>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == "<p>the whole entry</p>"
+    assert article.summary == "the whole entry"
+
+
+def test_atom_plain_summary_is_not_promoted():
+    article = parse_feed(ATOM_SAMPLE).articles[0]
+    assert article.content is None
+    assert article.summary == "Atom entry summary"
+
+
+def test_summary_decodes_entities_after_stripping_tags():
+    """Order matters: a `&lt;p&gt;` that survived double-escaping upstream must
+    end up as visible text, not be re-read as a tag and deleted."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p&gt;Tom &amp;amp; Jerry wrote &amp;lt;p&amp;gt;&lt;/p&gt;</description>
+      </item></channel></rss>"""
+    assert parse_feed(xml).articles[0].summary == "Tom & Jerry wrote <p>"
+
+
+def test_prose_quoting_a_tag_is_not_markup():
+    """XML forces both a real body and a sentence *about* HTML to arrive escaped,
+    so they are indistinguishable by "contains a tag". Getting this wrong runs the
+    destructive direction: the `<p>` would be stripped out of the summary, and the
+    reader would hand the rest to [innerHTML], which swallows it."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>Use &lt;p&gt; for paragraphs and &lt;a href="…"&gt; for links</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content is None
+    assert article.summary == 'Use <p> for paragraphs and <a href="…"> for links'
+
+
+def test_quoted_angle_bracket_in_an_attribute_does_not_leak_into_the_summary():
+    """`<p title="2 > 1">` is valid HTML. A `[^>]*` tag pattern stopped at the
+    `>` inside the quoted value and called the remainder text, so the summary
+    persisted as `1">Hi` — attribute source on screen as prose."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p title="2 &gt; 1"&gt;Hi&lt;/p&gt;</description>
+      </item></channel></rss>"""
+    assert parse_feed(xml).articles[0].summary == "Hi"
+
+    assert rss_parser._plain_text('<a href="x" title="a > b">link</a> tail') == "link tail"
+    assert rss_parser._plain_text("<p title='2 > 1'>Hi</p>") == "Hi"
+    # An unbalanced quote can't be walked, so a plain `[^>]*` branch still has to
+    # be there to catch it.
+    assert rss_parser._plain_text('<p title="unclosed>Hi</p>') == "Hi"
+
+
+def test_tag_stripping_does_not_backtrack_on_hostile_input():
+    """The quote-aware alternatives are mutually exclusive on their first
+    character, which is what keeps the star from going exponential. A feed body
+    is remote attacker-controlled input, so this is a real exposure, not
+    hypothetical."""
+    started = time.monotonic()
+    rss_parser._plain_text("<p " + 'a="' * 20000)
+    rss_parser._plain_text("<p " + "x" * 20000)
+    assert time.monotonic() - started < 1.0
+
+
+def test_what_makes_a_value_a_document():
+    """The discriminator, stated directly: a closing tag, an explicitly
+    self-closed tag, or a void element carrying an attribute."""
+    assert rss_parser._looks_like_markup("<p>body</p>")
+    assert rss_parser._looks_like_markup('<div><img src="a.png"/></div>')
+    assert rss_parser._looks_like_markup('<img src="a.png"/>')
+    # No slash, no closing tag — but an image-only description *is* the article
+    # on a photo blog, and dropping it would lose the whole item.
+    assert rss_parser._looks_like_markup('<img src="a.png">')
+    assert rss_parser._looks_like_markup('<IMG SRC="a.png">')
+    assert rss_parser._looks_like_markup('<hr class="rule">')
+
+    assert not rss_parser._looks_like_markup("Use <p> for paragraphs")
+    assert not rss_parser._looks_like_markup("if x < 3 and y > 2")
+    assert not rss_parser._looks_like_markup("")
+    # Void-element attributes count; attributes in general do not. Tech writing
+    # quotes `<a href="…">` constantly, and treating that as markup is what
+    # deletes the token the sentence is about.
+    assert not rss_parser._looks_like_markup('quote <a href="https://x"> like so')
+    # The void branch needs the tag to close with no `<` in between, or an
+    # unrelated `=` further down an unclosed sentence counts as an attribute.
+    assert not rss_parser._looks_like_markup("the <img tag is useful, x = 1")
+    # …while a genuine one still counts even with a `>` inside the attribute.
+    assert rss_parser._looks_like_markup('<img alt="a > b">')
+
+
+def test_numeric_character_references_are_decoded():
+    """Feeds are full of `&#8217;` for a curly apostrophe and `&#8212;` /
+    `&#x2014;` for an em dash. html.unescape() handles every form, which is what
+    migration 009's backfill has to reproduce for rows that never get upserted
+    again — a fixed list of replacements cannot."""
+    assert rss_parser._plain_text("<p>It&#8217;s here &#8212; really&#x2014;yes</p>") == (
+        "It’s here — really—yes"
+    )
+    assert rss_parser._plain_text("&#72;&#101;&#108;&#108;&#111;") == "Hello"
+
+    # Invalid references become U+FFFD, not the source text. The migration
+    # mirrors this so a migrated row and a re-upserted one agree.
+    assert rss_parser._plain_text("bad &#0; &#1114112; &#xD800; refs") == (
+        "bad � � � refs"
+    )
+
+    # Double-escaped stays visible, same as the named-entity case: the decoding
+    # is a single pass, so `&amp;#8217;` yields the literal text `&#8217;`.
+    assert rss_parser._plain_text("double escaped &amp;#8217; here") == (
+        "double escaped &#8217; here"
+    )
+
+
+def test_c1_numeric_references_use_the_windows_1252_table():
+    """html.unescape() does not treat a numeric reference in 0x80..0x9F as a
+    control character — per the HTML5 spec it substitutes the Windows-1252
+    character. Older feeds (anything downstream of Word) emit these constantly,
+    and migration 009 carries the same table so a backfilled row and a
+    re-upserted one agree."""
+    assert rss_parser._plain_text("&#151;dash") == "—dash"
+    assert rss_parser._plain_text("&#145;quote&#146;") == "‘quote’"
+    assert rss_parser._plain_text("&#128;euro") == "€euro"
+    assert rss_parser._plain_text("&#149;bullet") == "•bullet"
+
+
+def test_disallowed_control_references_are_dropped():
+    """Control characters other than tab/LF/FF/CR are dropped outright rather
+    than stored invisibly — `&#1;` contributes nothing, while `&#9;` becomes
+    whitespace and collapses."""
+    assert rss_parser._plain_text("X&#1;Y") == "XY"
+    assert rss_parser._plain_text("X&#11;Y") == "XY"
+    assert rss_parser._plain_text("X&#9;Y") == "X Y"
+    # Unicode noncharacters, every plane.
+    assert rss_parser._plain_text("X&#xFFFE;Y") == "XY"
+    assert rss_parser._plain_text("X&#x10FFFF;Y") == "XY"
+
+
+def test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup():
+    """A documented limit of the discriminator, not an oversight.
+
+    "Use <strong>bold</strong> for emphasis" is prose, but it is the same string
+    shape as "Hello <b>world</b>, welcome" — an ordinary short RSS body — so no
+    rule separates them. Excluding it would send real bodies back to rendering as
+    literal tags, which is the bug this module exists to fix.
+
+    It is safe to get wrong precisely because the tag is *paired*: every word
+    survives, and only the two tag tokens go. That is why the empty `<p>` case is
+    excluded instead — stripping it leaves "Use  for paragraphs".
+    """
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>Use &lt;strong&gt;bold&lt;/strong&gt; for emphasis</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == "Use <strong>bold</strong> for emphasis"
+    assert article.summary == "Use bold for emphasis"
+
+    # The shape it cannot be told apart from, asserted side by side.
+    assert rss_parser._looks_like_markup("Hello <b>world</b>, welcome")
+
+
+def test_a_bare_void_tag_is_left_as_text():
+    """"one<br>two" really is markup, but so is "use <br> to break lines", and
+    the two are indistinguishable. Only the second loses text if we guess wrong,
+    so the tie goes to leaving it alone: misjudging the first just shows a `<br>`
+    on screen, which is visible and fixable."""
+    assert not rss_parser._looks_like_markup("one<br>two")
+    assert not rss_parser._looks_like_markup("use <br> to break lines")
+    assert rss_parser._plain_text("use <br> to break lines") == "use <br> to break lines"
+
+
+def test_plain_text_leaves_tag_shaped_prose_alone():
+    assert rss_parser._plain_text("Use <p> for paragraphs") == "Use <p> for paragraphs"
+    assert rss_parser._plain_text("<p>Use <b>bold</b></p>") == "Use bold"
 
 
 def test_parse_rss_no_articles():

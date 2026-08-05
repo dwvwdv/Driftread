@@ -4,6 +4,7 @@ import {
   Component,
   OnInit,
   WritableSignal,
+  computed,
   effect,
   inject,
   signal,
@@ -15,6 +16,7 @@ import { AuthService } from '../../services/auth';
 import { Article, BookmarkType } from '../../models';
 import { ObIcon } from '../../ui/icon/icon';
 import { ObLoading, ObError } from '../../ui/state/state';
+import { looksLikeHtml } from '../../shared/html';
 
 /**
  * Full-text reader.
@@ -42,6 +44,17 @@ export class ArticleReader implements OnInit {
   error = signal('');
   favorited = signal(false);
   readLater = signal(false);
+
+  /**
+   * Whether the summary fallback has to be rendered as HTML rather than text.
+   *
+   * The parser now stores plain text in `summary`, but rows written before that
+   * still hold the publisher's markup, and an article that has scrolled out of
+   * its feed's window never gets re-upserted. Checked rather than always using
+   * [innerHTML]: a genuinely plain summary containing "if x < 3" would have the
+   * rest of the sentence swallowed as a tag.
+   */
+  summaryIsHtml = computed(() => looksLikeHtml(this.article()?.summary));
 
   /** Bookmark types the reader has toggled — see applyBookmarkState. */
   private touched = new Set<BookmarkType>();

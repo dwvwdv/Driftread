@@ -1,0 +1,163 @@
+/**
+ * Text-side handling of feed HTML.
+ *
+ * `Article.summary` is a *text* field — bookmark rows and the reader's
+ * no-content fallback print it through interpolation. The parser now stores
+ * plain text there (backend/rss_parser.py), but rows written before that fix
+ * still hold whichever markup the publisher put in <description>, and an article
+ * that has since scrolled out of its feed's window will never be re-upserted.
+ * These helpers keep those rows readable instead of showing `<p>` on screen.
+ *
+ * Kept as string work rather than DOMParser so the same rules apply wherever
+ * this runs, and so it stays cheap enough to call from a template binding.
+ */
+
+// Everything between a tag's name and its closing `>`, quote-aware.
+//
+// An attribute value may legally contain a raw `>` (`<p title="2 > 1">`), and a
+// plain `[^>]*` stopped at that inner one, leaving `1">Hi` behind as "text". The
+// three alternatives are mutually exclusive on their first character, so the
+// star is deterministic and cannot backtrack exponentially on hostile input.
+// Mirrors _ATTRS in backend/rss_parser.py.
+const ATTRS = `(?:[^>"']|"[^"]*"|'[^']*')*`;
+
+// The opening `<` must be followed by a letter or `/`, so prose like
+// "if x < 3 and y > 2" survives intact. The plain `[^>]*` form is kept as a last
+// alternative for a tag with an unbalanced quote (`<p title="unclosed>`), which
+// the quote-aware form cannot match — it has to come second.
+const TAG_RE = new RegExp(`<!--[\\s\\S]*?-->|</?[a-zA-Z]${ATTRS}>|</?[a-zA-Z][^>]*>`, 'g');
+const DROP_WHOLE_RE = new RegExp(`<(script|style)\\b${ATTRS}>[\\s\\S]*?</\\1\\s*>`, 'gi');
+const TAG_NAME_RE = /^<\/?\s*([a-zA-Z][a-zA-Z0-9]*)/;
+const WS_RE = /\s+/g;
+
+/**
+ * Tags that imply a break in the text. Everything else is inline and is removed
+ * outright — `<a>` and `<em>` sit inside a word, and turning them into spaces
+ * sprayed gaps through Chinese text ("这里记录 开源 。").
+ */
+const BLOCK_TAGS = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'br',
+  'dd',
+  'div',
+  'dl',
+  'dt',
+  'figcaption',
+  'figure',
+  'footer',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hr',
+  'li',
+  'main',
+  'nav',
+  'ol',
+  'p',
+  'pre',
+  'section',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'ul',
+]);
+
+/**
+ * Decode HTML entities by handing the string to the platform's own HTML parser.
+ *
+ * This used to be a six-entry lookup table plus hand-rolled numeric decoding,
+ * and every review pass found another way it diverged from Python's
+ * html.unescape(): missing named entities (`&rsquo;`, `&mdash;` — there are 2231
+ * of them), the Windows-1252 substitutions for the C1 range, the code points
+ * whose reference is dropped outright, and single-pass scanning. The browser
+ * already implements all of that, because it *is* the HTML spec. Same reasoning
+ * as backend/backfill.py calling the parser instead of restating it in SQL.
+ *
+ * `<` is escaped first, which is load-bearing twice over. It stops any residual
+ * tag-shaped text from being parsed as an element — "Use <p> for paragraphs" is
+ * prose we deliberately preserve, and the parser would otherwise swallow the
+ * `<p>`. And it guarantees the input is inert text: no elements means nothing to
+ * fetch a resource. (DOMParser never executes script in any case.)
+ */
+const parser = new DOMParser();
+
+function decodeEntities(value: string): string {
+  if (!value.includes('&')) return value;
+  const inert = value.replace(/</g, '&lt;');
+  return parser.parseFromString(inert, 'text/html').documentElement.textContent ?? '';
+}
+
+const VOID_ELEMENTS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr';
+
+/**
+ * Tells an HTML *document* apart from prose that happens to mention a tag.
+ *
+ * A plain summary can legitimately contain tag-shaped text — the parser stores
+ * "Use <p> for paragraphs" exactly like that, because that is what the publisher
+ * wrote. Deciding on "contains a tag" classified that sentence as legacy markup,
+ * and the failure ran the bad direction: the reader fed it to [innerHTML] and the
+ * bookmark row stripped it, so the `<p>` vanished from the page instead of merely
+ * looking ugly.
+ *
+ * Three shapes count, and the asymmetry above is why the list stops where it does:
+ *
+ *   `</x>`         a closing tag. Markup that encloses anything has one; prose
+ *                  quoting a tag name essentially never does.
+ *   `<x …/>`       explicitly self-closed.
+ *   `<img src=…>`  a void element *carrying an attribute*. This is what makes an
+ *                  image-only summary work — common on photo blogs and webcomics,
+ *                  where the image is the article. Restricted to void elements on
+ *                  purpose: "an attribute" on its own would swallow prose quoting
+ *                  `<a href="…">`, which tech writing does daily.
+ *
+ * A *bare* void tag stays out. "one<br>two" really is markup, but so is "use
+ * <br> to break lines", and only the second one loses text if we guess wrong.
+ * Misjudging the first only shows a `<br>` on screen: visible, and fixable.
+ *
+ * The void-element branch requires the tag to actually close with no `<`
+ * intervening; without both, unclosed prose like "the <img tag is useful, x = 1"
+ * reaches an unrelated `=` further down the sentence and gets called markup.
+ *
+ * Mirrors _MARKUP_RE in backend/rss_parser.py.
+ *
+ * Non-global on purpose: `.test()` on a /g regex carries lastIndex between calls.
+ */
+const MARKUP_RE = new RegExp(
+  `</[a-zA-Z]|<[a-zA-Z]${ATTRS}/>|<(?:${VOID_ELEMENTS})\\b[^><]*=[^><]*>`,
+  'i',
+);
+
+export function looksLikeHtml(value: string | null | undefined): boolean {
+  return !!value && MARKUP_RE.test(value);
+}
+
+/**
+ * Flatten HTML source to readable text. Returns '' for null/undefined.
+ *
+ * Tags are only stripped from something that is actually a document, for the
+ * reason above: stripping "Use <p> for paragraphs" would delete the one token
+ * the sentence is about.
+ */
+export function stripHtml(value: string | null | undefined): string {
+  if (!value) return '';
+  const withoutTags = looksLikeHtml(value)
+    ? value.replace(DROP_WHOLE_RE, ' ').replace(TAG_RE, (tag) => {
+        const name = TAG_NAME_RE.exec(tag);
+        return name && BLOCK_TAGS.has(name[1].toLowerCase()) ? ' ' : '';
+      })
+    : value;
+  // Decoded last either way, so a `&lt;p&gt;` that survived double-escaping
+  // upstream becomes visible text rather than a parsed tag.
+  return decodeEntities(withoutTags).replace(WS_RE, ' ').trim();
+}
