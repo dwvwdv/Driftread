@@ -1,4 +1,5 @@
 import random
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from supabase import Client
@@ -180,13 +181,13 @@ def _fetch_candidate_pool(
     dependencies=[Depends(rate_limit("recommendations"))],
 )
 async def get_recommendations(
-    liked: list[str] = Query(default=[], max_length=50),
-    disliked: list[str] = Query(default=[], max_length=50),
+    liked: list[UUID] = Query(default=[], max_length=50),
+    disliked: list[UUID] = Query(default=[], max_length=50),
     limit: int = Query(10, ge=1, le=50),
     user: AuthUser | None = Depends(get_optional_user),
     db: Client = Depends(get_client),
 ) -> list[Feed]:
-    excluded: set[str] = set(liked) | set(disliked)
+    excluded: set[str] = {str(u) for u in liked} | {str(u) for u in disliked}
     categories: set[str] = set()
     tags: set[str] = set()
     languages: set[str] = set()
@@ -204,7 +205,7 @@ async def get_recommendations(
         liked_rows = (
             db.table("feeds")
             .select("category, tags, language")
-            .in_("id", liked)
+            .in_("id", [str(u) for u in liked])
             .execute()
         )
         for row in liked_rows.data:

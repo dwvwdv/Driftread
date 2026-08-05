@@ -377,3 +377,20 @@ def test_limit_out_of_bounds_is_rejected(client, limit):
     c, _ = client
     resp = c.get("/api/recommendations", params={"limit": limit})
     assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("param", ["liked", "disliked"])
+def test_malformed_id_in_liked_or_disliked_is_rejected(client, param):
+    """`feeds.id` is a UUID column (migration 001); before this fix `liked`/
+    `disliked` were plain `list[str]`, so a non-UUID value sailed through
+    request validation and reached `.in_("id", ...)` and the
+    `sample_feed_candidates` RPC's `uuid[]` parameter untouched — a type
+    cast Postgres would reject, surfacing as an unhandled 500 with no
+    exception handler anywhere in backend/ to turn it into a clean 4xx.
+    Typing the params `list[UUID]` makes FastAPI/pydantic reject a
+    malformed value with 422 before any DB call fires."""
+    c, mock_db = client
+    resp = c.get("/api/recommendations", params={param: "not-a-uuid"})
+    assert resp.status_code == 422
+    mock_db.table.assert_not_called()
+    mock_db.rpc.assert_not_called()

@@ -261,6 +261,13 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **測試**：`backend/tests/test_main.py` 新增 `test_oversized_chunked_body_without_content_length_rejected`——用產生器（generator）當 `httpx` 的請求內容，讓 client 端不知道長度而不送出 `Content-Length`；斷言收到 `413`、送出的請求確實沒有 `content-length` header（證明真的走了新的路徑而非舊的 header 檢查），且 `mock_db.table` 從未被呼叫（route 邏輯沒被觸發）。這個測試在 CI 裡實際跑過兩次：第一版實作跑出 `assert 400 == 413` 失敗，改用 send-guard 設計後重推、CI 轉綠，是這一輪唯一一次能在裝有完整依賴的環境下驗證過（而非只靠推理）的部分。沒有網路能在本 sandbox 安裝依賴，改用 CI 本身當驗證環境，本機仍以 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格。
 - **已知且刻意的範圍界線（同一輪 code review 抓到）**：串流計數只看得到 route 真的去要的 bytes——沒有宣告 body 欄位的 route（`GET /api/health`、或任何在 body 欄位被解析**之前**就被 auth dependency 擋下的請求）從頭到尾不會呼叫 `receive()`，宣告了一個超大 chunked body 但沒人讀它，不會被這道檢查轉成 413。**沒有跟進到「不管 route 讀不讀都主動把 stream 榨乾」**，是刻意的取捨而非漏改：要做到那樣，這個 middleware 得在背景搶著把 ASGI 的 `receive`（原本是單一消費者的 channel）讀乾淨，同時還要跟 app 自己可能發生的 `receive()` 呼叫協調誰先拿到哪一則訊息——複雜度與潛在的訊息順序 bug，遠不成比例地換來一個已經被其他層擋住的風險：本專案的 `api` 容器從不對外開 port（見 `main.py` 的 `ProxyHeadersMiddleware` 註解），唯一入口是 nginx，而 `frontend/nginx.conf` 沒有覆寫 `client_max_body_size`，代表 nginx 用內建預設值 **1 MiB**（比這裡的 6 MiB 更嚴）先擋一輪，chunked 與一般請求一視同仁；本機開發或未來若有其他方式直接打中 backend，才會真的碰到這個邊界。
 
+### #28 — `GET /api/recommendations` 的 `liked` / `disliked` 未驗證格式，非法值變成未接住的 500（08-05）
+
+- **問題**：`feeds.id` 是 `UUID` 欄位（`migrations/001_initial_schema.sql`）。本專案其他每個接 feed/article id 的端點（`/feeds/{feed_id}`、`/articles/{article_id}`、`/me/*`）都把該參數宣告成 `UUID`，FastAPI/pydantic 因此會在任何 DB 呼叫之前就把格式錯誤的值擋成乾淨的 `422`。唯獨 `GET /api/recommendations` 的 `liked` / `disliked` 兩個 query 參數宣告成 `list[str]`，只限制了陣列長度（`max_length=50`），沒有限制每個字串本身要長得像 UUID。這個端點是公開免認證（`get_optional_user`）、有 rate limit 但沒有其他門檻，任何人都能打。像 `GET /api/recommendations?liked=not-a-uuid` 這樣的請求會直接帶著這個字串走到 `.table("feeds").in_("id", liked)`，以及 `_sample_feeds()` 傳給 `sample_feed_candidates` RPC（migration 007）、型別是 `uuid[]` 的 `p_excluded_ids` 參數——兩處都會讓 Postgres 端擲出 cast 例外，而 `backend/` 全專案沒有任何一個地方對 `postgrest`/`APIError` 掛 `exception_handler`，未接住的例外變成一個裸的 FastAPI `500`，而不是輸入驗證該給的 `4xx`。
+- **和既有紀錄的差異**：#14 / #25 的 filter-injection 是「字面上合法的字串裡挾帶 `,`／`(`／`)` 等 PostgREST 保留字元、扭曲查詢語意」；這裡是另一種失效模式——字串格式本身就通不過型別轉換，會在 DB 端直接炸掉，不是查詢語意被劫持。#20 是「`.single()` 對查無資料回的例外沒接住」，成因是查詢結果為空，不是請求輸入本身沒驗證，且該處已經修過；這個端點的 `liked`/`disliked` 缺口在那次修補範圍之外，一直沒補。
+- **修法**：`liked`、`disliked` 的型別從 `list[str]` 改成 `list[UUID]`，比照本專案其他所有 id 參數的既有慣例——FastAPI 在路由函式執行前就會驗證每個元素，格式錯誤直接回 `422`，兩個 DB 呼叫點都不會被觸發。兩個實際使用處（組 `excluded` 集合、`.in_("id", ...)`）改成呼叫端呼叫 `str(u)` 轉回字串，同樣沿用其餘 router 一貫的 `str(feed_id)` 寫法。
+- **測試**：`backend/tests/test_recommendations.py` 新增 `test_malformed_id_in_liked_or_disliked_is_rejected`（對 `liked`、`disliked` 各跑一次），斷言帶入 `not-a-uuid` 回 `422`，且 `mock_db.table` / `mock_db.rpc` 都沒被呼叫過——證明是請求驗證擋下，不是等 DB 呼叫失敗才處理。沒有網路能在本 sandbox 安裝依賴跑 `pytest`（與 #25/#26/#27 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，實際執行結果交給 CI（`.github/workflows/backend.yml` 的 `Test` job）驗證。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
@@ -273,7 +280,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 | 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用）；robots.txt 另限 512 KiB | `services/feed_discovery.py`、`services/robots.py` |
 | 自主爬取 | 總開關預設關；批次 / 並發 / per-host 延遲上限；robots 遵循；`POST /admin/discovery/run` 在停用時回 503 | `services/discovery_config.py`、`routers/admin_discovery.py` |
 | XML 解析 | 全數 `defusedxml`（feed、OPML 上傳、遠端 OPML 目錄三條路徑） | `rss_parser.py`、`routers/opml.py`、`services/directory_sources.py` |
-| DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
+| DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter；id 類參數一律宣告 `UUID` 型別，格式錯誤在進 DB 呼叫前就回 422（見 #28） | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
 | 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
 | 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
 | 資料存取 | 四張 `user_*` 表 RLS owner-only；`feeds` / `articles` RLS + public read；四張 `discovery_*` 表 RLS + **零 policy**（僅 service_role） | `migrations/002`、`004`、`006` |
