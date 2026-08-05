@@ -221,6 +221,31 @@ def test_what_makes_a_value_a_document():
     assert not rss_parser._looks_like_markup('quote <a href="https://x"> like so')
 
 
+def test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup():
+    """A documented limit of the discriminator, not an oversight.
+
+    "Use <strong>bold</strong> for emphasis" is prose, but it is the same string
+    shape as "Hello <b>world</b>, welcome" — an ordinary short RSS body — so no
+    rule separates them. Excluding it would send real bodies back to rendering as
+    literal tags, which is the bug this module exists to fix.
+
+    It is safe to get wrong precisely because the tag is *paired*: every word
+    survives, and only the two tag tokens go. That is why the empty `<p>` case is
+    excluded instead — stripping it leaves "Use  for paragraphs".
+    """
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>Use &lt;strong&gt;bold&lt;/strong&gt; for emphasis</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == "Use <strong>bold</strong> for emphasis"
+    assert article.summary == "Use bold for emphasis"
+
+    # The shape it cannot be told apart from, asserted side by side.
+    assert rss_parser._looks_like_markup("Hello <b>world</b>, welcome")
+
+
 def test_a_bare_void_tag_is_left_as_text():
     """"one<br>two" really is markup, but so is "use <br> to break lines", and
     the two are indistinguishable. Only the second loses text if we guess wrong,

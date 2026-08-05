@@ -365,7 +365,7 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 ### 驗證
 
-- `pytest`：536 passed（523 → 536，新增 13 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `pytest`：537 passed（523 → 537，新增 14 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
 - `ng test`：78 passed（66 → 78，新增 `shared/html.spec.ts` 12 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
 - migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 16 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
 
@@ -391,6 +391,23 @@ migration 也跟著拆成四步（升格 / 剝標籤 / 解 entity 與收空白 /
 - **繼續排除**：**沒有屬性的** bare void 標籤。`one<br>two` 確實是 markup，但 `use <br> to break lines` 也長一樣，兩者無法區分；只有後者猜錯會弄丟文字，所以平手時判給「不動它」。前者猜錯只是畫面上多一個 `<br>`，看得見、修得掉。
 
 三處（parser、前端、migration）同步更新，並在 PostgreSQL 16 上用 16 列樣本重跑確認三邊判定一致：`<img src="…" alt="today">` 與 `<IMG SRC="a.png">` 正確升格，`use <br> to break lines`、`one<br>two`、`Use <p> for paragraphs and <a href="…"> for links`、單獨一個 `<p>` 全部原封不動。
+
+### Codex review 第三輪：引用成對標籤的散文（未採納，已寫成測試記錄）
+
+第三輪指出 `Use &lt;strong&gt;bold&lt;/strong&gt; for emphasis` 這種引用**成對**標籤的散文會被判成文件。機制上正確，但這次沒有改，理由是實測之後可以確定它落在安全那一側：
+
+```
+prose：Use <strong>bold</strong> for emphasis
+  → content='Use <strong>bold</strong> for emphasis'  summary='Use bold for emphasis'
+真body：Hello <b>world</b>, welcome
+  → content='Hello <b>world</b>, welcome'             summary='Hello world, welcome'
+```
+
+兩者是**完全相同的字串形狀**，沒有任何規則能分開。而且成對標籤被誤判時**一個字都不會少**——`bold` 完整保留，只有兩個標籤 token 被吃掉；這正是第一輪那個空的 `<p>` 被排除的原因（剝掉會變成 `Use  for paragraphs`，句子壞掉）。
+
+反過來說，任何為了排除這句散文而收緊的規則，都會連帶排除 `Hello <b>world</b>, welcome` 這種 RSS 裡極常見的短內文，把它打回「畫面上顯示裸標籤」——那正是這個 PR 要修的原始 bug。三輪下來這條啟發式已經到達它的有效邊界，再收緊就是拿常見情況換罕見情況。
+
+決定寫成 `test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup`，把「知道、且刻意接受」釘在程式碼裡，而不是只留在 PR 討論串。
 
 ### 已知未處理
 

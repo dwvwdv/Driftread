@@ -57,8 +57,16 @@ _VOID_ELEMENTS = frozenset(
 #
 # Three shapes count, and the asymmetry above is why the list stops where it does:
 #
-#   </x>          a closing tag. Markup that encloses anything has one; prose
-#                 quoting a tag name essentially never does.
+#   </x>          a closing tag. Markup that encloses anything has one. Prose
+#                 quoting a *paired* tag has one too ("Use <strong>bold</strong>
+#                 for emphasis"), and that is knowingly accepted: it is the same
+#                 string shape as "Hello <b>world</b>, welcome", an ordinary short
+#                 RSS body, so no rule can separate them. The tie-break is the one
+#                 below — misreading the sentence renders `bold` in bold and drops
+#                 two tags, while misreading the body would put its markup back on
+#                 screen as literal tags, which is the bug this file exists to fix.
+#                 Every word survives either way; only a *paired* quote is safe
+#                 that way, which is why the empty `<p>` case is excluded.
 #   <x …/>        explicitly self-closed.
 #   <img src=…>   a void element *carrying an attribute*. This is what makes an
 #                 image-only description work — very common on photo blogs and
