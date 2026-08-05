@@ -61,9 +61,18 @@
       -->
       <div class="prose" [innerHTML]="a.content"></div>
     } @else if (a.summary) {
-      <div class="prose">
-        <p>{{ a.summary }}</p>
-      </div>
+      @if (summaryIsHtml()) {
+        <!--
+          A row stored before the parser split content/summary: the whole article
+          body is sitting in `summary` as markup. Interpolating it printed the
+          tags on screen, so render it the same sanitized way as `content`.
+        -->
+        <div class="prose" [innerHTML]="a.summary"></div>
+      } @else {
+        <div class="prose">
+          <p>{{ a.summary }}</p>
+        </div>
+      }
       <p class="jump">
         <a class="ob-btn ob-btn--primary" [href]="a.url" target="_blank" rel="noopener">
           前往原文閱讀

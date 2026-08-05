@@ -76,6 +76,101 @@ def test_parse_atom_feed():
     assert feed.articles[0].published_at is not None
 
 
+def test_rss_description_markup_becomes_the_body():
+    """A feed whose <description> *is* the article (very common — no
+    content:encoded anywhere) used to leave `content` NULL, so the reader fell
+    through to its text-only summary branch and printed the markup as literal
+    tags on screen."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p&gt;第一段&lt;a href="https://g.com"&gt;連結&lt;/a&gt;。&lt;/p&gt;&lt;p&gt;第二段&lt;/p&gt;</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == '<p>第一段<a href="https://g.com">連結</a>。</p><p>第二段</p>'
+    # Flattened for display, and no space wedged in around the inline <a> —
+    # that reads as a typo in Chinese ("第一段 連結 。").
+    assert article.summary == "第一段連結。 第二段"
+
+
+def test_rss_content_encoded_still_wins_over_description():
+    xml = """<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+      <channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p&gt;short blurb&lt;/p&gt;</description>
+        <content:encoded>&lt;p&gt;the whole article&lt;/p&gt;</content:encoded>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == "<p>the whole article</p>"
+    assert article.summary == "short blurb"
+
+
+def test_plain_text_description_is_left_alone():
+    """The `<` here opens no tag. A greedy tag-stripper would eat the middle of
+    the sentence, and promoting this to `content` would drop the reader's
+    "go read the original" fallback for a feed that only ships blurbs."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>if x &lt; 3 and y &gt; 2 then done</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content is None
+    assert article.summary == "if x < 3 and y > 2 then done"
+
+
+def test_summary_drops_script_and_style_bodies():
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;style&gt;p{color:red}&lt;/style&gt;&lt;p&gt;Hi&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;</description>
+      </item></channel></rss>"""
+    assert parse_feed(xml).articles[0].summary == "Hi"
+
+
+def test_atom_xhtml_content_is_serialized_not_truncated():
+    """Atom's type="xhtml" delivers the body as real child elements. Reading
+    only `.text` returned the whitespace before the first child, i.e. nothing —
+    the article looked like it had no cached content at all."""
+    xml = """<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>
+      <entry><title>E</title><link href="https://a.com/1" rel="alternate"/>
+        <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Hello <b>world</b></p><br/><img src="a.png"/></div></content>
+      </entry></feed>"""
+    article = parse_feed(xml).articles[0]
+
+    # Namespaces stripped and void elements left unclosed: this has to be HTML a
+    # browser will render, not the XML round-trip ET.tostring() would produce.
+    assert article.content == '<div><p>Hello <b>world</b></p><br><img src="a.png"></div>'
+    assert article.summary == "Hello world"
+
+
+def test_atom_markup_summary_becomes_the_body():
+    xml = """<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>
+      <entry><title>E</title><link href="https://a.com/1" rel="alternate"/>
+        <summary>&lt;p&gt;the whole entry&lt;/p&gt;</summary>
+      </entry></feed>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == "<p>the whole entry</p>"
+    assert article.summary == "the whole entry"
+
+
+def test_atom_plain_summary_is_not_promoted():
+    article = parse_feed(ATOM_SAMPLE).articles[0]
+    assert article.content is None
+    assert article.summary == "Atom entry summary"
+
+
+def test_summary_decodes_entities_after_stripping_tags():
+    """Order matters: a `&lt;p&gt;` that survived double-escaping upstream must
+    end up as visible text, not be re-read as a tag and deleted."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;p&gt;Tom &amp;amp; Jerry wrote &amp;lt;p&amp;gt;&lt;/p&gt;</description>
+      </item></channel></rss>"""
+    assert parse_feed(xml).articles[0].summary == "Tom & Jerry wrote <p>"
+
+
 def test_parse_rss_no_articles():
     xml = """<rss version="2.0"><channel><title>Empty</title><link>https://x.com</link></channel></rss>"""
     feed = parse_feed(xml)

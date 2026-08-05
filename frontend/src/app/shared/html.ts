@@ -1,0 +1,96 @@
+/**
+ * Text-side handling of feed HTML.
+ *
+ * `Article.summary` is a *text* field — bookmark rows and the reader's
+ * no-content fallback print it through interpolation. The parser now stores
+ * plain text there (backend/rss_parser.py), but rows written before that fix
+ * still hold whichever markup the publisher put in <description>, and an article
+ * that has since scrolled out of its feed's window will never be re-upserted.
+ * These helpers keep those rows readable instead of showing `<p>` on screen.
+ *
+ * Kept as string work rather than DOMParser so the same rules apply wherever
+ * this runs, and so it stays cheap enough to call from a template binding.
+ */
+
+// The opening `<` must be followed by a letter or `/`, so prose like
+// "if x < 3 and y > 2" survives intact.
+const TAG_RE = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>/g;
+const DROP_WHOLE_RE = /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const TAG_NAME_RE = /^<\/?\s*([a-zA-Z][a-zA-Z0-9]*)/;
+const WS_RE = /\s+/g;
+
+/**
+ * Tags that imply a break in the text. Everything else is inline and is removed
+ * outright — `<a>` and `<em>` sit inside a word, and turning them into spaces
+ * sprayed gaps through Chinese text ("这里记录 开源 。").
+ */
+const BLOCK_TAGS = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'br',
+  'dd',
+  'div',
+  'dl',
+  'dt',
+  'figcaption',
+  'figure',
+  'footer',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hr',
+  'li',
+  'main',
+  'nav',
+  'ol',
+  'p',
+  'pre',
+  'section',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'ul',
+]);
+
+/** Entities common enough in feed text to be worth decoding by hand. */
+const ENTITIES: Record<string, string> = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&apos;': "'",
+  '&nbsp;': ' ',
+};
+
+/** Non-global twin of TAG_RE: `.test()` on a /g regex carries lastIndex between calls. */
+const HAS_TAG_RE = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>/;
+
+export function looksLikeHtml(value: string | null | undefined): boolean {
+  return !!value && HAS_TAG_RE.test(value);
+}
+
+/** Flatten HTML source to readable text. Returns '' for null/undefined. */
+export function stripHtml(value: string | null | undefined): string {
+  if (!value) return '';
+  const withoutTags = value.replace(DROP_WHOLE_RE, ' ').replace(TAG_RE, (tag) => {
+    const name = TAG_NAME_RE.exec(tag);
+    return name && BLOCK_TAGS.has(name[1].toLowerCase()) ? ' ' : '';
+  });
+  // Decoded only after the tags are gone, so a `&lt;p&gt;` that survived
+  // double-escaping upstream becomes visible text rather than a parsed tag.
+  return withoutTags
+    .replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (e) => ENTITIES[e] ?? e)
+    .replace(WS_RE, ' ')
+    .trim();
+}

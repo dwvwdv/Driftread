@@ -1,10 +1,18 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  effect,
+  inject,
+  signal,
+} from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
 import { Article, BookmarkType } from '../../models';
 import { apiMessage } from '../../shared/http-errors';
+import { stripHtml } from '../../shared/html';
 import { ObListRow } from '../../ui/list-row/list-row';
 import { ObLoading, ObEmpty } from '../../ui/state/state';
 import { ObPageHeader } from '../../ui/page-header/page-header';
@@ -33,6 +41,15 @@ export class Bookmarks {
   tabIndex = signal(0);
   items = signal<Article[]>([]);
   loading = signal(false);
+
+  /**
+   * Rows with the preview text derived once per list, rather than calling
+   * stripHtml() from the template on every change-detection pass — a summary
+   * written before the parser fix can hold a whole article's worth of markup.
+   */
+  rows = computed(() =>
+    this.items().map((article) => ({ article, preview: stripHtml(article.summary) })),
+  );
 
   get tab(): BookmarkType {
     return this.tabIndex() === 0 ? 'favorite' : 'read_later';

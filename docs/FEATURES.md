@@ -10,7 +10,7 @@
 | 功能 | 狀態 | 說明 | 相關程式 |
 |------|------|------|----------|
 | 信息源瀏覽 | ✅ | 分頁、分類 / tag 篩選、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
-| 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文 | `routers/articles.py`、`components/article-reader` |
+| 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ⚠ | Supabase Auth（email / password）；JWT 由後端驗證。**前端的 Supabase 設定是 build 時編進 bundle 的，官方 GHCR image 帶空值 → 需自建 image 才可用**（見第 4 節） | `auth.py`、`services/auth.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy | `routers/me.py`、`components/my-feeds`、`components/bookmarks` |
@@ -358,7 +358,7 @@ image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at` |
-| `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)` |
+| `articles` | 001 + 005 + 009 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（009 回填舊資料列） |
 | `user_feeds` | 002 | 訂閱關係 |
 | `user_article_reads` | 002 | 已讀回報 |
 | `user_bookmarks` | 002 | 收藏 / 稍後讀（`bookmark_type` 區分） |

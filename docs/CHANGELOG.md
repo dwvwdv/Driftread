@@ -332,3 +332,45 @@ initial bundle 從 607 kB 降到 503 kB，仍超出預設 500 kB 預算 3.31 kB�
 - **範圍比原先記錄的稍大**：檢查全部 7 個 migration 檔後發現 `004_enable_rls_on_public_tables.sql` 的兩個 `CREATE POLICY`（`feeds_public_read` / `articles_public_read`）同樣沒有防護。只修 001/002 沒有意義——修完之後從頭重跑仍會在 004 中止，等於沒解決「`_migrations` 被清空後可以安全重跑到底」這個實際目標，因此一併補上。003/005/006/007 本來就已是 `IF NOT EXISTS` / `DO`-guard / 純 `CREATE OR REPLACE FUNCTION`，不需要改動。
 - **修法**：`CREATE TRIGGER` 比照 006 的既有寫法，用 `DO $$ ... IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = ... AND tgrelid = '<table>'::regclass) THEN CREATE TRIGGER ... END IF; END $$;` 包住（001 的 `feeds_updated_at`、002 的 `user_preferences_updated_at`）。`CREATE POLICY` 用同樣的 `DO` 結構改查 `pg_policies`（依 `schemaname` / `tablename` / `policyname` 判斷），包住 002 的四個 owner policy 與 004 的兩個 public-read policy。判斷邏輯與被包住的 DDL 本身完全不動，純粹加上存在性檢查。
 - **驗證**：這個 sandbox 剛好裝有本機 `postgresql-16` 且 `psql` / `sudo` 可用，因此沒有停在「改完只能靠推理」——實際起了一個暫時 cluster、建好 `anon` / `authenticated` / `service_role` 三個角色與 `auth.users` / `auth.uid()`，依序套用全部 7 個 migration 檔（成功），接著清空 `_migrations` 並從 001 重新整個跑一遍：修改前的版本會如預期在 001 的 `CREATE TRIGGER feeds_updated_at` 那行炸掉（`trigger "feeds_updated_at" for relation "feeds" already exists`），精確重現了階段十記錄的既知限制；修改後的版本 7 個檔案全數重跑成功，且 `pg_trigger` / `pg_policies` 查詢確認 `feeds_updated_at`、`user_preferences_updated_at` 兩個 trigger 與六個 policy 都仍然只有一份、沒有重複建立。過程沒有動到 `backend/tests/`——現有測試套件裡沒有任何測試對這幾個 migration 檔的原始內容做斷言，也沒有能連真實 PostgreSQL 的既有 migration 測試（`migrate.py` 需要 `DATABASE_URL` 才會執行，pytest 套件走的是 mock 掉 Supabase client 的路徑）。
+
+## 階段十七：文章全文顯示成 HTML 原始碼（PR #32，2026-08-05）
+
+使用者回報在 `/articles/:id` 讀文章時整頁都是 `<p>` `<a href="…">` 這類標籤字面值，貼了一篇阮一峰《科技爱好者周刊》第 406 期作為範例。
+
+### 根因
+
+不在渲染層。`article-reader.html` 的主要分支一直是 `<div class="prose" [innerHTML]="a.content">`，會正常渲染；問題是**那個分支根本沒被走到**。
+
+`rss_parser.py` 的 RSS 解析把 `<description>` 原封不動塞進 `summary`，`content` 只從 `content:encoded` 取。阮一峰的 feed（以及非常多 feed）整篇文章就放在 `<description>` 裡、完全不送 `content:encoded`——於是 `content` 是 NULL，reader 落到 `@else if (a.summary)` 這條 **`{{ }}` 插值**的後備分支，Angular 依約把那串 HTML 逐字轉義輸出，標籤就上了畫面。`components/bookmarks` 的預覽行是同一個 `{{ article.summary }}`，症狀相同。
+
+順帶找到第二條會壞掉的路徑：`_text()` 只讀 `el.text`，也就是第一個子元素之前的文字。Atom 的 `type="xhtml"` content 是**真的子元素**而不是轉義字串，`.text` 只有子元素前的空白，所以那類 feed 的 `content` 一律被截成空字串——症狀是文章顯示「沒有快取內容」。
+
+### 修法
+
+**`backend/rss_parser.py`**——把 `content`（HTML）與 `summary`（純文字）的職責分清楚：
+
+- `_inner_html()` 取代 content/description 欄位上的 `_text()`。CDATA／轉義的 HTML 仍然原樣從 `.text` 取出不動；有子元素時（Atom xhtml）改用 `_serialize()` 遞迴輸出，剝掉命名空間前綴、void element 不補結束標籤——輸出必須是瀏覽器認得的 HTML，不是 `ET.tostring()` 那種 `<ns0:p xmlns:ns0="…">` 的 XML round-trip。
+- 沒有 `content:encoded`／Atom `<content>` 而 description／summary 本身是 markup 時，把它升格為 `content`。判定用的 `_TAG_RE` 刻意保守——`<` 後面必須接字母或 `/`，所以 `if x < 3 and y > 2` 這種純文字摘要不會被誤判成 markup 而升格。
+- `summary` 一律經過 `_plain_text()`：先整段丟掉 `<script>` / `<style>`（那是原始碼不是文章），再把 block 標籤換成空格、inline 標籤直接刪掉，最後才解 entity。**不做截斷**——`summary` 是純 blurb 的 feed 仍然需要完整內容當 reader 的後備。
+
+block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡記錄<a>開源</a>。</p>` 變成「這裡記錄 開源 。」，讀起來像打錯字。entity 放在剝標籤**之後**解，是為了讓上游雙重轉義殘留的 `&lt;p&gt;` 變成看得見的文字，而不是被重新當成標籤刪掉。
+
+**`backend/migrations/009_plain_text_article_summaries.sql`**——解析器只修得到之後再 upsert 的資料列，已經滑出 feed 視窗的舊文章永遠不會被再寫一次，所以歷史資料要在這裡回填。兩步：markup 且 `content` 為空的 `summary` 複製進 `content`；然後用與 Python 端同一套規則（同樣保守的標籤形狀、同樣的 block／inline 區分、同樣的 entity 順序）把 `summary` 壓成純文字。
+
+**前端**——後端修完之後 `summary` 就是純文字了，但這兩處仍加了防禦，因為回填跑之前、或任何未來又混進 markup 的情況下畫面不該再出現裸標籤：
+
+- 新增 `shared/html.ts`（`looksLikeHtml()` / `stripHtml()`），規則與後端逐條對齊，純字串處理不碰 DOM。
+- `article-reader` 的 summary 後備改成先判斷 `summaryIsHtml()`：是 markup 才走 `[innerHTML]`（一樣經 DomSanitizer，不用 `bypassSecurityTrust`），否則維持 `{{ }}`。**不無條件用 `[innerHTML]`**——純文字摘要裡的 `if x < 3` 會被 sanitizer 當成標籤開頭吞掉後半句。
+- `bookmarks` 的預覽行改吃預先算好的 `rows()`，`stripHtml()` 一份清單只跑一次；列表列是單行預覽，殘留 markup 應該變成文字而不是版面。
+
+### 驗證
+
+- `pytest`：531 passed（523 → 531，新增 8 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序）。
+- `ng test`：75 passed（66 → 75，新增 `shared/html.spec.ts` 9 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 9 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+
+### 已知未處理
+
+`<p></p>` 這種只有空標籤的 description 會被升格成 `content`，reader 於是渲染出一個空的 `.prose` 而不顯示「前往原文閱讀」。沒有加「必須有文字才升格」的條件是刻意的：那條件會連帶把 `<p><img src="…"></p>` 這種只有圖片的 description（圖片部落格、網路漫畫很常見，而且圖片就是內文）也擋掉，代價比它換到的好處大。
+
+009 的第二段 UPDATE **不是冪等的**——entity 解碼本質上不可能冪等，重跑一次會把上游雙重轉義殘留的 `&lt;p&gt;` 再解一層變成 `<p>`。正常路徑不會踩到（`_migrations` 保證只跑一次），但階段十六提到有人手動清空過 `_migrations`；那種情況下這個檔案會對已經乾淨的 `summary` 多解一層。沒有為此加防護，因為判斷「這個 entity 是原文還是殘留」本身就沒有正確答案，而 refresh worker 之後的 upsert 會把值蓋回解析器算出的正確結果。

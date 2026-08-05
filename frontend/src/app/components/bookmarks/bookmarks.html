@@ -14,27 +14,30 @@
       </ob-empty>
     } @else {
       <div class="list">
-        @for (article of items(); track article.id) {
+        @for (row of rows(); track row.article.id) {
           <ob-list-row>
-            <a rowTitle [routerLink]="['/articles', article.id]">{{ article.title }}</a>
+            <a rowTitle [routerLink]="['/articles', row.article.id]">{{ row.article.title }}</a>
             <div rowLines>
               <span>
-                @if (article.author) {
-                  {{ article.author }} ・
+                @if (row.article.author) {
+                  {{ row.article.author }} ・
                 }
-                @if (article.published_at) {
-                  {{ article.published_at | date: 'yyyy-MM-dd' }}
+                @if (row.article.published_at) {
+                  {{ row.article.published_at | date: 'yyyy-MM-dd' }}
                 }
               </span>
-              @if (article.summary) {
-                <span class="summary">{{ article.summary }}</span>
+              @if (row.preview) {
+                <!-- Stripped, not rendered: this is a one-line preview inside a
+                     list row, so any markup left over from a pre-fix row should
+                     become text, never layout. -->
+                <span class="summary">{{ row.preview }}</span>
               }
             </div>
             <div rowMeta>
               <button
                 type="button"
                 class="ob-btn ob-btn--ghost ob-btn--sm"
-                (click)="remove(article)"
+                (click)="remove(row.article)"
               >
                 移除
               </button>
