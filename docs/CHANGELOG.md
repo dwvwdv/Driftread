@@ -489,3 +489,11 @@ migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，
 `<p></p>` 這種只有空標籤的 description 會被升格成 `content`，reader 於是渲染出一個空的 `.prose` 而不顯示「前往原文閱讀」。沒有加「必須有文字才升格」的條件是刻意的：那條件會連帶把 `<p><img src="…"></p>` 這種只有圖片的 description（圖片部落格、網路漫畫很常見，而且圖片就是內文）也擋掉，代價比它換到的好處大。
 
 009 的第二段 UPDATE **不是冪等的**——entity 解碼本質上不可能冪等，重跑一次會把上游雙重轉義殘留的 `&lt;p&gt;` 再解一層變成 `<p>`。正常路徑不會踩到（`_migrations` 保證只跑一次），但階段十六提到有人手動清空過 `_migrations`；那種情況下這個檔案會對已經乾淨的 `summary` 多解一層。沒有為此加防護，因為判斷「這個 entity 是原文還是殘留」本身就沒有正確答案，而 refresh worker 之後的 upsert 會把值蓋回解析器算出的正確結果。
+
+## 階段十八：`GET /api/recommendations` 的 `liked`/`disliked` 補上 UUID 型別驗證（PR #34，2026-08-05）
+
+同一個「持續改善專案」排程任務。`feeds.id` 是 `migrations/001_initial_schema.sql` 宣告的 `UUID` 欄位，本專案其餘每個接 feed/article id 的端點都把對應參數宣告成 `UUID`，讓 FastAPI/pydantic 在進任何 DB 呼叫前就把格式錯誤的值擋成乾淨的 `422`——唯獨這個公開免認證端點的 `liked`/`disliked` 兩個 query 參數仍是 `list[str]`，只限制陣列長度，不限制每個字串要長得像 UUID。一個像 `?liked=not-a-uuid` 的請求會帶著這個字串一路走到 `.in_("id", liked)` 與 `sample_feed_candidates` RPC 型別是 `uuid[]` 的參數，讓 Postgres 端的型別轉換直接炸掉；`backend/` 全專案沒有任何地方對 `postgrest`/`APIError` 掛 `exception_handler`，未接住的例外變成裸的 FastAPI `500`，不是輸入驗證該給的 `4xx`。
+
+- **修法**：`backend/routers/recommendations.py` 的 `liked`、`disliked` 型別改成 `list[UUID]`，比照本專案其他 id 參數一貫的宣告方式；兩個實際使用處（組 `excluded` 集合、`.in_("id", ...)`）在呼叫端用 `str(u)` 轉回字串，同樣沿用其餘 router 既有的 `str(feed_id)` 寫法，行為本身不變，只是把「格式錯誤」這一類輸入提前攔在請求驗證這一層。
+- **測試**：`backend/tests/test_recommendations.py` 新增 `test_malformed_id_in_liked_or_disliked_is_rejected`（`liked`、`disliked` 各跑一次），斷言帶入非 UUID 字串回 `422`，且 `mock_db.table` / `mock_db.rpc` 都未被呼叫——證明是請求驗證層擋下，不是等 DB 端才處理。沒有網路能在本 sandbox 安裝依賴跑 `pytest`（與 #25–#27 同樣的既有限制），本機以 `python3 -m py_compile` 與 `ruff check` 驗證，交給 CI 實際跑過。
+- 詳細前後對照見 [SECURITY.md #28](SECURITY.md)。
