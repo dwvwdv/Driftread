@@ -1,20 +1,33 @@
 import { looksLikeHtml, stripHtml } from './html';
 
 describe('looksLikeHtml', () => {
-  it('recognises a document by its closing or self-closing tag', () => {
+  it('recognises a closing tag, a self-closing tag, or a void tag with an attribute', () => {
     expect(looksLikeHtml('<p>hi</p>')).toBe(true);
     expect(looksLikeHtml('<div><img src="a.png"/></div>')).toBe(true);
     expect(looksLikeHtml('<img src="a.png"/>')).toBe(true);
+    // No slash, no closing tag — but an image-only summary is the whole item on
+    // a photo blog, so it has to follow the markup path.
+    expect(looksLikeHtml('<img src="a.png">')).toBe(true);
+    expect(looksLikeHtml('<IMG SRC="a.png">')).toBe(true);
   });
 
   it('leaves prose that merely quotes a tag alone', () => {
     // The reader picks its rendering branch on this, and a false positive runs
     // the destructive direction: [innerHTML] would swallow the `<p>` the
     // sentence is about, so the text disappears rather than just looking ugly.
-    // An attribute is deliberately not enough — prose about HTML quotes
-    // `<a href="…">` constantly.
     expect(looksLikeHtml('Use <p> for paragraphs')).toBe(false);
+    // Void-element attributes count; attributes in general do not. Tech writing
+    // quotes `<a href="…">` constantly.
     expect(looksLikeHtml('quote <a href="https://x"> like so')).toBe(false);
+  });
+
+  it('leaves a bare void tag as text', () => {
+    // "one<br>two" is markup and "use <br> to break lines" is prose, and the
+    // two are indistinguishable. Only the second loses text if we guess wrong,
+    // so the tie goes to leaving it alone.
+    expect(looksLikeHtml('one<br>two')).toBe(false);
+    expect(looksLikeHtml('use <br> to break lines')).toBe(false);
+    expect(stripHtml('use <br> to break lines')).toBe('use <br> to break lines');
   });
 
   it('leaves comparisons alone', () => {

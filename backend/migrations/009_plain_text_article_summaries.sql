@@ -10,19 +10,21 @@
 -- scrolled out of its feed's window never will, so history has to be repaired here.
 -- Runs once, tracked by `_migrations` like every other file.
 --
--- `</[a-zA-Z]|<[a-zA-Z][^>]*/>` is the same discriminator _MARKUP_RE uses in
--- rss_parser.py: a closing or self-closing tag means the value is a document,
--- while prose that merely quotes a tag ("Use <p> for paragraphs", or a summary
--- reading "if x < 3 and y > 2") has neither and must be left exactly as it is.
--- Deciding on "contains a tag" would delete the very token such a sentence is
--- about. Postgres AREs are newline-insensitive by default, so `.` already spans
--- the line breaks inside a multi-line tag.
+-- The `~*` predicate below is the same discriminator _MARKUP_RE uses in
+-- rss_parser.py. Three shapes mean the value is a document: a closing tag, an
+-- explicitly self-closed tag, or a void element carrying an attribute (an
+-- image-only description is the article on a photo blog). Prose that merely
+-- quotes a tag — "Use <p> for paragraphs", "use <br> to break lines", or a
+-- summary reading "if x < 3 and y > 2" — has none of them and must be left
+-- exactly as it is: deciding on "contains a tag" would delete the very token
+-- such a sentence is about. Postgres AREs are newline-insensitive by default,
+-- so `.` already spans the line breaks inside a multi-line tag.
 
 -- 1. Rescue the body. A document sitting in `summary` with no content *is* the content.
 UPDATE articles
 SET content = summary
 WHERE coalesce(content, '') = ''
-  AND summary ~ '</[a-zA-Z]|<[a-zA-Z][^>]*/>';
+  AND summary ~* '</[a-zA-Z]|<[a-zA-Z][^>]*/>|<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\y[^>]*=[^>]*>';
 
 -- 2. Strip the tags, documents only.
 UPDATE articles
@@ -38,7 +40,7 @@ SET summary = regexp_replace(
   ),
   '<!--.*?-->|</?[a-zA-Z][^>]*>', '', 'g'
 )
-WHERE summary ~ '</[a-zA-Z]|<[a-zA-Z][^>]*/>';
+WHERE summary ~* '</[a-zA-Z]|<[a-zA-Z][^>]*/>|<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\y[^>]*=[^>]*>';
 
 -- 3. Decode entities and tidy whitespace, on tag-shaped prose as well as on what
 --    step 2 just flattened. `&amp;` goes last, so a double-escaped `&amp;lt;`

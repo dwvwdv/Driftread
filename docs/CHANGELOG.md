@@ -365,9 +365,9 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 ### 驗證
 
-- `pytest`：534 passed（523 → 534，新增 11 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面那條 review 修正的判定規則）。
-- `ng test`：77 passed（66 → 77，新增 `shared/html.spec.ts` 11 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
-- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 12 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+- `pytest`：536 passed（523 → 536，新增 13 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `ng test`：78 passed（66 → 78，新增 `shared/html.spec.ts` 12 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 16 列涵蓋各種形狀的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
 
 ### Codex review：不能把「引用了標籤的純文字」當成 HTML
 
@@ -379,7 +379,18 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 現在誤判的方向也翻過來了：漏判（例如整段只用 `<br>` 分行的 legacy 內容）最多是標籤露在畫面上，看得見、修得掉，不會靜悄悄弄丟東西。
 
-migration 也跟著拆成四步（升格 / 剝標籤 / 解 entity 與收空白 / 把只剩空字串的 summary 正規化成 NULL），並在同一個 PostgreSQL 16 cluster 上用 12 列樣本重跑：`Use <p> for paragraphs and <a href="…"> for links` 與單獨一個 `<p>` 都原封不動且不升格，`<img src="a.png"/>` 則正確判成文件。
+migration 也跟著拆成四步（升格 / 剝標籤 / 解 entity 與收空白 / 把只剩空字串的 summary 正規化成 NULL）。
+
+### Codex review 第二輪：沒有斜線的 void 標籤
+
+同一個 bot 接著指出 `<br>` / `<img>` 這種合法但沒有結束標籤也沒有 `/>` 的 void element 會被判成純文字。這條只對了一半，而且**兩輪 review 的方向是相反的**——把 bare `<br>` 收進 markup，等於把第一輪修掉的洞照原樣開回來（`use <br> to break lines` 會被剝成 `use  to break lines`）。
+
+拆開處理：
+
+- **收進來**：void element **帶屬性**的形式（`<img src="…">`、`<hr class="…">`）。圖片型部落格與網路漫畫的 description 常常就是一個 bare `<img>`，那張圖就是整篇文章；判成純文字的話 reader 會把標籤當文字印出來、圖片完全不顯示，這是真的會弄丟內容。限定在 void element 是關鍵——「有屬性就算數」會把 `<a href="…">` 一起收進去，那正是第一輪的地雷。
+- **繼續排除**：**沒有屬性的** bare void 標籤。`one<br>two` 確實是 markup，但 `use <br> to break lines` 也長一樣，兩者無法區分；只有後者猜錯會弄丟文字，所以平手時判給「不動它」。前者猜錯只是畫面上多一個 `<br>`，看得見、修得掉。
+
+三處（parser、前端、migration）同步更新，並在 PostgreSQL 16 上用 16 列樣本重跑確認三邊判定一致：`<img src="…" alt="today">` 與 `<IMG SRC="a.png">` 正確升格，`use <br> to break lines`、`one<br>two`、`Use <p> for paragraphs and <a href="…"> for links`、單獨一個 `<p>` 全部原封不動。
 
 ### 已知未處理
 

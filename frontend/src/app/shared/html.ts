@@ -83,14 +83,27 @@ const ENTITIES: Record<string, string> = {
  * bookmark row stripped it, so the `<p>` vanished from the page instead of merely
  * looking ugly.
  *
- * A closing or self-closing tag is the discriminator: markup that encloses
- * anything has one, and prose quoting a tag name essentially never does. Having
- * an *attribute* is deliberately not enough — prose about HTML quotes
- * `<a href="…">` all the time. Mirrors _MARKUP_RE in backend/rss_parser.py.
+ * Three shapes count, and the asymmetry above is why the list stops where it does:
+ *
+ *   `</x>`         a closing tag. Markup that encloses anything has one; prose
+ *                  quoting a tag name essentially never does.
+ *   `<x …/>`       explicitly self-closed.
+ *   `<img src=…>`  a void element *carrying an attribute*. This is what makes an
+ *                  image-only summary work — common on photo blogs and webcomics,
+ *                  where the image is the article. Restricted to void elements on
+ *                  purpose: "an attribute" on its own would swallow prose quoting
+ *                  `<a href="…">`, which tech writing does daily.
+ *
+ * A *bare* void tag stays out. "one<br>two" really is markup, but so is "use
+ * <br> to break lines", and only the second one loses text if we guess wrong.
+ * Misjudging the first only shows a `<br>` on screen: visible, and fixable.
+ *
+ * Mirrors _MARKUP_RE in backend/rss_parser.py.
  *
  * Non-global on purpose: `.test()` on a /g regex carries lastIndex between calls.
  */
-const MARKUP_RE = /<\/[a-zA-Z]|<[a-zA-Z][^>]*\/>/;
+const MARKUP_RE =
+  /<\/[a-zA-Z]|<[a-zA-Z][^>]*\/>|<(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\b[^>]*=[^>]*>/i;
 
 export function looksLikeHtml(value: string | null | undefined): boolean {
   return !!value && MARKUP_RE.test(value);

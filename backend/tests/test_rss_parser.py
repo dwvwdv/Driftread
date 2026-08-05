@@ -120,6 +120,20 @@ def test_plain_text_description_is_left_alone():
     assert article.summary == "if x < 3 and y > 2 then done"
 
 
+def test_image_only_description_becomes_the_body():
+    """Photo blogs and webcomics: the image *is* the article, and it routinely
+    arrives as a bare `<img>` with no closing or self-closing tag. Left
+    unpromoted, the reader would print the tag as text and show no picture."""
+    xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>A</title><link>https://x.com/1</link>
+        <description>&lt;img src="https://x.com/today.png" alt="today"&gt;</description>
+      </item></channel></rss>"""
+    article = parse_feed(xml).articles[0]
+
+    assert article.content == '<img src="https://x.com/today.png" alt="today">'
+    assert article.summary is None
+
+
 def test_summary_drops_script_and_style_bodies():
     xml = """<rss version="2.0"><channel><title>T</title><link>https://x.com</link>
       <item><title>A</title><link>https://x.com/1</link>
@@ -186,17 +200,35 @@ def test_prose_quoting_a_tag_is_not_markup():
     assert article.summary == 'Use <p> for paragraphs and <a href="…"> for links'
 
 
-def test_a_closing_tag_is_what_makes_it_a_document():
-    """The discriminator, stated directly. An attribute is deliberately not
-    enough — prose about HTML quotes `<a href="…">` all the time."""
+def test_what_makes_a_value_a_document():
+    """The discriminator, stated directly: a closing tag, an explicitly
+    self-closed tag, or a void element carrying an attribute."""
     assert rss_parser._looks_like_markup("<p>body</p>")
     assert rss_parser._looks_like_markup('<div><img src="a.png"/></div>')
     assert rss_parser._looks_like_markup('<img src="a.png"/>')
+    # No slash, no closing tag — but an image-only description *is* the article
+    # on a photo blog, and dropping it would lose the whole item.
+    assert rss_parser._looks_like_markup('<img src="a.png">')
+    assert rss_parser._looks_like_markup('<IMG SRC="a.png">')
+    assert rss_parser._looks_like_markup('<hr class="rule">')
 
     assert not rss_parser._looks_like_markup("Use <p> for paragraphs")
-    assert not rss_parser._looks_like_markup('quote <a href="https://x"> like so')
     assert not rss_parser._looks_like_markup("if x < 3 and y > 2")
     assert not rss_parser._looks_like_markup("")
+    # Void-element attributes count; attributes in general do not. Tech writing
+    # quotes `<a href="…">` constantly, and treating that as markup is what
+    # deletes the token the sentence is about.
+    assert not rss_parser._looks_like_markup('quote <a href="https://x"> like so')
+
+
+def test_a_bare_void_tag_is_left_as_text():
+    """"one<br>two" really is markup, but so is "use <br> to break lines", and
+    the two are indistinguishable. Only the second loses text if we guess wrong,
+    so the tie goes to leaving it alone: misjudging the first just shows a `<br>`
+    on screen, which is visible and fixable."""
+    assert not rss_parser._looks_like_markup("one<br>two")
+    assert not rss_parser._looks_like_markup("use <br> to break lines")
+    assert rss_parser._plain_text("use <br> to break lines") == "use <br> to break lines"
 
 
 def test_plain_text_leaves_tag_shaped_prose_alone():

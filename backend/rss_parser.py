@@ -19,20 +19,6 @@ DC_NS = "http://purl.org/dc/elements/1.1/"
 # `/`, so prose like "if x < 3 and y > 2" is left alone. A greedy `<[^>]+>`
 # would eat the middle of that sentence.
 _TAG_RE = re.compile(r"<!--.*?-->|</?[a-zA-Z][^>]*>", re.DOTALL)
-# Tells an HTML *document* apart from prose that happens to mention a tag.
-#
-# The two are genuinely indistinguishable by the time we see them: XML requires
-# both to be escaped, so a body sent as `&lt;p&gt;text&lt;/p&gt;` and a sentence
-# written as `Use &lt;p&gt; for paragraphs` both arrive from the XML parser with
-# real `<` characters. Deciding on "contains a tag" got the sentence wrong, and
-# the failure was the bad direction — the text was stripped or fed to a renderer
-# that swallowed it, so it vanished from the page instead of merely looking ugly.
-#
-# A closing or self-closing tag is the discriminator: markup that encloses
-# anything has one, and prose quoting a tag name essentially never does. Note
-# that having an *attribute* is deliberately not enough — prose about HTML quotes
-# `<a href="…">` all the time.
-_MARKUP_RE = re.compile(r"</[a-zA-Z]|<[a-zA-Z][^>]*/>")
 # Their text is markup source, not readable prose — it has to go before tags
 # are stripped, or a stylesheet ends up inside the summary.
 _DROP_WHOLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
@@ -58,6 +44,37 @@ def _tag_to_space(match: re.Match[str]) -> str:
 _VOID_ELEMENTS = frozenset(
     {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
      "param", "source", "track", "wbr"}
+)
+
+# Tells an HTML *document* apart from prose that happens to mention a tag.
+#
+# The two are genuinely indistinguishable by the time we see them: XML requires
+# both to be escaped, so a body sent as `&lt;p&gt;text&lt;/p&gt;` and a sentence
+# written as `Use &lt;p&gt; for paragraphs` both arrive from the XML parser with
+# real `<` characters. Deciding on "contains a tag" got the sentence wrong, and
+# the failure was the bad direction — the text was stripped or fed to a renderer
+# that swallowed it, so it vanished from the page instead of merely looking ugly.
+#
+# Three shapes count, and the asymmetry above is why the list stops where it does:
+#
+#   </x>          a closing tag. Markup that encloses anything has one; prose
+#                 quoting a tag name essentially never does.
+#   <x …/>        explicitly self-closed.
+#   <img src=…>   a void element *carrying an attribute*. This is what makes an
+#                 image-only description work — very common on photo blogs and
+#                 webcomics, where the image is the article. Restricted to void
+#                 elements on purpose: "an attribute" on its own would swallow
+#                 prose quoting `<a href="…">`, which tech writing does daily.
+#
+# A *bare* void tag stays out. "one<br>two" really is markup, but so is "use
+# <br> to break lines", and only the second one loses text if we guess wrong —
+# it would be stripped down to "use  to break lines". Misjudging the first only
+# shows a `<br>` on screen: visible, and fixable by whoever notices.
+_MARKUP_RE = re.compile(
+    r"</[a-zA-Z]"
+    r"|<[a-zA-Z][^>]*/>"
+    rf"|<(?:{'|'.join(sorted(_VOID_ELEMENTS))})\b[^>]*=[^>]*>",
+    re.IGNORECASE,
 )
 
 
