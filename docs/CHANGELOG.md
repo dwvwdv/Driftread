@@ -355,7 +355,7 @@ initial bundle 從 607 kB 降到 503 kB，仍超出預設 500 kB 預算 3.31 kB�
 
 block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡記錄<a>開源</a>。</p>` 變成「這裡記錄 開源 。」，讀起來像打錯字。entity 放在剝標籤**之後**解，是為了讓上游雙重轉義殘留的 `&lt;p&gt;` 變成看得見的文字，而不是被重新當成標籤刪掉。
 
-**`backend/migrations/009_plain_text_article_summaries.sql`**——解析器只修得到之後再 upsert 的資料列，已經滑出 feed 視窗的舊文章永遠不會被再寫一次，所以歷史資料要在這裡回填。兩步：markup 且 `content` 為空的 `summary` 複製進 `content`；然後用與 Python 端同一套規則（同樣保守的標籤形狀、同樣的 block／inline 區分、同樣的 entity 順序）把 `summary` 壓成純文字。
+**`backend/backfill.py`**——解析器只修得到之後再 upsert 的資料列，已經滑出 feed 視窗的舊文章永遠不會被再寫一次，所以歷史資料要回填。**回填直接呼叫解析器本身**（`_looks_like_markup()` / `_plain_text()`），不在 SQL 裡重寫一份規則；在 `main.py` 的 lifespan 於 migration 之後執行，記在同一張 `_migrations` 表。這個設計是走了冤枉路才定下來的，理由見下面第七輪。
 
 **前端**——後端修完之後 `summary` 就是純文字了，但這兩處仍加了防禦，因為回填跑之前、或任何未來又混進 markup 的情況下畫面不該再出現裸標籤：
 
@@ -365,9 +365,9 @@ block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡
 
 ### 驗證
 
-- `pytest`：542 passed（523 → 542，新增 19 個解析器測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
-- `ng test`：83 passed（66 → 83，新增 `shared/html.spec.ts` 17 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
-- migration 在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 638 列窮舉樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+- `pytest`：548 passed（523 → 548，新增 19 個解析器測試與 6 個回填測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `ng test`：85 passed（66 → 85，新增 `shared/html.spec.ts` 19 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- 回填在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 16 列涵蓋前六輪每一個爭議案例的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
 
 ### Codex review：不能把「引用了標籤的純文字」當成 HTML
 
@@ -454,6 +454,27 @@ migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，
 2. **step 4 的 WHERE 條件漏選**。原本為了避免整表重寫，只選「含實體 / 連續空白 / 首尾空白」的列——`line one<TAB>line two` 三個條件都不符合，於是那個 tab 永遠不會被正規化。這是我自己為了微優化而製造的 bug。**改成 `WHERE summary IS NOT NULL` 掃全表**：前三步本來就已經在重寫了，省這一次沒有意義，卻換來一整類「這個條件涵蓋到了嗎」的推理負擔。順帶補上 Postgres `[[:space:]]` 比 Python `\s`少的字元（NBSP 等）。
 
 第 2 點特別值得記：**聰明的 WHERE 條件是這個 migration 唯一一個「我自己寫壞、而且五輪 review 都沒抓到」的地方**，是窮舉才逼出來的。
+
+### Codex review 第七輪：兩個發現，一個共同根因（架構改掉）
+
+第七輪指出兩件事：
+
+1. **具名實體只解了六個**。`&rsquo;`、`&mdash;`、`&hellip;`、`&copy;` 這些常見的都沒解——Python 的 `html.unescape()` 認得 **2231 個**。
+2. **我的數字實體解碼不是單次掃描**。`&#38;` 就是 `&`，解開它會**製造出**一個新的 `&#8217;`，而 `SELECT DISTINCT` 沒有順序保證，後面那輪會把它也解掉。`X&#38;#8217; and &#8217;Y` 應該是 `X&#8217; and ’Y`，我的版本會變成 `X’ and ’Y`。
+
+兩條都對。但**第五、六、七輪（共四個發現）是同一個根因**：我在 PL/pgSQL 裡重寫 `html.unescape()`。每一輪都在補症狀——先是實體表不全、然後十六進位分支靜默失效、然後 C1 範圍存成控制字元、然後解碼會重掃自己的輸出。「2231 個具名實體」這個數字是最後一根稻草：真要對齊就得把 2231 筆表格產生進 SQL，再手寫一個單次掃描器。
+
+**改掉架構：回填不再用 SQL，改成 Python 直接呼叫解析器。**
+
+- 刪掉 `migrations/009_plain_text_article_summaries.sql`（145 行 PL/pgSQL）。
+- 新增 `backend/backfill.py`：用 server-side cursor 分批走過 `articles`，每列丟進 `_repair()`，而 `_repair()` 直接呼叫 `_looks_like_markup()` 與 `_plain_text()`。與解析器的一致性**由建構保證**，不是靠比對維持。
+- 在 `main.py` 的 lifespan 於 `run_migrations()` 之後呼叫，沿用同一張 `_migrations` 表追蹤，語意與既有 migration 完全一致（缺 `DATABASE_URL` 時只警告不中斷）。
+
+**前端同一個根因，同一種解法**：`stripHtml()` 的六筆具名實體表 + 手寫數字解碼 + C1 對照表 + 丟棄碼位集合（共約 60 行），全部換成把字串交給瀏覽器自己的 HTML parser——它**就是** HTML 規範的實作，2231 個實體、C1 代換、單次掃描全都內建。先把 `<` 轉義再丟進去，這一步是關鍵：既擋住殘留的標籤形狀文字被當成元素吃掉（`Use <p> for paragraphs` 是要保留的散文），也保證餵進去的是惰性文字。
+
+淨效果是**刪掉的程式碼比新增的多**，而且前六輪每一個爭議案例都仍然正確——16 列端到端樣本在真 PostgreSQL 上驗證，全部與解析器輸出一致。
+
+**已知且刻意的差異**：控制字元引用（`&#1;`）在前端會被**輸出**而非丟棄。HTML 規範說輸出（附帶 parse error），`html.unescape()` 比規範更嚴格、選擇丟棄。要對齊就得把剛剛刪掉的碼位表加回來，而它換不到任何東西——後端根本不會存下這種值（解析器在寫入前就丟掉了），而且兩種寫法在畫面上都是看不見的。已寫成測試 `emits control-character references, where Python drops them` 記錄。
 
 ### 已知未處理
 

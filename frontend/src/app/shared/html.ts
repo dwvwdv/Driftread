@@ -73,77 +73,29 @@ const BLOCK_TAGS = new Set([
   'ul',
 ]);
 
-/** Named entities common enough in feed text to be worth decoding by hand. */
-const NAMED_ENTITIES: Record<string, string> = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&apos;': "'",
-  '&nbsp;': ' ',
-};
-
 /**
- * Named entities plus numeric character references, in one alternation.
+ * Decode HTML entities by handing the string to the platform's own HTML parser.
  *
- * One regex rather than a chain of replaces so the decode is a *single pass*,
- * matching Python's html.unescape(): scanning resumes after each match, so a
- * double-escaped `&amp;#8217;` yields the literal text `&#8217;` instead of
- * being decoded twice.
+ * This used to be a six-entry lookup table plus hand-rolled numeric decoding,
+ * and every review pass found another way it diverged from Python's
+ * html.unescape(): missing named entities (`&rsquo;`, `&mdash;` — there are 2231
+ * of them), the Windows-1252 substitutions for the C1 range, the code points
+ * whose reference is dropped outright, and single-pass scanning. The browser
+ * already implements all of that, because it *is* the HTML spec. Same reasoning
+ * as backend/backfill.py calling the parser instead of restating it in SQL.
  *
- * The numeric forms matter — feeds are full of `&#8217;` for a curly apostrophe
- * and `&#8212;` / `&#x2014;` for an em dash. Mirrors rss_parser.py and step 3 of
- * migration 009.
+ * `<` is escaped first, which is load-bearing twice over. It stops any residual
+ * tag-shaped text from being parsed as an element — "Use <p> for paragraphs" is
+ * prose we deliberately preserve, and the parser would otherwise swallow the
+ * `<p>`. And it guarantees the input is inert text: no elements means nothing to
+ * fetch a resource. (DOMParser never executes script in any case.)
  */
-const ENTITY_RE = /&(?:amp|lt|gt|quot|apos|nbsp|#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6});/g;
+const parser = new DOMParser();
 
-/**
- * Code points for 0x80..0x9F, in order.
- *
- * html.unescape() does not treat a numeric reference in the C1 range as a
- * control character: per the HTML5 spec it substitutes the Windows-1252
- * character, so `&#151;` is an em dash and `&#128;` is a euro sign. Older feeds
- * — anything downstream of Word — emit these constantly. Generated from Python's
- * html._invalid_charrefs rather than transcribed; five slots (0x81, 0x8D, 0x8F,
- * 0x90, 0x9D) map to themselves, as in Python. Mirrors c1_map in migration 009.
- */
-const C1_REPLACEMENTS = [
-  8364, 129, 8218, 402, 8222, 8230, 8224, 8225, 710, 8240, 352, 8249, 338, 141, 381, 143, 144, 8216,
-  8217, 8220, 8221, 8226, 8211, 8212, 732, 8482, 353, 8250, 339, 157, 382, 376,
-];
-
-/**
- * Code points html.unescape() drops the reference for outright: control
- * characters other than tab/LF/FF/CR, and the Unicode noncharacters. The last
- * test covers 0xFFFE/0xFFFF in every plane, which is 17 ranges in one line.
- */
-function isDroppedCodePoint(code: number): boolean {
-  return (
-    (code >= 0x01 && code <= 0x08) ||
-    code === 0x0b ||
-    (code >= 0x0e && code <= 0x1f) ||
-    code === 0x7f ||
-    (code >= 0xfdd0 && code <= 0xfdef) ||
-    (code & 0xfffe) === 0xfffe
-  );
-}
-
-function decodeEntity(entity: string): string {
-  const named = NAMED_ENTITIES[entity];
-  if (named !== undefined) return named;
-
-  const body = entity.slice(2, -1);
-  const code =
-    body[0] === 'x' || body[0] === 'X' ? parseInt(body.slice(1), 16) : parseInt(body, 10);
-
-  // Branch order is html.unescape()'s own and it matters: 0x80..0x9F is in both
-  // the C1 table and the dropped set, and the table has to win.
-  if (code === 0) return '�';
-  if (code === 0x0d) return '\r';
-  if (code >= 0x80 && code <= 0x9f) return String.fromCodePoint(C1_REPLACEMENTS[code - 0x80]);
-  if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '�';
-  if (isDroppedCodePoint(code)) return '';
-  return String.fromCodePoint(code);
+function decodeEntities(value: string): string {
+  if (!value.includes('&')) return value;
+  const inert = value.replace(/</g, '&lt;');
+  return parser.parseFromString(inert, 'text/html').documentElement.textContent ?? '';
 }
 
 const VOID_ELEMENTS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr';
@@ -207,5 +159,5 @@ export function stripHtml(value: string | null | undefined): string {
     : value;
   // Decoded last either way, so a `&lt;p&gt;` that survived double-escaping
   // upstream becomes visible text rather than a parsed tag.
-  return withoutTags.replace(ENTITY_RE, decodeEntity).replace(WS_RE, ' ').trim();
+  return decodeEntities(withoutTags).replace(WS_RE, ' ').trim();
 }

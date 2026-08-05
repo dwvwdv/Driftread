@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from backfill import run_backfills
 from migrate import run_migrations
 from routers import (
     admin,
@@ -64,6 +65,9 @@ class MaxBodySizeMiddleware:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     run_migrations()
+    # After the schema is in place, and separately: these need the parser's own
+    # html.unescape()-backed logic, which is not expressible as SQL.
+    run_backfills()
     yield
 
 

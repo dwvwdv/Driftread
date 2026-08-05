@@ -355,10 +355,12 @@ image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時
 
 由 `backend/migrations/*.sql` 定義，後端啟動時 `migrate.py` 自動套用（以 `_migrations` 表追蹤）。
 
+**資料回填**（非 schema 變更）走 `backend/backfill.py`，在 migration 之後由同一個 lifespan 呼叫，記在同一張 `_migrations` 表。放在 Python 而非 SQL 是因為它需要解析器自己的 `html.unescape()` 語意（2231 個具名實體、C1 的 Windows-1252 代換、單次掃描），在 PL/pgSQL 重寫過一版，每一輪 review 都會冒出新的不一致——直接呼叫解析器才不會漂移。
+
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at` |
-| `articles` | 001 + 005 + 009 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（009 回填舊資料列） |
+| `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）|
 | `user_feeds` | 002 | 訂閱關係 |
 | `user_article_reads` | 002 | 已讀回報 |
 | `user_bookmarks` | 002 | 收藏 / 稍後讀（`bookmark_type` 區分） |

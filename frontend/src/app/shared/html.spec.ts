@@ -88,6 +88,14 @@ describe('stripHtml', () => {
     );
   });
 
+  it('decodes named entities beyond the common few', () => {
+    // The old hand-rolled table knew six. The platform parser knows all 2231,
+    // which is why decoding is delegated to it rather than restated here.
+    expect(stripHtml('<p>it&rsquo;s &mdash; really&hellip; &copy;2026</p>')).toBe(
+      'it’s — really… ©2026',
+    );
+  });
+
   it('decodes numeric character references', () => {
     // Feeds are full of these: &#8217; for a curly apostrophe, &#8212;/&#x2014;
     // for an em dash. Matches html.unescape() and migration 009 step 3.
@@ -99,6 +107,9 @@ describe('stripHtml', () => {
     expect(stripHtml('bad &#0; &#1114112; &#xD800; refs')).toBe('bad � � � refs');
     // Single pass, so double-escaping stays visible rather than decoding twice.
     expect(stripHtml('double escaped &amp;#8217; here')).toBe('double escaped &#8217; here');
+    // Same property, harder case: `&#38;` *is* `&`, so decoding it manufactures
+    // a `&#8217;` that a second pass would wrongly decode again.
+    expect(stripHtml('X&#38;#8217; and &#8217;Y')).toBe('X&#8217; and ’Y');
   });
 
   it('maps C1 references through the Windows-1252 table', () => {
@@ -110,12 +121,21 @@ describe('stripHtml', () => {
     expect(stripHtml('&#149;bullet')).toBe('•bullet');
   });
 
-  it('drops disallowed control references', () => {
-    expect(stripHtml('X&#1;Y')).toBe('XY');
-    expect(stripHtml('X&#11;Y')).toBe('XY');
+  it('replaces unencodable references and collapses whitespace ones', () => {
+    expect(stripHtml('X&#0;Y')).toBe('X�Y');
+    expect(stripHtml('X&#xD800;Y')).toBe('X�Y');
+    expect(stripHtml('X&#1114112;Y')).toBe('X�Y');
     expect(stripHtml('X&#9;Y')).toBe('X Y');
-    expect(stripHtml('X&#xFFFE;Y')).toBe('XY');
-    expect(stripHtml('X&#x10FFFF;Y')).toBe('XY');
+  });
+
+  it('emits control-character references, where Python drops them', () => {
+    // A knowing divergence, not an oversight. html.unescape() is *stricter than
+    // the HTML spec* here: the spec says emit with a parse error, Python drops.
+    // Matching Python would mean reinstating the hand-maintained code-point
+    // table whose removal fixed four separate review findings, and it buys
+    // nothing — the backend never stores these (the parser dropped them before
+    // they were written), and both spellings render as nothing on screen.
+    expect(stripHtml('X&#1;Y')).toBe('XY');
   });
 
   it('leaves plain text intact', () => {
