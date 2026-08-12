@@ -6,7 +6,6 @@ from supabase import Client
 from auth import AuthUser, get_current_user
 from database import get_client
 from models import (
-    Article,
     ArticleSummary,
     Bookmark,
     BookmarkCreate,
@@ -90,23 +89,28 @@ async def list_reads(
 
 # --- Bookmarks ---------------------------------------------------------------
 
-@router.get("/bookmarks", response_model=list[Article])
+_BOOKMARK_ARTICLE_FIELDS = "id,feed_id,title,url,summary,author,published_at"
+
+
+@router.get("/bookmarks", response_model=list[ArticleSummary])
 async def list_bookmarks(
     bookmark_type: str = Query("favorite"),
     user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
-) -> list[Article]:
+) -> list[ArticleSummary]:
     if bookmark_type not in ("favorite", "read_later"):
         raise HTTPException(status_code=400, detail="Invalid bookmark_type")
     rows = (
         db.table("user_bookmarks")
-        .select("articles(*)")
+        .select(f"articles({_BOOKMARK_ARTICLE_FIELDS})")
         .eq("user_id", user.id)
         .eq("bookmark_type", bookmark_type)
         .order("created_at", desc=True)
         .execute()
     )
-    return [Article(**row["articles"]) for row in rows.data if row.get("articles")]
+    return [
+        ArticleSummary(**row["articles"]) for row in rows.data if row.get("articles")
+    ]
 
 
 @router.post("/bookmarks", status_code=204)

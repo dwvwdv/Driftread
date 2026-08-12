@@ -5,23 +5,22 @@ import { Bookmarks } from './bookmarks';
 import { AuthService } from '../../services/auth';
 import { MeService } from '../../services/me';
 import { ToastService } from '../../ui/toast/toast';
-import { Article, BookmarkType } from '../../models';
+import { ArticleSummary, BookmarkType } from '../../models';
 
-const article = (i: number) =>
-  ({
-    id: `article-${i}`,
-    feed_id: 'feed-1',
-    title: `文章 ${i}`,
-    url: `https://example.com/${i}`,
-    summary: null,
-    author: null,
-    published_at: null,
-  }) as Article;
+const article = (i: number): ArticleSummary => ({
+  id: `article-${i}`,
+  feed_id: 'feed-1',
+  title: `文章 ${i}`,
+  url: `https://example.com/${i}`,
+  summary: null,
+  author: null,
+  published_at: null,
+});
 
 describe('Bookmarks tab scoping', () => {
   /** Held open so a delete can be left in flight across a tab switch. */
   let deletion: Subject<void>;
-  let lists: Record<BookmarkType, Article[]>;
+  let lists: Record<BookmarkType, ArticleSummary[]>;
 
   function setup() {
     deletion = new Subject<void>();
