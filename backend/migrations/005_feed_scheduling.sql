@@ -2,7 +2,7 @@
 -- plus the conditional-GET validators needed to avoid re-downloading unchanged
 -- feed bodies on every poll.
 
-ALTER TABLE driftread.feeds
+ALTER TABLE feeds
   ADD COLUMN IF NOT EXISTS etag                   TEXT,
   ADD COLUMN IF NOT EXISTS last_modified          TEXT,
   ADD COLUMN IF NOT EXISTS fetch_interval_minutes INT NOT NULL DEFAULT 60,
@@ -13,7 +13,7 @@ ALTER TABLE driftread.feeds
 -- (the auto-archive threshold sends dead sources here permanently) out of the
 -- index entirely rather than just out of the result set.
 CREATE INDEX IF NOT EXISTS feeds_next_fetch_at_idx
-  ON driftread.feeds (next_fetch_at)
+  ON feeds (next_fetch_at)
   WHERE archived_at IS NULL;
 
 -- articles.url was globally UNIQUE, which is wrong once two feeds syndicate the
@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS feeds_next_fetch_at_idx
 -- reassigns that row's feed_id to whichever feed refreshed last. Scope it per
 -- feed instead. No dedupe pass is needed first — a globally unique url means
 -- (feed_id, url) is already unique, so the wider constraint cannot fail.
-ALTER TABLE driftread.articles DROP CONSTRAINT IF EXISTS articles_url_key;
+ALTER TABLE articles DROP CONSTRAINT IF EXISTS articles_url_key;
 
 -- ADD CONSTRAINT has no IF NOT EXISTS, and a raised migration aborts backend
 -- startup (main.py's lifespan calls run_migrations before serving), so guard it
@@ -29,11 +29,9 @@ ALTER TABLE driftread.articles DROP CONSTRAINT IF EXISTS articles_url_key;
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conname = 'articles_feed_id_url_key'
-       AND conrelid = 'driftread.articles'::regclass
+    SELECT 1 FROM pg_constraint WHERE conname = 'articles_feed_id_url_key'
   ) THEN
-    ALTER TABLE driftread.articles
+    ALTER TABLE articles
       ADD CONSTRAINT articles_feed_id_url_key UNIQUE (feed_id, url);
   END IF;
 END $$;

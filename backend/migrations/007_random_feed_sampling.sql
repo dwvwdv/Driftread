@@ -12,18 +12,17 @@
 -- fixed set of literals the Python caller controls, never concatenated into
 -- the query text, so this doesn't reopen the PostgREST filter-injection
 -- class SECURITY.md #14 fixed.
-CREATE OR REPLACE FUNCTION driftread.sample_feed_candidates(
+CREATE OR REPLACE FUNCTION sample_feed_candidates(
   p_excluded_ids uuid[],
   p_categories   text[],
   p_mode         text,
   p_limit        int
 )
-RETURNS SETOF driftread.feeds
+RETURNS SETOF feeds
 LANGUAGE sql
-SET search_path = pg_catalog
 AS $$
   SELECT *
-  FROM driftread.feeds
+  FROM feeds
   WHERE archived_at IS NULL
     AND (p_excluded_ids IS NULL OR NOT (id = ANY(p_excluded_ids)))
     AND (
@@ -59,7 +58,7 @@ $$;
 -- The backend only ever calls this via the service_role client
 -- (database.py), same as every other write path in this project, so lock
 -- it down the same way.
-REVOKE EXECUTE ON FUNCTION driftread.sample_feed_candidates(uuid[], text[], text, int) FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION driftread.sample_feed_candidates(uuid[], text[], text, int) FROM anon;
-REVOKE EXECUTE ON FUNCTION driftread.sample_feed_candidates(uuid[], text[], text, int) FROM authenticated;
-GRANT EXECUTE ON FUNCTION driftread.sample_feed_candidates(uuid[], text[], text, int) TO service_role;
+REVOKE EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) FROM anon;
+REVOKE EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) FROM authenticated;
+GRANT EXECUTE ON FUNCTION sample_feed_candidates(uuid[], text[], text, int) TO service_role;
