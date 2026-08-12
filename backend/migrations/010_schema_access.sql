@@ -58,10 +58,10 @@ BEGIN
 END
 $$;
 
--- Keep old backend images safe during a rolling deployment. They still look
--- up public._migrations; this auto-updatable view points them at the real,
--- private ledger so they never replay migrations against the emptied public
--- schema. Remove the view after all deployments use driftread._migrations.
+-- Keep a restarted legacy migration runner from replaying migrations. This
+-- does not make old API/worker images runtime-compatible after the tables move;
+-- they must be stopped for the one-time cutover. Remove the view after every
+-- deployment uses driftread._migrations.
 DO $$
 BEGIN
   IF to_regclass('public._migrations') IS NULL THEN

@@ -282,10 +282,16 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
   `driftread` schema；完整限定 SQL 名稱、設定 PostgREST exposed schemas、最小 grants 與 default
   privileges。backend 用 `ClientOptions(schema="driftread")` 固定 scope。`_migrations` 開 RLS、
   不建 policy，並撤銷 anon/authenticated 全部 table privilege。四張 owner policy 同時檢查
-  `(select auth.uid())` 與 JWT `is_anonymous is false`。三個 function 固定 `search_path=pg_catalog`，
-  trigger function 與抽樣 RPC 都撤銷 PUBLIC/anon/authenticated execute。
+  `(select auth.uid())` 與 JWT `is_anonymous is false`；因 backend 使用會繞過 RLS 的 service-role
+  client，`auth.py` 也要求 `is_anonymous` 明確為 false，才允許任何 privileged query。三個
+  function 固定 `search_path=pg_catalog`，trigger function 與抽樣 RPC 都撤銷
+  PUBLIC/anon/authenticated execute。
 - **部署安全**：搬表與 client 切換不能分開部署。migration 010 由新 backend 在 lifespan 最前面
   執行；成功後才建立 scoped client 並通過 healthcheck，worker 又必須等待 API healthy 才啟動。
+  migration 與 backfill 共用 session-level advisory lock，避免多個 API replica 競跑 ledger / DDL。
+  一次性切換前必須停止舊版 API / worker；`public._migrations` 相容 view 只保護舊 migration runner，
+  並且在 ledger 搬移後、任何歷史 migration 執行前就建立，讓 006–008 失敗時仍可安全回滾舊
+  image；它不提供舊 runtime 所需的業務 table 相容性。
   `supabase/1_create_schema.sql`、`2_migrate_tables.sql`、`3_rls_policies.sql` 保留為可審核的三層
   定義，010 是相同 SQL 的可部署版本。
 
@@ -303,7 +309,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 | XML 解析 | 全數 `defusedxml`（feed、OPML 上傳、遠端 OPML 目錄三條路徑） | `rss_parser.py`、`routers/opml.py`、`services/directory_sources.py` |
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter；id 類參數一律宣告 `UUID` 型別，格式錯誤在進 DB 呼叫前就回 422（見 #28） | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
 | 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
-| 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
+| 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；永久帳號必須帶 `is_anonymous=false`；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
 | 資料存取 | 專屬 `driftread` schema + scoped client；四張 `user_*` 表 RLS permanent-user owner-only；`feeds` / `articles` RLS + public read；四張 `discovery_*` 與 `_migrations` RLS + **零 policy**（僅 service_role） | `database.py`、`migrations/002`、`004`、`006`、`010` |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 

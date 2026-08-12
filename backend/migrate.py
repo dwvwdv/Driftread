@@ -10,6 +10,19 @@ logger = logging.getLogger(__name__)
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SCHEMA = "driftread"
 _MIGRATIONS_TABLE = f"{_SCHEMA}._migrations"
+_MIGRATION_LOCK_NAME = "driftread:migrations"
+
+
+def acquire_migration_lock(cur) -> None:
+    """Serialize schema migrations and ledger-backed data backfills.
+
+    This is a session-level lock, so it remains held across the per-migration
+    commits below and is released automatically when the connection closes.
+    """
+    cur.execute(
+        "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+        (_MIGRATION_LOCK_NAME,),
+    )
 
 
 def _ensure_migration_table(cur) -> None:
@@ -36,6 +49,15 @@ def _ensure_migration_table(cur) -> None:
               );
             END IF;
           END IF;
+
+          -- Create the rollback bridge before any historical migration runs.
+          -- If 006-008 fails before 010, a legacy image must still see the
+          -- real ledger instead of creating a new empty public table.
+          IF to_regclass('public._migrations') IS NULL THEN
+            CREATE VIEW public._migrations
+              WITH (security_invoker = true)
+              AS SELECT filename, applied_at FROM {_MIGRATIONS_TABLE};
+          END IF;
         END
         $$
         """
@@ -45,6 +67,7 @@ def _ensure_migration_table(cur) -> None:
     # RLS plus explicit revokes keep it inaccessible even if grants drift later.
     cur.execute(f"ALTER TABLE {_MIGRATIONS_TABLE} ENABLE ROW LEVEL SECURITY")
     cur.execute(f"REVOKE ALL ON TABLE {_MIGRATIONS_TABLE} FROM PUBLIC, anon, authenticated")
+    cur.execute("REVOKE ALL ON TABLE public._migrations FROM PUBLIC, anon, authenticated")
 
 
 def run_migrations() -> None:
@@ -57,6 +80,7 @@ def run_migrations() -> None:
     try:
         conn.autocommit = False
         with conn.cursor() as cur:
+            acquire_migration_lock(cur)
             _ensure_migration_table(cur)
             conn.commit()
 

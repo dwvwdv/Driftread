@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from pathlib import Path
 
+import backfill
 import migrate
 
 
@@ -11,8 +12,10 @@ class _MigrationCursor:
         self.applied = applied
         self.pending_result = None
         self.executed_migrations: list[str] = []
+        self.executed_statements: list[tuple[str, object]] = []
 
     def execute(self, statement, params=None):
+        self.executed_statements.append((statement, params))
         if statement.lstrip().startswith("SELECT 1 FROM"):
             self.pending_result = params[0] in self.applied
         elif params and statement.lstrip().startswith("INSERT INTO"):
@@ -63,6 +66,13 @@ def test_partial_public_schema_upgrade_runs_legacy_sql_before_move(monkeypatch, 
 
     migrate.run_migrations()
 
+    assert cursor.executed_statements[0] == (
+        "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+        ("driftread:migrations",),
+    )
+    ensure_ledger_sql = cursor.executed_statements[2][0]
+    assert "CREATE VIEW public._migrations" in ensure_ledger_sql
+    assert "FROM driftread._migrations" in ensure_ledger_sql
     migration_006, migration_007, migration_008, migration_010 = cursor.executed_migrations
     assert "ALTER TABLE feeds" in migration_006
     assert "ALTER TABLE driftread.feeds" not in migration_006
@@ -85,3 +95,23 @@ def test_postgrest_schema_migration_preserves_custom_schemas():
     existing = "public, graphql_public, cotime_book"
     resulting = existing + ", driftread"
     assert resulting == "public, graphql_public, cotime_book, driftread"
+
+
+def test_backfill_uses_same_lock_before_reading_ledger(monkeypatch):
+    cursor = _MigrationCursor({backfill.BACKFILL_NAME})
+    connection = _MigrationConnection(cursor)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://backfill-lock-fixture")
+    monkeypatch.setattr(backfill.psycopg2, "connect", lambda _url: connection)
+
+    backfill.run_backfills()
+
+    assert cursor.executed_statements[:2] == [
+        (
+            "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+            ("driftread:migrations",),
+        ),
+        (
+            "SELECT 1 FROM driftread._migrations WHERE filename = %s",
+            (backfill.BACKFILL_NAME,),
+        ),
+    ]

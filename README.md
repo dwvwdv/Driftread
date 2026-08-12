@@ -79,6 +79,19 @@ Driftread 的 table / function / migration ledger 全部位於專屬 `driftread`
 會在同一個 transaction 內搬移既有 `public` 資料、設定 Data API exposure、最小 grants 與 RLS，
 接著 backend 才以 schema-scoped Supabase client 開始服務。
 
+首次套用 migration 010 是一次性切換，不能讓舊版 `public`-scoped API / worker 同時運行：
+
+```bash
+docker compose stop worker api
+docker compose pull api worker
+docker compose up -d api
+docker compose up -d worker frontend
+```
+
+新 API 啟動時會用 PostgreSQL advisory lock 序列化 migration 與 ledger-backed backfill；worker
+仍須等 API healthcheck 成功才啟動。migration 保留的 `public._migrations` view 只供舊 migration
+runner 安全重試，不是舊版 runtime 的 table 相容層。
+
 不想跑 `worker` 的話，設 `FEED_REFRESH_ENABLED=false` 並改由外部排程器定期呼叫
 `POST /api/admin/feeds/refresh-due`（需 `X-API-Key`）即可，抓取邏輯完全相同。
 主動發現同理，對應端點是 `POST /api/admin/discovery/run` —— 但那條路徑要求

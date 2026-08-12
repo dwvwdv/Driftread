@@ -37,6 +37,17 @@ def _verify_token(token: str) -> AuthUser:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing subject",
         )
+    # The shared Supabase project has Anonymous Sign-Ins enabled. Anonymous
+    # users receive the authenticated Postgres role, and this backend uses the
+    # service-role client, so RLS cannot enforce the permanent-user-only rule
+    # for API calls. Mirror the owner policies here before any privileged query
+    # is allowed to run. Requiring an explicit False also keeps application
+    # authorization aligned with SQL's `... IS FALSE` behavior.
+    if payload.get("is_anonymous") is not False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A permanent account is required",
+        )
     return AuthUser(user_id=user_id, email=payload.get("email"))
 
 

@@ -19,6 +19,7 @@ import os
 import psycopg2
 import psycopg2.extras
 
+from migrate import acquire_migration_lock
 from rss_parser import _looks_like_markup, _plain_text
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,10 @@ def run_backfills() -> None:
     try:
         conn.autocommit = False
         with conn.cursor() as cur:
+            # Use the same session-level lock as SQL migrations. Multiple API
+            # replicas may boot together; only one may inspect/update the
+            # shared ledger and run this one-off rewrite at a time.
+            acquire_migration_lock(cur)
             # run_migrations() creates the schema-scoped ledger first.
             cur.execute(
                 "SELECT 1 FROM driftread._migrations WHERE filename = %s",

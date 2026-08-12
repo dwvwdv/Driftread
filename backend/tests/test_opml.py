@@ -13,6 +13,7 @@ def _token() -> str:
         {
             "sub": "user-abc",
             "aud": "authenticated",
+            "is_anonymous": False,
             "exp": int(time.time()) + 3600,
         },
         os.environ["SUPABASE_JWT_SECRET"],

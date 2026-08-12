@@ -8,14 +8,21 @@ import jwt
 os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-please-change-and-make-32-bytes-long")
 
 
-def _token(user_id: str = "user-abc", secret: str | None = None) -> str:
+def _token(
+    user_id: str = "user-abc",
+    secret: str | None = None,
+    is_anonymous: bool | None = False,
+) -> str:
+    payload = {
+        "sub": user_id,
+        "aud": "authenticated",
+        "email": "u@example.com",
+        "exp": int(time.time()) + 3600,
+    }
+    if is_anonymous is not None:
+        payload["is_anonymous"] = is_anonymous
     return jwt.encode(
-        {
-            "sub": user_id,
-            "aud": "authenticated",
-            "email": "u@example.com",
-            "exp": int(time.time()) + 3600,
-        },
+        payload,
         secret or os.environ["SUPABASE_JWT_SECRET"],
         algorithm="HS256",
     )
@@ -51,3 +58,26 @@ def test_me_feeds_valid_token(client):
     )
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_me_feeds_rejects_anonymous_supabase_user(client):
+    c, mock_db = client
+    resp = c.get(
+        "/api/me/feeds",
+        headers={"Authorization": f"Bearer {_token(is_anonymous=True)}"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": "A permanent account is required"}
+    mock_db.table.assert_not_called()
+
+
+def test_me_feeds_rejects_token_without_permanent_user_claim(client):
+    c, mock_db = client
+    resp = c.get(
+        "/api/me/feeds",
+        headers={"Authorization": f"Bearer {_token(is_anonymous=None)}"},
+    )
+
+    assert resp.status_code == 403
+    mock_db.table.assert_not_called()
