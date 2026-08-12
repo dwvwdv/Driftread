@@ -152,6 +152,10 @@ def test_refresh_feed_success_keeps_inserted_key(client):
 
     with (
         patch(
+            "services.feed_refresh.validate_fetch_url",
+            return_value="https://example.com",
+        ),
+        patch(
             "services.feed_refresh.fetch_and_parse_conditional",
             return_value=ConditionalFetch(
                 not_modified=False,

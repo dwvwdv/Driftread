@@ -268,6 +268,27 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **修法**：`liked`、`disliked` 的型別從 `list[str]` 改成 `list[UUID]`，比照本專案其他所有 id 參數的既有慣例——FastAPI 在路由函式執行前就會驗證每個元素，格式錯誤直接回 `422`，兩個 DB 呼叫點都不會被觸發。兩個實際使用處（組 `excluded` 集合、`.in_("id", ...)`）改成呼叫端呼叫 `str(u)` 轉回字串，同樣沿用其餘 router 一貫的 `str(feed_id)` 寫法。
 - **測試**：`backend/tests/test_recommendations.py` 新增 `test_malformed_id_in_liked_or_disliked_is_rejected`（對 `liked`、`disliked` 各跑一次），斷言帶入 `not-a-uuid` 回 `422`，且 `mock_db.table` / `mock_db.rpc` 都沒被呼叫過——證明是請求驗證擋下，不是等 DB 呼叫失敗才處理。沒有網路能在本 sandbox 安裝依賴跑 `pytest`（與 #25/#26/#27 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，實際執行結果交給 CI（`.github/workflows/backend.yml` 的 `Test` job）驗證。
 
+### #29 — Supabase schema 隔離、migration ledger 與匿名帳號 RLS（08-12）
+
+- **問題一：沒有 App schema 隔離。** Driftread 的 10 張業務表、3 個 function 與 `_migrations`
+  全在共用專案的 `public`，和其他 App 的資料混在一起；Python client 也沒有 schema scope。
+- **問題二：migration ledger 可從 Data API 寫入。** `public._migrations` 沒開 RLS，且 `anon` /
+  `authenticated` 持有 CRUD grants。公開 key 的持有者能偽造 migration 執行紀錄，讓 backend
+  跳過或重跑 schema change。
+- **問題三：匿名登入共用 authenticated role。** 這個 Supabase project 啟用了 Anonymous
+  Sign-In；原本只用 `TO authenticated AND user_id = auth.uid()`，因此匿名帳號也能使用四張
+  `user_*` 表。Driftread 的產品流程只有 email/password，這不是預期授權模型。
+- **修法**：migration 010 在 backend 啟動、client 建立前，將全部 Driftread objects 原地搬入
+  `driftread` schema；完整限定 SQL 名稱、設定 PostgREST exposed schemas、最小 grants 與 default
+  privileges。backend 用 `ClientOptions(schema="driftread")` 固定 scope。`_migrations` 開 RLS、
+  不建 policy，並撤銷 anon/authenticated 全部 table privilege。四張 owner policy 同時檢查
+  `(select auth.uid())` 與 JWT `is_anonymous is false`。三個 function 固定 `search_path=pg_catalog`，
+  trigger function 與抽樣 RPC 都撤銷 PUBLIC/anon/authenticated execute。
+- **部署安全**：搬表與 client 切換不能分開部署。migration 010 由新 backend 在 lifespan 最前面
+  執行；成功後才建立 scoped client 並通過 healthcheck，worker 又必須等待 API healthy 才啟動。
+  `supabase/1_create_schema.sql`、`2_migrate_tables.sql`、`3_rls_policies.sql` 保留為可審核的三層
+  定義，010 是相同 SQL 的可部署版本。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
@@ -283,7 +304,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter；id 類參數一律宣告 `UUID` 型別，格式錯誤在進 DB 呼叫前就回 422（見 #28） | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
 | 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
 | 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
-| 資料存取 | 四張 `user_*` 表 RLS owner-only；`feeds` / `articles` RLS + public read；四張 `discovery_*` 表 RLS + **零 policy**（僅 service_role） | `migrations/002`、`004`、`006` |
+| 資料存取 | 專屬 `driftread` schema + scoped client；四張 `user_*` 表 RLS permanent-user owner-only；`feeds` / `articles` RLS + public read；四張 `discovery_*` 與 `_migrations` RLS + **零 policy**（僅 service_role） | `database.py`、`migrations/002`、`004`、`006`、`010` |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 
 ## 改動時要注意的事

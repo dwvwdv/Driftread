@@ -30,7 +30,7 @@
 
 -- ═════════════════════════════════════════════ 1. harvest cursor on feeds
 
-ALTER TABLE feeds
+ALTER TABLE driftread.feeds
   ADD COLUMN IF NOT EXISTS last_harvested_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS next_harvest_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
@@ -39,7 +39,7 @@ ALTER TABLE feeds
 -- 005: keep archived feeds out of the index entirely, not just out of the
 -- result set.
 CREATE INDEX IF NOT EXISTS feeds_next_harvest_at_idx
-  ON feeds (next_harvest_at)
+  ON driftread.feeds (next_harvest_at)
   WHERE archived_at IS NULL;
 
 -- DEFAULT NOW() makes every existing feed immediately harvest-due. That is
@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS feeds_next_harvest_at_idx
 
 -- ═════════════════════════════════════════════ 2. the crawl frontier
 
-CREATE TABLE IF NOT EXISTS discovery_targets (
+CREATE TABLE IF NOT EXISTS driftread.discovery_targets (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   -- UNIQUE on url, not host: an OPML directory can contribute several feed URLs
   -- on one host. The "probe a host only once" rule applies only to link mining
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS discovery_targets (
   -- One representative referrer for display; the full set lives in
   -- discovery_target_referrers. SET NULL so deleting a feed doesn't delete
   -- frontier history.
-  source_feed_id       UUID REFERENCES feeds(id) ON DELETE SET NULL,
+  source_feed_id       UUID REFERENCES driftread.feeds(id) ON DELETE SET NULL,
   -- Denormalized COUNT of discovery_target_referrers, maintained by the trigger
   -- below. The primary quality signal.
   referring_feed_count INT NOT NULL DEFAULT 0,
@@ -93,38 +93,38 @@ CREATE TABLE IF NOT EXISTS discovery_targets (
 -- quality signal, so the crawler always spends its budget on the
 -- best-evidenced hosts first.
 CREATE INDEX IF NOT EXISTS discovery_targets_due_idx
-  ON discovery_targets (referring_feed_count DESC, next_probe_at)
+  ON driftread.discovery_targets (referring_feed_count DESC, next_probe_at)
   WHERE status = 'pending';
 
 -- link_harvest.build_host_index pages through every host to build its in-memory
 -- dedupe set; the seed endpoint looks up single hosts.
 CREATE INDEX IF NOT EXISTS discovery_targets_host_idx
-  ON discovery_targets (host);
+  ON driftread.discovery_targets (host);
 
 -- Admin list/stats filter by status.
 CREATE INDEX IF NOT EXISTS discovery_targets_status_idx
-  ON discovery_targets (status);
+  ON driftread.discovery_targets (status);
 
 -- The distinct-referrer ledger. A plain counter column would double-count every
 -- re-harvest of the same feed; a row per (target, feed) makes the count a
 -- property of the data instead of of the write path.
-CREATE TABLE IF NOT EXISTS discovery_target_referrers (
-  target_id     UUID NOT NULL REFERENCES discovery_targets(id) ON DELETE CASCADE,
-  feed_id       UUID NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS driftread.discovery_target_referrers (
+  target_id     UUID NOT NULL REFERENCES driftread.discovery_targets(id) ON DELETE CASCADE,
+  feed_id       UUID NOT NULL REFERENCES driftread.feeds(id) ON DELETE CASCADE,
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (target_id, feed_id)
 );
 
 CREATE INDEX IF NOT EXISTS discovery_target_referrers_feed_idx
-  ON discovery_target_referrers (feed_id);
+  ON driftread.discovery_target_referrers (feed_id);
 
 -- ═════════════════════════════════════════════ 3. candidate review queue
 
-CREATE TABLE IF NOT EXISTS discovery_candidates (
+CREATE TABLE IF NOT EXISTS driftread.discovery_candidates (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   -- SET NULL, not CASCADE: purging old frontier rows must not destroy review
   -- history (especially rejections).
-  target_id            UUID REFERENCES discovery_targets(id) ON DELETE SET NULL,
+  target_id            UUID REFERENCES driftread.discovery_targets(id) ON DELETE SET NULL,
   -- UNIQUE is the "never re-propose a rejected candidate" mechanism. The write
   -- path in services/discovery_candidates.py::record_candidates therefore
   -- INSERTs only URLs it has confirmed absent, and never upserts over status.
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS discovery_candidates (
   --   approved is a real intermediate state: approval is recorded first, then a
   --   sweep promotes it into `feeds`. If the feeds write fails the approval
   --   isn't lost and the next cycle retries it.
-  feed_id              UUID REFERENCES feeds(id) ON DELETE SET NULL,
+  feed_id              UUID REFERENCES driftread.feeds(id) ON DELETE SET NULL,
   -- The category/tags the reviewer chose, stored with the approval rather than
   -- held in the request. Without these, a promotion that failed and got retried
   -- by promote_approved() next cycle would import the feed uncategorised and
@@ -155,18 +155,18 @@ CREATE TABLE IF NOT EXISTS discovery_candidates (
 
 -- The review queue query: status = 'pending', ordered best-evidence-first.
 CREATE INDEX IF NOT EXISTS discovery_candidates_review_idx
-  ON discovery_candidates (referring_feed_count DESC, discovered_at DESC)
+  ON driftread.discovery_candidates (referring_feed_count DESC, discovered_at DESC)
   WHERE status = 'pending';
 
 CREATE INDEX IF NOT EXISTS discovery_candidates_status_idx
-  ON discovery_candidates (status);
+  ON driftread.discovery_candidates (status);
 
 CREATE INDEX IF NOT EXISTS discovery_candidates_target_idx
-  ON discovery_candidates (target_id);
+  ON driftread.discovery_candidates (target_id);
 
 -- ═════════════════════════════════════════════ 4. directory / index sources
 
-CREATE TABLE IF NOT EXISTS discovery_sources (
+CREATE TABLE IF NOT EXISTS driftread.discovery_sources (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   url                 TEXT NOT NULL UNIQUE,
   --   links_page : HTML page; every external <a href> becomes a frontier host
@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS discovery_sources (
 
 -- Matches services/directory_sources.py::select_due_sources.
 CREATE INDEX IF NOT EXISTS discovery_sources_due_idx
-  ON discovery_sources (next_harvest_at)
+  ON driftread.discovery_sources (next_harvest_at)
   WHERE enabled;
 
 -- ═════════════════════════════════════════════ 5. referrer count maintenance
@@ -198,22 +198,24 @@ CREATE INDEX IF NOT EXISTS discovery_sources_due_idx
 -- Also refreshes *pending* candidates so the auto-promote threshold reacts to
 -- evidence that accumulated after the candidate was first discovered; already
 -- reviewed rows are deliberately frozen.
-CREATE OR REPLACE FUNCTION discovery_sync_referrer_count()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION driftread.discovery_sync_referrer_count()
+RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
 DECLARE
   affected UUID := COALESCE(NEW.target_id, OLD.target_id);
   total    INT;
 BEGIN
   SELECT COUNT(*) INTO total
-    FROM discovery_target_referrers
+    FROM driftread.discovery_target_referrers
    WHERE target_id = affected;
 
-  UPDATE discovery_targets
+  UPDATE driftread.discovery_targets
      SET referring_feed_count = total
    WHERE id = affected
      AND referring_feed_count <> total;
 
-  UPDATE discovery_candidates
+  UPDATE driftread.discovery_candidates
      SET referring_feed_count = total
    WHERE target_id = affected
      AND status = 'pending'
@@ -233,11 +235,11 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
      WHERE tgname = 'discovery_target_referrers_sync_count'
-       AND tgrelid = 'discovery_target_referrers'::regclass
+       AND tgrelid = 'driftread.discovery_target_referrers'::regclass
   ) THEN
     CREATE TRIGGER discovery_target_referrers_sync_count
-      AFTER INSERT OR DELETE ON discovery_target_referrers
-      FOR EACH ROW EXECUTE FUNCTION discovery_sync_referrer_count();
+      AFTER INSERT OR DELETE ON driftread.discovery_target_referrers
+      FOR EACH ROW EXECUTE FUNCTION driftread.discovery_sync_referrer_count();
   END IF;
 END $$;
 
@@ -248,40 +250,40 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
      WHERE tgname = 'discovery_targets_updated_at'
-       AND tgrelid = 'discovery_targets'::regclass
+       AND tgrelid = 'driftread.discovery_targets'::regclass
   ) THEN
     CREATE TRIGGER discovery_targets_updated_at
-      BEFORE UPDATE ON discovery_targets
-      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+      BEFORE UPDATE ON driftread.discovery_targets
+      FOR EACH ROW EXECUTE FUNCTION driftread.set_updated_at();
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
      WHERE tgname = 'discovery_candidates_updated_at'
-       AND tgrelid = 'discovery_candidates'::regclass
+       AND tgrelid = 'driftread.discovery_candidates'::regclass
   ) THEN
     CREATE TRIGGER discovery_candidates_updated_at
-      BEFORE UPDATE ON discovery_candidates
-      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+      BEFORE UPDATE ON driftread.discovery_candidates
+      FOR EACH ROW EXECUTE FUNCTION driftread.set_updated_at();
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
      WHERE tgname = 'discovery_sources_updated_at'
-       AND tgrelid = 'discovery_sources'::regclass
+       AND tgrelid = 'driftread.discovery_sources'::regclass
   ) THEN
     CREATE TRIGGER discovery_sources_updated_at
-      BEFORE UPDATE ON discovery_sources
-      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+      BEFORE UPDATE ON driftread.discovery_sources
+      FOR EACH ROW EXECUTE FUNCTION driftread.set_updated_at();
   END IF;
 END $$;
 
 -- ═════════════════════════════════════════════ 7. RLS: service_role only
 
-ALTER TABLE discovery_targets          ENABLE ROW LEVEL SECURITY;
-ALTER TABLE discovery_target_referrers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE discovery_candidates       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE discovery_sources          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driftread.discovery_targets          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driftread.discovery_target_referrers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driftread.discovery_candidates       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driftread.discovery_sources          ENABLE ROW LEVEL SECURITY;
 
 -- Deliberately NO policies at all — not even SELECT. With RLS on and zero
 -- policies, anon and authenticated see zero rows and can write nothing, while

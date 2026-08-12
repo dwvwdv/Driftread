@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 
 from supabase import Client, create_client
+from supabase.client import ClientOptions
 
 
 _client: Client | None = None
@@ -14,5 +15,9 @@ def get_client() -> Client:
         key = os.getenv("SUPABASE_KEY", "")
         if not url or not key:
             raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set")
-        _client = create_client(url, key)
+        _client = create_client(
+            url,
+            key,
+            options=ClientOptions(schema="driftread"),
+        )
     return _client

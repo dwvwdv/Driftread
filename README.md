@@ -75,6 +75,9 @@ Compose 有三個服務：
 
 資料庫 migration 由後端啟動時的 `backend/migrate.py` 自動套用 `backend/migrations/*.sql`。
 `worker` 以 `depends_on: api: service_healthy` 等 migration 落地後才開始輪詢，自己不跑 migration。
+Driftread 的 table / function / migration ledger 全部位於專屬 `driftread` schema；migration 010
+會在同一個 transaction 內搬移既有 `public` 資料、設定 Data API exposure、最小 grants 與 RLS，
+接著 backend 才以 schema-scoped Supabase client 開始服務。
 
 不想跑 `worker` 的話，設 `FEED_REFRESH_ENABLED=false` 並改由外部排程器定期呼叫
 `POST /api/admin/feeds/refresh-due`（需 `X-API-Key`）即可，抓取邏輯完全相同。

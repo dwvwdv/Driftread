@@ -497,3 +497,15 @@ migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，
 - **修法**：`backend/routers/recommendations.py` 的 `liked`、`disliked` 型別改成 `list[UUID]`，比照本專案其他 id 參數一貫的宣告方式；兩個實際使用處（組 `excluded` 集合、`.in_("id", ...)`）在呼叫端用 `str(u)` 轉回字串，同樣沿用其餘 router 既有的 `str(feed_id)` 寫法，行為本身不變，只是把「格式錯誤」這一類輸入提前攔在請求驗證這一層。
 - **測試**：`backend/tests/test_recommendations.py` 新增 `test_malformed_id_in_liked_or_disliked_is_rejected`（`liked`、`disliked` 各跑一次），斷言帶入非 UUID 字串回 `422`，且 `mock_db.table` / `mock_db.rpc` 都未被呼叫——證明是請求驗證層擋下，不是等 DB 端才處理。沒有網路能在本 sandbox 安裝依賴跑 `pytest`（與 #25–#27 同樣的既有限制），本機以 `python3 -m py_compile` 與 `ruff check` 驗證，交給 CI 實際跑過。
 - 詳細前後對照見 [SECURITY.md #28](SECURITY.md)。
+
+## 階段十九：Supabase `driftread` schema 隔離與 RLS hardening（2026-08-12）
+
+- 所有 Driftread tables、functions 與 migration ledger 從共用 `public` 原地搬入 `driftread`。
+- backend Supabase client 固定使用 `ClientOptions(schema="driftread")`；SQL migration、backfill
+  與 function body 全改用 schema-qualified names。
+- `_migrations` 開 RLS 並撤銷 anon/authenticated grants；公開 catalog、使用者資料與後台 discovery
+  資料分別使用 public-read、permanent-user owner-only、service-role-only 權限模型。
+- owner policy 額外拒絕 Supabase Anonymous Sign-In 帳號，並把 `auth.uid()` / `auth.jwt()` 包成
+  init-plan subquery；functions 固定 `search_path=pg_catalog` 並收斂 EXECUTE grants。
+- migration 010 將資料搬遷、Data API exposure、RLS 與 client 切換放在同一次 backend deployment，
+  避免舊版 public-scoped client 與已搬移 tables 之間產生停機窗口。

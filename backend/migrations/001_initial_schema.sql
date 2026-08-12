@@ -3,7 +3,7 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- RSS sources
-CREATE TABLE IF NOT EXISTS feeds (
+CREATE TABLE IF NOT EXISTS driftread.feeds (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   title       TEXT NOT NULL,
   url         TEXT UNIQUE NOT NULL,
@@ -19,13 +19,13 @@ CREATE TABLE IF NOT EXISTS feeds (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS feeds_category_idx ON feeds (category);
-CREATE INDEX IF NOT EXISTS feeds_archived_at_idx ON feeds (archived_at);
+CREATE INDEX IF NOT EXISTS feeds_category_idx ON driftread.feeds (category);
+CREATE INDEX IF NOT EXISTS feeds_archived_at_idx ON driftread.feeds (archived_at);
 
 -- Cached articles
-CREATE TABLE IF NOT EXISTS articles (
+CREATE TABLE IF NOT EXISTS driftread.articles (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  feed_id     UUID NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+  feed_id     UUID NOT NULL REFERENCES driftread.feeds(id) ON DELETE CASCADE,
   title       TEXT NOT NULL,
   url         TEXT UNIQUE NOT NULL,
   summary     TEXT,
@@ -35,12 +35,14 @@ CREATE TABLE IF NOT EXISTS articles (
   fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS articles_feed_id_idx ON articles (feed_id);
-CREATE INDEX IF NOT EXISTS articles_published_at_idx ON articles (published_at DESC);
+CREATE INDEX IF NOT EXISTS articles_feed_id_idx ON driftread.articles (feed_id);
+CREATE INDEX IF NOT EXISTS articles_published_at_idx ON driftread.articles (published_at DESC);
 
 -- Auto-update updated_at on feeds
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION driftread.set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
 BEGIN
   NEW.updated_at = NOW();
   RETURN NEW;
@@ -57,10 +59,10 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
      WHERE tgname = 'feeds_updated_at'
-       AND tgrelid = 'feeds'::regclass
+       AND tgrelid = 'driftread.feeds'::regclass
   ) THEN
     CREATE TRIGGER feeds_updated_at
-      BEFORE UPDATE ON feeds
-      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+      BEFORE UPDATE ON driftread.feeds
+      FOR EACH ROW EXECUTE FUNCTION driftread.set_updated_at();
   END IF;
 END $$;

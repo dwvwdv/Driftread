@@ -9,7 +9,7 @@ every review pass — a partial entity table, a hex branch that silently failed,
 C1 range stored as control characters, and a decode that re-scanned its own
 output. Calling the parser is the only version that cannot drift from it.
 
-Tracked in the same `_migrations` table as the SQL files so "has this run?" has
+Tracked in the same `driftread._migrations` table as the SQL files so "has this run?" has
 one answer, and so an operator reading that table sees the whole sequence.
 """
 from __future__ import annotations
@@ -57,7 +57,10 @@ def backfill_plain_text_summaries(conn) -> int:
         # Server-side cursor: the whole point is to walk every row, and this
         # table holds every article ever cached.
         read.itersize = BATCH_SIZE
-        read.execute("SELECT id, summary, content FROM articles WHERE summary IS NOT NULL")
+        read.execute(
+            "SELECT id, summary, content "
+            "FROM driftread.articles WHERE summary IS NOT NULL"
+        )
 
         updates: list[tuple[str | None, str | None, str]] = []
         with conn.cursor() as write:
@@ -80,7 +83,7 @@ def _flush(cur, updates: list[tuple[str | None, str | None, str]]) -> int:
         return 0
     psycopg2.extras.execute_batch(
         cur,
-        "UPDATE articles SET summary = %s, content = %s WHERE id = %s",
+        "UPDATE driftread.articles SET summary = %s, content = %s WHERE id = %s",
         updates,
         page_size=len(updates),
     )
@@ -103,15 +106,11 @@ def run_backfills() -> None:
     try:
         conn.autocommit = False
         with conn.cursor() as cur:
-            # run_migrations() creates this table and runs first; the guard keeps
-            # the two independent anyway, so neither can break the other's boot.
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS _migrations (
-                    filename TEXT PRIMARY KEY,
-                    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            cur.execute("SELECT 1 FROM _migrations WHERE filename = %s", (BACKFILL_NAME,))
+            # run_migrations() creates the schema-scoped ledger first.
+            cur.execute(
+                "SELECT 1 FROM driftread._migrations WHERE filename = %s",
+                (BACKFILL_NAME,),
+            )
             if cur.fetchone():
                 return
             conn.commit()
@@ -119,7 +118,11 @@ def run_backfills() -> None:
         logger.info("Running backfill: %s", BACKFILL_NAME)
         changed = backfill_plain_text_summaries(conn)
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO _migrations (filename) VALUES (%s)", (BACKFILL_NAME,))
+            cur.execute(
+                "INSERT INTO driftread._migrations (filename) VALUES (%s) "
+                "ON CONFLICT (filename) DO NOTHING",
+                (BACKFILL_NAME,),
+            )
         conn.commit()
         logger.info("Backfill %s complete: %d rows rewritten", BACKFILL_NAME, changed)
     except Exception:

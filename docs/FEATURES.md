@@ -353,9 +353,11 @@ image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時
 
 ## 5. 資料表
 
-由 `backend/migrations/*.sql` 定義，後端啟動時 `migrate.py` 自動套用（以 `_migrations` 表追蹤）。
+由 `backend/migrations/*.sql` 定義，全部位於專屬 `driftread` schema。後端啟動時
+`migrate.py` 自動套用（以 `driftread._migrations` 表追蹤）。migration 010 負責把既有
+`public` objects 原地搬入專屬 schema，同時設定 Data API exposure、grants 與 RLS。
 
-**資料回填**（非 schema 變更）走 `backend/backfill.py`，在 migration 之後由同一個 lifespan 呼叫，記在同一張 `_migrations` 表。放在 Python 而非 SQL 是因為它需要解析器自己的 `html.unescape()` 語意（2231 個具名實體、C1 的 Windows-1252 代換、單次掃描），在 PL/pgSQL 重寫過一版，每一輪 review 都會冒出新的不一致——直接呼叫解析器才不會漂移。
+**資料回填**（非 schema 變更）走 `backend/backfill.py`，在 migration 之後由同一個 lifespan 呼叫，記在同一張 `driftread._migrations` 表。放在 Python 而非 SQL 是因為它需要解析器自己的 `html.unescape()` 語意（2231 個具名實體、C1 的 Windows-1252 代換、單次掃描），在 PL/pgSQL 重寫過一版，每一輪 review 都會冒出新的不一致——直接呼叫解析器才不會漂移。
 
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
@@ -369,12 +371,13 @@ image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時
 | `discovery_target_referrers` | 006 | `(target_id, feed_id)` 主鍵的分帳表，讓「幾個**不同**的既有源連到這裡」精確且重複收割時冪等 |
 | `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制；`approved_category` / `approved_tags` 讓核准決定在寫 `feeds` 失敗時不會遺失 |
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
-| `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名 |
+| `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 
 Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
 （不建新表）：供 `routers/recommendations.py` 以 `ORDER BY random()` 抽樣候選池，見上方第 2 節。
 
-RLS：四張 `user_*` 表為 owner-only policy（002）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。
+RLS：四張 `user_*` 表為 permanent-user owner-only policy（002；同時檢查 `auth.uid()` 與
+JWT `is_anonymous = false`）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。
 **四張 `discovery_*` 表開 RLS 但刻意不建任何 policy（006）** —— 連 SELECT 都沒有，所以 anon 與
 authenticated 看不到任何列也寫不進去，只有 service_role 能繞過。這與 004 對公開 catalog 開 public
 read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key 洩漏不該能列舉待探測佇列。
