@@ -15,7 +15,12 @@ os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-please-change")
 
 def _token(user_id: str = "user-abc") -> str:
     return jwt.encode(
-        {"sub": user_id, "aud": "authenticated", "exp": int(time.time()) + 3600},
+        {
+            "sub": user_id,
+            "aud": "authenticated",
+            "is_anonymous": False,
+            "exp": int(time.time()) + 3600,
+        },
         os.environ["SUPABASE_JWT_SECRET"],
         algorithm="HS256",
     )

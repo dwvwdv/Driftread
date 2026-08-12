@@ -5,11 +5,13 @@ on:
     branches: [main, master]
     paths:
       - 'backend/**'
+      - 'supabase/**'
       - '.github/workflows/backend.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'backend/**'
+      - 'supabase/**'
       - '.github/workflows/backend.yml'
   workflow_dispatch:
 
