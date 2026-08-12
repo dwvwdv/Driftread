@@ -97,6 +97,21 @@ def test_postgrest_schema_migration_preserves_custom_schemas():
     assert resulting == "public, graphql_public, cotime_book, driftread"
 
 
+def test_reviewable_schema_layers_match_deployable_migration():
+    """The three review layers must remain the exact source of migration 010."""
+    root = Path(migrate.__file__).parent.parent
+    layers = [
+        root / "supabase/1_create_schema.sql",
+        root / "supabase/2_migrate_tables.sql",
+        root / "supabase/3_rls_policies.sql",
+    ]
+
+    expected = "\n\n".join(path.read_text().strip() for path in layers)
+    deployed = (root / "backend/migrations/010_schema_access.sql").read_text().strip()
+
+    assert deployed == expected
+
+
 def test_backfill_uses_same_lock_before_reading_ledger(monkeypatch):
     cursor = _MigrationCursor({backfill.BACKFILL_NAME})
     connection = _MigrationConnection(cursor)
