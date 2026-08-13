@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
-import { Article, BookmarkType, Feed, OpmlImportResult, UserPreferences } from '../models';
+import { ArticleSummary, BookmarkType, Feed, OpmlImportResult, UserPreferences } from '../models';
 
 @Injectable({ providedIn: 'root' })
 export class MeService {
@@ -29,9 +29,9 @@ export class MeService {
     return this.http.get<string[]>(`${this.base}/me/reads`);
   }
 
-  listBookmarks(bookmarkType: BookmarkType = 'favorite'): Observable<Article[]> {
+  listBookmarks(bookmarkType: BookmarkType = 'favorite'): Observable<ArticleSummary[]> {
     const params = new HttpParams().set('bookmark_type', bookmarkType);
-    return this.http.get<Article[]>(`${this.base}/me/bookmarks`, { params });
+    return this.http.get<ArticleSummary[]>(`${this.base}/me/bookmarks`, { params });
   }
 
   addBookmark(articleId: string, bookmarkType: BookmarkType): Observable<void> {

@@ -10,7 +10,7 @@ import {
 import { RouterLink } from '@angular/router';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
-import { Article, BookmarkType } from '../../models';
+import { ArticleSummary, BookmarkType } from '../../models';
 import { apiMessage } from '../../shared/http-errors';
 import { stripHtml } from '../../shared/html';
 import { ObListRow } from '../../ui/list-row/list-row';
@@ -39,7 +39,7 @@ export class Bookmarks {
 
   protected readonly tabs = ['收藏', '稍後閱讀'] as const;
   tabIndex = signal(0);
-  items = signal<Article[]>([]);
+  items = signal<ArticleSummary[]>([]);
   loading = signal(false);
 
   /**
@@ -99,7 +99,7 @@ export class Bookmarks {
     });
   }
 
-  remove(article: Article): void {
+  remove(article: ArticleSummary): void {
     // Captured up front. An article may be both a favourite and read-later, so if
     // the reader switches tabs while the delete is in flight, filtering whatever
     // list is on screen when it lands would hide a still-valid entry from the
