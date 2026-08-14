@@ -97,6 +97,16 @@ class PaginatedArticles(BaseModel):
     page_size: int
 
 
+class ReadReceipt(BaseModel):
+    article_id: UUID
+    read_at: datetime
+
+
+class PaginatedReads(BaseModel):
+    items: list[ReadReceipt]
+    next_cursor: str | None = None
+
+
 class BookmarkCreate(BaseModel):
     article_id: UUID
     bookmark_type: str  # 'favorite' | 'read_later'

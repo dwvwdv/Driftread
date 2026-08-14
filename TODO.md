@@ -115,7 +115,7 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### API 與查詢
 
-- [ ] `GET /me/reads` 加入 cursor pagination、limit 上限與穩定排序。
+- [x] `GET /me/reads` 加入 cursor pagination、limit 上限與穩定排序。
 - [ ] Bookmark 列表只回傳列表所需摘要，不回傳完整 `Article.content`。
 - [ ] `GET /categories` 改由 SQL `DISTINCT`／RPC 聚合，不把所有 Feed 拉回 Python 去重。
 - [ ] 推薦候選移除大表 `ORDER BY random()`，改用 indexed random key、pivot sampling 或可擴充的抽樣策略。

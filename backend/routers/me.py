@@ -1,3 +1,5 @@
+import base64
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,9 +12,12 @@ from models import (
     Bookmark,
     BookmarkCreate,
     Feed,
+    PaginatedReads,
+    ReadReceipt,
     UserPreferences,
     UserPreferencesUpdate,
 )
+from utils import escape_postgrest_literal
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -73,18 +78,59 @@ async def mark_read(
     ).execute()
 
 
-@router.get("/reads", response_model=list[str])
+def _encode_reads_cursor(read_at: datetime, article_id: UUID) -> str:
+    raw = f"{read_at.isoformat()}|{article_id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_reads_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+        read_at_raw, article_id_raw = raw.rsplit("|", 1)
+        datetime.fromisoformat(read_at_raw)
+        UUID(article_id_raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
+    return read_at_raw, article_id_raw
+
+
+@router.get("/reads", response_model=PaginatedReads)
 async def list_reads(
+    cursor: str | None = None,
+    limit: int = Query(100, ge=1, le=500),
     user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
-) -> list[str]:
+) -> PaginatedReads:
+    # Keyset (not offset) pagination: this table only grows with usage, and a
+    # heavy reader can accumulate thousands of rows, so a plain unbounded
+    # select (the previous behavior) or OFFSET-based paging would both get
+    # slower — and offsets can skip/duplicate rows — as it grows. (read_at,
+    # article_id) DESC is a stable sort key even when multiple rows share a
+    # read_at timestamp (e.g. a bulk "mark all read").
+    query = db.table("user_article_reads").select("article_id, read_at").eq("user_id", user.id)
+    if cursor:
+        read_at, article_id = _decode_reads_cursor(cursor)
+        read_at_lit = escape_postgrest_literal(read_at)
+        article_id_lit = escape_postgrest_literal(article_id)
+        query = query.or_(
+            f"read_at.lt.{read_at_lit},"
+            f"and(read_at.eq.{read_at_lit},article_id.lt.{article_id_lit})"
+        )
+
     rows = (
-        db.table("user_article_reads")
-        .select("article_id")
-        .eq("user_id", user.id)
+        query.order("read_at", desc=True)
+        .order("article_id", desc=True)
+        .limit(limit)
         .execute()
     )
-    return [row["article_id"] for row in rows.data]
+
+    items = [ReadReceipt(**row) for row in rows.data]
+    next_cursor = (
+        _encode_reads_cursor(items[-1].read_at, items[-1].article_id)
+        if len(items) == limit
+        else None
+    )
+    return PaginatedReads(items=items, next_cursor=next_cursor)
 
 
 # --- Bookmarks ---------------------------------------------------------------

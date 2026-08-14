@@ -2,7 +2,14 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
-import { ArticleSummary, BookmarkType, Feed, OpmlImportResult, UserPreferences } from '../models';
+import {
+  ArticleSummary,
+  BookmarkType,
+  Feed,
+  OpmlImportResult,
+  PaginatedReads,
+  UserPreferences,
+} from '../models';
 
 @Injectable({ providedIn: 'root' })
 export class MeService {
@@ -25,8 +32,12 @@ export class MeService {
     return this.http.post<void>(`${this.base}/me/articles/${articleId}/read`, {});
   }
 
-  listReads(): Observable<string[]> {
-    return this.http.get<string[]>(`${this.base}/me/reads`);
+  listReads(cursor?: string, limit = 100): Observable<PaginatedReads> {
+    let params = new HttpParams().set('limit', limit);
+    if (cursor) {
+      params = params.set('cursor', cursor);
+    }
+    return this.http.get<PaginatedReads>(`${this.base}/me/reads`, { params });
   }
 
   listBookmarks(bookmarkType: BookmarkType = 'favorite'): Observable<ArticleSummary[]> {
