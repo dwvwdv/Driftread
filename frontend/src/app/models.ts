@@ -47,6 +47,16 @@ export interface PaginatedArticles {
   page_size: number;
 }
 
+export interface ReadReceipt {
+  article_id: string;
+  read_at: string;
+}
+
+export interface PaginatedReads {
+  items: ReadReceipt[];
+  next_cursor: string | null;
+}
+
 export interface DiscoveredFeed {
   feed_url: string;
   title: string | null;
