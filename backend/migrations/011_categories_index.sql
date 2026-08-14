@@ -15,6 +15,7 @@ AS $$
   FROM driftread.feeds
   WHERE archived_at IS NULL
     AND category IS NOT NULL
+    AND category != ''
   ORDER BY category
 $$;
 
