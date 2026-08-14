@@ -21,3 +21,21 @@ def test_get_feed_not_found_returns_404(client, execute_return):
     assert resp.status_code == 404
     chain.single.assert_not_called()
     chain.maybe_single.assert_called_once()
+
+
+def test_list_categories_uses_db_side_dedup(client):
+    # The dedup, null-filtering and sort all happen in
+    # list_feed_categories() (migration 011) now, not in Python — this
+    # asserts the route calls the RPC rather than falling back to
+    # `.table("feeds").select(...)`.
+    c, mock_db = client
+    mock_db.rpc.return_value.execute.return_value = MagicMock(
+        data=[{"category": "News"}, {"category": "Tech"}]
+    )
+
+    resp = c.get("/api/feeds/categories")
+
+    assert resp.status_code == 200
+    assert resp.json() == ["News", "Tech"]
+    mock_db.rpc.assert_called_once_with("list_feed_categories", {})
+    mock_db.table.assert_not_called()

@@ -44,9 +44,8 @@ async def list_feeds(
 
 @router.get("/categories", response_model=list[str])
 async def list_categories(db: Client = Depends(get_client)) -> list[str]:
-    result = db.table("feeds").select("category").is_("archived_at", "null").execute()
-    categories = {row["category"] for row in result.data if row.get("category")}
-    return sorted(categories)
+    result = db.rpc("list_feed_categories", {}).execute()
+    return [row["category"] for row in result.data]
 
 
 @router.get("/{feed_id}", response_model=FeedWithArticles)
