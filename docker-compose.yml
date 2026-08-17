@@ -117,14 +117,19 @@ services:
 
   frontend:
     image: ghcr.io/dwvwdv/driftread-frontend:latest
-    # The published image is built by CI from the repo as-is, which means empty
-    # supabaseUrl/supabaseAnonKey in src/environments/environment.ts — those are
-    # compiled into the JS bundle at build time, so the official image can never
-    # authenticate. A build section is required for `docker compose build
-    # frontend` to work at all (image: alone gives compose nothing to build).
-    # See the README section on frontend Supabase configuration.
+    # The published image no longer needs a local build: SUPABASE_URL /
+    # SUPABASE_ANON_KEY are rendered into env.js by the container's own
+    # entrypoint at startup (see frontend/docker-entrypoint.d), not compiled
+    # into the JS bundle at `npm run build` time. `build:` stays so `docker
+    # compose build frontend` still works for anyone iterating on the image
+    # itself.
     build: ./frontend
     restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      # Browser-facing anon/publishable key — never the service_role key the
+      # api/worker containers use. See .env.example.
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
     depends_on:
       api:
         condition: service_healthy

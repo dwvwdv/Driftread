@@ -56,7 +56,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 python3 scripts/gen_env.py
 
 # 2. 依腳本提示，手動填入 Supabase 相關變數
-#    SUPABASE_URL / SUPABASE_KEY / DATABASE_URL / SUPABASE_JWT_SECRET
+#    SUPABASE_URL / SUPABASE_KEY / SUPABASE_ANON_KEY / DATABASE_URL / SUPABASE_JWT_SECRET
 
 # 3. 建立反向代理用的外部 network（若尚未存在）
 docker network create web_network
@@ -109,6 +109,7 @@ docker compose down
 |------|------|------|
 | `SUPABASE_URL` | ✅ | Supabase 專案 URL（Dashboard → Settings → API）|
 | `SUPABASE_KEY` | ✅ | **service_role key**，非 anon key。後端需繞過 RLS 寫入 feeds / articles |
+| `SUPABASE_ANON_KEY` | ✅ | 瀏覽器用的 anon / publishable key。**不是給 backend 的** —— `frontend` 容器啟動時把它寫入 `env.js`，供 `AuthService` 讀取 |
 | `DATABASE_URL` | ✅ | 直連 PostgreSQL 連線字串，供 migration 使用（Dashboard → Settings → Database）|
 | `SUPABASE_JWT_SECRET` | ✅ | 驗證用戶 `Authorization: Bearer` token（Dashboard → Settings → API → JWT Settings）|
 | `ADMIN_API_KEY` | ✅ | 後台 / 開放 API 的 `X-API-Key` 標頭，由 `gen_env.py` 自動產生 |
@@ -137,42 +138,26 @@ docker compose down
 > 那個從 #22 起就記錄但尚未修復的繞過，在無人看管的自主迴圈下嚴重度明顯上升。另外請在
 > `DISCOVERY_USER_AGENT` 帶上聯絡網址，讓被抓取的站方找得到你。
 
-> `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**。前端的 Supabase 設定在
-> `frontend/src/environments/`，那裡用的是 anon key。
+> `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**；瀏覽器只吃
+> `SUPABASE_ANON_KEY`。
 
 新增 / 移除環境變數時，必須同步更新 `.env.example`、`docker-compose.yml`、`scripts/gen_env.py` 三處（見 `CLAUDE.md`）。
 
-### ⚠ 前端 Supabase 設定是 build 時決定的
+### 前端 Supabase 設定是 runtime 決定的
 
-上面那些環境變數只餵給 **backend**。瀏覽器端的 Supabase Auth 另外讀
-`frontend/src/environments/environment.ts` 的 `supabaseUrl` / `supabaseAnonKey`，
-而這兩個值在 `npm run build` 時就被編進 JS bundle —— compose 沒有任何 runtime 替換機制。
+`SUPABASE_URL` / `SUPABASE_ANON_KEY` 兩個環境變數同時餵給 `frontend` 容器。
+啟動時容器自己的 entrypoint（`frontend/docker-entrypoint.d/15-render-driftread-env.sh`）
+把它們渲染進 `env.js`，由 `index.html` 在 Angular bundle 之前載入、寫進
+`window.__env`；`AuthService` 透過 `src/app/services/runtime-config.ts` 讀取，
+**不會被編進 JS bundle**。
 
-repo 內這兩個值目前是**空字串**，因此 GHCR 上由 CI 建出的 `driftread-frontend:latest`
-也是空的。`AuthService` 遇到空值時 `isConfigured()` 回 `false`，
-**註冊 / 登入 / 訂閱 / 已讀 / 收藏 / 稍後讀全部不會運作**（瀏覽功能與猜你喜歡的匿名模式不受影響）。
+因此 GHCR 上由 CI 建出的官方 `driftread-frontend:latest` 可以直接使用 ——
+只要 compose 的 `frontend.environment` 帶了這兩個值，`docker compose up -d`
+就會讓註冊 / 登入 / 訂閱 / 已讀 / 收藏 / 稍後讀全部生效，不需要自建 image。
 
-要啟用用戶功能，必須自己建前端 image：
-
-```bash
-# 1. 填入 frontend/src/environments/environment.ts
-#    supabaseUrl:     https://your-project-id.supabase.co
-#    supabaseAnonKey: <anon key，不是 service_role key>
-
-# 2. 從原始碼重建 frontend image（compose 的 frontend 服務有 build: ./frontend）
-docker compose build frontend
-docker compose up -d frontend
-```
-
-（本地開發走 `npm start` 時讀的是 `environment.development.ts`，同樣要自己填。）
-
-> ⚠ 自建的 image 沿用 `ghcr.io/dwvwdv/driftread-frontend:latest` 這個 tag，
-> 所以之後跑 `docker compose pull` 會用官方（空值）image 蓋掉它。
-> 長期部署建議 fork 後讓自己的 CI 推到自己的 GHCR，或在 compose 裡改成自己的 image 名稱。
-
-> 這是目前的已知限制：沒有 runtime 注入機制，所以官方 image 無法直接開啟用戶功能。
-> 若要讓同一個 image 在不同部署帶不同 Supabase 專案，需要改成啟動時載入
-> `assets/config.json` 之類的作法——尚未實作。
+`frontend/src/environments/environment.ts` 的 `supabaseUrl` / `supabaseAnonKey`
+只是本地 `ng serve` / 未過 Docker 的 fallback（repo 內留空）；容器裡永遠以
+`env.js` 為準。
 
 ---
 

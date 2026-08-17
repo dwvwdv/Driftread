@@ -5,8 +5,8 @@ Usage:
     python3 scripts/gen_env.py
 
 Fills in any empty variables in .env (or creates it from .env.example).
-SUPABASE_URL / SUPABASE_KEY (service_role) / DATABASE_URL / SUPABASE_JWT_SECRET
-must be filled in manually from the Supabase Dashboard.
+SUPABASE_URL / SUPABASE_KEY (service_role) / SUPABASE_ANON_KEY / DATABASE_URL /
+SUPABASE_JWT_SECRET must be filled in manually from the Supabase Dashboard.
 """
 import os
 import secrets
@@ -104,6 +104,7 @@ def main():
     PLACEHOLDERS = {
         "SUPABASE_URL": "https://your-project-id.supabase.co",
         "SUPABASE_KEY": "your-service-role-key",
+        "SUPABASE_ANON_KEY": "your-anon-key",
         "DATABASE_URL": "postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres",
     }
 
@@ -111,13 +112,16 @@ def main():
         val = existing.get(key, "").strip()
         return not val or val == PLACEHOLDERS.get(key)
 
-    if is_unset("SUPABASE_URL") or is_unset("SUPABASE_KEY"):
-        missing = [k for k in ("SUPABASE_URL", "SUPABASE_KEY") if is_unset(k)]
+    if is_unset("SUPABASE_URL") or is_unset("SUPABASE_KEY") or is_unset("SUPABASE_ANON_KEY"):
+        missing = [k for k in ("SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_ANON_KEY") if is_unset(k)]
         print(f"\n⚠ 請手動填入 .env 中的：{', '.join(missing)}")
         print("  Supabase Dashboard → Settings → API")
         if "SUPABASE_KEY" in missing:
             print("  ↳ SUPABASE_KEY 必須是 service_role key（不是 anon key），")
             print("    backend 需要繞過 RLS 進行 admin 寫入。")
+        if "SUPABASE_ANON_KEY" in missing:
+            print("  ↳ SUPABASE_ANON_KEY 是給瀏覽器用的 anon / publishable key，")
+            print("    frontend 容器啟動時會寫入 env.js，不會被編進 JS bundle。")
 
     if is_unset("DATABASE_URL"):
         print("\n⚠ 請手動填入 .env 中的：DATABASE_URL")

@@ -1,6 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 import { createClient, Session, SupabaseClient } from '@supabase/supabase-js';
-import { environment } from '../../environments/environment';
+import { runtimeSupabaseConfig } from './runtime-config';
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
@@ -8,8 +8,9 @@ export class AuthService {
   session = signal<Session | null>(null);
 
   constructor() {
-    if (environment.supabaseUrl && environment.supabaseAnonKey) {
-      this.client = createClient(environment.supabaseUrl, environment.supabaseAnonKey, {
+    const { supabaseUrl, supabaseAnonKey } = runtimeSupabaseConfig();
+    if (supabaseUrl && supabaseAnonKey) {
+      this.client = createClient(supabaseUrl, supabaseAnonKey, {
         auth: { persistSession: true, autoRefreshToken: true },
       });
       this.client.auth.getSession().then(({ data }) => this.session.set(data.session));

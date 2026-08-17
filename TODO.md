@@ -11,25 +11,39 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ## Phase 0：Supabase schema 隔離與資料安全（進行中）
 
-- [~] 將 Driftread 的 table、function 與 migration ledger 從 `public` 搬到 `driftread` schema。
+- [x] 將 Driftread 的 table、function 與 migration ledger 從 `public` 搬到 `driftread` schema。
+      （migration 010，見 `docs/FEATURES.md` 第 5 節）
 - [~] 遷移期間保留 `public._migrations` 的 PostgreSQL 相容 view，避免舊版 backend 重啟時建立空 ledger；新版 backend 部署完成後再移除。
-- [~] 將 Python／Supabase client 改為 scoped schema client，避免每次 query 手寫 schema。
-- [~] 在 Supabase Data API 的 Exposed Schemas 加入 `driftread`，補齊 `anon`／`authenticated` 所需 grant。
-- [~] 重新檢查所有 RLS policy：
+      （view 已建立；「新版 backend 部署完成後移除」是後續的營運步驟，尚未執行）
+- [x] 將 Python／Supabase client 改為 scoped schema client，避免每次 query 手寫 schema。
+      （`backend/database.py::get_client()` 固定 `ClientOptions(schema="driftread")`）
+- [ ] 在 Supabase Data API 的 Exposed Schemas 加入 `driftread`，補齊 `anon`／`authenticated` 所需 grant。
+      （Dashboard 設定，無法從程式碼驗證，維持未確認狀態）
+- [x] 重新檢查所有 RLS policy：
   - 一般使用者資料必須以 `auth.uid() = user_id` 隔離。
   - UPDATE policy 同時包含 `USING` 與 `WITH CHECK`。
   - view 使用 `security_invoker`，或移到未暴露 schema。
   - function 預設使用 `SECURITY INVOKER`；必要的 `SECURITY DEFINER` function 不放在暴露 schema，並限制 execute 權限。
-- [~] 一般使用者路徑改用 user JWT scoped client；`service_role` 只保留給抓取、後台、migration 與其他明確的系統工作。
-- [~] 遷移完成後執行 Supabase database advisors、RLS 驗證與新舊 backend 部署順序測試。
+      （四項皆在 `backend/migrations/002_user_features.sql`、`010_schema_access.sql` 核實：
+      owner policy 用 `(SELECT auth.uid())` 且都是 `FOR ALL`／涵蓋 `WITH CHECK`；
+      `security_invoker` view 見 010；無任何 `SECURITY DEFINER` function；
+      `driftread` 全 schema 的 function EXECUTE 先 REVOKE 再選擇性 GRANT）
+- [ ] 一般使用者路徑改用 user JWT scoped client；`service_role` 只保留給抓取、後台、migration 與其他明確的系統工作。
+      （查證後這項尚未開始：`backend/database.py` 全專案只有一個 client 建構點，永遠用
+      `SUPABASE_KEY`／service_role，沒有任何 user-JWT scoped client；使用者隔離目前仍全靠
+      應用層手動加 `user_id` 條件，不是 RLS + user JWT）
+- [ ] 遷移完成後執行 Supabase database advisors、RLS 驗證與新舊 backend 部署順序測試。
+      （需要連到真的 Supabase 專案才能執行，本次未做）
 
 ## P0：補齊核心閱讀閉環
 
 ### Runtime Supabase 設定
 
-- [ ] 官方 GHCR frontend image 改用容器啟動時產生的 runtime config。
-- [ ] 不在 frontend build 階段寫死 Supabase URL／publishable key。
+- [x] 官方 GHCR frontend image 改用容器啟動時產生的 runtime config。
+- [x] 不在 frontend build 階段寫死 Supabase URL／publishable key。
 - [ ] 驗證官方 image 的登入、登出、session restore、訂閱、已讀與收藏流程。
+      （`AuthService` 的登入 / session 邏輯本身未改動，只換了兩個字串的來源，已靜態覆核；
+      本 sandbox 無法起 Docker daemon 也無法完整 `npm ci`，尚未跑過真的容器 + 瀏覽器驗證。）
 
 ### 訂閱操作與狀態
 
@@ -153,7 +167,8 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 各批次保持可獨立部署與回滾；前一批完成驗證後再開始下一批。
 
 1. [~] Supabase schema 隔離、RLS、scoped client 與相容部署。
-2. [ ] Runtime Supabase config，確保官方 image 的登入與個人功能可用。
+2. [~] Runtime Supabase config，確保官方 image 的登入與個人功能可用。
+      （runtime config 機制已實作，見上方「Runtime Supabase 設定」；真的容器 + 瀏覽器登入驗證尚未執行）
 3. [ ] 訂閱 CTA、訂閱狀態與核心流程整合。
 4. [ ] 我的閱讀流、未讀數與已讀管理。
 5. [ ] 標籤／語言篩選、偏好設定與匯入後分類。
