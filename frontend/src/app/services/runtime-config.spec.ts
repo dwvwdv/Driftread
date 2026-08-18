@@ -41,4 +41,13 @@ describe('runtimeSupabaseConfig', () => {
       supabaseAnonKey: environment.supabaseAnonKey,
     });
   });
+
+  it('falls back to environment.ts when the injected values are whitespace-only', () => {
+    window.__env = { supabaseUrl: '   ', supabaseAnonKey: '\n' };
+
+    expect(runtimeSupabaseConfig()).toEqual({
+      supabaseUrl: environment.supabaseUrl,
+      supabaseAnonKey: environment.supabaseAnonKey,
+    });
+  });
 });

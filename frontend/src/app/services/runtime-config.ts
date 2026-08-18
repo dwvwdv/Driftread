@@ -38,7 +38,7 @@ declare global {
 export function runtimeSupabaseConfig(): { supabaseUrl: string; supabaseAnonKey: string } {
   const injected = window.__env;
   return {
-    supabaseUrl: injected?.supabaseUrl || environment.supabaseUrl,
-    supabaseAnonKey: injected?.supabaseAnonKey || environment.supabaseAnonKey,
+    supabaseUrl: injected?.supabaseUrl?.trim() || environment.supabaseUrl,
+    supabaseAnonKey: injected?.supabaseAnonKey?.trim() || environment.supabaseAnonKey,
   };
 }

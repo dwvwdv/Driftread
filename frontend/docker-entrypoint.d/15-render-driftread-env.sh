@@ -10,6 +10,10 @@
 # rebuild. See frontend/src/app/services/runtime-config.ts for the read side.
 set -eu
 
+out=/usr/share/nginx/html/env.js
+tmp="${out}.tmp"
+
 envsubst '${SUPABASE_URL} ${SUPABASE_ANON_KEY}' \
   < /etc/driftread/env.template.js \
-  > /usr/share/nginx/html/env.js
+  > "$tmp"
+mv "$tmp" "$out"
