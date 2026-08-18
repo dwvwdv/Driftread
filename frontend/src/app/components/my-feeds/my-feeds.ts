@@ -35,6 +35,15 @@ export class MyFeeds {
   /** User id the subscriptions have already been loaded for. */
   private loadedFor: string | null = null;
 
+  /**
+   * `asOf` ticket of the last response actually applied to `feeds`. Two
+   * loads for the *same* user id can still race (initial load vs. a
+   * post-OPML-import reload); the `requestedFor` identity check alone can't
+   * tell an older-but-slower response from a newer-but-faster one that
+   * already landed. Mirrors SubscriptionService's own lastAppliedAsOf.
+   */
+  private lastAppliedAsOf = -1;
+
   constructor() {
     // Not `if (session()) load()` in ngOnInit: AuthService restores the persisted
     // session asynchronously, so on a direct visit that check runs before the
@@ -90,6 +99,12 @@ export class MyFeeds {
         // here would flash an empty list before that one lands.
         if ((this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.loading.set(false);
+        // Guards against a same-user race: an older, slower load() response
+        // (e.g. the initial load) arriving after a newer one (e.g. a
+        // post-OPML-import reload) already applied. requestedFor alone can't
+        // catch this since both requests share the same user id.
+        if (asOf < this.lastAppliedAsOf) return;
+        this.lastAppliedAsOf = asOf;
         this.feeds.set(feeds);
         // Reconciles the shared subscription cache from the same response,
         // rather than have SubscriptionService.load() fire a second, redundant

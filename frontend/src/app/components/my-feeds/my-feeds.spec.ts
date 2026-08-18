@@ -59,10 +59,11 @@ describe('MyFeeds stale-response handling', () => {
       listSubscriptions: options?.listSubscriptions ?? (() => of([])),
       unsubscribe: options?.unsubscribe ?? (() => of(undefined)),
     };
+    let nextAsOf = 0;
     subs = {
       syncCalls: [],
       markUnsubscribedCalls: [],
-      beginFetch: () => 0,
+      beginFetch: () => ++nextAsOf,
       // Mirrors the real SubscriptionService's ids closely enough for
       // MyFeeds' own reconciliation effect (which reads this) to behave
       // sanely across these tests, not just for the dedicated test below
@@ -200,6 +201,33 @@ describe('MyFeeds stale-response handling', () => {
     expect(page.feeds()).toEqual([feed('a'), feed('c')]);
     expect(subs.markUnsubscribedCalls).toEqual([]);
     expect(toastInfo).toEqual([]);
+  });
+
+  it('drops a same-user load() response that arrives after a newer same-user load() already applied', () => {
+    const requests: Subject<Feed[]>[] = [];
+    const page = setup({
+      listSubscriptions: () => {
+        const subject = new Subject<Feed[]>();
+        requests.push(subject);
+        return subject;
+      },
+    });
+    // requests[0]: the initial load from the constructor's session effect, still in flight.
+
+    page.load(); // e.g. a post-OPML-import reload, fired for the same user -> requests[1]
+
+    requests[1].next([feed('b')]); // the newer request resolves first
+    requests[1].complete();
+    expect(page.feeds()).toEqual([feed('b')]);
+
+    requests[0].next([feed('a')]); // the older, slower request resolves late
+    requests[0].complete();
+
+    // Must not overwrite the newer, already-applied result — even though
+    // both requests share the same user id, so the requestedFor check alone
+    // can't tell them apart.
+    expect(page.feeds()).toEqual([feed('b')]);
+    expect(subs.syncCalls).toEqual([[feed('b')]]);
   });
 
   it('drops a feed from the rendered list when it is unsubscribed elsewhere while this page is open', () => {
