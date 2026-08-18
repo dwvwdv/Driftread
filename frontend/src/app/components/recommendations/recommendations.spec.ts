@@ -25,13 +25,24 @@ const feed: Feed = {
 };
 
 describe('Recommendations subscribe action', () => {
-  let session: { user: { id: string } } | null;
+  // Signed in by default; a test that needs signed-out sets this to null
+  // *before* calling setup() — setup() itself must not touch it, or it would
+  // clobber that override right back to signed-in.
+  let session: { user: { id: string } } | null = { user: { id: 'user-1' } };
   let rec: { liked: () => string[]; disliked: () => string[]; likeCalls: string[]; like: (id: string) => void; dislike: (id: string) => void; getRecommendations: () => ReturnType<RecommendationService['getRecommendations']> };
-  let subs: { subscribeCalls: string[]; isSubscribed: (id: string) => boolean; isPending: (id: string) => boolean; subscribe: (id: string) => void };
+  let subs: {
+    subscribeCalls: string[];
+    isSubscribed: (id: string) => boolean;
+    isPending: (id: string) => boolean;
+    subscribe: (id: string, onError?: (err: unknown) => void, onSuccess?: () => void) => void;
+  };
   let navCalls: unknown[][];
 
-  function setup() {
+  beforeEach(() => {
     session = { user: { id: 'user-1' } };
+  });
+
+  function setup() {
     rec = {
       liked: () => [],
       disliked: () => [],
@@ -44,7 +55,10 @@ describe('Recommendations subscribe action', () => {
       subscribeCalls: [],
       isSubscribed: () => false,
       isPending: () => false,
-      subscribe: (id) => subs.subscribeCalls.push(id),
+      subscribe: (id, _onError, onSuccess) => {
+        subs.subscribeCalls.push(id);
+        onSuccess?.();
+      },
     };
 
     TestBed.resetTestingModule();
@@ -96,5 +110,22 @@ describe('Recommendations subscribe action', () => {
     expect(subs.subscribeCalls).toEqual(['feed-1']);
     expect(rec.likeCalls).toEqual(['feed-1']);
     expect(page.currentIndex()).toBe(1);
+  });
+
+  it('does not record liked or advance the deck when the subscribe request fails', () => {
+    const page = setup();
+    // liked is stored in localStorage and excludes the feed from every future
+    // deck — recording it on a request that never actually succeeded would
+    // strand an unsubscribed feed outside all future decks with no way back.
+    subs.subscribe = (id, onError) => {
+      subs.subscribeCalls.push(id);
+      onError?.(new Error('boom'));
+    };
+
+    page.subscribe(feed);
+
+    expect(subs.subscribeCalls).toEqual(['feed-1']);
+    expect(rec.likeCalls).toEqual([]);
+    expect(page.currentIndex()).toBe(0);
   });
 });

@@ -129,6 +129,14 @@ export class Recommendations implements OnInit, OnDestroy {
    * persisted "subscribed" signal yet (that is TODO.md's later 推薦回饋持久化
    * batch), and folding it in here means it still contributes its
    * category/tags/language to this session's scoring the same way 喜歡 does.
+   *
+   * Recording "liked" and advancing the deck both wait for the subscribe
+   * request to actually succeed, rather than firing immediately the way
+   * like()/skip() do (those are local-only and cannot fail). `liked` is
+   * stored in localStorage and excludes the feed from every future deck
+   * (RecommendationService.getRecommendations) — doing that on an
+   * optimistic call that then fails would strand an unsubscribed feed
+   * outside all future decks with no way back short of clearing storage.
    */
   subscribe(feed: Feed): void {
     if (!this.auth.session()) {
@@ -137,9 +145,14 @@ export class Recommendations implements OnInit, OnDestroy {
       });
       return;
     }
-    this.rec.like(feed.id);
-    this.subs.subscribe(feed.id, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
-    this.next();
+    this.subs.subscribe(
+      feed.id,
+      (err) => this.toast.danger(apiMessage(err, '訂閱失敗')),
+      () => {
+        this.rec.like(feed.id);
+        this.next();
+      },
+    );
   }
 
   /**

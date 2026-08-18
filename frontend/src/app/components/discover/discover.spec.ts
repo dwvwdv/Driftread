@@ -25,7 +25,10 @@ const feed: Feed = {
 };
 
 describe('Discover subscribe actions', () => {
-  let session: { user: { id: string } } | null;
+  // Signed in by default; a test that needs signed-out sets this to null
+  // *before* calling setup() — setup() itself must not touch it, or it would
+  // clobber that override right back to signed-in.
+  let session: { user: { id: string } } | null = { user: { id: 'user-1' } };
   let subs: {
     subscribeCalls: string[];
     markSubscribedCalls: string[];
@@ -36,8 +39,11 @@ describe('Discover subscribe actions', () => {
   };
   let navCalls: unknown[][];
 
-  function setup() {
+  beforeEach(() => {
     session = { user: { id: 'user-1' } };
+  });
+
+  function setup() {
     subs = {
       subscribeCalls: [],
       markSubscribedCalls: [],

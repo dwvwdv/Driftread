@@ -185,6 +185,66 @@ describe('SubscriptionService', () => {
     expect(svc.isSubscribed('c')).toBe(true);
   });
 
+  it('calls onSuccess once the subscribe request actually succeeds', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    const pending = new Subject<void>();
+    me.subscribe = (id: string) => {
+      me.subscribeCalls.push(id);
+      return pending;
+    };
+    let succeeded = false;
+
+    svc.subscribe('c', undefined, () => (succeeded = true));
+    expect(succeeded).toBe(false);
+
+    pending.next();
+    pending.complete();
+    expect(succeeded).toBe(true);
+  });
+
+  it('drops a load() response that arrives after the user has signed out', () => {
+    const svc = setup();
+    const pending = new Subject<Feed[]>();
+    me.listSubscriptions = () => {
+      me.listCalls++;
+      return pending;
+    };
+
+    TestBed.flushEffects(); // runs the initial load(), which stays in flight
+
+    session.set(null); // signed out before GET /me/feeds returned
+    TestBed.flushEffects();
+
+    pending.next([feed('a')]); // stale response, for a user that is gone
+    pending.complete();
+
+    expect(svc.isSubscribed('a')).toBe(false);
+    expect(svc.loaded()).toBe(false);
+  });
+
+  it('attributes a load() response to whichever account is current when it arrives', () => {
+    const svc = setup();
+    const pending = new Subject<Feed[]>();
+    me.listSubscriptions = () => {
+      me.listCalls++;
+      return pending;
+    };
+
+    TestBed.flushEffects(); // initial load for user-1, still in flight
+
+    session.set({ user: { id: 'user-2' } }); // switch accounts before it resolves
+    TestBed.flushEffects(); // kicks off a second load(), also subscribed to `pending`
+
+    pending.next([feed('a')]);
+    pending.complete();
+
+    // The user-1 request's callback sees it is no longer current and drops
+    // it; the user-2 request's callback is the one that actually applies it.
+    expect(svc.isSubscribed('a')).toBe(true);
+    expect(svc.loaded()).toBe(true);
+  });
+
   it('markSubscribed records state without calling the API', () => {
     const svc = setup();
     TestBed.flushEffects();
