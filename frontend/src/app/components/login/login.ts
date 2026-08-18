@@ -1,13 +1,16 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth';
+import { SubscriptionService } from '../../services/subscription';
+import { apiMessage } from '../../shared/http-errors';
 import { ObCallout } from '../../ui/callout/callout';
+import { ToastService } from '../../ui/toast/toast';
 
 /**
  * Sign in / sign up.
  *
- * Two fixes beyond the restyle:
+ * Three fixes beyond the restyle:
  *
  *  - Wrapped in a <form (ngSubmit)>. Previously only the click handler ran, so
  *    pressing Enter in the password field did nothing — on a login form, of all
@@ -17,6 +20,12 @@ import { ObCallout } from '../../ui/callout/callout';
  *    accompanied by a warning. It used to stay fully interactive and fail
  *    silently, which reads as a broken site rather than a missing build-time
  *    setting.
+ *
+ *  - Honors `redirect` / `subscribeFeed` query params: a reader who clicked
+ *    "訂閱" while signed out is sent here with both set (see
+ *    FeedDetail.toggleSubscribe, FeedList.quickSubscribe, Discover.subscribeExisting),
+ *    and lands back on that exact feed with the subscription already done,
+ *    instead of on the home page having to find it and click subscribe again.
  */
 @Component({
   selector: 'app-login',
@@ -27,7 +36,10 @@ import { ObCallout } from '../../ui/callout/callout';
 })
 export class Login {
   protected auth = inject(AuthService);
+  private route = inject(ActivatedRoute);
   private router = inject(Router);
+  private subs = inject(SubscriptionService);
+  private toast = inject(ToastService);
 
   mode = signal<'login' | 'signup'>('login');
   email = '';
@@ -35,6 +47,10 @@ export class Login {
   error = signal('');
   info = signal('');
   busy = signal(false);
+
+  get pendingSubscribeFeed(): string | null {
+    return this.route.snapshot.queryParamMap.get('subscribeFeed');
+  }
 
   setMode(mode: 'login' | 'signup'): void {
     if (mode === this.mode()) return;
@@ -71,6 +87,12 @@ export class Login {
       return;
     }
 
-    void this.router.navigateByUrl('/');
+    const feedId = this.pendingSubscribeFeed;
+    if (feedId) {
+      this.subs.subscribe(feedId, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
+    }
+
+    const redirect = this.route.snapshot.queryParamMap.get('redirect') || '/';
+    void this.router.navigateByUrl(redirect);
   }
 }

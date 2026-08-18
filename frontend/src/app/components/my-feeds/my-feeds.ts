@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@ang
 import { RouterLink } from '@angular/router';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
+import { SubscriptionService } from '../../services/subscription';
 import { Feed, OpmlImportResult } from '../../models';
 import { apiMessage } from '../../shared/http-errors';
 import { ObCallout } from '../../ui/callout/callout';
@@ -21,6 +22,7 @@ import { ToastService } from '../../ui/toast/toast';
 export class MyFeeds {
   protected auth = inject(AuthService);
   private me = inject(MeService);
+  private subs = inject(SubscriptionService);
   private toast = inject(ToastService);
 
   feeds = signal<Feed[]>([]);
@@ -59,6 +61,10 @@ export class MyFeeds {
       next: (feeds) => {
         this.feeds.set(feeds);
         this.loading.set(false);
+        // Reconciles the shared subscription cache from the same response,
+        // rather than have SubscriptionService.load() fire a second, redundant
+        // GET /me/feeds for the very list this page just fetched.
+        this.subs.sync(feeds);
       },
       error: (e: unknown) => {
         this.loading.set(false);
@@ -72,6 +78,10 @@ export class MyFeeds {
       next: () => {
         this.toast.info(`已取消訂閱：${feed.title}`);
         this.feeds.update((list) => list.filter((f) => f.id !== feed.id));
+        // Keeps FeedDetail/FeedList/Discover, which all read SubscriptionService
+        // rather than their own copy, in sync without a redundant DELETE of
+        // their own.
+        this.subs.markUnsubscribed(feed.id);
       },
       error: (e: unknown) => this.toast.danger(apiMessage(e, '取消訂閱失敗')),
     });

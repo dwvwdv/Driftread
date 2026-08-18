@@ -6,16 +6,19 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { RecommendationService } from '../../services/recommendation';
+import { SubscriptionService } from '../../services/subscription';
+import { AuthService } from '../../services/auth';
 import { Feed } from '../../models';
-import { isRateLimited, retryAfterSeconds } from '../../shared/http-errors';
+import { apiMessage, isRateLimited, retryAfterSeconds } from '../../shared/http-errors';
 import { ObIcon } from '../../ui/icon/icon';
 import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
 import { ObPageHeader } from '../../ui/page-header/page-header';
+import { ToastService } from '../../ui/toast/toast';
 
 /**
- * 猜你喜歡 — one card at a time, like or skip.
+ * 猜你喜歡 — one card at a time: skip, like, or subscribe.
  *
  * GET /api/recommendations is rate limited to 20 requests per 60 seconds per IP,
  * and that bucket is shared by everyone behind the same NAT. Two changes here fall
@@ -40,6 +43,10 @@ import { ObPageHeader } from '../../ui/page-header/page-header';
 })
 export class Recommendations implements OnInit, OnDestroy {
   private rec = inject(RecommendationService);
+  private subs = inject(SubscriptionService);
+  private auth = inject(AuthService);
+  private router = inject(Router);
+  private toast = inject(ToastService);
 
   /** The server's own cap, so one fetch lasts as long as possible. */
   private static readonly DECK_SIZE = 50;
@@ -103,6 +110,35 @@ export class Recommendations implements OnInit, OnDestroy {
 
   skip(feed: Feed): void {
     this.rec.dislike(feed.id);
+    this.next();
+  }
+
+  isSubscribed(feedId: string): boolean {
+    return this.subs.isSubscribed(feedId);
+  }
+
+  isSubscribePending(feedId: string): boolean {
+    return this.subs.isPending(feedId);
+  }
+
+  /**
+   * A third, distinct action from 喜歡/跳過: subscribing is a stronger signal
+   * than liking (docs/FEATURES.md's recommendation logic already excludes a
+   * signed-in reader's subscribed feeds from future decks independently of
+   * `liked`/`disliked`). Also records it as liked — there is no separate
+   * persisted "subscribed" signal yet (that is TODO.md's later 推薦回饋持久化
+   * batch), and folding it in here means it still contributes its
+   * category/tags/language to this session's scoring the same way 喜歡 does.
+   */
+  subscribe(feed: Feed): void {
+    if (!this.auth.session()) {
+      void this.router.navigate(['/login'], {
+        queryParams: { redirect: '/recommendations', subscribeFeed: feed.id },
+      });
+      return;
+    }
+    this.rec.like(feed.id);
+    this.subs.subscribe(feed.id, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
     this.next();
   }
 

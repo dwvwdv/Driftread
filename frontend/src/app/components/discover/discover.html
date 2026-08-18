@@ -57,6 +57,22 @@
                 >
                   已收錄，前往查看
                 </a>
+                @if (isSubscribed(candidate.existing_feed_id)) {
+                  <span class="ob-chip ob-chip--success">
+                    <ob-icon name="check" [size]="12" />
+                    已訂閱
+                  </span>
+                } @else {
+                  <button
+                    type="button"
+                    class="ob-btn ob-btn--primary ob-btn--sm"
+                    [disabled]="isSubscribePending(candidate.existing_feed_id)"
+                    (click)="subscribeExisting(candidate.existing_feed_id)"
+                  >
+                    <ob-icon name="plus" [size]="12" />
+                    訂閱
+                  </button>
+                }
               } @else if (isImported(candidate)) {
                 <span class="ob-chip ob-chip--success">
                   <ob-icon name="check" [size]="12" />

@@ -59,6 +59,23 @@
         <ob-icon name="heart" [size]="16" />
         喜歡
       </button>
+
+      @if (isSubscribed(feed.id)) {
+        <span class="ob-chip ob-chip--success">
+          <ob-icon name="check" [size]="12" />
+          已訂閱
+        </span>
+      } @else {
+        <button
+          type="button"
+          class="ob-btn ob-btn--primary"
+          [disabled]="isSubscribePending(feed.id)"
+          (click)="subscribe(feed)"
+        >
+          <ob-icon name="plus" [size]="16" />
+          訂閱
+        </button>
+      }
     </div>
   </div>
 } @else {

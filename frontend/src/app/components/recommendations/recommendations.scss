@@ -67,7 +67,7 @@ h2 {
   justify-content: center;
 }
 
-// Like and skip are the whole interaction; they get real targets.
+// Skip, like, and subscribe are the whole interaction; they get real targets.
 .controls .ob-btn {
   min-height: var(--tap-target);
   min-width: 120px;

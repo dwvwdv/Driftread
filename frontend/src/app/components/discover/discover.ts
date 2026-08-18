@@ -1,13 +1,15 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, inject, signal } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { DiscoverService } from '../../services/discover';
 import { AuthService } from '../../services/auth';
+import { SubscriptionService } from '../../services/subscription';
 import { DiscoveredFeed } from '../../models';
 import { apiMessage, isRateLimited, retryAfterSeconds } from '../../shared/http-errors';
 import { ObIcon } from '../../ui/icon/icon';
 import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
 import { ObPageHeader } from '../../ui/page-header/page-header';
+import { ToastService } from '../../ui/toast/toast';
 
 /**
  * Paste a URL, get the RSS/Atom feeds behind it.
@@ -24,7 +26,10 @@ import { ObPageHeader } from '../../ui/page-header/page-header';
 })
 export class Discover implements OnDestroy {
   protected auth = inject(AuthService);
+  private router = inject(Router);
   private discoverService = inject(DiscoverService);
+  private subs = inject(SubscriptionService);
+  private toast = inject(ToastService);
 
   url = '';
   busy = signal(false);
@@ -77,9 +82,14 @@ export class Discover implements OnDestroy {
     this.error.set('');
 
     this.discoverService.importByUrl(candidate.feed_url).subscribe({
-      next: () => {
+      next: (feed) => {
         this.importing.set(null);
         this.imported.update((set) => new Set(set).add(candidate.feed_url));
+        // POST /discover/import auto-subscribes a signed-in importer server-side
+        // (backend/routers/discover.py); this just keeps SubscriptionService's
+        // cache in sync so the feed shows as subscribed elsewhere without a
+        // reload.
+        if (this.auth.session()) this.subs.markSubscribed(feed.id);
       },
       error: (e: unknown) => {
         this.importing.set(null);
@@ -94,6 +104,29 @@ export class Discover implements OnDestroy {
 
   isImported(candidate: DiscoveredFeed): boolean {
     return candidate.already_exists || this.imported().has(candidate.feed_url);
+  }
+
+  isSubscribed(feedId: string): boolean {
+    return this.subs.isSubscribed(feedId);
+  }
+
+  isSubscribePending(feedId: string): boolean {
+    return this.subs.isPending(feedId);
+  }
+
+  /**
+   * For a candidate already in the catalogue: subscribes directly instead of
+   * only offering "前往查看" — the reader already told us they want this feed by
+   * pasting a URL that led to it.
+   */
+  subscribeExisting(feedId: string): void {
+    if (!this.auth.session()) {
+      void this.router.navigate(['/login'], {
+        queryParams: { redirect: '/discover', subscribeFeed: feedId },
+      });
+      return;
+    }
+    this.subs.subscribe(feedId, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
   }
 
   /**
