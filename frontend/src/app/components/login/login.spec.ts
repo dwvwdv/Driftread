@@ -7,7 +7,7 @@ import { ToastService } from '../../ui/toast/toast';
 
 describe('Login redirect after sign-in', () => {
   let auth: { isConfigured: () => boolean; signIn: (e: string, p: string) => Promise<{ error: string | null }> };
-  let subs: { subscribeCalls: string[]; subscribe: (id: string) => void };
+  let subs: { calls: string[]; subscribeCalls: string[]; syncIdentity: () => void; subscribe: (id: string) => void };
   let navigateCalls: string[];
   let queryParams: Record<string, string>;
 
@@ -17,8 +17,13 @@ describe('Login redirect after sign-in', () => {
       signIn: async () => ({ error: null }),
     };
     subs = {
+      calls: [],
       subscribeCalls: [],
-      subscribe: (id) => subs.subscribeCalls.push(id),
+      syncIdentity: () => subs.calls.push('syncIdentity'),
+      subscribe: (id) => {
+        subs.calls.push('subscribe');
+        subs.subscribeCalls.push(id);
+      },
     };
     navigateCalls = [];
 
@@ -63,6 +68,11 @@ describe('Login redirect after sign-in', () => {
 
     expect(subs.subscribeCalls).toEqual(['feed-1']);
     expect(navigateCalls).toEqual(['/feeds/feed-1']);
+    // syncIdentity() must run before subscribe() — see SubscriptionService.
+    // syncIdentity: without it, subscribe() can still be tagged with the
+    // pre-login identity, since the identity effect is scheduled rather
+    // than synchronous with the session write auth.signIn() just made.
+    expect(subs.calls).toEqual(['syncIdentity', 'subscribe']);
   });
 
   it('falls back to home with no redirect param and does not subscribe to anything', async () => {

@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { Subject, of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { SubscriptionService } from './subscription';
 import { AuthService } from './auth';
 import { MeService } from './me';
@@ -301,7 +301,7 @@ describe('SubscriptionService', () => {
     // The list request this snapshot represents is "issued" here — before
     // the write below even starts — exactly like a load() and a subscribe()
     // racing around the same login/reload moment.
-    const asOf = svc.currentVersion();
+    const asOf = svc.beginFetch();
 
     const subscribePending = new Subject<void>();
     me.subscribe = (id: string) => {
@@ -336,10 +336,113 @@ describe('SubscriptionService', () => {
     // never goes through subscribe()/markSubscribed() at all — legitimately
     // shows 'a' again. It must win over the old tombstone, not lose to it
     // forever just because the tombstone happens to still be sitting there.
-    const asOf = svc.currentVersion();
+    const asOf = svc.beginFetch();
     svc.sync([feed('a'), feed('b')], asOf);
 
     expect(svc.isSubscribed('a')).toBe(true);
+  });
+
+  it('rejects an older-issued snapshot that arrives after a newer one already landed', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // ids={a,b}, loaded=true
+
+    // Two competing fetches — e.g. SubscriptionService's own load() (slower)
+    // racing MyFeeds' independent fetch after an OPML import (faster).
+    const olderAsOf = svc.beginFetch();
+    const newerAsOf = svc.beginFetch();
+
+    // The newer one arrives first.
+    svc.sync([feed('a'), feed('c')], newerAsOf);
+    expect(svc.isSubscribed('c')).toBe(true);
+    expect(svc.isSubscribed('b')).toBe(false);
+
+    // The older one arrives late — must not clobber state a newer snapshot
+    // already applied.
+    svc.sync([feed('a'), feed('b')], olderAsOf);
+
+    expect(svc.isSubscribed('c')).toBe(true);
+    expect(svc.isSubscribed('b')).toBe(false);
+  });
+
+  it('syncIdentity prevents a post-login write from being dropped once the identity effect catches up', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // user-1
+
+    session.set({ user: { id: 'user-2' } }); // signal changed; effect not yet flushed
+    svc.syncIdentity(); // what Login calls immediately after a successful sign-in
+
+    const pending = new Subject<void>();
+    me.subscribe = (id: string) => {
+      me.subscribeCalls.push(id);
+      return pending;
+    };
+    svc.subscribe('c'); // tagged with user-2, thanks to syncIdentity() above
+
+    TestBed.flushEffects(); // the effect finally catches up — loadedFor already matches, so this is a no-op
+
+    pending.next();
+    pending.complete();
+
+    expect(svc.isSubscribed('c')).toBe(true);
+  });
+
+  it('without syncIdentity, a write issued in the gap before the effect flushes can be dropped once it does', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // user-1
+
+    session.set({ user: { id: 'user-2' } }); // signal changed; effect not yet flushed
+    // No syncIdentity() call here — reproducing the race it fixes.
+
+    const pending = new Subject<void>();
+    me.subscribe = (id: string) => {
+      me.subscribeCalls.push(id);
+      return pending;
+    };
+    svc.subscribe('c'); // still tagged with user-1 — loadedFor hasn't caught up yet
+
+    TestBed.flushEffects(); // the effect now catches up to user-2, resetting state
+
+    pending.next(); // the write settles, but is now stale relative to user-2
+    pending.complete();
+
+    expect(svc.isSubscribed('c')).toBe(false);
+  });
+
+  it('retries a transient load() failure before giving up', () => {
+    vi.useFakeTimers();
+    try {
+      const svc = setup();
+      let attempt = 0;
+      me.listSubscriptions = () => {
+        me.listCalls++;
+        // A fresh cold Observable per subscription, like HttpClient's really
+        // is: retry() resubscribes to *this*, so each attempt must re-run
+        // the subscriber body — a fixed throwError/of instance wouldn't.
+        return new Observable<Feed[]>((subscriber) => {
+          attempt++;
+          if (attempt < 3) {
+            subscriber.error(new Error('network blip'));
+          } else {
+            subscriber.next([feed('a')]);
+            subscriber.complete();
+          }
+        });
+      };
+
+      TestBed.flushEffects(); // triggers load(): attempt 1, fails immediately
+      expect(attempt).toBe(1);
+      expect(svc.loaded()).toBe(false);
+
+      vi.advanceTimersByTime(1000); // retry() waits, then attempt 2, fails
+      expect(attempt).toBe(2);
+
+      vi.advanceTimersByTime(1000); // attempt 3, succeeds
+      expect(attempt).toBe(3);
+      expect(svc.isSubscribed('a')).toBe(true);
+      expect(svc.loaded()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('markSubscribed records state without calling the API', () => {

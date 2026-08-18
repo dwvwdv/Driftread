@@ -1,4 +1,5 @@
 import { Injectable, effect, inject, signal } from '@angular/core';
+import { retry } from 'rxjs';
 import { AuthService } from './auth';
 import { MeService } from './me';
 import { Feed } from '../models';
@@ -42,13 +43,26 @@ export class SubscriptionService {
   // OPML import is the one that exists today — would never clear it, so a
   // fresh, genuinely up-to-date snapshot would keep losing to a
   // now-obsolete tombstone. `_confirmedAt` timestamps each entry with a
-  // monotonic version, and `sync()` only lets a confirmed value override a
+  // ticket from the same monotonic sequence `beginFetch()` draws from
+  // (see below), and `sync()` only lets a confirmed value override a
   // snapshot whose *request* it can prove predates that confirmation —
   // arriving later is not the same thing as being taken later. Both maps
   // are cleared whenever the signed-in identity changes.
   private _confirmed = new Map<string, boolean>();
   private _confirmedAt = new Map<string, number>();
+  // A single monotonic sequence, shared by every write commit (confirmWrite)
+  // and every fetch-start (beginFetch): each draw is strictly greater than
+  // every prior one, regardless of which of the two drew it. That's what
+  // lets writes and snapshots be ordered against each other at all.
   private version = 0;
+  // The highest asOf actually applied via sync() so far. A second, real
+  // GET /me/feeds request can be in flight at once — SubscriptionService's
+  // own load() and MyFeeds' independent fetch, say, racing around an OPML
+  // import — and nothing about a single request's own asOf-vs-write
+  // comparison stops an older-but-slower snapshot from landing after a
+  // newer-but-faster one and clobbering it back. This rejects any sync()
+  // whose asOf is older than one already applied, snapshot-vs-snapshot.
+  private lastAppliedAsOf = -1;
 
   loaded = this._loaded.asReadonly();
 
@@ -56,39 +70,54 @@ export class SubscriptionService {
 
   constructor() {
     effect(() => {
-      const userId = this.auth.session()?.user?.id ?? null;
-      if (this.loadedFor === userId) return;
-      this.loadedFor = userId;
-      // Every identity change — signing out *or* switching straight to a
-      // different account — starts from a clean slate. Without this, a
-      // switch (no intervening null) kept the previous account's `_pending`
-      // entries around; a stale write callback for the old account would
-      // then either get dropped by the requestedFor guards below (leaving a
-      // phantom "pending" id that was never the new account's to begin with)
-      // or, worse, mutate state that now belongs to someone else.
-      this._ids.set(new Set());
-      this._pending.set(new Set());
-      this._confirmed.clear();
-      this._confirmedAt.clear();
-      this._loaded.set(false);
-      if (userId) this.load();
+      this.auth.session(); // establishes the reactive dependency
+      this.syncIdentity();
     });
   }
 
   /**
-   * A token representing "now" in write-ordering terms. A caller that fetches
-   * a `Feed[]` itself (MyFeeds — see there) and wants `sync()` to correctly
-   * resolve ordering against writes captures this *before* issuing its own
-   * request, and passes it back to `sync()` as `asOf`.
+   * Makes `loadedFor` (and, on an actual identity change, the rest of this
+   * service's state) catch up with `auth.session()` right now, rather than
+   * waiting for the constructor effect above to flush on Angular's own
+   * schedule. Effects run scheduled, not synchronously with the signal
+   * write that dirties them — Login calls this immediately after a
+   * successful sign-in and before subscribing to a pending feed, so that
+   * write is tagged with the identity it actually happens under instead of
+   * whatever `loadedFor` still held from before the effect has caught up.
    */
-  currentVersion(): number {
-    return this.version;
+  syncIdentity(): void {
+    const userId = this.auth.session()?.user?.id ?? null;
+    if (this.loadedFor === userId) return;
+    this.loadedFor = userId;
+    // Every identity change — signing out *or* switching straight to a
+    // different account — starts from a clean slate. Without this, a
+    // switch (no intervening null) kept the previous account's `_pending`
+    // entries around; a stale write callback for the old account would
+    // then either get dropped by the requestedFor guards below (leaving a
+    // phantom "pending" id that was never the new account's to begin with)
+    // or, worse, mutate state that now belongs to someone else.
+    this._ids.set(new Set());
+    this._pending.set(new Set());
+    this._confirmed.clear();
+    this._confirmedAt.clear();
+    this._loaded.set(false);
+    if (userId) this.load();
+  }
+
+  /**
+   * Claims the next ticket in the shared write/fetch sequence — draw one
+   * *before* issuing a request you'll later hand to `sync()` as `asOf`, so
+   * ordering is judged against when the snapshot was actually taken, not
+   * when its response happened to arrive.
+   */
+  beginFetch(): number {
+    return ++this.version;
   }
 
   private confirmWrite(feedId: string, subscribed: boolean): void {
-    this.version++;
+    const at = ++this.version;
     this._confirmed.set(feedId, subscribed);
-    this._confirmedAt.set(feedId, this.version);
+    this._confirmedAt.set(feedId, at);
   }
 
   load(): void {
@@ -97,21 +126,27 @@ export class SubscriptionService {
     // of repopulating the cache with another user's subscriptions, or
     // clobbering the load a subsequent sign-in already kicked off.
     const requestedFor = this.loadedFor;
-    // Captured *before* issuing the request — see currentVersion().
-    const asOf = this.version;
-    this.me.listSubscriptions().subscribe({
-      next: (feeds) => {
-        if (this.loadedFor !== requestedFor) return;
-        this.sync(feeds, asOf);
-      },
-      error: () => {
-        if (this.loadedFor !== requestedFor) return;
-        // Leaves `loaded` false so callers keep treating subscription state
-        // as unknown rather than confidently rendering "not subscribed" for
-        // every feed.
-        this._loaded.set(false);
-      },
-    });
+    const asOf = this.beginFetch();
+    this.me
+      .listSubscriptions()
+      // A transient blip here otherwise leaves `loaded` false — and every
+      // feed reading as "not subscribed" — for the rest of the session,
+      // since nothing else ever retries: the identity effect only re-fires
+      // on an actual user id change, not on a failed load for the same one.
+      .pipe(retry({ count: 2, delay: 1000 }))
+      .subscribe({
+        next: (feeds) => {
+          if (this.loadedFor !== requestedFor) return;
+          this.sync(feeds, asOf);
+        },
+        error: () => {
+          if (this.loadedFor !== requestedFor) return;
+          // Leaves `loaded` false so callers keep treating subscription state
+          // as unknown rather than confidently rendering "not subscribed" for
+          // every feed.
+          this._loaded.set(false);
+        },
+      });
   }
 
   /**
@@ -124,12 +159,18 @@ export class SubscriptionService {
    * see MyFeeds.load() — since only they know which user their request was
    * actually for.
    *
-   * `asOf` should be `currentVersion()` read *before* the caller issued its
-   * own request; omitting it is only safe when the caller has no in-flight
-   * write of its own to worry about racing against (or genuinely doesn't
-   * care, e.g. in a test).
+   * `asOf` should be `beginFetch()` drawn *before* the caller issued its own
+   * request; omitting it is only safe when the caller has no in-flight write
+   * or competing fetch of its own to worry about racing against (or
+   * genuinely doesn't care, e.g. in a test).
    */
   sync(feeds: Feed[], asOf: number = this.version): void {
+    // A second GET can be in flight at once (see lastAppliedAsOf above); an
+    // older-issued one arriving after a newer-issued one already landed is
+    // moot — applying it now would only regress the cache.
+    if (asOf < this.lastAppliedAsOf) return;
+    this.lastAppliedAsOf = asOf;
+
     const serverIds = new Set(feeds.map((f) => f.id));
     // A write that is still in flight (e.g. one fired right after login, in
     // the same tick as the session change that triggered this reload) may
@@ -144,7 +185,7 @@ export class SubscriptionService {
     // A write that already *finished* has the same problem once it is no
     // longer in `_pending` to protect it — but only if this snapshot's
     // request actually predates that confirmation (`asOf` before the write's
-    // version). A confirmation *at or before* `asOf` is exactly what this
+    // ticket). A confirmation *at or before* `asOf` is exactly what this
     // snapshot should already reflect (or a later state has since
     // superseded it through some other path — the snapshot wins either way).
     for (const [id, confirmed] of this._confirmed) {

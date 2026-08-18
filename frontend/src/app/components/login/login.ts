@@ -89,6 +89,13 @@ export class Login {
 
     const feedId = this.pendingSubscribeFeed;
     if (feedId) {
+      // SubscriptionService's own identity effect is scheduled, not
+      // synchronous with the session signal write auth.signIn() just
+      // caused — without forcing it to catch up first, subscribe() below
+      // could still tag this write with the pre-login identity, and its
+      // response would then get silently dropped by subscribe()'s own
+      // requestedFor guard once the effect does catch up.
+      this.subs.syncIdentity();
       this.subs.subscribe(feedId, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
     }
 
