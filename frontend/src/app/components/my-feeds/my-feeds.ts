@@ -53,6 +53,19 @@ export class MyFeeds {
       this.loadedFor = userId;
       this.load();
     });
+
+    // Reconciles this page's own rendered list with a subscribe/unsubscribe
+    // that lands while it's open — e.g. unsubscribing from feed detail, then
+    // navigating here before that request settles: this page's own load()
+    // can return the pre-write snapshot, and nothing else would tell it
+    // once SubscriptionService's cache (the actual source of truth) catches
+    // up. Only handles removals — SubscriptionService only holds ids, not
+    // full Feed objects, so a feed newly subscribed elsewhere still needs an
+    // actual reload before there's anything here to render for it.
+    effect(() => {
+      const ids = this.subs.ids();
+      this.feeds.update((list) => list.filter((f) => ids.has(f.id)));
+    });
   }
 
   load(): void {

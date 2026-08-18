@@ -31,6 +31,7 @@ describe('MyFeeds stale-response handling', () => {
     syncCalls: Feed[][];
     markUnsubscribedCalls: string[];
     beginFetch: () => number;
+    ids: ReturnType<typeof signal<ReadonlySet<string>>>;
     sync: (feeds: Feed[], asOf?: number) => void;
     markUnsubscribed: (id: string) => void;
   };
@@ -62,8 +63,21 @@ describe('MyFeeds stale-response handling', () => {
       syncCalls: [],
       markUnsubscribedCalls: [],
       beginFetch: () => 0,
-      sync: (feeds) => subs.syncCalls.push(feeds),
-      markUnsubscribed: (id) => subs.markUnsubscribedCalls.push(id),
+      // Mirrors the real SubscriptionService's ids closely enough for
+      // MyFeeds' own reconciliation effect (which reads this) to behave
+      // sanely across these tests, not just for the dedicated test below
+      // that exercises it directly.
+      ids: signal<ReadonlySet<string>>(new Set()),
+      sync: (feeds) => {
+        subs.syncCalls.push(feeds);
+        subs.ids.set(new Set(feeds.map((f) => f.id)));
+      },
+      markUnsubscribed: (id) => {
+        subs.markUnsubscribedCalls.push(id);
+        const next = new Set(subs.ids());
+        next.delete(id);
+        subs.ids.set(next);
+      },
     };
     toastInfo = [];
     toastDanger = [];
@@ -186,5 +200,18 @@ describe('MyFeeds stale-response handling', () => {
     expect(page.feeds()).toEqual([feed('a'), feed('c')]);
     expect(subs.markUnsubscribedCalls).toEqual([]);
     expect(toastInfo).toEqual([]);
+  });
+
+  it('drops a feed from the rendered list when it is unsubscribed elsewhere while this page is open', () => {
+    const page = setup({ listSubscriptions: () => of([feed('a'), feed('b')]) });
+    expect(page.feeds()).toEqual([feed('a'), feed('b')]);
+
+    // Simulates a *different* page (feed detail, feed list, Discover) doing
+    // its own successful unsubscribe: SubscriptionService's cache changes,
+    // but nothing ever told this page's own `feeds` signal directly.
+    subs.ids.set(new Set(['b']));
+    detect();
+
+    expect(page.feeds()).toEqual([feed('b')]);
   });
 });

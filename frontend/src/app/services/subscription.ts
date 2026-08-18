@@ -65,6 +65,15 @@ export class SubscriptionService {
   private lastAppliedAsOf = -1;
 
   loaded = this._loaded.asReadonly();
+  /**
+   * Read-only view of the subscribed id set, for a caller that needs to
+   * react to *any* change rather than poll `isSubscribed()` per feed — e.g.
+   * MyFeeds dropping a feed from its own rendered list when it gets
+   * unsubscribed from elsewhere while that page is open. Just the ids: this
+   * service never holds full `Feed` objects, so a feed newly *subscribed*
+   * elsewhere still needs an actual reload to have anything to render.
+   */
+  ids = this._ids.asReadonly();
 
   private loadedFor: string | null = null;
 
@@ -234,6 +243,17 @@ export class SubscriptionService {
   }
 
   /**
+   * True if some *other* write already confirmed a result for this feed
+   * after `sinceTicket` — meaning our own rollback below would be
+   * second-guessing a truth that's actually newer than the attempt that's
+   * failing, e.g. MyFeeds' own independent `MeService.unsubscribe()` for the
+   * same feed succeeding while this attempt was still in flight.
+   */
+  private confirmedSince(feedId: string, sinceTicket: number): boolean {
+    return (this._confirmedAt.get(feedId) ?? 0) > sinceTicket;
+  }
+
+  /**
    * Optimistic subscribe: flips local state immediately, rolls back on
    * failure. A feed already pending or already subscribed is a no-op —
    * guards against a double-click firing the request twice before the first
@@ -250,6 +270,10 @@ export class SubscriptionService {
     // top of that would mutate state that is no longer this write's to touch
     // (a stray add, a stray rollback-delete, or a phantom stuck-pending id).
     const requestedFor = this.loadedFor;
+    // A plain read, not beginFetch(): only needs to mark "as of right now",
+    // for confirmedSince() to compare against below — nothing else needs to
+    // reference this specific moment, so it doesn't need its own ticket.
+    const attemptAt = this.version;
     this.setPending(feedId, true);
     this._ids.set(new Set(this._ids()).add(feedId));
 
@@ -263,9 +287,11 @@ export class SubscriptionService {
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(feedId, false);
-        const next = new Set(this._ids());
-        next.delete(feedId);
-        this._ids.set(next);
+        if (!this.confirmedSince(feedId, attemptAt)) {
+          const next = new Set(this._ids());
+          next.delete(feedId);
+          this._ids.set(next);
+        }
         onError?.(err);
       },
     });
@@ -274,6 +300,7 @@ export class SubscriptionService {
   unsubscribe(feedId: string, onError?: (err: unknown) => void): void {
     if (this.isPending(feedId) || !this.isSubscribed(feedId)) return;
     const requestedFor = this.loadedFor;
+    const attemptAt = this.version; // see subscribe()'s attemptAt
     this.setPending(feedId, true);
     const next = new Set(this._ids());
     next.delete(feedId);
@@ -288,7 +315,9 @@ export class SubscriptionService {
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(feedId, false);
-        this._ids.set(new Set(this._ids()).add(feedId));
+        if (!this.confirmedSince(feedId, attemptAt)) {
+          this._ids.set(new Set(this._ids()).add(feedId));
+        }
         onError?.(err);
       },
     });

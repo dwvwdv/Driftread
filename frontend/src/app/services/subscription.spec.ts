@@ -445,6 +445,53 @@ describe('SubscriptionService', () => {
     }
   });
 
+  it('does not roll back a failed unsubscribe over a later confirmed unsubscribe for the same feed', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // ids={a,b}
+
+    const pending = new Subject<void>();
+    me.unsubscribe = (id: string) => {
+      me.unsubscribeCalls.push(id);
+      return pending;
+    };
+
+    svc.unsubscribe('a'); // this attempt; will fail below
+    // Meanwhile a *different* write for the same feed confirms it
+    // unsubscribed — e.g. MyFeeds' own independent MeService.unsubscribe()
+    // call succeeding while this attempt is still in flight.
+    svc.markUnsubscribed('a');
+    expect(svc.isSubscribed('a')).toBe(false);
+
+    pending.error(new Error('boom')); // this attempt's own failure, arriving after
+
+    // Must not re-add 'a' — a newer confirmation already settled it as
+    // unsubscribed; blindly rolling back would fight that.
+    expect(svc.isSubscribed('a')).toBe(false);
+  });
+
+  it('does not roll back a failed subscribe over a later confirmed subscribe for the same feed', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // ids={a,b}
+
+    const pending = new Subject<void>();
+    me.subscribe = (id: string) => {
+      me.subscribeCalls.push(id);
+      return pending;
+    };
+
+    svc.subscribe('c'); // this attempt; will fail below
+    // Meanwhile a different write confirms 'c' subscribed anyway — e.g. a
+    // Discover import auto-subscribing it while this attempt is in flight.
+    svc.markSubscribed('c');
+    expect(svc.isSubscribed('c')).toBe(true);
+
+    pending.error(new Error('boom')); // this attempt's own failure, arriving after
+
+    // Must not remove 'c' — a newer confirmation already settled it as
+    // subscribed.
+    expect(svc.isSubscribed('c')).toBe(true);
+  });
+
   it('markSubscribed records state without calling the API', () => {
     const svc = setup();
     TestBed.flushEffects();
