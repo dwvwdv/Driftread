@@ -44,6 +44,17 @@ export class MyFeeds {
    */
   private lastAppliedAsOf = -1;
 
+  /**
+   * Set while a load() triggered by the reconciliation effect below is in
+   * flight. SubscriptionService.sync() (called from every load()'s success
+   * handler) always publishes a fresh `ids` Set, even when its contents are
+   * unchanged — so without this guard, a feed that's still missing right
+   * after that reload (e.g. its subscribe POST elsewhere hasn't committed
+   * yet) would trigger another load() immediately, and again, for as long
+   * as the write stays unconfirmed.
+   */
+  private reloadingForMissingId = false;
+
   constructor() {
     // Not `if (session()) load()` in ngOnInit: AuthService restores the persisted
     // session asynchronously, so on a direct visit that check runs before the
@@ -83,7 +94,10 @@ export class MyFeeds {
         hasNewId = [...ids].some((id) => !current.some((f) => f.id === id));
         return current.filter((f) => ids.has(f.id));
       });
-      if (hasNewId && this.loadedFor) this.load();
+      if (hasNewId && this.loadedFor && !this.reloadingForMissingId) {
+        this.reloadingForMissingId = true;
+        this.load();
+      }
     });
   }
 
@@ -103,6 +117,11 @@ export class MyFeeds {
     const asOf = this.subs.beginFetch();
     this.me.listSubscriptions().subscribe({
       next: (feeds) => {
+        // Cleared unconditionally, regardless of which call site started
+        // this particular load(): this specific flight is over either way,
+        // and the reconciliation effect will re-trigger another one itself
+        // if the id it cared about is still missing once ids() next changes.
+        this.reloadingForMissingId = false;
         // Checked before touching `loading`: if this is a stale response
         // arriving after an account switch, a genuinely in-flight load for
         // the new account is likely still running, and clearing `loading`
@@ -122,6 +141,7 @@ export class MyFeeds {
         this.subs.sync(feeds, asOf);
       },
       error: (e: unknown) => {
+        this.reloadingForMissingId = false;
         if ((this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.loading.set(false);
         this.toast.danger(apiMessage(e, '讀取訂閱失敗'));

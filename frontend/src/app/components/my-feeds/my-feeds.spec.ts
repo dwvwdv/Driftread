@@ -265,4 +265,36 @@ describe('MyFeeds stale-response handling', () => {
     expect(listCalls).toBe(2);
     expect(page.feeds()).toEqual([feed('a'), feed('c')]);
   });
+
+  it('does not fire concurrent reloads while one triggered for a missing id is still in flight', () => {
+    const requests: Subject<Feed[]>[] = [];
+    const page = setup({
+      listSubscriptions: () => {
+        const subject = new Subject<Feed[]>();
+        requests.push(subject);
+        return subject;
+      },
+    });
+    requests[0].next([]); // initial load resolves empty
+    requests[0].complete();
+    expect(page.feeds()).toEqual([]);
+
+    // An elsewhere page starts subscribing to 'x': its POST is still
+    // pending, but SubscriptionService already optimistically added the id.
+    subs.ids.set(new Set(['x']));
+    detect();
+    expect(requests.length).toBe(2); // triggers exactly one reload
+
+    // A further ids() change arrives (e.g. another optimistic write) while
+    // that reload is still unresolved. Must not pile on a second one.
+    subs.ids.set(new Set(['x', 'y']));
+    detect();
+    expect(requests.length).toBe(2);
+
+    requests[1].next([feed('x'), feed('y')]); // the in-flight reload resolves
+    requests[1].complete();
+
+    expect(page.feeds()).toEqual([feed('x'), feed('y')]);
+    expect(requests.length).toBe(2); // no extra reload was ever fired
+  });
 });
