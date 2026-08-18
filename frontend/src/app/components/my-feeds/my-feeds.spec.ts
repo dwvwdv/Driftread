@@ -30,7 +30,8 @@ describe('MyFeeds stale-response handling', () => {
   let subs: {
     syncCalls: Feed[][];
     markUnsubscribedCalls: string[];
-    sync: (feeds: Feed[]) => void;
+    currentVersion: () => number;
+    sync: (feeds: Feed[], asOf?: number) => void;
     markUnsubscribed: (id: string) => void;
   };
   let toastInfo: string[];
@@ -60,6 +61,7 @@ describe('MyFeeds stale-response handling', () => {
     subs = {
       syncCalls: [],
       markUnsubscribedCalls: [],
+      currentVersion: () => 0,
       sync: (feeds) => subs.syncCalls.push(feeds),
       markUnsubscribed: (id) => subs.markUnsubscribedCalls.push(id),
     };

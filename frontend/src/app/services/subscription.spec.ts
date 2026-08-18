@@ -298,6 +298,11 @@ describe('SubscriptionService', () => {
     const svc = setup();
     TestBed.flushEffects(); // ids={a,b}, loaded=true
 
+    // The list request this snapshot represents is "issued" here — before
+    // the write below even starts — exactly like a load() and a subscribe()
+    // racing around the same login/reload moment.
+    const asOf = svc.currentVersion();
+
     const subscribePending = new Subject<void>();
     me.subscribe = (id: string) => {
       me.subscribeCalls.push(id);
@@ -310,13 +315,31 @@ describe('SubscriptionService', () => {
     subscribePending.complete();
     expect(svc.isPending('c')).toBe(false);
 
-    // ...and only then does a list snapshot arrive that was actually taken
-    // before the write committed (no 'c' in it) — e.g. a slower load()
-    // response from around the same time. `_pending` no longer protects
-    // 'c' since the write already left it.
-    svc.sync([feed('a'), feed('b')]);
+    // ...and only then does the (older) snapshot arrive (no 'c' in it —
+    // it was taken before the write committed). `_pending` no longer
+    // protects 'c' since the write already left it; `asOf` is what proves
+    // this snapshot predates the confirmation.
+    svc.sync([feed('a'), feed('b')], asOf);
 
     expect(svc.isSubscribed('c')).toBe(true);
+  });
+
+  it('lets a later write on a different path supersede an old confirmed tombstone', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // ids={a,b}, loaded=true
+
+    svc.unsubscribe('a'); // confirms 'a' unsubscribed synchronously (of(undefined))
+    expect(svc.isSubscribed('a')).toBe(false);
+
+    // A later snapshot whose request was issued *after* that — e.g. MyFeeds
+    // reloading after an OPML import re-subscribed 'a' through a path that
+    // never goes through subscribe()/markSubscribed() at all — legitimately
+    // shows 'a' again. It must win over the old tombstone, not lose to it
+    // forever just because the tombstone happens to still be sitting there.
+    const asOf = svc.currentVersion();
+    svc.sync([feed('a'), feed('b')], asOf);
+
+    expect(svc.isSubscribed('a')).toBe(true);
   });
 
   it('markSubscribed records state without calling the API', () => {

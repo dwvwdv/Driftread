@@ -64,6 +64,10 @@ export class MyFeeds {
     // sync() below — sync() itself has no way to know which user a given
     // Feed[] was fetched for, so this check has to happen here.
     const requestedFor = this.auth.session()?.user?.id ?? null;
+    // See SubscriptionService.currentVersion(): captured before issuing the
+    // request, so sync() below can correctly tell a write that landed while
+    // this was in flight apart from one this snapshot already reflects.
+    const asOf = this.subs.currentVersion();
     this.me.listSubscriptions().subscribe({
       next: (feeds) => {
         // Checked before touching `loading`: if this is a stale response
@@ -76,7 +80,7 @@ export class MyFeeds {
         // Reconciles the shared subscription cache from the same response,
         // rather than have SubscriptionService.load() fire a second, redundant
         // GET /me/feeds for the very list this page just fetched.
-        this.subs.sync(feeds);
+        this.subs.sync(feeds, asOf);
       },
       error: (e: unknown) => {
         if ((this.auth.session()?.user?.id ?? null) !== requestedFor) return;

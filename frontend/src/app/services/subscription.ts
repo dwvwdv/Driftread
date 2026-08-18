@@ -31,14 +31,24 @@ export class SubscriptionService {
   // stuck after the request that set it succeeded, until some unrelated
   // signal write elsewhere happened to repaint them.
   private _pending = signal<ReadonlySet<string>>(new Set());
-  // Feed ids a write actually confirmed with the server this session, and
-  // what it confirmed (true = subscribed, false = unsubscribed) — kept past
-  // the moment the write leaves `_pending`. Needed because a GET /me/feeds
-  // snapshot can be *taken* before a concurrent write commits but *arrive*
-  // after that write's own response already cleared it from `_pending`; at
-  // that point nothing else would stop the stale snapshot from overwriting
-  // a confirmed result. Cleared whenever the signed-in identity changes.
+  // What a write actually confirmed with the server (true = subscribed,
+  // false = unsubscribed), kept past the moment the write leaves `_pending`
+  // — needed because a GET /me/feeds snapshot can be *taken* before a
+  // concurrent write commits but *arrive* after that write's own response
+  // already cleared it from `_pending`.
+  //
+  // This can't just stay authoritative forever, though: a *later* write to
+  // the same feed through some other path this service doesn't guard —
+  // OPML import is the one that exists today — would never clear it, so a
+  // fresh, genuinely up-to-date snapshot would keep losing to a
+  // now-obsolete tombstone. `_confirmedAt` timestamps each entry with a
+  // monotonic version, and `sync()` only lets a confirmed value override a
+  // snapshot whose *request* it can prove predates that confirmation —
+  // arriving later is not the same thing as being taken later. Both maps
+  // are cleared whenever the signed-in identity changes.
   private _confirmed = new Map<string, boolean>();
+  private _confirmedAt = new Map<string, number>();
+  private version = 0;
 
   loaded = this._loaded.asReadonly();
 
@@ -59,9 +69,26 @@ export class SubscriptionService {
       this._ids.set(new Set());
       this._pending.set(new Set());
       this._confirmed.clear();
+      this._confirmedAt.clear();
       this._loaded.set(false);
       if (userId) this.load();
     });
+  }
+
+  /**
+   * A token representing "now" in write-ordering terms. A caller that fetches
+   * a `Feed[]` itself (MyFeeds — see there) and wants `sync()` to correctly
+   * resolve ordering against writes captures this *before* issuing its own
+   * request, and passes it back to `sync()` as `asOf`.
+   */
+  currentVersion(): number {
+    return this.version;
+  }
+
+  private confirmWrite(feedId: string, subscribed: boolean): void {
+    this.version++;
+    this._confirmed.set(feedId, subscribed);
+    this._confirmedAt.set(feedId, this.version);
   }
 
   load(): void {
@@ -70,10 +97,12 @@ export class SubscriptionService {
     // of repopulating the cache with another user's subscriptions, or
     // clobbering the load a subsequent sign-in already kicked off.
     const requestedFor = this.loadedFor;
+    // Captured *before* issuing the request — see currentVersion().
+    const asOf = this.version;
     this.me.listSubscriptions().subscribe({
       next: (feeds) => {
         if (this.loadedFor !== requestedFor) return;
-        this.sync(feeds);
+        this.sync(feeds, asOf);
       },
       error: () => {
         if (this.loadedFor !== requestedFor) return;
@@ -94,8 +123,13 @@ export class SubscriptionService {
    * responsible for their own staleness check against the current user —
    * see MyFeeds.load() — since only they know which user their request was
    * actually for.
+   *
+   * `asOf` should be `currentVersion()` read *before* the caller issued its
+   * own request; omitting it is only safe when the caller has no in-flight
+   * write of its own to worry about racing against (or genuinely doesn't
+   * care, e.g. in a test).
    */
-  sync(feeds: Feed[]): void {
+  sync(feeds: Feed[], asOf: number = this.version): void {
     const serverIds = new Set(feeds.map((f) => f.id));
     // A write that is still in flight (e.g. one fired right after login, in
     // the same tick as the session change that triggered this reload) may
@@ -108,12 +142,14 @@ export class SubscriptionService {
       else serverIds.delete(id);
     }
     // A write that already *finished* has the same problem once it is no
-    // longer in `_pending` to protect it: this snapshot can still predate
-    // its commit if it was taken before the write landed but arrives after
-    // the write's own (faster) response did. `_confirmed` is the record of
-    // what actually happened server-side, independent of how this
-    // particular snapshot's timing lines up with it.
+    // longer in `_pending` to protect it — but only if this snapshot's
+    // request actually predates that confirmation (`asOf` before the write's
+    // version). A confirmation *at or before* `asOf` is exactly what this
+    // snapshot should already reflect (or a later state has since
+    // superseded it through some other path — the snapshot wins either way).
     for (const [id, confirmed] of this._confirmed) {
+      const writeVersion = this._confirmedAt.get(id) ?? 0;
+      if (writeVersion <= asOf) continue;
       if (confirmed) serverIds.add(id);
       else serverIds.delete(id);
     }
@@ -131,14 +167,14 @@ export class SubscriptionService {
    * issuing a redundant POST /me/feeds/{id} of our own.
    */
   markSubscribed(feedId: string): void {
-    this._confirmed.set(feedId, true);
+    this.confirmWrite(feedId, true);
     if (this.isSubscribed(feedId)) return;
     this._ids.set(new Set(this._ids()).add(feedId));
   }
 
   /** The unsubscribe counterpart of markSubscribed — see there. */
   markUnsubscribed(feedId: string): void {
-    this._confirmed.set(feedId, false);
+    this.confirmWrite(feedId, false);
     if (!this.isSubscribed(feedId)) return;
     const next = new Set(this._ids());
     next.delete(feedId);
@@ -180,7 +216,7 @@ export class SubscriptionService {
       next: () => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(feedId, false);
-        this._confirmed.set(feedId, true);
+        this.confirmWrite(feedId, true);
         onSuccess?.();
       },
       error: (err: unknown) => {
@@ -206,7 +242,7 @@ export class SubscriptionService {
       next: () => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(feedId, false);
-        this._confirmed.set(feedId, false);
+        this.confirmWrite(feedId, false);
       },
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
