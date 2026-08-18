@@ -64,16 +64,26 @@ export class MyFeeds {
     });
 
     // Reconciles this page's own rendered list with a subscribe/unsubscribe
-    // that lands while it's open — e.g. unsubscribing from feed detail, then
-    // navigating here before that request settles: this page's own load()
-    // can return the pre-write snapshot, and nothing else would tell it
-    // once SubscriptionService's cache (the actual source of truth) catches
-    // up. Only handles removals — SubscriptionService only holds ids, not
-    // full Feed objects, so a feed newly subscribed elsewhere still needs an
-    // actual reload before there's anything here to render for it.
+    // that lands while it's open — e.g. (un)subscribing from feed detail,
+    // then navigating here before that request settles: this page's own
+    // load() can return the pre-write snapshot, and nothing else would tell
+    // it once SubscriptionService's cache (the actual source of truth)
+    // catches up. Removals are applied directly; SubscriptionService only
+    // holds ids, not full Feed objects, so a newly subscribed id triggers an
+    // actual reload to fetch that feed's data rather than being inserted
+    // here.
     effect(() => {
       const ids = this.subs.ids();
-      this.feeds.update((list) => list.filter((f) => ids.has(f.id)));
+      // hasNewId is computed from `current` inside the updater callback
+      // (not via this.feeds() directly) so this effect only tracks
+      // this.subs.ids() as a dependency — reading this.feeds() here too
+      // would make the .update() write below re-trigger this same effect.
+      let hasNewId = false;
+      this.feeds.update((current) => {
+        hasNewId = [...ids].some((id) => !current.some((f) => f.id === id));
+        return current.filter((f) => ids.has(f.id));
+      });
+      if (hasNewId && this.loadedFor) this.load();
     });
   }
 

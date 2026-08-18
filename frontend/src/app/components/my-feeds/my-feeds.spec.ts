@@ -242,4 +242,27 @@ describe('MyFeeds stale-response handling', () => {
 
     expect(page.feeds()).toEqual([feed('b')]);
   });
+
+  it('reloads to pick up a feed subscribed elsewhere while this page is open', () => {
+    let listCalls = 0;
+    const page = setup({
+      listSubscriptions: () => {
+        listCalls++;
+        // First call is the initial load; the second is the automatic
+        // reload this test expects once the new id shows up in subs.ids().
+        return of(listCalls === 1 ? [feed('a')] : [feed('a'), feed('c')]);
+      },
+    });
+    expect(page.feeds()).toEqual([feed('a')]);
+    expect(listCalls).toBe(1);
+
+    // Simulates a *different* page (Discover, Recommendations) completing a
+    // subscribe: SubscriptionService's cache gains the new id, but this
+    // page has no Feed object for it — only an actual reload can supply one.
+    subs.ids.set(new Set(['a', 'c']));
+    detect();
+
+    expect(listCalls).toBe(2);
+    expect(page.feeds()).toEqual([feed('a'), feed('c')]);
+  });
 });
