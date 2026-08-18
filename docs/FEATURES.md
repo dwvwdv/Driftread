@@ -12,7 +12,7 @@
 | 信息源瀏覽 | ✅ | 分頁、分類 / tag 篩選、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
-| 用戶系統 | ⚠ | Supabase Auth（email / password）；JWT 由後端驗證。**前端的 Supabase 設定是 build 時編進 bundle 的，官方 GHCR image 帶空值 → 需自建 image 才可用**（見第 4 節） | `auth.py`、`services/auth.ts` |
+| 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy | `routers/me.py`、`components/my-feeds`、`components/bookmarks` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
 | **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
@@ -343,13 +343,16 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 選擇存在 `localStorage['driftread_theme']`，並由 `index.html` 的 inline script 在
 first paint 前套用，避免淺色使用者每次載入都閃一下深色。
 
-前端設定在 `frontend/src/environments/`：`apiUrl` 正式為 `/api`（走 nginx 代理），
-`supabaseUrl` / `supabaseAnonKey` 供瀏覽器端 Supabase Auth 使用（**anon key，不是 service_role**）。
+前端設定在 `frontend/src/environments/`：`apiUrl` 正式為 `/api`（走 nginx 代理，不需要 runtime
+注入，各部署都一樣）。`supabaseUrl` / `supabaseAnonKey` 供瀏覽器端 Supabase Auth 使用（**anon
+key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未過 Docker 時的 fallback。
 
-⚠ 這三個值在 `npm run build` 時就被編進 bundle，沒有 runtime 替換機制。repo 內
-`supabaseUrl` / `supabaseAnonKey` 是空字串，GHCR 的官方 frontend image 因此也是空的，
-`AuthService.isConfigured()` 會回 `false`，所有需要登入的功能都不會運作 —— 必須填值後自建
-image。見 [README 的說明](../README.md#-前端-supabase-設定是-build-時決定的)。
+容器裡的真實值走 **runtime config**，不是編進 bundle：`frontend` 容器啟動時，
+`docker-entrypoint.d/15-render-driftread-env.sh` 把 `SUPABASE_URL` / `SUPABASE_ANON_KEY` 兩個
+環境變數渲染進 `env.js`；`index.html` 在 Angular bundle 之前以一般（非 module）`<script>` 載入
+它，寫進 `window.__env`；`AuthService` 透過 `services/runtime-config.ts` 讀取，缺值時才退回
+`environment.ts`。因此官方 GHCR frontend image 不需要自建，只要 compose 帶上這兩個環境變數即可
+讓登入 / 訂閱 / 已讀 / 收藏 / 稍後讀生效。見 [README 的說明](../README.md#前端-supabase-設定是-runtime-決定的)。
 
 ## 5. 資料表
 

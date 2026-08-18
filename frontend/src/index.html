@@ -15,6 +15,15 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="icon" type="image/x-icon" href="favicon.ico" />
     <!--
+      Runtime Supabase config, read by src/app/services/runtime-config.ts. A
+      plain (non-module) script executes synchronously as the parser reaches
+      it, before the deferred Angular bundle scripts the CLI injects at the
+      end of <body> — so window.__env is already set by the time AuthService
+      constructs. See public/env.js (local-dev default) and
+      docker-entrypoint.d/15-render-driftread-env.sh (real deploys).
+    -->
+    <script src="env.js"></script>
+    <!--
       Applies the saved theme before the first paint. Without it a light-mode user
       sees a dark flash on every load, because the stylesheet defaults to dark and
       ThemeService only runs once Angular has bootstrapped.

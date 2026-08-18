@@ -509,3 +509,39 @@ migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，
   init-plan subquery；functions 固定 `search_path=pg_catalog` 並收斂 EXECUTE grants。
 - migration 010 將資料搬遷、Data API exposure、RLS 與 client 切換放在同一次 backend deployment，
   避免舊版 public-scoped client 與已搬移 tables 之間產生停機窗口。
+
+## 階段二十：前端 Supabase 設定改為 runtime config，官方 GHCR image 免自建（2026-08-17）
+
+TODO.md 建議開發批次第 2 批。`frontend/src/environments/environment.ts` 的 `supabaseUrl` /
+`supabaseAnonKey` 在 `npm run build` 時就編進 JS bundle，repo 內留空，所以 CI 建出的
+`ghcr.io/dwvwdv/driftread-frontend:latest` 永遠是空的——`AuthService.isConfigured()` 恆回
+`false`，註冊 / 登入 / 訂閱 / 已讀 / 收藏 / 稍後讀全部不會運作，只能自建 image 才能用（見
+`docs/FEATURES.md` 舊版第 4 節）。
+
+- **修法**：新增一個小的 runtime config 讀取層，不改 `AuthService` 既有的登入 / 登出 /
+  session restore 邏輯本身：
+  - `frontend/src/app/services/runtime-config.ts`：`runtimeSupabaseConfig()` 讀
+    `window.__env`，缺值時退回 `environment.ts`（與改動前行為一致，`ng serve` 不受影響）。
+  - `frontend/public/env.js`：本地開發預設值（空字串），透過既有的 `public/` asset pipeline
+    編進 bundle，與 `favicon.ico` 同一套機制。
+  - `frontend/src/index.html`：在 Angular bundle 之前用一般（非 module）`<script src="env.js">`
+    載入，確保 `window.__env` 在 `AuthService` 建構時已經存在。
+  - `frontend/env.template.js` + `frontend/docker-entrypoint.d/15-render-driftread-env.sh`：
+    nginx 官方 image 既有的 entrypoint 擴充點（`/docker-entrypoint.d/*.sh`，執行完才
+    `exec nginx`），用 `envsubst` 把容器的 `SUPABASE_URL` / `SUPABASE_ANON_KEY` 渲染進
+    `env.js`，不需要自訂 `ENTRYPOINT`。
+  - `AuthService` 建構子唯一改動：兩個字串的來源從 `environment.*` 換成
+    `runtimeSupabaseConfig()`，其餘 signIn / signUp / signOut / session signal 完全不動。
+- **環境變數**：新增 `SUPABASE_ANON_KEY`（瀏覽器用的 anon / publishable key，與 backend 的
+  `SUPABASE_KEY` service_role key 分開），三處同步更新：`.env.example`、
+  `docker-compose.yml`（`frontend.environment`）、`scripts/gen_env.py`（併入
+  `SUPABASE_URL` / `SUPABASE_KEY` 既有的手動填寫提示）。
+- **測試**：`frontend/src/app/services/runtime-config.spec.ts` 覆蓋四種情境——`window.__env`
+  未設定、`env.js` 出的是本地空預設值、entrypoint 真的渲染了值、只渲染了一半（驗證是
+  field-by-field 退回，不是整組退回）。本 sandbox 的 npm registry allowlist 沒收錄
+  vitest/jsdom 這條依賴鏈用到的一批套件（`whatwg-url`、`yargs`、`zod` 等，`npm ci` 在這批
+  套件上收到 "no rule or allowlist entry allows host" 而失敗），因此無法在本機跑
+  `ng test` / `ng build` 驗證，以 `node --check` 對新增檔案做語法檢查，交給 CI 實際跑過。
+  `AuthService` 本身未新增測試——它的邏輯零改動，既有的登入相關元件測試一律用
+  `{ provide: AuthService, useValue: ... }` mock 掉，不受這次改動影響。
+- 對應文件更新：`docs/FEATURES.md` 第 4 節、`README.md`（環境變數表與「前端 Supabase 設定」章節）。
