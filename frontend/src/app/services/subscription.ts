@@ -31,6 +31,14 @@ export class SubscriptionService {
   // stuck after the request that set it succeeded, until some unrelated
   // signal write elsewhere happened to repaint them.
   private _pending = signal<ReadonlySet<string>>(new Set());
+  // Feed ids a write actually confirmed with the server this session, and
+  // what it confirmed (true = subscribed, false = unsubscribed) — kept past
+  // the moment the write leaves `_pending`. Needed because a GET /me/feeds
+  // snapshot can be *taken* before a concurrent write commits but *arrive*
+  // after that write's own response already cleared it from `_pending`; at
+  // that point nothing else would stop the stale snapshot from overwriting
+  // a confirmed result. Cleared whenever the signed-in identity changes.
+  private _confirmed = new Map<string, boolean>();
 
   loaded = this._loaded.asReadonly();
 
@@ -39,15 +47,20 @@ export class SubscriptionService {
   constructor() {
     effect(() => {
       const userId = this.auth.session()?.user?.id ?? null;
-      if (!userId) {
-        this.loadedFor = null;
-        this._ids.set(new Set());
-        this._loaded.set(false);
-        return;
-      }
       if (this.loadedFor === userId) return;
       this.loadedFor = userId;
-      this.load();
+      // Every identity change — signing out *or* switching straight to a
+      // different account — starts from a clean slate. Without this, a
+      // switch (no intervening null) kept the previous account's `_pending`
+      // entries around; a stale write callback for the old account would
+      // then either get dropped by the requestedFor guards below (leaving a
+      // phantom "pending" id that was never the new account's to begin with)
+      // or, worse, mutate state that now belongs to someone else.
+      this._ids.set(new Set());
+      this._pending.set(new Set());
+      this._confirmed.clear();
+      this._loaded.set(false);
+      if (userId) this.load();
     });
   }
 
@@ -76,19 +89,32 @@ export class SubscriptionService {
    * Reconciles with a `Feed[]` a caller already fetched for its own purposes
    * (MyFeeds needs full Feed objects, not just ids, to render its list) — so
    * that page becomes another writer of the single subscription cache instead
-   * of a second GET /me/feeds request duplicating `load()`'s.
+   * of a second GET /me/feeds request duplicating `load()`'s. Callers that
+   * fetch this themselves (rather than going through `load()`) are
+   * responsible for their own staleness check against the current user —
+   * see MyFeeds.load() — since only they know which user their request was
+   * actually for.
    */
   sync(feeds: Feed[]): void {
     const serverIds = new Set(feeds.map((f) => f.id));
-    // A subscribe/unsubscribe that is still in flight (e.g. one fired right
-    // after login, in the same tick as the session change that triggered this
-    // reload) may not be reflected in `feeds` yet — this snapshot can be a
-    // request that started before that write committed. For anything
-    // currently pending, keep the optimistic local value instead of letting a
-    // stale server snapshot silently overwrite it; everything else takes the
-    // server's word.
+    // A write that is still in flight (e.g. one fired right after login, in
+    // the same tick as the session change that triggered this reload) may
+    // not be reflected in `feeds` yet — this snapshot can be a request that
+    // started before that write committed. Keep the optimistic local value
+    // for anything currently pending instead of letting a stale server
+    // snapshot silently overwrite it.
     for (const id of this._pending()) {
       if (this._ids().has(id)) serverIds.add(id);
+      else serverIds.delete(id);
+    }
+    // A write that already *finished* has the same problem once it is no
+    // longer in `_pending` to protect it: this snapshot can still predate
+    // its commit if it was taken before the write landed but arrives after
+    // the write's own (faster) response did. `_confirmed` is the record of
+    // what actually happened server-side, independent of how this
+    // particular snapshot's timing lines up with it.
+    for (const [id, confirmed] of this._confirmed) {
+      if (confirmed) serverIds.add(id);
       else serverIds.delete(id);
     }
     this._ids.set(serverIds);
@@ -105,12 +131,14 @@ export class SubscriptionService {
    * issuing a redundant POST /me/feeds/{id} of our own.
    */
   markSubscribed(feedId: string): void {
+    this._confirmed.set(feedId, true);
     if (this.isSubscribed(feedId)) return;
     this._ids.set(new Set(this._ids()).add(feedId));
   }
 
   /** The unsubscribe counterpart of markSubscribed — see there. */
   markUnsubscribed(feedId: string): void {
+    this._confirmed.set(feedId, false);
     if (!this.isSubscribed(feedId)) return;
     const next = new Set(this._ids());
     next.delete(feedId);
@@ -139,15 +167,24 @@ export class SubscriptionService {
    */
   subscribe(feedId: string, onError?: (err: unknown) => void, onSuccess?: () => void): void {
     if (this.isPending(feedId) || this.isSubscribed(feedId)) return;
+    // Captured for the same reason as load()'s requestedFor: if the signed-in
+    // user changes before this settles, the constructor effect has already
+    // reset _ids/_pending for the new identity — applying this response on
+    // top of that would mutate state that is no longer this write's to touch
+    // (a stray add, a stray rollback-delete, or a phantom stuck-pending id).
+    const requestedFor = this.loadedFor;
     this.setPending(feedId, true);
     this._ids.set(new Set(this._ids()).add(feedId));
 
     this.me.subscribe(feedId).subscribe({
       next: () => {
+        if (this.loadedFor !== requestedFor) return;
         this.setPending(feedId, false);
+        this._confirmed.set(feedId, true);
         onSuccess?.();
       },
       error: (err: unknown) => {
+        if (this.loadedFor !== requestedFor) return;
         this.setPending(feedId, false);
         const next = new Set(this._ids());
         next.delete(feedId);
@@ -159,14 +196,20 @@ export class SubscriptionService {
 
   unsubscribe(feedId: string, onError?: (err: unknown) => void): void {
     if (this.isPending(feedId) || !this.isSubscribed(feedId)) return;
+    const requestedFor = this.loadedFor;
     this.setPending(feedId, true);
     const next = new Set(this._ids());
     next.delete(feedId);
     this._ids.set(next);
 
     this.me.unsubscribe(feedId).subscribe({
-      next: () => this.setPending(feedId, false),
+      next: () => {
+        if (this.loadedFor !== requestedFor) return;
+        this.setPending(feedId, false);
+        this._confirmed.set(feedId, false);
+      },
       error: (err: unknown) => {
+        if (this.loadedFor !== requestedFor) return;
         this.setPending(feedId, false);
         this._ids.set(new Set(this._ids()).add(feedId));
         onError?.(err);

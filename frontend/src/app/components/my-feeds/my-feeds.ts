@@ -57,16 +57,29 @@ export class MyFeeds {
 
   load(): void {
     this.loading.set(true);
+    // Captured so a response that outlives the user it was fetched for
+    // (signed out, or switched accounts, before this returned) gets dropped
+    // instead of showing this page's own list under the wrong account, or
+    // passing that stale data into the shared SubscriptionService cache via
+    // sync() below — sync() itself has no way to know which user a given
+    // Feed[] was fetched for, so this check has to happen here.
+    const requestedFor = this.auth.session()?.user?.id ?? null;
     this.me.listSubscriptions().subscribe({
       next: (feeds) => {
-        this.feeds.set(feeds);
+        // Checked before touching `loading`: if this is a stale response
+        // arriving after an account switch, a genuinely in-flight load for
+        // the new account is likely still running, and clearing `loading`
+        // here would flash an empty list before that one lands.
+        if ((this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.loading.set(false);
+        this.feeds.set(feeds);
         // Reconciles the shared subscription cache from the same response,
         // rather than have SubscriptionService.load() fire a second, redundant
         // GET /me/feeds for the very list this page just fetched.
         this.subs.sync(feeds);
       },
       error: (e: unknown) => {
+        if ((this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.loading.set(false);
         this.toast.danger(apiMessage(e, '讀取訂閱失敗'));
       },
@@ -74,8 +87,14 @@ export class MyFeeds {
   }
 
   unsubscribe(feed: Feed): void {
+    // Captured so a response arriving after a sign-out/account switch can't
+    // remove this feed from whoever is signed in *now*'s list, or tell the
+    // shared cache it was unsubscribed for them — same class of bug as
+    // SubscriptionService.unsubscribe()'s own guard.
+    const requestedFor = this.auth.session()?.user?.id ?? null;
     this.me.unsubscribe(feed.id).subscribe({
       next: () => {
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.toast.info(`已取消訂閱：${feed.title}`);
         this.feeds.update((list) => list.filter((f) => f.id !== feed.id));
         // Keeps FeedDetail/FeedList/Discover, which all read SubscriptionService
@@ -83,7 +102,10 @@ export class MyFeeds {
         // their own.
         this.subs.markUnsubscribed(feed.id);
       },
-      error: (e: unknown) => this.toast.danger(apiMessage(e, '取消訂閱失敗')),
+      error: (e: unknown) => {
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
+        this.toast.danger(apiMessage(e, '取消訂閱失敗'));
+      },
     });
   }
 

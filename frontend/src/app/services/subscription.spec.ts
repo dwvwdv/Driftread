@@ -245,6 +245,80 @@ describe('SubscriptionService', () => {
     expect(svc.loaded()).toBe(true);
   });
 
+  it('does not let a stale subscribe success reintroduce a feed after sign-out', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // user-1, ids={a,b}
+    const pending = new Subject<void>();
+    me.subscribe = (id: string) => {
+      me.subscribeCalls.push(id);
+      return pending;
+    };
+
+    svc.subscribe('c'); // optimistic add while signed in as user-1
+
+    session.set(null); // signs out mid-flight; the effect resets _ids/_pending
+    TestBed.flushEffects();
+
+    pending.next(); // stale success arrives after sign-out
+    pending.complete();
+
+    expect(svc.isSubscribed('c')).toBe(false);
+    expect(svc.isPending('c')).toBe(false);
+  });
+
+  it('does not let a stale unsubscribe rollback reintroduce a feed into a different account', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // user-1, ids={a,b}
+    const pending = new Subject<void>();
+    me.unsubscribe = (id: string) => {
+      me.unsubscribeCalls.push(id);
+      return pending;
+    };
+
+    svc.unsubscribe('a'); // user-1 optimistically unsubscribes 'a'
+
+    // Switch accounts. The effect resets local state and kicks off a fresh
+    // load; give it a response that legitimately does not include 'a', so
+    // user-2 genuinely never subscribed to it.
+    me.listSubscriptions = () => {
+      me.listCalls++;
+      return of([feed('b')]);
+    };
+    session.set({ user: { id: 'user-2' } });
+    TestBed.flushEffects(); // user-2 now loaded with ids={b}
+
+    pending.error(new Error('boom')); // user-1's stale rollback arrives late
+
+    // Without the requestedFor guard this unconditionally re-adds 'a' —
+    // to what is now user-2's state, which never had it.
+    expect(svc.isSubscribed('a')).toBe(false);
+  });
+
+  it('preserves a confirmed write against a list snapshot that predates it but arrives after it settled', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // ids={a,b}, loaded=true
+
+    const subscribePending = new Subject<void>();
+    me.subscribe = (id: string) => {
+      me.subscribeCalls.push(id);
+      return subscribePending;
+    };
+    svc.subscribe('c'); // optimistic add, pending
+
+    // The write settles first...
+    subscribePending.next();
+    subscribePending.complete();
+    expect(svc.isPending('c')).toBe(false);
+
+    // ...and only then does a list snapshot arrive that was actually taken
+    // before the write committed (no 'c' in it) — e.g. a slower load()
+    // response from around the same time. `_pending` no longer protects
+    // 'c' since the write already left it.
+    svc.sync([feed('a'), feed('b')]);
+
+    expect(svc.isSubscribed('c')).toBe(true);
+  });
+
   it('markSubscribed records state without calling the API', () => {
     const svc = setup();
     TestBed.flushEffects();

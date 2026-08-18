@@ -80,6 +80,11 @@ export class Discover implements OnDestroy {
   importFeed(candidate: DiscoveredFeed): void {
     this.importing.set(candidate.feed_url);
     this.error.set('');
+    // Captured so a response arriving after a sign-out/account switch can't
+    // credit whoever is signed in *now* with a subscription the backend
+    // actually created for whoever was signed in when the import was sent —
+    // same class of bug as SubscriptionService.subscribe()'s own guard.
+    const requestedFor = this.auth.session()?.user?.id ?? null;
 
     this.discoverService.importByUrl(candidate.feed_url).subscribe({
       next: (feed) => {
@@ -89,7 +94,9 @@ export class Discover implements OnDestroy {
         // (backend/routers/discover.py); this just keeps SubscriptionService's
         // cache in sync so the feed shows as subscribed elsewhere without a
         // reload.
-        if (this.auth.session()) this.subs.markSubscribed(feed.id);
+        if (requestedFor && (this.auth.session()?.user?.id ?? null) === requestedFor) {
+          this.subs.markSubscribed(feed.id);
+        }
       },
       error: (e: unknown) => {
         this.importing.set(null);

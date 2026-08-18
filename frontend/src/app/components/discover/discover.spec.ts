@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { Discover } from './discover';
 import { DiscoverService } from '../../services/discover';
 import { AuthService } from '../../services/auth';
@@ -43,7 +43,7 @@ describe('Discover subscribe actions', () => {
     session = { user: { id: 'user-1' } };
   });
 
-  function setup() {
+  function setup(importByUrl?: () => ReturnType<DiscoverService['importByUrl']>) {
     subs = {
       subscribeCalls: [],
       markSubscribedCalls: [],
@@ -58,7 +58,7 @@ describe('Discover subscribe actions', () => {
       imports: [Discover],
       providers: [
         provideRouter([]),
-        { provide: DiscoverService, useValue: { importByUrl: () => of(feed) } },
+        { provide: DiscoverService, useValue: { importByUrl: importByUrl ?? (() => of(feed)) } },
         { provide: AuthService, useValue: { session: () => session } },
         { provide: SubscriptionService, useValue: subs },
         {
@@ -128,6 +128,27 @@ describe('Discover subscribe actions', () => {
       existing_feed_id: null,
     });
 
+    expect(subs.markSubscribedCalls).toEqual([]);
+  });
+
+  it('does not mark subscribed for an import that resolves after switching accounts', () => {
+    const pending = new Subject<Feed>();
+    const page = setup(() => pending);
+
+    page.importFeed({
+      feed_url: feed.url,
+      title: feed.title,
+      website_url: null,
+      already_exists: false,
+      existing_feed_id: null,
+    });
+
+    session = { user: { id: 'user-2' } }; // switches before the response returns
+    pending.next(feed);
+    pending.complete();
+
+    // The backend created this subscription for user-1, not whoever is
+    // signed in when the (slow) response happens to arrive.
     expect(subs.markSubscribedCalls).toEqual([]);
   });
 });
