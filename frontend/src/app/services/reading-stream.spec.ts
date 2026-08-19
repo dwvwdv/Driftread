@@ -445,4 +445,74 @@ describe('ReadingStreamService', () => {
 
     expect(sentBody).toEqual({});
   });
+
+  it('markAllReadInScope ignores its outcome after the signed-in identity changes', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    const pending = new Subject<MarkAllReadResult>();
+    me.markAllRead = () => pending;
+
+    let called = false;
+    svc.markAllReadInScope(
+      'feed-1',
+      () => (called = true),
+      () => (called = true),
+    );
+
+    session.set(null);
+    TestBed.flushEffects();
+
+    pending.next({ marked: 3 });
+    pending.complete();
+
+    expect(called).toBe(false);
+    expect(svc.items()).toEqual([]);
+  });
+
+  it('markRead/markUnread rollback callbacks ignore a late failure after the identity changes', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    const pending = new Subject<void>();
+    me.markRead = () => pending;
+
+    let errored = false;
+    svc.markRead('a', () => (errored = true));
+
+    session.set(null);
+    TestBed.flushEffects();
+    expect(svc.items()).toEqual([]);
+
+    pending.error(new Error('boom'));
+
+    expect(errored).toBe(false);
+    expect(svc.items()).toEqual([]);
+    expect(svc.totalUnread()).toBe(0);
+  });
+
+  it('loadCounts() supersedes an older still-in-flight loadCounts() call', () => {
+    const svc = setup();
+    const first = new Subject<UnreadSummary>();
+    const second = new Subject<UnreadSummary>();
+    let call = 0;
+    me.getUnreadCounts = () => (++call === 1 ? first : second);
+
+    svc.loadCounts(); // e.g. the automatic page-entry fetch
+    svc.loadCounts(); // e.g. markAllReadInScope's post-write authoritative refresh
+
+    // The newer request resolves first with the authoritative post-write
+    // count, then the older, pre-write request resolves after it — it must
+    // not overwrite the authoritative refresh.
+    second.next({ total_unread: 1, feeds: [] });
+    second.complete();
+    first.next({ total_unread: 9, feeds: [] });
+    first.complete();
+
+    expect(svc.totalUnread()).toBe(1);
+  });
 });

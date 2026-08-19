@@ -85,11 +85,17 @@ export class ReadingStreamService {
    * invalidated if a `load()` supersedes it first. */
   private _itemsGeneration = 0;
 
-  /** Bumped by every local optimistic count mutation (`adjustUnreadCount`).
-   * `loadCounts()` captures it when it fires and discards its response if a
-   * mutation happened in the meantime — otherwise a snapshot requested
-   * before a markRead/markUnread/mark-all write, but arriving after it,
-   * would silently overwrite the optimistic counters with stale numbers. */
+  /** Bumped by every local optimistic count mutation (`adjustUnreadCount`)
+   * *and* by every `loadCounts()` call itself. `loadCounts()` captures it
+   * when it fires and discards its response if the generation has moved on
+   * by the time it resolves — either because a mutation landed in the
+   * meantime (a snapshot requested before a markRead/markUnread/mark-all
+   * write would otherwise clobber the more recent optimistic counters), or
+   * because a *newer* `loadCounts()` call (e.g. markAllReadInScope's
+   * post-write refresh) was issued and its response is authoritative
+   * instead — without this, an older in-flight `loadCounts()` resolving
+   * after the newer one would overwrite it right back with pre-write
+   * numbers. */
   private _countsGeneration = 0;
 
   constructor() {
@@ -121,7 +127,7 @@ export class ReadingStreamService {
 
   loadCounts(onError?: (err: unknown) => void): void {
     const requestedFor = this.loadedFor;
-    const generation = this._countsGeneration;
+    const generation = ++this._countsGeneration;
     this._countsLoading.set(true);
     this.me.getUnreadCounts().subscribe({
       next: (summary) => {
@@ -226,13 +232,18 @@ export class ReadingStreamService {
     const current = this._items().find((a) => a.id === articleId);
     if (!current || current.is_read) return;
 
+    const requestedFor = this.loadedFor;
     this.setPending(articleId, true);
     this.patchItem(articleId, { is_read: true, read_at: new Date().toISOString() });
     this.adjustUnreadCount(current.feed_id, -1);
 
     this.me.markRead(articleId).subscribe({
-      next: () => this.setPending(articleId, false),
+      next: () => {
+        if (this.loadedFor !== requestedFor) return;
+        this.setPending(articleId, false);
+      },
       error: (err: unknown) => {
+        if (this.loadedFor !== requestedFor) return;
         this.setPending(articleId, false);
         this.patchItem(articleId, { is_read: false, read_at: null });
         this.adjustUnreadCount(current.feed_id, 1);
@@ -247,13 +258,18 @@ export class ReadingStreamService {
     const current = this._items().find((a) => a.id === articleId);
     if (!current || !current.is_read) return;
 
+    const requestedFor = this.loadedFor;
     this.setPending(articleId, true);
     this.patchItem(articleId, { is_read: false, read_at: null });
     this.adjustUnreadCount(current.feed_id, 1);
 
     this.me.markUnread(articleId).subscribe({
-      next: () => this.setPending(articleId, false),
+      next: () => {
+        if (this.loadedFor !== requestedFor) return;
+        this.setPending(articleId, false);
+      },
       error: (err: unknown) => {
+        if (this.loadedFor !== requestedFor) return;
         this.setPending(articleId, false);
         this.patchItem(articleId, { is_read: true, read_at: current.read_at });
         this.adjustUnreadCount(current.feed_id, -1);
@@ -323,8 +339,10 @@ export class ReadingStreamService {
     onSuccess?: (marked: number) => void,
     onError?: (err: unknown) => void,
   ): void {
+    const requestedFor = this.loadedFor;
     this.me.markAllRead(feedId ? { feed_id: feedId } : {}).subscribe({
       next: (result) => {
+        if (this.loadedFor !== requestedFor) return;
         const now = new Date().toISOString();
         this._items.update((items) =>
           items.map((a) =>
@@ -336,7 +354,10 @@ export class ReadingStreamService {
         this.loadCounts();
         onSuccess?.(result.marked);
       },
-      error: onError,
+      error: (err: unknown) => {
+        if (this.loadedFor !== requestedFor) return;
+        onError?.(err);
+      },
     });
   }
 }
