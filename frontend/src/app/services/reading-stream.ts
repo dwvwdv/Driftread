@@ -143,7 +143,7 @@ export class ReadingStreamService {
         this._feedCounts.set(summary.feeds);
       },
       error: (err: unknown) => {
-        if (this.loadedFor !== requestedFor) return;
+        if (this.loadedFor !== requestedFor || generation !== this._countsGeneration) return;
         this._countsLoading.set(false);
         onError?.(err);
       },

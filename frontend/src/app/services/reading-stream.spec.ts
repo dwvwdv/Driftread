@@ -234,6 +234,32 @@ describe('ReadingStreamService', () => {
     expect(svc.countsLoaded()).toBe(true);
   });
 
+  it('loadCounts() ignores a failure from a superseded (older) request', () => {
+    const svc = setup();
+    const first = new Subject<UnreadSummary>();
+    const second = new Subject<UnreadSummary>();
+    let call = 0;
+    me.getUnreadCounts = () => (++call === 1 ? first : second);
+
+    svc.loadCounts();
+    let errored = false;
+    // A second loadCounts() call (e.g. a rapid reload) supersedes the first.
+    svc.loadCounts(() => (errored = true));
+
+    second.next({ total_unread: 5, feeds: [] });
+    second.complete();
+    expect(svc.totalUnread()).toBe(5);
+    expect(svc.countsLoading()).toBe(false);
+
+    // The superseded first request fails after the second already
+    // succeeded — its error must not surface or touch loading state.
+    first.error(new Error('boom'));
+
+    expect(errored).toBe(false);
+    expect(svc.totalUnread()).toBe(5);
+    expect(svc.countsLoading()).toBe(false);
+  });
+
   it('markRead ignores a second call while one is already pending', () => {
     const svc = setup();
     TestBed.flushEffects();
