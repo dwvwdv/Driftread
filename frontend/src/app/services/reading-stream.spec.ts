@@ -148,6 +148,38 @@ describe('ReadingStreamService', () => {
     expect(streamCalls.length).toBe(callsBefore);
   });
 
+  it('load() clears a loadingMore flag left stuck by a superseded loadMore', () => {
+    const svc = setup();
+    streamPage = { items: [article('a')], next_cursor: 'cursor-1' };
+    svc.load({ feedId: 'feed-1' });
+
+    const pendingLoadMore = new Subject<PaginatedStream>();
+    me.getStream = (opts: unknown) => {
+      streamCalls.push(opts);
+      return pendingLoadMore;
+    };
+    svc.loadMore({ feedId: 'feed-1' });
+    expect(svc.loadingMore()).toBe(true);
+
+    // Filter changes while that load-more is still in flight — a fresh
+    // load() should clear the stuck flag immediately, not wait for the
+    // superseded response (which never gets applied at all).
+    streamPage = { items: [article('b')], next_cursor: null };
+    me.getStream = (opts: unknown) => {
+      streamCalls.push(opts);
+      return of(streamPage);
+    };
+    svc.load({ feedId: 'feed-2' });
+
+    expect(svc.loadingMore()).toBe(false);
+
+    pendingLoadMore.next({ items: [article('stale')], next_cursor: 'stale-cursor' });
+    pendingLoadMore.complete();
+
+    expect(svc.loadingMore()).toBe(false);
+    expect(svc.items().map((a) => a.id)).toEqual(['b']);
+  });
+
   it('markRead optimistically flips the row and decrements unread counts', () => {
     const svc = setup();
     TestBed.flushEffects();
@@ -172,6 +204,34 @@ describe('ReadingStreamService', () => {
     expect(errored).toBe(true);
     expect(svc.items().find((a) => a.id === 'a')?.is_read).toBe(false);
     expect(svc.totalUnread()).toBe(2);
+  });
+
+  it('loadCounts() discards a snapshot that predates a local optimistic mutation', () => {
+    const svc = setup();
+    TestBed.flushEffects(); // initial automatic load resolves synchronously: totalUnread = 2
+    svc.load({});
+    expect(svc.totalUnread()).toBe(2);
+
+    // A reload starts (e.g. re-entering the page) but is left in flight...
+    const counts = new Subject<UnreadSummary>();
+    me.getUnreadCounts = () => counts;
+    svc.loadCounts();
+
+    // ...while a markRead commits synchronously and moves totalUnread to 1.
+    svc.markRead('a');
+    expect(svc.totalUnread()).toBe(1);
+
+    // The in-flight snapshot — requested before that mutation — resolves
+    // after it with the pre-mutation count; applying it would silently
+    // undo the optimistic decrement.
+    counts.next({
+      total_unread: 2,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 2 }],
+    });
+    counts.complete();
+
+    expect(svc.totalUnread()).toBe(1);
+    expect(svc.countsLoaded()).toBe(true);
   });
 
   it('markRead ignores a second call while one is already pending', () => {
@@ -280,6 +340,73 @@ describe('ReadingStreamService', () => {
     expect(sentBodies[1].article_ids.length).toBe(120);
     expect(marked).toBe(620);
     expect(svc.items().every((a) => a.is_read)).toBe(true);
+  });
+
+  it('markAllReadInView reconciles a partially failed batch instead of reverting the whole set', () => {
+    const svc = setup();
+    const items = Array.from({ length: 620 }, (_, i) =>
+      article(`a${i}`, { is_read: false, feed_id: 'feed-1' }),
+    );
+    streamPage = { items, next_cursor: null };
+    svc.load({});
+
+    // The first (500-id) batch commits server-side; the second (120-id)
+    // batch fails — the two aren't atomic as a set.
+    let call = 0;
+    me.markAllRead = (body: unknown) => {
+      const b = body as { article_ids: string[] };
+      call++;
+      return call === 1 ? of({ marked: b.article_ids.length }) : throwError(() => new Error('boom'));
+    };
+
+    let marked = -1;
+    let errored = false;
+    svc.markAllReadInView(
+      (n) => (marked = n),
+      () => (errored = true),
+    );
+
+    expect(errored).toBe(true);
+    expect(marked).toBe(500);
+    // First 500 (the succeeded batch) stay read; the last 120 (the failed
+    // batch) are reverted back to unread rather than left showing as read
+    // client-side while the server never actually recorded them.
+    expect(items.slice(0, 500).every((a) => svc.items().find((x) => x.id === a.id)?.is_read)).toBe(
+      true,
+    );
+    expect(
+      items.slice(500).every((a) => !svc.items().find((x) => x.id === a.id)?.is_read),
+    ).toBe(true);
+  });
+
+  it('markAllReadInView ignores its outcome after the signed-in identity changes', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    const pending = new Subject<MarkAllReadResult>();
+    me.markAllRead = () => pending;
+
+    let called = false;
+    svc.markAllReadInView(
+      () => (called = true),
+      () => (called = true),
+    );
+
+    // The reader signs out while the request is still in flight — the
+    // identity effect resets items/counts for the new (signed-out) state.
+    session.set(null);
+    TestBed.flushEffects();
+    expect(svc.items()).toEqual([]);
+
+    // A late failure for the old user's request must not resurrect the old
+    // user's items or touch the counts of the new (signed-out) session.
+    pending.error(new Error('boom'));
+
+    expect(called).toBe(false);
+    expect(svc.items()).toEqual([]);
+    expect(svc.totalUnread()).toBe(0);
   });
 
   it('markAllReadInScope sends the given feed id and refreshes counts on success', () => {

@@ -1,5 +1,5 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
-import { forkJoin } from 'rxjs';
+import { catchError, forkJoin, map, of } from 'rxjs';
 import { AuthService } from './auth';
 import { MeService } from './me';
 import { FeedUnreadCount, StreamArticle } from '../models';
@@ -85,6 +85,13 @@ export class ReadingStreamService {
    * invalidated if a `load()` supersedes it first. */
   private _itemsGeneration = 0;
 
+  /** Bumped by every local optimistic count mutation (`adjustUnreadCount`).
+   * `loadCounts()` captures it when it fires and discards its response if a
+   * mutation happened in the meantime — otherwise a snapshot requested
+   * before a markRead/markUnread/mark-all write, but arriving after it,
+   * would silently overwrite the optimistic counters with stale numbers. */
+  private _countsGeneration = 0;
+
   constructor() {
     effect(() => {
       const userId = this.auth.session()?.user?.id ?? null;
@@ -114,14 +121,20 @@ export class ReadingStreamService {
 
   loadCounts(onError?: (err: unknown) => void): void {
     const requestedFor = this.loadedFor;
+    const generation = this._countsGeneration;
     this._countsLoading.set(true);
     this.me.getUnreadCounts().subscribe({
       next: (summary) => {
         if (this.loadedFor !== requestedFor) return;
         this._countsLoading.set(false);
+        this._countsLoaded.set(true);
+        // A local mutation landed after this fetch started — its snapshot
+        // predates that write, so applying it would clobber the more
+        // recent optimistic counters. Drop it; the mutation's own
+        // success/error handling already keeps the counters correct.
+        if (generation !== this._countsGeneration) return;
         this._totalUnread.set(summary.total_unread);
         this._feedCounts.set(summary.feeds);
-        this._countsLoaded.set(true);
       },
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
@@ -136,6 +149,10 @@ export class ReadingStreamService {
     const requestedFor = this.loadedFor;
     const generation = ++this._itemsGeneration;
     this._loading.set(true);
+    // A fresh load supersedes any load-more in flight for the previous
+    // generation — that request's own callback will now bail out on the
+    // generation check below without ever clearing this flag itself.
+    this._loadingMore.set(false);
     this.me.getStream({ feedId: filters.feedId, unreadOnly: filters.unreadOnly }).subscribe({
       next: (page) => {
         if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
@@ -191,6 +208,7 @@ export class ReadingStreamService {
   }
 
   private adjustUnreadCount(feedId: string, delta: number): void {
+    this._countsGeneration++;
     this._totalUnread.update((n) => Math.max(0, n + delta));
     this._feedCounts.update((list) =>
       list.map((f) =>
@@ -256,24 +274,38 @@ export class ReadingStreamService {
       onSuccess?.(0);
       return;
     }
-    const previous = this._items();
+    const requestedFor = this.loadedFor;
     const now = new Date().toISOString();
     this._items.update((items) =>
       items.map((a) => (a.is_read ? a : { ...a, is_read: true, read_at: now })),
     );
     for (const a of targets) this.adjustUnreadCount(a.feed_id, -1);
 
-    const batches = chunk(
-      targets.map((a) => a.id),
-      MARK_ALL_BATCH_SIZE,
-    );
-    forkJoin(batches.map((article_ids) => this.me.markAllRead({ article_ids }))).subscribe({
-      next: (results) => onSuccess?.(results.reduce((sum, r) => sum + r.marked, 0)),
-      error: (err: unknown) => {
-        this._items.set(previous);
-        for (const a of targets) this.adjustUnreadCount(a.feed_id, 1);
-        onError?.(err);
-      },
+    // Batches aren't atomic as a set — one can commit while a later one
+    // fails — so each batch's outcome is tracked independently instead of
+    // blindly reverting every target on any single failure, which would
+    // otherwise show server-confirmed reads as unread again.
+    const batches = chunk(targets, MARK_ALL_BATCH_SIZE);
+    forkJoin(
+      batches.map((batch) =>
+        this.me.markAllRead({ article_ids: batch.map((a) => a.id) }).pipe(
+          map((result) => ({ ok: true as const, batch, marked: result.marked })),
+          catchError((err: unknown) => of({ ok: false as const, batch, err })),
+        ),
+      ),
+    ).subscribe((outcomes) => {
+      if (this.loadedFor !== requestedFor) return;
+      const failed = outcomes.filter((o) => !o.ok);
+      const marked = outcomes.filter((o) => o.ok).reduce((sum, o) => sum + o.marked, 0);
+      if (failed.length) {
+        const failedIds = new Set(failed.flatMap((o) => o.batch.map((a) => a.id)));
+        this._items.update((items) =>
+          items.map((a) => (failedIds.has(a.id) ? { ...a, is_read: false, read_at: null } : a)),
+        );
+        for (const o of failed) for (const a of o.batch) this.adjustUnreadCount(a.feed_id, 1);
+        onError?.(failed[0].err);
+      }
+      if (marked > 0 || !failed.length) onSuccess?.(marked);
     });
   }
 
