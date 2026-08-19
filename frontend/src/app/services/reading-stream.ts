@@ -351,7 +351,10 @@ export class ReadingStreamService {
               : a,
           ),
         );
-        this.loadCounts();
+        // The mark-all write itself already succeeded — surface a refresh
+        // failure through the same onError channel so stale counts don't
+        // linger silently, without implying the write itself failed.
+        this.loadCounts(onError);
         onSuccess?.(result.marked);
       },
       error: (err: unknown) => {

@@ -459,6 +459,31 @@ describe('ReadingStreamService', () => {
     expect(svc.totalUnread()).toBe(0);
   });
 
+  it('markAllReadInScope surfaces a failure of its post-write counts refresh', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    me.markAllRead = () => of({ marked: 5 });
+    me.getUnreadCounts = () => throwError(() => new Error('boom'));
+
+    let marked = -1;
+    let errored = false;
+    svc.markAllReadInScope(
+      'feed-1',
+      (n) => (marked = n),
+      () => (errored = true),
+    );
+
+    // The write itself succeeded — the row still flips and onSuccess still
+    // fires — but the refresh failure is also surfaced rather than leaving
+    // the stale counts silently wrong.
+    expect(marked).toBe(5);
+    expect(svc.items()[0].is_read).toBe(true);
+    expect(errored).toBe(true);
+  });
+
   it('markAllReadInScope with no feed id sends an unscoped ("everything") request', () => {
     const svc = setup();
     let sentBody: unknown;
