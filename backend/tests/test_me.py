@@ -191,6 +191,24 @@ def test_mark_all_read_with_article_ids_upserts_exactly_those(client):
     mock_db.rpc.assert_not_called()
 
 
+def test_mark_all_read_with_empty_article_ids_is_a_no_op(client):
+    """An explicit `{"article_ids": []}` must mark zero articles, not fall
+    through to the unscoped RPC and mark the entire stream read — regression
+    for a truthiness check that treated `[]` the same as omitted."""
+    c, mock_db = client
+
+    resp = c.post(
+        "/api/me/reads/mark-all",
+        json={"article_ids": []},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"marked": 0}
+    mock_db.table.return_value.upsert.assert_not_called()
+    mock_db.rpc.assert_not_called()
+
+
 def test_mark_all_read_without_ids_uses_scoped_rpc(client):
     c, mock_db = client
     mock_db.rpc.return_value.execute.return_value = MagicMock(data=[{"marked": 7}])

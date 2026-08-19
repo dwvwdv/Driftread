@@ -163,7 +163,9 @@ async def mark_all_read(
       doesn't require shipping every one of its article ids to the client
       first just to hand them back.
     """
-    if body.article_ids:
+    if body.article_ids is not None:
+        if not body.article_ids:
+            return MarkAllReadResult(marked=0)
         rows = [{"user_id": user.id, "article_id": str(aid)} for aid in body.article_ids]
         db.table("user_article_reads").upsert(rows, on_conflict="user_id,article_id").execute()
         return MarkAllReadResult(marked=len(rows))

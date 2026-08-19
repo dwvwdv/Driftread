@@ -100,6 +100,31 @@ describe('ReadingStreamService', () => {
     expect(svc.hasMore()).toBe(true);
   });
 
+  it('load() discards a response from a superseded (older) filter call', () => {
+    const svc = setup();
+    const subjects: Subject<PaginatedStream>[] = [];
+    me.getStream = (opts: unknown) => {
+      streamCalls.push(opts);
+      const s = new Subject<PaginatedStream>();
+      subjects.push(s);
+      return s;
+    };
+
+    svc.load({ feedId: 'feed-1' });
+    svc.load({ feedId: 'feed-2' });
+
+    // The newer request (feed-2) resolves first, then the older (feed-1)
+    // request resolves after it — its response must be discarded, not
+    // clobber the newer filter's items/cursor.
+    subjects[1].next({ items: [article('b')], next_cursor: 'cursor-b' });
+    subjects[1].complete();
+    subjects[0].next({ items: [article('a')], next_cursor: 'cursor-a' });
+    subjects[0].complete();
+
+    expect(svc.items().map((a) => a.id)).toEqual(['b']);
+    expect(svc.hasMore()).toBe(true);
+  });
+
   it('loadMore() appends to the existing items and updates the cursor', () => {
     const svc = setup();
     streamPage = { items: [article('a')], next_cursor: 'cursor-1' };
@@ -230,6 +255,31 @@ describe('ReadingStreamService', () => {
 
     expect(errored).toBe(true);
     expect(svc.items()[0].is_read).toBe(false);
+  });
+
+  it('markAllReadInView batches ids in view past the backend cap into multiple requests', () => {
+    const svc = setup();
+    const items = Array.from({ length: 620 }, (_, i) =>
+      article(`a${i}`, { is_read: false, feed_id: 'feed-1' }),
+    );
+    streamPage = { items, next_cursor: null };
+    svc.load({});
+
+    const sentBodies: { article_ids: string[] }[] = [];
+    me.markAllRead = (body: unknown) => {
+      const b = body as { article_ids: string[] };
+      sentBodies.push(b);
+      return of({ marked: b.article_ids.length });
+    };
+
+    let marked = -1;
+    svc.markAllReadInView((n) => (marked = n));
+
+    expect(sentBodies.length).toBe(2);
+    expect(sentBodies[0].article_ids.length).toBe(500);
+    expect(sentBodies[1].article_ids.length).toBe(120);
+    expect(marked).toBe(620);
+    expect(svc.items().every((a) => a.is_read)).toBe(true);
   });
 
   it('markAllReadInScope sends the given feed id and refreshes counts on success', () => {

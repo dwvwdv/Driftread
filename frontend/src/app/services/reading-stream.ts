@@ -1,7 +1,19 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
+import { forkJoin } from 'rxjs';
 import { AuthService } from './auth';
 import { MeService } from './me';
 import { FeedUnreadCount, StreamArticle } from '../models';
+
+/** Matches backend/models.py MarkAllReadRequest.article_ids' `max_length`
+ * validation cap — "本頁全部已讀" must batch requests below this or a
+ * reader who has loaded more than this many unread articles gets a 422. */
+const MARK_ALL_BATCH_SIZE = 500;
+
+function chunk<T>(items: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
 
 /** Filters the stream page currently applies — shared shape between
  * `load()`/`loadMore()` and the mark-all "explicit scope" call, so the scope
@@ -63,11 +75,22 @@ export class ReadingStreamService {
    * loaded state rather than showing the previous account's numbers. */
   private loadedFor: string | null = null;
 
+  /** Bumped by every `load()` call (a fresh page for possibly-new filters).
+   * `load()`/`loadMore()` capture it when they fire and only apply their
+   * response if it's still current — otherwise a `load()` for an older
+   * filter combination that resolves after a newer one would clobber the
+   * newer filter's items and cursor (same user, so the `loadedFor` guard
+   * alone doesn't catch this). `loadMore()` doesn't bump it: it's
+   * continuing the in-view page, not superseding it, but still gets
+   * invalidated if a `load()` supersedes it first. */
+  private _itemsGeneration = 0;
+
   constructor() {
     effect(() => {
       const userId = this.auth.session()?.user?.id ?? null;
       if (this.loadedFor === userId) return;
       this.loadedFor = userId;
+      this._itemsGeneration++;
       this._totalUnread.set(0);
       this._feedCounts.set([]);
       this._countsLoaded.set(false);
@@ -111,16 +134,17 @@ export class ReadingStreamService {
   /** Replaces `items` with the first page for the given filters. */
   load(filters: StreamFilters, onError?: (err: unknown) => void): void {
     const requestedFor = this.loadedFor;
+    const generation = ++this._itemsGeneration;
     this._loading.set(true);
     this.me.getStream({ feedId: filters.feedId, unreadOnly: filters.unreadOnly }).subscribe({
       next: (page) => {
-        if (this.loadedFor !== requestedFor) return;
+        if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
         this._loading.set(false);
         this._items.set(page.items);
         this._nextCursor.set(page.next_cursor);
       },
       error: (err: unknown) => {
-        if (this.loadedFor !== requestedFor) return;
+        if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
         this._loading.set(false);
         onError?.(err);
       },
@@ -135,18 +159,19 @@ export class ReadingStreamService {
     const cursor = this._nextCursor();
     if (!cursor || this._loadingMore()) return;
     const requestedFor = this.loadedFor;
+    const generation = this._itemsGeneration;
     this._loadingMore.set(true);
     this.me
       .getStream({ cursor, feedId: filters.feedId, unreadOnly: filters.unreadOnly })
       .subscribe({
         next: (page) => {
-          if (this.loadedFor !== requestedFor) return;
+          if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
           this._loadingMore.set(false);
           this._items.update((current) => [...current, ...page.items]);
           this._nextCursor.set(page.next_cursor);
         },
         error: (err: unknown) => {
-          if (this.loadedFor !== requestedFor) return;
+          if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
           this._loadingMore.set(false);
           onError?.(err);
         },
@@ -238,8 +263,12 @@ export class ReadingStreamService {
     );
     for (const a of targets) this.adjustUnreadCount(a.feed_id, -1);
 
-    this.me.markAllRead({ article_ids: targets.map((a) => a.id) }).subscribe({
-      next: (result) => onSuccess?.(result.marked),
+    const batches = chunk(
+      targets.map((a) => a.id),
+      MARK_ALL_BATCH_SIZE,
+    );
+    forkJoin(batches.map((article_ids) => this.me.markAllRead({ article_ids }))).subscribe({
+      next: (results) => onSuccess?.(results.reduce((sum, r) => sum + r.marked, 0)),
       error: (err: unknown) => {
         this._items.set(previous);
         for (const a of targets) this.adjustUnreadCount(a.feed_id, 1);
