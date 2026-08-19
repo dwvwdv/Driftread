@@ -64,7 +64,27 @@
   }
 }
 
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+// Raised above the title link's stretched ::after (see below) so it stays a
+// real, independently clickable target instead of being swallowed by the
+// card-wide hit area.
+.subscribe-btn,
+.subscribe-chip {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  white-space: nowrap;
+}
+
 .title {
+  flex: 1;
+  min-width: 0;
   font-size: var(--text-md);
   font-weight: 700;
   overflow-wrap: anywhere;
@@ -78,7 +98,9 @@
     }
 
     // Stretches the link's hit area over the whole card without adding a second
-    // tab stop or nesting interactive elements.
+    // tab stop for the card itself. The subscribe button/chip is a genuine
+    // second interactive element now — see .subscribe-btn, .subscribe-chip
+    // above for how it stays clickable over this overlay.
     &::after {
       content: '';
       position: absolute;

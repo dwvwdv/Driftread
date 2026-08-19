@@ -47,13 +47,21 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### 訂閱操作與狀態
 
-- [ ] 建立單一訂閱狀態查詢，避免各頁各自推導狀態。
-- [ ] Feed 詳情加入「訂閱／取消訂閱」。
-- [ ] Feed 目錄卡片加入快速訂閱。
-- [ ] 「猜你喜歡」將「喜歡」「跳過」「訂閱」拆成三個獨立語意。
-- [ ] Discover 已收錄結果允許登入使用者直接訂閱，不只提供「前往查看」。
-- [ ] 未登入操作保留原路徑，登入後回到原 Feed 並完成訂閱。
-- [ ] 訂閱／取消訂閱需有 optimistic UI、失敗回滾與重複請求保護。
+- [x] 建立單一訂閱狀態查詢，避免各頁各自推導狀態。
+      （`frontend/src/app/services/subscription.ts::SubscriptionService`，登入後載入一次並在
+      feed 詳情、目錄卡片、Discover、猜你喜歡、我的訂閱之間共用同一份快取）
+- [x] Feed 詳情加入「訂閱／取消訂閱」。
+- [x] Feed 目錄卡片加入快速訂閱。
+- [x] 「猜你喜歡」將「喜歡」「跳過」「訂閱」拆成三個獨立語意。
+      （訂閱目前仍會同時記一筆本地「喜歡」信號供本次 session 評分用——尚未接上下面
+      「推薦回饋持久化」批次規劃的獨立 `subscribed` 訊號與資料表）
+- [x] Discover 已收錄結果允許登入使用者直接訂閱，不只提供「前往查看」。
+- [x] 未登入操作保留原路徑，登入後回到原 Feed 並完成訂閱。
+      （`/login?redirect=...&subscribeFeed=...`，`Login.submit()` 登入成功後代下單並導回）
+- [x] 訂閱／取消訂閱需有 optimistic UI、失敗回滾與重複請求保護。
+      （`SubscriptionService.subscribe()` / `unsubscribe()`：樂觀更新、失敗回滾、pending 期間
+      忽略重複呼叫；`sync()` 對還在 pending 中的項目保留樂觀值，避免與登入後的重新載入互相
+      蓋掉）
 
 ### 我的閱讀流
 
@@ -156,10 +164,15 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### Frontend 與 CI
 
-- [ ] frontend GitHub Actions 除了 production build，也必須執行現有單元測試。
+- [x] frontend GitHub Actions 除了 production build，也必須執行現有單元測試。
+      （`.github/workflows/frontend.yml` 的 Build job 在 `npm run build` 前加了 `npm test`
+      步驟，跑 `@angular/build:unit-test`／Vitest，用 jsdom，不需要瀏覽器）
 - [ ] 將 initial bundle 超過 warning budget 的既有 4.97 kB 消除，或依實際預算重新設定並記錄理由。
 - [ ] 將 Supabase client 與非首屏功能延後載入，評估是否能直接降低 initial bundle。
 - [ ] 為訂閱 CTA、我的閱讀流、偏好設定與推薦回饋補前端整合測試。
+      （訂閱 CTA 這部分已完成：`subscription.spec.ts`、`feed-detail.spec.ts`、
+      `feed-list.spec.ts`、`discover.spec.ts`、`recommendations.spec.ts`、`login.spec.ts`。
+      我的閱讀流、偏好設定 UI、推薦回饋持久化都還沒實作，測試無從補起）
 - [ ] backend 測試中的 DNS／外部網路依賴全部 mock，讓測試在隔離環境可重現。
 
 ## 建議開發批次
@@ -169,7 +182,7 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 1. [~] Supabase schema 隔離、RLS、scoped client 與相容部署。
 2. [~] Runtime Supabase config，確保官方 image 的登入與個人功能可用。
       （runtime config 機制已實作，見上方「Runtime Supabase 設定」；真的容器 + 瀏覽器登入驗證尚未執行）
-3. [ ] 訂閱 CTA、訂閱狀態與核心流程整合。
+3. [x] 訂閱 CTA、訂閱狀態與核心流程整合。
 4. [ ] 我的閱讀流、未讀數與已讀管理。
 5. [ ] 標籤／語言篩選、偏好設定與匯入後分類。
 6. [ ] 回饋持久化、可解釋推薦權重與推薦理由。

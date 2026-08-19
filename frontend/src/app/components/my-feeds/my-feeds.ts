@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@ang
 import { RouterLink } from '@angular/router';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
+import { SubscriptionService } from '../../services/subscription';
 import { Feed, OpmlImportResult } from '../../models';
 import { apiMessage } from '../../shared/http-errors';
 import { ObCallout } from '../../ui/callout/callout';
@@ -21,6 +22,7 @@ import { ToastService } from '../../ui/toast/toast';
 export class MyFeeds {
   protected auth = inject(AuthService);
   private me = inject(MeService);
+  private subs = inject(SubscriptionService);
   private toast = inject(ToastService);
 
   feeds = signal<Feed[]>([]);
@@ -32,6 +34,26 @@ export class MyFeeds {
 
   /** User id the subscriptions have already been loaded for. */
   private loadedFor: string | null = null;
+
+  /**
+   * `asOf` ticket of the last response actually applied to `feeds`. Two
+   * loads for the *same* user id can still race (initial load vs. a
+   * post-OPML-import reload); the `requestedFor` identity check alone can't
+   * tell an older-but-slower response from a newer-but-faster one that
+   * already landed. Mirrors SubscriptionService's own lastAppliedAsOf.
+   */
+  private lastAppliedAsOf = -1;
+
+  /**
+   * Set while a load() triggered by the reconciliation effect below is in
+   * flight. SubscriptionService.sync() (called from every load()'s success
+   * handler) always publishes a fresh `ids` Set, even when its contents are
+   * unchanged — so without this guard, a feed that's still missing right
+   * after that reload (e.g. its subscribe POST elsewhere hasn't committed
+   * yet) would trigger another load() immediately, and again, for as long
+   * as the write stays unconfirmed.
+   */
+  private reloadingForMissingId = false;
 
   constructor() {
     // Not `if (session()) load()` in ngOnInit: AuthService restores the persisted
@@ -51,16 +73,76 @@ export class MyFeeds {
       this.loadedFor = userId;
       this.load();
     });
+
+    // Reconciles this page's own rendered list with a subscribe/unsubscribe
+    // that lands while it's open — e.g. (un)subscribing from feed detail,
+    // then navigating here before that request settles: this page's own
+    // load() can return the pre-write snapshot, and nothing else would tell
+    // it once SubscriptionService's cache (the actual source of truth)
+    // catches up. Removals are applied directly; SubscriptionService only
+    // holds ids, not full Feed objects, so a newly subscribed id triggers an
+    // actual reload to fetch that feed's data rather than being inserted
+    // here.
+    effect(() => {
+      const ids = this.subs.ids();
+      // hasNewId is computed from `current` inside the updater callback
+      // (not via this.feeds() directly) so this effect only tracks
+      // this.subs.ids() as a dependency — reading this.feeds() here too
+      // would make the .update() write below re-trigger this same effect.
+      let hasNewId = false;
+      this.feeds.update((current) => {
+        hasNewId = [...ids].some((id) => !current.some((f) => f.id === id));
+        return current.filter((f) => ids.has(f.id));
+      });
+      if (hasNewId && this.loadedFor && !this.reloadingForMissingId) {
+        this.reloadingForMissingId = true;
+        this.load();
+      }
+    });
   }
 
   load(): void {
     this.loading.set(true);
+    // Captured so a response that outlives the user it was fetched for
+    // (signed out, or switched accounts, before this returned) gets dropped
+    // instead of showing this page's own list under the wrong account, or
+    // passing that stale data into the shared SubscriptionService cache via
+    // sync() below — sync() itself has no way to know which user a given
+    // Feed[] was fetched for, so this check has to happen here.
+    const requestedFor = this.auth.session()?.user?.id ?? null;
+    // See SubscriptionService.beginFetch(): drawn before issuing the
+    // request, so sync() below can correctly order this snapshot against
+    // writes and against any other fetch (e.g. SubscriptionService's own
+    // load()) racing it.
+    const asOf = this.subs.beginFetch();
     this.me.listSubscriptions().subscribe({
       next: (feeds) => {
-        this.feeds.set(feeds);
+        // Cleared unconditionally, regardless of which call site started
+        // this particular load(): this specific flight is over either way,
+        // and the reconciliation effect will re-trigger another one itself
+        // if the id it cared about is still missing once ids() next changes.
+        this.reloadingForMissingId = false;
+        // Checked before touching `loading`: if this is a stale response
+        // arriving after an account switch, a genuinely in-flight load for
+        // the new account is likely still running, and clearing `loading`
+        // here would flash an empty list before that one lands.
+        if ((this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.loading.set(false);
+        // Guards against a same-user race: an older, slower load() response
+        // (e.g. the initial load) arriving after a newer one (e.g. a
+        // post-OPML-import reload) already applied. requestedFor alone can't
+        // catch this since both requests share the same user id.
+        if (asOf < this.lastAppliedAsOf) return;
+        this.lastAppliedAsOf = asOf;
+        this.feeds.set(feeds);
+        // Reconciles the shared subscription cache from the same response,
+        // rather than have SubscriptionService.load() fire a second, redundant
+        // GET /me/feeds for the very list this page just fetched.
+        this.subs.sync(feeds, asOf);
       },
       error: (e: unknown) => {
+        this.reloadingForMissingId = false;
+        if ((this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.loading.set(false);
         this.toast.danger(apiMessage(e, '讀取訂閱失敗'));
       },
@@ -68,12 +150,25 @@ export class MyFeeds {
   }
 
   unsubscribe(feed: Feed): void {
+    // Captured so a response arriving after a sign-out/account switch can't
+    // remove this feed from whoever is signed in *now*'s list, or tell the
+    // shared cache it was unsubscribed for them — same class of bug as
+    // SubscriptionService.unsubscribe()'s own guard.
+    const requestedFor = this.auth.session()?.user?.id ?? null;
     this.me.unsubscribe(feed.id).subscribe({
       next: () => {
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.toast.info(`已取消訂閱：${feed.title}`);
         this.feeds.update((list) => list.filter((f) => f.id !== feed.id));
+        // Keeps FeedDetail/FeedList/Discover, which all read SubscriptionService
+        // rather than their own copy, in sync without a redundant DELETE of
+        // their own.
+        this.subs.markUnsubscribed(feed.id);
       },
-      error: (e: unknown) => this.toast.danger(apiMessage(e, '取消訂閱失敗')),
+      error: (e: unknown) => {
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
+        this.toast.danger(apiMessage(e, '取消訂閱失敗'));
+      },
     });
   }
 

@@ -545,3 +545,53 @@ TODO.md 建議開發批次第 2 批。`frontend/src/environments/environment.ts`
   `AuthService` 本身未新增測試——它的邏輯零改動，既有的登入相關元件測試一律用
   `{ provide: AuthService, useValue: ... }` mock 掉，不受這次改動影響。
 - 對應文件更新：`docs/FEATURES.md` 第 4 節、`README.md`（環境變數表與「前端 Supabase 設定」章節）。
+
+## 階段二十一：訂閱 CTA、單一訂閱狀態與 frontend CI 補跑單元測試（2026-08-18）
+
+TODO.md 建議開發批次第 3 批。此前訂閱只能在「我的訂閱」頁面單向取消，feed 詳情、目錄卡片、
+Discover 與「猜你喜歡」都沒有訂閱入口，也沒有任何地方能知道「這個 feed 我訂閱了沒」——每個頁面
+各自推導，彼此不同步。
+
+- **`frontend/src/app/services/subscription.ts`（新）**：`SubscriptionService`，單一訂閱狀態
+  快取，登入後（依 user id keyed，同 `MyFeeds` 既有的 `loadedFor` pattern）載入一次，`isSubscribed()`
+  供任何頁面查詢。`subscribe()` / `unsubscribe()` 樂觀更新本地狀態、失敗回滾、pending 期間忽略
+  重複呼叫；`sync()` 讓已經自己抓過 `Feed[]` 的頁面（`MyFeeds`）直接回填快取，不必再多打一次
+  `GET /me/feeds`；`markSubscribed()` / `markUnsubscribed()` 給後端已經順帶完成訂閱異動的情況
+  （見下方 Discover 匯入）記錄狀態，不必再補一次多餘的 API 呼叫。
+  - 有個真實的 race：重新登入的同一個 tick 裡，session 變化同時觸發這個 service 自己的
+    reload effect，也可能觸發呼叫端自己的 `subscribe()`（例如登入後代下的訂閱）。若 reload 的
+    伺服器快照剛好是那筆寫入 commit 之前抓到的，`_ids.set(new Set(serverIds))` 直接整組覆蓋
+    就會把還在 in-flight 的樂觀新增蓋掉。`load()`/`sync()` 現在對 `_pending` 中的 id 保留本地
+    樂觀值，其餘才信任伺服器快照。`subscription.spec.ts` 有這個情境的回歸測試。
+- **訂閱入口**：
+  - `components/feed-detail`：header 加「訂閱／已訂閱」按鈕。
+  - `components/feed-list`：每張目錄卡片加快速訂閱；按鈕/已訂閱 chip 疊在卡片整體可點擊區
+    （標題 `::after` 撐開的 hit area）之上（`position: relative; z-index: 1`），否則會被蓋住點不到。
+  - `components/discover`：已收錄（`already_exists`）的候選除了「前往查看」，登入使用者可直接訂閱；
+    新匯入（`POST /discover/import`）本來就會讓後端順便訂閱登入中的使用者
+    （`backend/routers/discover.py`），前端呼叫 `markSubscribed()` 同步快取，不重複打
+    `POST /me/feeds/{id}`。
+  - `components/recommendations`（猜你喜歡）：卡片動作由「喜歡／跳過」兩個，拆成「喜歡／跳過／
+    訂閱」三個獨立語意。訂閱同時仍記一筆本地「喜歡」信號——`user_feed_feedback` 之類的獨立
+    `subscribed` 訊號與持久化是 TODO.md 之後「回饋持久化」批次的範圍，這批只先把 UI 動作分開。
+  - `components/my-feeds`：取消訂閱／重新整理清單時透過 `subs.markUnsubscribed()` /
+    `subs.sync()` 回寫共用快取，讓其他頁面不必整頁重新整理就會同步。
+- **未登入時的訂閱**：以上入口在未登入時都導去 `/login?redirect=<原路徑>&subscribeFeed=<feed id>`，
+  而不是把點擊吃掉或丟回首頁。`components/login` 的 `Login.submit()` 登入成功後讀這兩個 query
+  param，代呼叫一次 `subscribe()` 再導回 `redirect`（沒有則回首頁），簽出時不會誤觸發。
+- **frontend CI**：`.github/workflows/frontend.yml` 的 Build job 在 `npm run build` 前加
+  `npm test`。此前 CI 只跑 production build，這個 repo 既有／新增的所有 `*.spec.ts` 從未被 CI
+  執行過（`ng build` 用的 `tsconfig.app.json` 也刻意排除 `*.spec.ts`，型別錯誤都抓不到）。
+  `@angular/build:unit-test`（Vitest + jsdom，非瀏覽器）在 GitHub Actions 會自動偵測
+  `CI=true` 以 non-watch 模式單次執行，不需要額外安裝瀏覽器或加 `--no-watch`。
+- **測試**：新增 `subscription.spec.ts`、`feed-detail.spec.ts`、`feed-list.spec.ts`、
+  `discover.spec.ts`、`recommendations.spec.ts`、`login.spec.ts`。全部沿用既有測試慣例——純
+  物件 fake + 手動記錄呼叫（本專案的 Vitest 設定裡沒有任何 spec 用 `jasmine.*`／`vi.*` mock
+  API，一律手寫 fake），`Router.navigate`/`navigateByUrl` 用真的 `provideRouter([])` 換掉方法
+  本體記錄呼叫參數，`SubscriptionService` 自己的 effect 測試用 `TestBed.flushEffects()`
+  （Angular 17 起的正式 API，用在 `TestBed.inject()` 直接建立、不經過 `ComponentFixture` 的場合）。
+  本 sandbox 的 npm registry allowlist 依然卡在同一批依賴鏈（`zod-to-json-schema` 等）上，
+  `npm ci` 全部失敗，無法在本機跑 `ng build` / `ng test` 驗證——與階段二十的已知限制相同，
+  交給 CI 實際跑過；已用人工重讀全部改動檔案一遍。
+- 對應文件更新：`docs/FEATURES.md` 第 1 節、第 7 節（新增 Frontend 測試列）、`TODO.md`
+  （批次 3 打勾，勾掉 frontend CI 補跑單元測試那條）。

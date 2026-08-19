@@ -1,12 +1,16 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { FeedService } from '../../services/feed';
+import { SubscriptionService } from '../../services/subscription';
+import { AuthService } from '../../services/auth';
 import { Feed, PaginatedFeeds } from '../../models';
+import { apiMessage } from '../../shared/http-errors';
 import { ObIcon } from '../../ui/icon/icon';
 import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
 import { ObPageHeader } from '../../ui/page-header/page-header';
 import { ObPaginator } from '../../ui/paginator/paginator';
+import { ToastService } from '../../ui/toast/toast';
 
 /** The feed catalogue. */
 @Component({
@@ -27,6 +31,10 @@ import { ObPaginator } from '../../ui/paginator/paginator';
 })
 export class FeedList implements OnInit {
   private feedService = inject(FeedService);
+  private router = inject(Router);
+  private subs = inject(SubscriptionService);
+  protected auth = inject(AuthService);
+  private toast = inject(ToastService);
 
   feeds = signal<Feed[]>([]);
   total = signal(0);
@@ -101,5 +109,24 @@ export class FeedList implements OnInit {
 
   get hasFilters(): boolean {
     return Boolean(this.search || this.category);
+  }
+
+  isSubscribed(feedId: string): boolean {
+    return this.subs.isSubscribed(feedId);
+  }
+
+  isSubscribePending(feedId: string): boolean {
+    return this.subs.isPending(feedId);
+  }
+
+  /** Same not-signed-in redirect as FeedDetail.toggleSubscribe — see there. */
+  quickSubscribe(feed: Feed): void {
+    if (!this.auth.session()) {
+      void this.router.navigate(['/login'], {
+        queryParams: { redirect: '/', subscribeFeed: feed.id },
+      });
+      return;
+    }
+    this.subs.subscribe(feed.id, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
   }
 }

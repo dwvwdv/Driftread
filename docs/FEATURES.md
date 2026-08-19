@@ -13,7 +13,7 @@
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
-| 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy | `routers/me.py`、`components/my-feeds`、`components/bookmarks` |
+| 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
 | **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
 | OPML 匯入 / 匯出 | ✅ | 與 Feedly / Inoreader 互通 | `routers/opml.py` |
@@ -456,7 +456,7 @@ DELETE FROM discovery_targets
 | Frontend | Angular 21（**僅 `@angular/cdk`**：overlay / a11y；UI 為自建 Offbeat 元件庫，見 `frontend/src/app/ui/` 與 `frontend/src/styles/`）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
-| 測試 | pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試） |
+| 測試 | Backend：pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試）。Frontend：Vitest（`@angular/build:unit-test`，jsdom，無需瀏覽器），`*.spec.ts` 與被測檔同目錄；`frontend.yml` 的 Build job 在 `npm run build` 前先跑 `npm test` |
 | 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理 |
 
 `worker` 容器跑兩個獨立迴圈（refresh 與 discovery），共用同一個 event loop 與同一個 stop

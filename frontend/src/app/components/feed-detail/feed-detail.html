@@ -43,35 +43,51 @@
       }
     </div>
 
-    <!--
-      Signals for 猜你喜歡. Stored locally by RecommendationService, so these work
-      signed out — which is what makes recommendations usable without an account.
-    -->
-    <div class="votes">
-      <p class="ob-label">回饋給「猜你喜歡」</p>
-      <div class="vote-row">
-        <button
-          type="button"
-          class="ob-btn ob-btn--sm"
-          [class.ob-btn--primary]="isLiked"
-          [class.ob-btn--ghost]="!isLiked"
-          [attr.aria-pressed]="isLiked"
-          (click)="like()"
-        >
-          <ob-icon name="heart" [size]="14" [filled]="isLiked" />
-          喜歡
-        </button>
-        <button
-          type="button"
-          class="ob-btn ob-btn--sm"
-          [class.ob-btn--danger]="isDisliked"
-          [class.ob-btn--ghost]="!isDisliked"
-          [attr.aria-pressed]="isDisliked"
-          (click)="dislike()"
-        >
-          <ob-icon name="close" [size]="14" />
-          不喜歡
-        </button>
+    <div class="actions">
+      <button
+        type="button"
+        class="ob-btn"
+        [class.ob-btn--primary]="!isSubscribed"
+        [class.ob-btn--ghost]="isSubscribed"
+        [disabled]="subscribePending"
+        [attr.aria-pressed]="isSubscribed"
+        (click)="toggleSubscribe()"
+      >
+        <ob-icon [name]="isSubscribed ? 'check' : 'plus'" [size]="14" />
+        {{ isSubscribed ? '已訂閱' : '訂閱' }}
+      </button>
+
+      <!--
+        Signals for 猜你喜歡. Stored locally by RecommendationService, so these
+        work signed out — which is what makes recommendations usable without an
+        account.
+      -->
+      <div class="votes">
+        <p class="ob-label">回饋給「猜你喜歡」</p>
+        <div class="vote-row">
+          <button
+            type="button"
+            class="ob-btn ob-btn--sm"
+            [class.ob-btn--primary]="isLiked"
+            [class.ob-btn--ghost]="!isLiked"
+            [attr.aria-pressed]="isLiked"
+            (click)="like()"
+          >
+            <ob-icon name="heart" [size]="14" [filled]="isLiked" />
+            喜歡
+          </button>
+          <button
+            type="button"
+            class="ob-btn ob-btn--sm"
+            [class.ob-btn--danger]="isDisliked"
+            [class.ob-btn--ghost]="!isDisliked"
+            [attr.aria-pressed]="isDisliked"
+            (click)="dislike()"
+          >
+            <ob-icon name="close" [size]="14" />
+            不喜歡
+          </button>
+        </div>
       </div>
     </div>
   </header>
