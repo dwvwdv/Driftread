@@ -166,7 +166,12 @@ async def mark_all_read(
     if body.article_ids is not None:
         if not body.article_ids:
             return MarkAllReadResult(marked=0)
-        rows = [{"user_id": user.id, "article_id": str(aid)} for aid in body.article_ids]
+        # Dedupe: a single upsert with the same article_id twice makes
+        # Postgres raise "ON CONFLICT DO UPDATE command cannot affect row a
+        # second time" (same constraint services/articles.py::upsert_articles
+        # already dedupes around for feed ingestion).
+        unique_ids = {str(aid) for aid in body.article_ids}
+        rows = [{"user_id": user.id, "article_id": aid} for aid in unique_ids]
         db.table("user_article_reads").upsert(rows, on_conflict="user_id,article_id").execute()
         return MarkAllReadResult(marked=len(rows))
 

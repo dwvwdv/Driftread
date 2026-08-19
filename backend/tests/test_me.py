@@ -191,6 +191,37 @@ def test_mark_all_read_with_article_ids_upserts_exactly_those(client):
     mock_db.rpc.assert_not_called()
 
 
+def test_mark_all_read_with_duplicate_article_ids_dedupes_before_upsert(client):
+    """A single upsert with the same article_id twice makes Postgres raise
+    "ON CONFLICT DO UPDATE command cannot affect row a second time" — the
+    same constraint services/articles.py::upsert_articles already dedupes
+    around for feed ingestion. article_ids must be deduped the same way."""
+    c, mock_db = client
+    mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
+
+    resp = c.post(
+        "/api/me/reads/mark-all",
+        json={
+            "article_ids": [
+                "11111111-1111-1111-1111-111111111111",
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+            ]
+        },
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"marked": 2}
+    args, _ = mock_db.table.return_value.upsert.call_args
+    rows = args[0]
+    assert len(rows) == 2
+    assert {row["article_id"] for row in rows} == {
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    }
+
+
 def test_mark_all_read_with_empty_article_ids_is_a_no_op(client):
     """An explicit `{"article_ids": []}` must mark zero articles, not fall
     through to the unscoped RPC and mark the entire stream read — regression

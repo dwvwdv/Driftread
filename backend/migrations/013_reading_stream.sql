@@ -163,9 +163,13 @@ GRANT EXECUTE ON FUNCTION driftread.mark_reading_stream_read(uuid, uuid, timesta
 -- already covering these new queries, so nothing new is needed for either
 -- side of that join.
 --
--- What's missing is an index usable when `p_before` narrows a scoped mark-all
--- or a future date-scoped read of the stream: neither existing articles index
--- is keyed on `fetched_at`, so a request that lands on the COALESCE(published_at,
--- fetched_at) IS NULL fallback for many undated rows would fall back to a scan.
-CREATE INDEX IF NOT EXISTS articles_feed_id_fetched_at_idx
-  ON driftread.articles (feed_id, fetched_at DESC);
+-- What's missing is an index matching what `list_reading_stream`'s cursor
+-- predicate and ORDER BY (and a `p_before`-scoped mark-all) actually key on:
+-- COALESCE(published_at, fetched_at), not `fetched_at` alone. An index on
+-- the bare column can't serve that expression's range scan or ordering, so
+-- a plain (feed_id, fetched_at DESC) index would still force a scan+sort on
+-- feeds with substantial history; index the expression itself instead, with
+-- the same `id` tie-breaker the query uses to keep pagination stable across
+-- rows sharing a sort key.
+CREATE INDEX IF NOT EXISTS articles_feed_id_sort_at_idx
+  ON driftread.articles (feed_id, COALESCE(published_at, fetched_at) DESC, id DESC);
