@@ -118,6 +118,12 @@
   font-family: var(--font-mono);
 }
 
+// Pushed to the row's trailing edge via the row's own flex layout
+// (.ob-menu-item is display:flex).
+.unread-chip {
+  margin-left: auto;
+}
+
 // Paint for the rows themselves is the global .ob-menu-item; only the panel
 // geometry is component-local.
 .menu {

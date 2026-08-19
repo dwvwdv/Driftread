@@ -45,6 +45,12 @@ export const routes: Routes = [
           import('./components/article-reader/article-reader').then((m) => m.ArticleReader),
       },
       {
+        path: 'me/stream',
+        title: '我的閱讀 — 漂流閱讀 Driftread',
+        loadComponent: () =>
+          import('./components/reading-stream/reading-stream').then((m) => m.ReadingStream),
+      },
+      {
         path: 'recommendations',
         title: '猜你喜歡 — 漂流閱讀 Driftread',
         loadComponent: () =>

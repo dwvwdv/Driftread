@@ -4,6 +4,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 import { AuthService } from '../../services/auth';
+import { ReadingStreamService } from '../../services/reading-stream';
 import { ObIcon } from '../../ui/icon/icon';
 import { ObThemeToggle } from '../../ui/theme-toggle/theme-toggle';
 
@@ -30,6 +31,12 @@ import { ObThemeToggle } from '../../ui/theme-toggle/theme-toggle';
 })
 export class PublicLayout {
   protected auth = inject(AuthService);
+  // Injected here (not just inside the reading-stream page) so the account
+  // menu's unread badge populates as soon as a signed-in reader lands
+  // anywhere in the app, not only after they first visit /me/stream —
+  // ReadingStreamService is a root singleton, so this and the stream page
+  // share the same counts rather than each fetching their own.
+  protected stream = inject(ReadingStreamService);
   private router = inject(Router);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
 

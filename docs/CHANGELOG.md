@@ -595,3 +595,67 @@ Discover 與「猜你喜歡」都沒有訂閱入口，也沒有任何地方能�
   交給 CI 實際跑過；已用人工重讀全部改動檔案一遍。
 - 對應文件更新：`docs/FEATURES.md` 第 1 節、第 7 節（新增 Frontend 測試列）、`TODO.md`
   （批次 3 打勾，勾掉 frontend CI 補跑單元測試那條）。
+
+## 階段二十二：我的閱讀流、未讀數與已讀管理（2026-08-19）
+
+TODO.md 建議開發批次第 4 批。此前「已讀」只有 `POST /me/articles/{id}/read`（單篇標記、無法
+復原）與 `GET /me/reads`（回原始 read receipt id 列表，cursor 分頁但前端從未使用），沒有任何一個
+地方能一次看到「所有已訂閱來源的新文章」——`/me/feeds` 只列訂閱本身，要讀新文章得逐一點進每個
+feed 詳情頁翻最新 10 篇。也沒有未讀數，也沒有批次已讀。
+
+- **`user_article_reads` 不新增表**：一列存在即代表「已讀」，這批只加查詢端的 DB function 與
+  index，讀寫路徑仍是同一張 002 建的表——`DELETE` 該列就是「標為未讀」。
+- **`backend/migrations/013_reading_stream.sql`（新）**：三個 `driftread` schema 內的 DB
+  function，EXECUTE 只授權 `service_role`（同 `sample_feed_candidates` / `list_feed_categories`
+  的鎖法）：
+  - `list_reading_stream(...)`：跨 `user_feeds` 聚合每個已訂閱來源的 `articles`，LEFT JOIN
+    `user_article_reads` 帶出 `is_read` / `read_at`，keyset 分頁。排序鍵是
+    `COALESCE(published_at, fetched_at) DESC, id DESC`——未解析出發佈日期的文章退回抓取時間，
+    避免落進 Postgres `DESC` 預設的 `NULLS FIRST` 卡在最前面，也讓 cursor 比較不必特別處理
+    NULL。
+  - `reading_stream_unread_counts(...)`：每個已訂閱來源的未讀數，LEFT JOIN 而非 anti-join，
+    讀完的來源仍會列出、只是 0，前端拿來畫「各來源未讀數」的篩選下拉。
+  - `mark_reading_stream_read(...)`：伺服器端一次 `INSERT ... SELECT ... ON CONFLICT DO
+    NOTHING`，供「明確範圍」全部已讀用（單一來源／整個閱讀流），不必先把符合的 article id
+    全部撈回 Python 再逐筆 upsert。
+  - 新增 `articles(feed_id, fetched_at DESC)` 索引；`user_feeds` 與 `user_article_reads` 既有的
+    複合主鍵已經覆蓋這批查詢在這兩張表上的存取模式，不必再加。
+- **`backend/routers/me.py`**：
+  - `DELETE /me/articles/{id}/read`——`mark_read` 的反向操作，標為未讀。
+  - `POST /me/reads/mark-all`——帶 `article_ids` 就精準標那幾篇（目前頁面）；不帶則用
+    `feed_id` / `before` 走上面的 RPC（明確範圍，三者都空即整個閱讀流全部已讀）。回傳
+    `{marked}`。
+  - `GET /me/stream`——聚合文章流，`cursor` / `limit`（上限 100）/ `feed_id` / `unread_only`。
+  - `GET /me/stream/unread-counts`——總未讀數與各來源未讀數。
+  - `utils.py` 新增 `encode_keyset_cursor` / `decode_keyset_cursor`，把 `GET /me/reads` 內
+    原本寫死在 router 裡的 cursor 編解碼抽出來給 `/me/stream` 共用，行為不變。
+- **`frontend/src/app/services/reading-stream.ts`（新）**：`ReadingStreamService`，
+  `providedIn: 'root'` 單一快取，同時餵給導覽列帳號選單的未讀數 badge 與閱讀流頁面本身
+  （同 `SubscriptionService` 讓多個元件共用一份狀態的角色，見階段二十一）。單篇標記已讀／未讀
+  樂觀更新＋失敗回滾＋pending 期間忽略重複呼叫；「本頁全部已讀」送目前頁面未讀文章的 id 清單；
+  「明確範圍全部已讀」（可選單一來源）不做本地樂觀更新——範圍可能涵蓋這頁從未載入過的文章，
+  成功後改用伺服器回應重新整理未讀數，並把畫面上已載入、落在範圍內的列直接標成已讀。
+- **`frontend/src/app/components/reading-stream`（新，`/me/stream`）**：主要閱讀入口。cursor
+  「載入更多」（不一次載入全部）、總未讀 / 本頁未讀（`ObStat`）、「只看未讀」（server-side
+  filter）與「隱藏已讀」（client-side 篩選，兩者刻意分開——前者改變 `GET /me/stream` 抓什麼，
+  後者只影響已抓到的資料怎麼顯示）、來源篩選下拉（選項即 `reading_stream_unread_counts` 回傳的
+  已訂閱來源清單，不必另外呼叫 `GET /me/feeds`）、逐篇已讀／未讀切換、兩種全部已讀動作
+  （明確範圍那個帶 `ConfirmService` 確認對話框，訊息依是否有作用中的來源篩選而不同）。
+  導覽列（`layouts/public-layout`）帳號選單第一個項目換成「我的閱讀」（帶未讀數 chip），原本
+  排最前的「我的訂閱」讓出主要閱讀入口的角色，往後移一位，並在自己的頁首加一顆「前往我的閱讀」
+  按鈕；`/me/feeds` 仍是唯一的來源管理入口（訂閱清單、OPML 匯入匯出），沒有拿掉任何既有功能。
+- **測試**：新增 `test_me.py` 的 mark-unread／mark-all／stream／unread-counts 案例（沿用既有
+  `mock_db` + `dependency_overrides` 慣例）；`reading-stream.spec.ts`（service，`TestBed.inject`
+  + `TestBed.flushEffects()`，同 `subscription.spec.ts` 的模式）與
+  `components/reading-stream/reading-stream.spec.ts`（元件，`TestBed.inject(ReadingStreamService)`
+  拿與元件共用的同一個 root instance 斷言狀態，而不是碰元件自己 `protected` 的欄位——同
+  `feed-detail.spec.ts` 對 `SubscriptionService` 的作法）。本 sandbox 對 PyPI 與 npm registry
+  的存取都被 allowlist 擋下（`pip install pytest` 403、`npm ci` 卡在
+  `zod-to-json-schema` 同一批依賴鏈），backend／frontend 測試都無法在本機實際執行——與階段
+  二十一的已知限制相同，交給 CI 實際跑過；已用人工重讀全部改動檔案與呼叫鏈一遍。
+- **刻意先不做**：`GET /me/stream` 目前只在讀者主動載入該頁時抓資料，不是即時／WebSocket
+  推送新文章或即時更新未讀數；`article-reader` 開文章時仍各自呼叫 `POST /me/articles/{id}/read`，
+  沒有回頭同步已載入的 `ReadingStreamService` 快取，所以在另一個分頁／視窗開文章不會立刻反映在
+  已開啟的閱讀流頁面上，要等下一次 `reload()`。兩者都留給之後的批次或後續 PR。
+- 對應文件更新：`docs/FEATURES.md` 第 1、3、4、5 節、`TODO.md`（批次 4「我的閱讀流」七項全部
+  打勾，「建議開發批次」第 4 項打勾）。

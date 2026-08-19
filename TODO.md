@@ -65,13 +65,28 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### 我的閱讀流
 
-- [ ] 新增聚合所有已訂閱來源的文章時間流。
-- [ ] 支援分頁或 cursor pagination，不一次載入全部文章。
-- [ ] 顯示總未讀數與各來源未讀數。
-- [ ] 支援「只看未讀」「隱藏已讀」與來源篩選。
-- [ ] 支援單篇標記已讀／未讀。
-- [ ] 支援目前頁面全部標已讀，以及明確範圍的全部標已讀。
-- [ ] 「我的訂閱」保留來源管理入口，但主要閱讀入口改為文章流。
+- [x] 新增聚合所有已訂閱來源的文章時間流。
+      （`GET /me/stream`，`backend/migrations/013_reading_stream.sql::list_reading_stream`；
+      前端 `components/reading-stream`，掛在 `/me/stream`）
+- [x] 支援分頁或 cursor pagination，不一次載入全部文章。
+      （keyset cursor，同 `GET /me/reads` 既有作法；`limit` 上限 100；前端「載入更多」）
+- [x] 顯示總未讀數與各來源未讀數。
+      （`GET /me/stream/unread-counts` ← `reading_stream_unread_counts()`；頁面上方
+      `ObStat` 總未讀／本頁未讀，來源篩選下拉帶各來源未讀數，導覽列帳號選單也有未讀數 badge）
+- [x] 支援「只看未讀」「隱藏已讀」與來源篩選。
+      （「只看未讀」是 server-side `unread_only`；「隱藏已讀」是 client-side 篩選已載入資料，
+      刻意跟「只看未讀」分開——一個決定抓什麼，一個只決定怎麼顯示；來源篩選是 `feed_id`）
+- [x] 支援單篇標記已讀／未讀。
+      （`POST` / `DELETE /me/articles/{id}/read`；前端樂觀更新 + 失敗回滾，同
+      `SubscriptionService` 的 pattern）
+- [x] 支援目前頁面全部標已讀，以及明確範圍的全部標已讀。
+      （`POST /me/reads/mark-all`：帶 `article_ids` 是目前頁面；帶 `feed_id`／不帶則整個閱讀流
+      是明確範圍，走 DB function `mark_reading_stream_read` 一次 `INSERT ... SELECT`；
+      明確範圍那個在前端有 `ConfirmService` 確認對話框）
+- [x] 「我的訂閱」保留來源管理入口，但主要閱讀入口改為文章流。
+      （導覽列帳號選單「我的閱讀」排在「我的訂閱」之前；`/me/feeds` 頁首加「前往我的閱讀」按鈕，
+      subtitle 改成「管理已訂閱的來源；要開始閱讀請前往『我的閱讀』」；OPML／取消訂閱等來源管理
+      功能沒有被移除）
 
 ## P1：偏好、推薦與內容探索
 
@@ -142,6 +157,11 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [ ] `GET /categories` 改由 SQL `DISTINCT`／RPC 聚合，不把所有 Feed 拉回 Python 去重。
 - [ ] 推薦候選移除大表 `ORDER BY random()`，改用 indexed random key、pivot sampling 或可擴充的抽樣策略。
 - [ ] 為常用的 subscription、read receipt、bookmark、feedback 查詢補齊複合 index。
+      （read receipt／閱讀流這半邊在批次 4 補了：`user_article_reads(user_id, read_at DESC,
+      article_id DESC)`（012）與 `articles(feed_id, fetched_at DESC)`（013）；`user_feeds` 與
+      `user_article_reads` 既有複合主鍵已覆蓋閱讀流查詢，沒有另外加。bookmark／feedback 那兩類
+      查詢還沒動——`user_bookmarks` 目前只有 `(user_id, bookmark_type)`，`user_feed_feedback`
+      這張表本身都還沒建（見上方「推薦回饋持久化」批次），留給之後的批次）
 - [ ] 對 PostgREST／database 例外建立一致的 API error mapping，避免裸 500。
 - [ ] 為單一 Feed 手動 refresh 固定 response contract，測試不得依賴真實 DNS。
 
@@ -172,7 +192,9 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [ ] 為訂閱 CTA、我的閱讀流、偏好設定與推薦回饋補前端整合測試。
       （訂閱 CTA 這部分已完成：`subscription.spec.ts`、`feed-detail.spec.ts`、
       `feed-list.spec.ts`、`discover.spec.ts`、`recommendations.spec.ts`、`login.spec.ts`。
-      我的閱讀流、偏好設定 UI、推薦回饋持久化都還沒實作，測試無從補起）
+      我的閱讀流這部分批次 4 也補了：`reading-stream.spec.ts`（service）與
+      `components/reading-stream/reading-stream.spec.ts`（元件）。偏好設定 UI、推薦回饋持久化
+      都還沒實作，測試無從補起）
 - [ ] backend 測試中的 DNS／外部網路依賴全部 mock，讓測試在隔離環境可重現。
 
 ## 建議開發批次
@@ -183,7 +205,7 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 2. [~] Runtime Supabase config，確保官方 image 的登入與個人功能可用。
       （runtime config 機制已實作，見上方「Runtime Supabase 設定」；真的容器 + 瀏覽器登入驗證尚未執行）
 3. [x] 訂閱 CTA、訂閱狀態與核心流程整合。
-4. [ ] 我的閱讀流、未讀數與已讀管理。
+4. [x] 我的閱讀流、未讀數與已讀管理。
 5. [ ] 標籤／語言篩選、偏好設定與匯入後分類。
 6. [ ] 回饋持久化、可解釋推薦權重與推薦理由。
 7. [ ] Feed 完整文章分頁、全文搜尋與資料夾管理。

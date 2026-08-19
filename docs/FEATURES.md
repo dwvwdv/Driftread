@@ -14,6 +14,7 @@
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
+| **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/013_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
 | **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
 | OPML 匯入 / 匯出 | ✅ | 與 Feedly / Inoreader 互通 | `routers/opml.py` |
@@ -255,7 +256,11 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/me/feeds/{feed_id}` | 訂閱（204） |
 | DELETE | `/me/feeds/{feed_id}` | 取消訂閱（204） |
 | POST | `/me/articles/{article_id}/read` | 標記已讀（204） |
-| GET | `/me/reads` | 已讀的 article id 列表 |
+| DELETE | `/me/articles/{article_id}/read` | 標記未讀（204） |
+| GET | `/me/reads` | 已讀的 article id 列表，cursor pagination |
+| POST | `/me/reads/mark-all` | 批次標已讀：帶 `article_ids` 為明確清單（目前頁面），省略則依 `feed_id`／`before` 篩選（明確範圍），三者皆空即整個閱讀流全部標已讀。回傳 `{marked}` |
+| GET | `/me/stream` | 我的閱讀流：跨所有已訂閱來源的文章時間流，cursor pagination（`cursor`／`limit`，上限 100），可用 `feed_id`／`unread_only` 篩選，每筆帶 `is_read`／`read_at` |
+| GET | `/me/stream/unread-counts` | 總未讀數與各已訂閱來源的未讀數 |
 | GET | `/me/bookmarks` | 收藏 / 稍後讀（依 `bookmark_type`） |
 | POST | `/me/bookmarks` | 加入收藏（204） |
 | DELETE | `/me/bookmarks/{article_id}` | 移除收藏（204） |
@@ -310,7 +315,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/recommendations` | `recommendations` |
 | `/discover` | `discover` |
 | `/login` | `login` |
-| `/me/feeds` | `my-feeds` |
+| `/me/stream` | `reading-stream`（主要閱讀入口——聚合所有已訂閱來源的文章時間流，見下）|
+| `/me/feeds` | `my-feeds`（來源管理：訂閱清單、OPML；不再是主要閱讀入口）|
 | `/me/bookmarks` | `bookmarks` |
 | `**` | 轉回 `/` |
 
@@ -367,7 +373,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at` |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）|
 | `user_feeds` | 002 | 訂閱關係 |
-| `user_article_reads` | 002 | 已讀回報 |
+| `user_article_reads` | 002 | 已讀回報。一列的存在即代表「已讀」，`DELETE` 即「標為未讀」——沒有另外的已讀/未讀狀態欄位或新表。`GET /me/stream` 的 `is_read`／`GET /me/reads` 都直接查這張表 |
 | `user_bookmarks` | 002 | 收藏 / 稍後讀（`bookmark_type` 區分） |
 | `user_preferences` | 002 | `preferred_categories` / `preferred_languages` |
 | `discovery_targets` | 006 | 待探測佇列。`url` UNIQUE（不是 host —— 一個站可以有多個 feed），`host` 另建索引供去重；`status` / `attempts` / `next_probe_at` / `referring_feed_count` |
@@ -378,6 +384,26 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 
 Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
 （不建新表）：供 `routers/recommendations.py` 以 `ORDER BY random()` 抽樣候選池，見上方第 2 節。
+
+Migration 013（我的閱讀流，不建新表——「已讀」仍是 `user_article_reads` 一列存在與否）另外定義三個
+DB function，供 `routers/me.py` 的 `/me/stream*`、`/me/reads/mark-all` 呼叫：
+
+- `list_reading_stream(p_user_id, p_feed_id, p_unread_only, p_cursor_sort_at, p_cursor_id, p_limit)`——
+  跨 `user_feeds` 聚合每個已訂閱來源的 `articles`，LEFT JOIN `user_article_reads` 帶出 `is_read`／
+  `read_at`，keyset （非 offset）分頁。排序鍵是 `COALESCE(published_at, fetched_at) DESC, id DESC`：
+  未解析出 `published_at` 的文章改用 `fetched_at` 排序，避免落在 Postgres `DESC` 預設的
+  `NULLS FIRST` 而使未定期文章卡在最前面、也讓 cursor 比較不必特別處理 NULL。
+- `reading_stream_unread_counts(p_user_id)`——每個已訂閱來源的未讀數（含 0），LEFT JOIN 而非
+  anti-join，所以「已讀完」的來源仍會出現、只是計數是 0；`GET /me/stream/unread-counts` 加總即為
+  總未讀數。
+- `mark_reading_stream_read(p_user_id, p_feed_id, p_before)`——伺服器端一次性 `INSERT ... SELECT ...
+  ON CONFLICT DO NOTHING`，供「明確範圍全部標已讀」用（單一來源／指定時間之前／兩者皆空即整個
+  閱讀流），不必先把符合的 article id 全部撈回 Python 再逐筆 upsert。
+
+三者都是 `SECURITY INVOKER`（沿用本專案「不使用 SECURITY DEFINER」的既有原則），EXECUTE 只授權
+`service_role`，與 `sample_feed_candidates`／`list_feed_categories` 同一套鎖法——後端一律經
+`service_role` client 呼叫並顯式帶入 `user_id`，隔離仍在應用層，不是 RLS + user-scoped JWT
+（Phase 0 尚待完成項）。
 
 RLS：四張 `user_*` 表為 permanent-user owner-only policy（002；同時檢查 `auth.uid()` 與
 JWT `is_anonymous = false`）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。
@@ -395,7 +421,12 @@ read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key
 `discovery_targets(host)`、`discovery_targets(status)`、
 `discovery_candidates(referring_feed_count DESC, discovered_at DESC) WHERE status='pending'`（partial，供審核佇列）、
 `discovery_candidates(status)`、`discovery_candidates(target_id)`、
-`discovery_target_referrers(feed_id)`、`discovery_sources(next_harvest_at) WHERE enabled`。
+`discovery_target_referrers(feed_id)`、`discovery_sources(next_harvest_at) WHERE enabled`、
+`user_article_reads(user_id, read_at DESC, article_id DESC)`（012，供 `GET /me/reads` 的 keyset
+分頁）、`articles(feed_id, published_at DESC)`（012）、`articles(feed_id, fetched_at DESC)`（013，
+`list_reading_stream`／`mark_reading_stream_read` 在未解析出 `published_at` 而落到 `fetched_at`
+排序/篩選時使用；`user_feeds` 與 `user_article_reads` 既有的複合主鍵已經覆蓋這兩張表在閱讀流查詢
+中的存取模式，不需要另外的 index）。
 
 清理待探測佇列（終態列可安全刪除 —— 候選是 `ON DELETE SET NULL`，審核歷史不受影響）：
 
