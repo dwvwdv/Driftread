@@ -30,4 +30,8 @@ export class FeedService {
   getCategories(): Observable<string[]> {
     return this.http.get<string[]>(`${this.base}/feeds/categories`);
   }
+
+  getLanguages(): Observable<string[]> {
+    return this.http.get<string[]>(`${this.base}/feeds/languages`);
+  }
 }

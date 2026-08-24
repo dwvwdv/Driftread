@@ -79,7 +79,9 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 - [ ] Feed tag 改為可點擊篩選。
 - [ ] Feed 目錄加入 language、category、tag 的組合篩選。
-- [ ] 建立偏好設定 UI，接上既有 `getPreferences()`／`updatePreferences()`。
+- [x] 建立偏好設定 UI，接上既有 `getPreferences()`／`updatePreferences()`。
+      （`frontend/src/app/components/preferences`，`/me/preferences`；分類／語言選項各自來自
+      `GET /feeds/categories`／新增的 `GET /feeds/languages`（migration 014），不是寫死清單）
 - [ ] 使用受控 category/tag vocabulary，處理同義詞、大小寫與多語標籤。
 - [ ] 清楚區分來源標籤、使用者自訂資料夾與推薦偏好，避免三者混用。
 

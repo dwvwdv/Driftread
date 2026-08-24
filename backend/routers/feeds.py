@@ -48,6 +48,12 @@ async def list_categories(db: Client = Depends(get_client)) -> list[str]:
     return [row["category"] for row in result.data]
 
 
+@router.get("/languages", response_model=list[str])
+async def list_languages(db: Client = Depends(get_client)) -> list[str]:
+    result = db.rpc("list_feed_languages", {}).execute()
+    return [row["language"] for row in result.data]
+
+
 @router.get("/{feed_id}", response_model=FeedWithArticles)
 async def get_feed(feed_id: UUID, db: Client = Depends(get_client)) -> FeedWithArticles:
     result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()

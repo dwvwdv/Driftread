@@ -624,3 +624,33 @@ Discover 與「猜你喜歡」都沒有訂閱入口，也沒有任何地方能�
   動（Pydantic model 型別、純 additive 的 index migration）做語法檢查與人工重讀。
 - 對應文件更新：`docs/FEATURES.md` 第 5 節（索引清單補 012／013 兩條，先前也漏了 012）、
   `TODO.md`（本節五個項目打勾／補說明）。
+
+## 階段二十三：偏好設定 UI（2026-08-24）
+
+TODO.md「P1：偏好、推薦與內容探索」的「建立偏好設定 UI，接上既有 `getPreferences()`／
+`updatePreferences()`」——後端與 frontend service 早已存在（`routers/me.py` 的
+`GET`/`PUT /me/preferences`、`services/me.ts` 的 `getPreferences()`/`updatePreferences()`），
+只是沒有頁面可以呼叫它們。
+
+- **`backend/migrations/014_feed_languages_rpc.sql`**：新增 `driftread.list_feed_languages()`，
+  仿照 migration 011 的 `list_feed_categories()`——db-side `DISTINCT`、`REVOKE ALL FROM PUBLIC,
+  anon, authenticated`，只有 service_role 能 `EXECUTE`。`routers/feeds.py` 新增
+  `GET /feeds/languages`，回傳型別與既有的 `GET /feeds/categories` 一致（`list[str]`）。
+- **`frontend/src/app/components/preferences`**（新元件，`/me/preferences`）：分類與語言各自
+  以 `ob-chip` 呈現成可複選的 toggle 清單，選項來自 `GET /feeds/categories` /
+  `GET /feeds/languages`（實際目錄的詞彙，不是寫死的清單），已選狀態載入自
+  `GET /me/preferences`，按「儲存偏好」呼叫 `PUT /me/preferences`。沿用
+  `bookmarks`/`my-feeds` 既有的「依 `auth.session()` 的 user id 判斷是否已載入」`effect()`
+  寫法，避免 `AuthService` 還原 session 前就用空清單渲染。導覽列帳號選單與行動版抽屜都加上
+  「偏好設定」連結，排在「收藏」之後。
+- **不做的部分**：受控 category/tag vocabulary（同義詞、大小寫、多語標籤正規化）與推薦理由顯示
+  是 TODO.md 同一節底下的獨立項目，留給各自的後續 PR；這批只接上既有的兩個欄位。
+- **測試**：`backend/tests/test_feeds.py` 新增 `test_list_languages_uses_db_side_dedup`，比照
+  既有的 `test_list_categories_uses_db_side_dedup`。`frontend/.../preferences.spec.ts` 覆蓋
+  選項與已選狀態載入、toggle 的 immutable 更新、儲存成功/失敗的 toast 與 `saving()` 狀態。
+- **本 sandbox 的已知限制**：`npm ci` 仍卡在 `zod-to-json-schema` 那條依賴鏈（403），
+  `pip install pytest` 也被 PyPI allowlist 擋下，backend／frontend 測試都無法在本機實際執行，
+  與階段二十一、二十二遇到的限制相同；已用 `python3 -m py_compile` 過 backend 改動、系統 `tsc`
+  （`--ignoreConfig --noResolve`，僅語法檢查）過 frontend 改動，交給 CI 實際跑過驗證。
+- 對應文件更新：`docs/FEATURES.md`（API 端點、DB function、前端路由）、`TODO.md`
+  （「建立偏好設定 UI」打勾）。

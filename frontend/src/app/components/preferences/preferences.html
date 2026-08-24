@@ -1,0 +1,68 @@
+@if (!auth.session()) {
+  <ob-empty message="請先登入才能設定偏好。">
+    <a class="ob-btn ob-btn--primary" routerLink="/login">前往登入</a>
+  </ob-empty>
+} @else {
+  <ob-page-header
+    kicker="PREFERENCES"
+    heading="偏好設定"
+    subtitle="影響「猜你喜歡」的分類與語言權重"
+  />
+
+  @if (loading()) {
+    <ob-loading label="讀取中" />
+  } @else {
+    <section class="group">
+      <h2 class="ob-label">分類</h2>
+      @if (categoryOptions().length === 0) {
+        <p class="empty-hint">目前沒有任何分類。</p>
+      } @else {
+        <div class="chips">
+          @for (category of categoryOptions(); track category) {
+            <button
+              type="button"
+              class="ob-chip"
+              [class.ob-chip--success]="selectedCategories().has(category)"
+              [attr.aria-pressed]="selectedCategories().has(category)"
+              (click)="toggleCategory(category)"
+            >
+              {{ category }}
+            </button>
+          }
+        </div>
+      }
+    </section>
+
+    <section class="group">
+      <h2 class="ob-label">語言</h2>
+      @if (languageOptions().length === 0) {
+        <p class="empty-hint">目前沒有任何語言。</p>
+      } @else {
+        <div class="chips">
+          @for (language of languageOptions(); track language) {
+            <button
+              type="button"
+              class="ob-chip"
+              [class.ob-chip--success]="selectedLanguages().has(language)"
+              [attr.aria-pressed]="selectedLanguages().has(language)"
+              (click)="toggleLanguage(language)"
+            >
+              {{ language }}
+            </button>
+          }
+        </div>
+      }
+    </section>
+
+    <div class="actions">
+      <button
+        type="button"
+        class="ob-btn ob-btn--primary"
+        [disabled]="saving()"
+        (click)="save()"
+      >
+        {{ saving() ? '儲存中…' : '儲存偏好' }}
+      </button>
+    </div>
+  }
+}
