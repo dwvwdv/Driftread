@@ -4,7 +4,7 @@ import { MeService } from '../../services/me';
 import { FeedService } from '../../services/feed';
 import { AuthService } from '../../services/auth';
 import { apiMessage } from '../../shared/http-errors';
-import { ObLoading, ObEmpty } from '../../ui/state/state';
+import { ObLoading, ObEmpty, ObError } from '../../ui/state/state';
 import { ObPageHeader } from '../../ui/page-header/page-header';
 import { ToastService } from '../../ui/toast/toast';
 
@@ -22,7 +22,7 @@ import { ToastService } from '../../ui/toast/toast';
 @Component({
   selector: 'app-preferences',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, ObLoading, ObEmpty, ObPageHeader],
+  imports: [RouterLink, ObLoading, ObEmpty, ObError, ObPageHeader],
   templateUrl: './preferences.html',
   styleUrl: './preferences.scss',
 })
@@ -34,6 +34,15 @@ export class Preferences {
 
   loading = signal(false);
   saving = signal(false);
+  /**
+   * Set only when GET /me/preferences itself fails — not when the catalog
+   * options fail (those degrade to an empty chip list + a toast, since they
+   * aren't destructive). While this is set, the template renders `ob-error`
+   * instead of the form: the alternative is showing an editable, save-enabled
+   * form seeded with two empty Sets, where clicking "儲存偏好" would silently
+   * overwrite the reader's real preferences with an empty selection.
+   */
+  error = signal<string | null>(null);
 
   categoryOptions = signal<string[]>([]);
   languageOptions = signal<string[]>([]);
@@ -42,6 +51,16 @@ export class Preferences {
 
   /** User id the options + current preferences have already been loaded for. */
   private loadedFor: string | null = null;
+
+  /**
+   * Bumped by every load() call. A response is only applied if its captured
+   * generation still matches — otherwise a slower response from a load kicked
+   * off for a previous account (or a stale manual retry) could land after a
+   * newer load already started, and overwrite the new account's selections
+   * with the old one's. Same pattern ReadingStreamService uses for its own
+   * item/count generations.
+   */
+  private loadGeneration = 0;
 
   constructor() {
     // Same reason as bookmarks/my-feeds: AuthService restores the persisted
@@ -60,46 +79,51 @@ export class Preferences {
   }
 
   load(): void {
+    const generation = ++this.loadGeneration;
     this.loading.set(true);
+    this.error.set(null);
+
     // Options and the saved selection are independent reads; run them
     // together rather than chaining, since neither depends on the other's
     // result.
     let pending = 3;
     const done = () => {
       pending -= 1;
-      if (pending === 0) this.loading.set(false);
+      if (pending === 0 && generation === this.loadGeneration) this.loading.set(false);
     };
 
     this.feedService.getCategories().subscribe({
       next: (categories) => {
-        this.categoryOptions.set(categories);
+        if (generation === this.loadGeneration) this.categoryOptions.set(categories);
         done();
       },
       error: (e: unknown) => {
-        this.toast.danger(apiMessage(e, '無法載入分類清單'));
+        if (generation === this.loadGeneration) this.toast.danger(apiMessage(e, '無法載入分類清單'));
         done();
       },
     });
 
     this.feedService.getLanguages().subscribe({
       next: (languages) => {
-        this.languageOptions.set(languages);
+        if (generation === this.loadGeneration) this.languageOptions.set(languages);
         done();
       },
       error: (e: unknown) => {
-        this.toast.danger(apiMessage(e, '無法載入語言清單'));
+        if (generation === this.loadGeneration) this.toast.danger(apiMessage(e, '無法載入語言清單'));
         done();
       },
     });
 
     this.me.getPreferences().subscribe({
       next: (prefs) => {
-        this.selectedCategories.set(new Set(prefs.preferred_categories));
-        this.selectedLanguages.set(new Set(prefs.preferred_languages));
+        if (generation === this.loadGeneration) {
+          this.selectedCategories.set(new Set(prefs.preferred_categories));
+          this.selectedLanguages.set(new Set(prefs.preferred_languages));
+        }
         done();
       },
       error: (e: unknown) => {
-        this.toast.danger(apiMessage(e, '無法載入偏好設定'));
+        if (generation === this.loadGeneration) this.error.set(apiMessage(e, '無法載入偏好設定'));
         done();
       },
     });

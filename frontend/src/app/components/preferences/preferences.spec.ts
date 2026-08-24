@@ -52,6 +52,51 @@ describe('Preferences', () => {
     return fixture.componentInstance;
   }
 
+  /**
+   * Like setup(), but GET /me/preferences returns a fresh Subject per call
+   * (`prefsCalls[n]`) instead of a fixed value, so a test can resolve two
+   * overlapping load() calls out of order.
+   */
+  function setupControlled() {
+    const prefsCalls: Subject<UserPreferences>[] = [];
+    updateCall = new Subject<UserPreferences>();
+    toast = {
+      info: vi.fn(),
+      danger: vi.fn(),
+      success: vi.fn(),
+      warning: vi.fn(),
+    };
+
+    const me = {
+      getPreferences: () => {
+        const call = new Subject<UserPreferences>();
+        prefsCalls.push(call);
+        return call;
+      },
+      updatePreferences: () => updateCall,
+    };
+    const feedService = {
+      getCategories: () => of(['News', 'Tech']),
+      getLanguages: () => of(['en', 'zh-TW']),
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [Preferences],
+      providers: [
+        provideRouter([]),
+        { provide: AuthService, useValue: { session: () => ({ user: { id: 'user-1' } }) } },
+        { provide: MeService, useValue: me },
+        { provide: FeedService, useValue: feedService },
+        { provide: ToastService, useValue: toast },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(Preferences);
+    fixture.detectChanges(); // triggers the constructor effect's initial load() -> prefsCalls[0]
+    return { page: fixture.componentInstance, prefsCalls };
+  }
+
   it('loads catalog options and the saved selection', () => {
     const page = setup({ preferred_categories: ['Tech'], preferred_languages: ['en'] });
 
@@ -105,5 +150,33 @@ describe('Preferences', () => {
 
     expect(page.saving()).toBe(false);
     expect(toast.danger).toHaveBeenCalled();
+  });
+
+  it('ignores a stale preferences response once a newer load has started', () => {
+    const { page, prefsCalls } = setupControlled();
+    // prefsCalls[0] is the constructor effect's initial load(), still in flight.
+
+    page.load(); // generation 2 — e.g. a manual retry, or an account switch.
+
+    // The older request finally resolves after the newer one already started.
+    prefsCalls[0].next({ preferred_categories: ['OLD'], preferred_languages: [] });
+    expect(page.selectedCategories().has('OLD')).toBe(false);
+
+    prefsCalls[1].next({ preferred_categories: ['NEW'], preferred_languages: [] });
+    expect(page.selectedCategories().has('NEW')).toBe(true);
+  });
+
+  it('shows a retryable error instead of the form when preferences fail to load', () => {
+    const { page, prefsCalls } = setupControlled();
+
+    prefsCalls[0].error(new Error('boom'));
+
+    // The form (and its save button) must stay hidden behind the error state —
+    // otherwise a click on "儲存偏好" would PUT the two empty default Sets
+    // over the reader's real saved preferences.
+    expect(page.loading()).toBe(false);
+    expect(page.error()).toBeTruthy();
+    expect(page.selectedCategories().size).toBe(0);
+    expect(page.selectedLanguages().size).toBe(0);
   });
 });

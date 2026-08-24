@@ -11,6 +11,10 @@
 
   @if (loading()) {
     <ob-loading label="讀取中" />
+  } @else if (error()) {
+    <ob-error [message]="error()">
+      <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="load()">重試</button>
+    </ob-error>
   } @else {
     <section class="group">
       <h2 class="ob-label">分類</h2>
