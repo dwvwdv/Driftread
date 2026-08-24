@@ -624,3 +624,29 @@ Discover 與「猜你喜歡」都沒有訂閱入口，也沒有任何地方能�
   動（Pydantic model 型別、純 additive 的 index migration）做語法檢查與人工重讀。
 - 對應文件更新：`docs/FEATURES.md` 第 5 節（索引清單補 012／013 兩條，先前也漏了 012）、
   `TODO.md`（本節五個項目打勾／補說明）。
+
+## 階段二十三：部署／回滾 runbook，GHCR image 補 commit sha tag（2026-08-24）
+
+- **新增 `docs/RUNBOOK.md`**：對照 `TODO.md`「補上升級與回滾 runbook，特別記錄 schema
+  exposure、grant、RLS 與 runtime config 的部署順序」這條，寫一份給實際操作
+  `docker-compose.yml` 的人看的操作手冊——一般部署四步、會動到 Supabase Dashboard
+  Exposed Schemas／grant 的部署要先後順序（Dashboard 手動步驟必須先於帶新 migration 的
+  `api` image 部署，理由是反過來的話 API 對新 schema／表的請求會直接壞掉而非優雅降級）、
+  migration 010 保留的 `public._migrations` 相容 view 何時能安全移除、以及環境變數檢查
+  指到 `CLAUDE.md` 既有的三處同步規則。
+- **意外發現並修掉的缺口**：寫回滾章節時發現 `.github/workflows/{backend,frontend}.yml`
+  的 `docker/build-push-action` 只打 `:latest` 一個 tag——這代表「回滾」在此之前根本沒有
+  對應的 image 可指，只能等一次新的、修好的部署把 `:latest` 蓋掉。兩個 workflow 都加上
+  `sha-${{ github.sha }}` 第二個 tag（`docker/build-push-action` 的 `tags:` 本來就支援多行
+  多個 tag），永久保留、不會被覆寫，回滾 runbook 因此有真的可以操作的步驟：改
+  `docker-compose.yml` 三個 `image:` 欄位指到 `:sha-<sha>`。
+- **TODO.md 盤點**：連帶重讀「Migration 與部署」整節時發現兩條已經做了但沒打勾——
+  migration runner 的 PostgreSQL advisory lock（`migrate.py::acquire_migration_lock`，
+  `run_backfills()` 也共用同一把）、以及 migration／backfill 的可追蹤可重試狀態（兩者都記在
+  `driftread._migrations`，成功才 commit，重跑會跳過已套用項目）——都補上勾。
+- 本 sandbox 沒有網路能跑 `actions/lint` 之類的工具驗證 workflow YAML，用系統已有的
+  PyYAML（`python3 -c "import yaml; yaml.safe_load(...)"`）對兩個改動過的 workflow 檔案
+  各跑一次 `safe_load` 確認語法正確；多行 `tags:` 寫法本身沿用
+  `docker/build-push-action@v6` 官方文件既有的用法。
+- 對應文件更新：`docs/FEATURES.md` 第 7 節（部署列補 sha tag 與 RUNBOOK 連結）、
+  `TODO.md`（「Migration 與部署」四項打勾／補說明）。

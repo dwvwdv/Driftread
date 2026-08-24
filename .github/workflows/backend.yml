@@ -62,4 +62,6 @@ jobs:
         with:
           context: ./backend
           push: ${{ github.event_name == 'push' }}
-          tags: ghcr.io/dwvwdv/driftread-api:latest
+          tags: |
+            ghcr.io/dwvwdv/driftread-api:latest
+            ghcr.io/dwvwdv/driftread-api:sha-${{ github.sha }}
