@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints
@@ -165,6 +165,19 @@ class RefreshDueSummary(BaseModel):
     failed: int
     archived: int
     new_articles: int
+
+
+class FeedRefreshResult(BaseModel):
+    """Response for a single manual feed refresh.
+
+    `inserted` keeps its original rows-touched meaning — the browser
+    extension and any external scripts already read this field name.
+    """
+    inserted: int
+    feed_id: UUID
+    status: Literal["updated", "not_modified", "failed"]
+    new_articles: int
+    total_articles: int | None = None
 
 
 class FeedHealthSummary(BaseModel):

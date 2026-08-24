@@ -176,6 +176,7 @@ def test_refresh_feed_success_keeps_inserted_key(client):
     assert body["new_articles"] == 4      # count delta 5 - 1
     assert body["total_articles"] == 5
     assert body["feed_id"] == str(feed_id)
+    assert body["status"] == "updated"
 
 
 def test_import_feeds_marks_new_feeds_due(client):

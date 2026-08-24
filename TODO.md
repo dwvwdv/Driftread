@@ -138,12 +138,23 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 ### API 與查詢
 
 - [x] `GET /me/reads` 加入 cursor pagination、limit 上限與穩定排序。
-- [ ] Bookmark 列表只回傳列表所需摘要，不回傳完整 `Article.content`。
-- [ ] `GET /categories` 改由 SQL `DISTINCT`／RPC 聚合，不把所有 Feed 拉回 Python 去重。
+- [x] Bookmark 列表只回傳列表所需摘要，不回傳完整 `Article.content`。
+      （`routers/me.py::list_bookmarks` 已回傳 `ArticleSummary`，DB 端也只 select 摘要欄位；
+      `test_list_bookmarks_omits_article_content` 已覆蓋，這裡先前只是漏勾）
+- [x] `GET /categories` 改由 SQL `DISTINCT`／RPC 聚合，不把所有 Feed 拉回 Python 去重。
+      （`driftread.list_feed_categories()`，見 migration 011，`routers/feeds.py` 用 `db.rpc(...)` 呼叫，
+      這裡也是先前漏勾）
 - [ ] 推薦候選移除大表 `ORDER BY random()`，改用 indexed random key、pivot sampling 或可擴充的抽樣策略。
-- [ ] 為常用的 subscription、read receipt、bookmark、feedback 查詢補齊複合 index。
+- [x] 為常用的 subscription、read receipt、bookmark、feedback 查詢補齊複合 index。
+      （`user_feeds` 靠 PK 前導欄位已足夠；`user_article_reads` 見 migration 012；
+      `user_bookmarks` 新增 migration 013：`(user_id, bookmark_type, created_at DESC)`，
+      滿足 `GET /me/bookmarks` 的等值篩選加 `ORDER BY created_at DESC`。
+      feedback 資料表本身尚未建立，見下方「推薦回饋持久化」，屆時一併補 index）
 - [ ] 對 PostgREST／database 例外建立一致的 API error mapping，避免裸 500。
-- [ ] 為單一 Feed 手動 refresh 固定 response contract，測試不得依賴真實 DNS。
+- [x] 為單一 Feed 手動 refresh 固定 response contract，測試不得依賴真實 DNS。
+      （測試本來就已 mock `fetch_and_parse_conditional`，不打真實網路；
+      response contract 部分新增 `FeedRefreshResult` Pydantic model，取代原本的 `response_model=dict`，
+      欄位名稱與既有外部合約（`inserted` 等）保持不變）
 
 ### Migration 與部署
 

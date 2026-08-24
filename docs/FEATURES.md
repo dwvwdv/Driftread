@@ -390,7 +390,11 @@ read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key
 `feeds(next_fetch_at) WHERE archived_at IS NULL`（partial，供到期佇列）、
 `feeds(next_harvest_at) WHERE archived_at IS NULL`（partial，供收割佇列）、`articles(feed_id)`、
 `articles(published_at DESC)`、`user_feeds(user_id)`、`user_feeds(feed_id)`、
-`user_article_reads(user_id)`、`user_bookmarks(user_id, bookmark_type)`、
+`user_article_reads(user_id)`、
+`user_article_reads(user_id, read_at DESC, article_id DESC)`（012，供 `GET /me/reads` 的 keyset pagination）、
+`user_bookmarks(user_id, bookmark_type)`、
+`user_bookmarks(user_id, bookmark_type, created_at DESC)`（013，供 `GET /me/bookmarks` 的
+`ORDER BY created_at DESC` 免額外排序）、
 `discovery_targets(referring_feed_count DESC, next_probe_at) WHERE status='pending'`（partial，供探測佇列）、
 `discovery_targets(host)`、`discovery_targets(status)`、
 `discovery_candidates(referring_feed_count DESC, discovered_at DESC) WHERE status='pending'`（partial，供審核佇列）、

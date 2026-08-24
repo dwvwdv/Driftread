@@ -595,3 +595,32 @@ Discover 與「猜你喜歡」都沒有訂閱入口，也沒有任何地方能�
   交給 CI 實際跑過；已用人工重讀全部改動檔案一遍。
 - 對應文件更新：`docs/FEATURES.md` 第 1 節、第 7 節（新增 Frontend 測試列）、`TODO.md`
   （批次 3 打勾，勾掉 frontend CI 補跑單元測試那條）。
+
+## 階段二十二：手動 refresh response contract、bookmarks 複合 index（2026-08-19）
+
+- **`POST /admin/feeds/{feed_id}/refresh` 補上型別化 response model**：原本
+  `response_model=dict`，回傳的 dict 完全沒有欄位驗證與 OpenAPI schema。新增
+  `models.py::FeedRefreshResult`（`inserted` / `feed_id` / `status` / `new_articles` /
+  `total_articles`），沿用既有欄位名稱與語意——`inserted` 這個名字本身就是既有外部合約（瀏覽器
+  擴充與外部腳本會讀），沒有改名。`status` 收斂成 `Literal["updated", "not_modified", "failed"]`，
+  對齊 `services/feed_refresh.py::Status` 本來就有的型別。既有測試
+  `test_refresh_feed_success_keeps_inserted_key` 不需要改動斷言就能通過，額外補了一條
+  `status` 欄位的斷言。這條路由原本的測試就已經用 `patch()` 蓋掉
+  `fetch_and_parse_conditional`，沒有打過真實網路，TODO.md 那條「測試不得依賴真實 DNS」其實
+  早就成立，這次一併打勾。
+- **`user_bookmarks` 補複合 index**：migration 013 新增
+  `user_bookmarks_user_type_created_idx (user_id, bookmark_type, created_at DESC)`。
+  `GET /me/bookmarks` 的查詢型態是 `.eq(user_id).eq(bookmark_type).order(created_at desc)`，
+  既有的 `user_bookmarks_user_type_idx (user_id, bookmark_type)` 只覆蓋兩個等值篩選，
+  `ORDER BY` 仍要另外排序；新 index 讓整條查詢一次索引掃描就能滿足，做法比照 migration 012
+  幫 `user_article_reads` 補 keyset index 的先例——保留舊 index，只新增，不做風險較高的欄位替換。
+- **`TODO.md` 補打勾**：盤點「技術與可靠性優化」整節時發現 `GET /me/bookmarks` 只回傳
+  `ArticleSummary`（PR #37 就做了）、`GET /categories` 已經是 SQL 端 `DISTINCT` RPC
+  （`driftread.list_feed_categories()`，migration 011）都是先前漏勾，一併補上；
+  `user_feeds` / `user_article_reads` 的複合 index 現況也一併記錄——`user_feeds` 查詢只有
+  單一等值篩選，PK 前導欄位已經夠用，不需要額外 index。
+- 本 sandbox 的 pip index allowlist 卡在同一類限制（`pip install -r requirements.txt` 連
+  `pytest` 都裝不出來），無法在本機跑 `pytest`，交給 CI 的 `backend.yml` 實際跑過；已對兩處改
+  動（Pydantic model 型別、純 additive 的 index migration）做語法檢查與人工重讀。
+- 對應文件更新：`docs/FEATURES.md` 第 5 節（索引清單補 012／013 兩條，先前也漏了 012）、
+  `TODO.md`（本節五個項目打勾／補說明）。
