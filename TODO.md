@@ -158,10 +158,19 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### Migration 與部署
 
-- [ ] migration runner 加 PostgreSQL advisory lock，避免多個 API replica 同時競跑。
-- [ ] migration／backfill 各自具備可追蹤、可安全重試的狀態。
-- [ ] 補上升級與回滾 runbook，特別記錄 schema exposure、grant、RLS 與 runtime config 的部署順序。
+- [x] migration runner 加 PostgreSQL advisory lock，避免多個 API replica 同時競跑。
+      （`migrate.py::acquire_migration_lock`，`pg_advisory_lock`，`run_backfills()` 共用
+      同一把鎖——這裡先前也是漏勾）
+- [x] migration／backfill 各自具備可追蹤、可安全重試的狀態。
+      （兩者都記在同一張 `driftread._migrations`：套用成功才 commit，重跑會先查表跳過已套用的
+      項目，先前也是漏勾）
+- [x] 補上升級與回滾 runbook，特別記錄 schema exposure、grant、RLS 與 runtime config 的部署順序。
+      （新增 `docs/RUNBOOK.md`；順便發現 GHCR image 過去只打 `:latest` tag、沒有任何可回滾的
+      版本化 tag，一併把 `.github/workflows/{backend,frontend}.yml` 改成同時打
+      `sha-<commit sha>`，回滾 runbook 才有真的能操作的步驟）
 - [ ] backend Python dependencies 改為可重現安裝：鎖定版本或提交 lockfile，避免只寫無上限的最低版本。
+      （本 sandbox 的 pip index allowlist 擋掉 PyPI，無法在本機解析版本產生真的 lockfile，
+      留給有網路的環境做）
 - [ ] 定期檢查 Supabase changelog 與 auth／Data API breaking changes。
 
 ### Auth 與安全
