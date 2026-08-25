@@ -468,7 +468,7 @@ DELETE FROM discovery_targets
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
 | 測試 | Backend：pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試）。Frontend：Vitest（`@angular/build:unit-test`，jsdom，無需瀏覽器），`*.spec.ts` 與被測檔同目錄；`frontend.yml` 的 Build job 在 `npm run build` 前先跑 `npm test` |
-| 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理 |
+| 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理。每個 image 同時打 `:latest` 與 `:sha-<commit sha>` 兩個 tag，供回滾指定版本用，見 `docs/RUNBOOK.md` |
 
 `worker` 容器跑兩個獨立迴圈（refresh 與 discovery），共用同一個 event loop 與同一個 stop
 event，各有自己的開關與 tick。兩者皆停用時 worker 記一行 log 後 exit 0（`restart: on-failure`
