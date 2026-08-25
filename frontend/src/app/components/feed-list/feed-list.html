@@ -28,12 +28,31 @@
     </select>
   </label>
 
+  <label class="language">
+    <span class="ob-visually-hidden">語言</span>
+    <select class="ob-select" name="language" [(ngModel)]="language" (change)="onSearch()">
+      <option value="">全部語言</option>
+      @for (l of languages(); track l) {
+        <option [value]="l">{{ l }}</option>
+      }
+    </select>
+  </label>
+
   <button type="submit" class="ob-btn ob-btn--primary">搜尋</button>
 
   @if (hasFilters) {
     <button type="button" class="ob-btn ob-btn--subtle" (click)="clearFilters()">清除條件</button>
   }
 </form>
+
+@if (tag) {
+  <p class="tag-filter">
+    標籤篩選：
+    <button type="button" class="ob-chip ob-chip--success" (click)="filterByTag(tag)">
+      {{ tag }}
+    </button>
+  </p>
+}
 
 @if (loading()) {
   <ob-loading label="讀取信息源中" />
@@ -93,8 +112,18 @@
 
         @if (feed.tags.length) {
           <ul class="tags">
-            @for (tag of feed.tags; track tag) {
-              <li class="ob-chip">{{ tag }}</li>
+            @for (t of feed.tags; track t) {
+              <li>
+                <button
+                  type="button"
+                  class="ob-chip"
+                  [class.ob-chip--success]="t === tag"
+                  [attr.aria-pressed]="t === tag"
+                  (click)="filterByTag(t)"
+                >
+                  {{ t }}
+                </button>
+              </li>
             }
           </ul>
         }

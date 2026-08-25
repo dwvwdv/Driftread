@@ -58,7 +58,11 @@ describe('FeedList quick-subscribe', () => {
         provideRouter([]),
         {
           provide: FeedService,
-          useValue: { getFeeds: () => of(page), getCategories: () => of([]) },
+          useValue: {
+            getFeeds: () => of(page),
+            getCategories: () => of([]),
+            getLanguages: () => of([]),
+          },
         },
         { provide: SubscriptionService, useValue: subs },
         { provide: AuthService, useValue: { session: () => session } },
@@ -98,5 +102,82 @@ describe('FeedList quick-subscribe', () => {
     component.quickSubscribe(feed('a'));
 
     expect(subs.subscribeCalls).toEqual(['a']);
+  });
+});
+
+describe('FeedList combined category/language/tag filtering', () => {
+  let getFeedsCalls: unknown[][];
+
+  function setup() {
+    const page: PaginatedFeeds = { items: [feed('a')], total: 1, page: 1, page_size: 20 };
+    getFeedsCalls = [];
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FeedList],
+      providers: [
+        provideRouter([]),
+        {
+          provide: FeedService,
+          useValue: {
+            getFeeds: (...args: unknown[]) => {
+              getFeedsCalls.push(args);
+              return of(page);
+            },
+            getCategories: () => of([]),
+            getLanguages: () => of([]),
+          },
+        },
+        { provide: SubscriptionService, useValue: { isSubscribed: () => false, isPending: () => false } },
+        { provide: AuthService, useValue: { session: () => null } },
+        {
+          provide: ToastService,
+          useValue: { info: () => {}, danger: () => {}, success: () => {}, warning: () => {} },
+        },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(FeedList);
+    fixture.detectChanges();
+    return fixture.componentInstance;
+  }
+
+  it('sends the picked category, language and clicked tag to getFeeds', () => {
+    const component = setup();
+    getFeedsCalls = []; // drop the initial ngOnInit load
+
+    component.category = 'News';
+    component.language = 'en';
+    component.filterByTag('security');
+
+    // filterByTag itself triggers the reload — page, pageSize, category, language, tag, search.
+    expect(getFeedsCalls).toEqual([[1, 20, 'News', 'en', 'security', undefined]]);
+    expect(component.tag).toBe('security');
+  });
+
+  it('clicking the same tag again clears it (toggle)', () => {
+    const component = setup();
+
+    component.filterByTag('security');
+    expect(component.tag).toBe('security');
+
+    component.filterByTag('security');
+    expect(component.tag).toBe('');
+  });
+
+  it('counts language and tag towards hasFilters, and clearFilters resets both', () => {
+    const component = setup();
+
+    component.language = 'en';
+    expect(component.hasFilters).toBe(true);
+
+    component.language = '';
+    component.tag = 'security';
+    expect(component.hasFilters).toBe(true);
+
+    component.clearFilters();
+    expect(component.language).toBe('');
+    expect(component.tag).toBe('');
+    expect(component.hasFilters).toBe(false);
   });
 });
