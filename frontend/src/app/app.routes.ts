@@ -70,6 +70,12 @@ export const routes: Routes = [
         title: '收藏 — 漂流閱讀 Driftread',
         loadComponent: () => import('./components/bookmarks/bookmarks').then((m) => m.Bookmarks),
       },
+      {
+        path: 'me/preferences',
+        title: '偏好設定 — 漂流閱讀 Driftread',
+        loadComponent: () =>
+          import('./components/preferences/preferences').then((m) => m.Preferences),
+      },
     ],
   },
 

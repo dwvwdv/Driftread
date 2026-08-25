@@ -231,6 +231,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 |--------|------|------|
 | GET | `/feeds` | 列表；支援分頁、`category`、`tag`（單一 tag，對 `tags` 陣列做 contains）、`search`（`search` 上限 200 字） |
 | GET | `/feeds/categories` | 所有分類 |
+| GET | `/feeds/languages` | 所有語言（供偏好設定 UI 的語言選項） |
 | GET | `/feeds/{feed_id}` | feed 詳情 + 文章（不存在回 404） |
 | GET | `/feeds/{feed_id}/articles` | 該 feed 的文章分頁 |
 | GET | `/articles/{article_id}` | 單篇文章全文（不存在回 404） |
@@ -312,6 +313,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/login` | `login` |
 | `/me/feeds` | `my-feeds` |
 | `/me/bookmarks` | `bookmarks` |
+| `/me/preferences` | `preferences` |
 | `**` | 轉回 `/` |
 
 ### 後台（`AdminLayout`，`canMatch: [adminGuard]`）
@@ -378,6 +380,11 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 
 Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
 （不建新表）：供 `routers/recommendations.py` 以 `ORDER BY random()` 抽樣候選池，見上方第 2 節。
+
+Migration 011 / 014 分別定義 `list_feed_categories()` / `list_feed_languages()`（不建新表）：
+db-side dedup，供 `GET /feeds/categories`、`GET /feeds/languages` 與偏好設定 UI 使用。兩者皆
+`REVOKE ALL FROM PUBLIC, anon, authenticated`，只有 service_role 能 EXECUTE，同
+`sample_feed_candidates` 的鎖法。
 
 RLS：四張 `user_*` 表為 permanent-user owner-only policy（002；同時檢查 `auth.uid()` 與
 JWT `is_anonymous = false`）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。

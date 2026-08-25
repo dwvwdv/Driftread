@@ -39,3 +39,19 @@ def test_list_categories_uses_db_side_dedup(client):
     assert resp.json() == ["News", "Tech"]
     mock_db.rpc.assert_called_once_with("list_feed_categories", {})
     mock_db.table.assert_not_called()
+
+
+def test_list_languages_uses_db_side_dedup(client):
+    # Same shape as list_categories above, backed by list_feed_languages()
+    # (migration 014).
+    c, mock_db = client
+    mock_db.rpc.return_value.execute.return_value = MagicMock(
+        data=[{"language": "en"}, {"language": "zh-TW"}]
+    )
+
+    resp = c.get("/api/feeds/languages")
+
+    assert resp.status_code == 200
+    assert resp.json() == ["en", "zh-TW"]
+    mock_db.rpc.assert_called_once_with("list_feed_languages", {})
+    mock_db.table.assert_not_called()
