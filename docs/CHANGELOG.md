@@ -680,3 +680,38 @@ TODO.md「P1：偏好、推薦與內容探索」的「建立偏好設定 UI，�
   （`--ignoreConfig --noResolve`，僅語法檢查）過 frontend 改動，交給 CI 實際跑過驗證。
 - 對應文件更新：`docs/FEATURES.md`（API 端點、DB function、前端路由）、`TODO.md`
   （「建立偏好設定 UI」打勾）。
+
+## 階段二十五：Feed 目錄的語言篩選與可點擊標籤（2026-08-25）
+
+TODO.md「P1：標籤、語言與偏好設定」剩下的兩項——「Feed tag 改為可點擊篩選」與「Feed 目錄加入
+language、category、tag 的組合篩選」。`category`／`tag` 篩選、偏好設定 UI 的分類/語言 chip 都已
+存在，這批把兩者接起來：目錄頁補上語言篩選，卡片上的標籤本身也能點。
+
+- **`backend/routers/feeds.py`**：`GET /feeds` 新增 `language` 查詢參數，`query.eq("language",
+  language)`，與既有 `category`／`tag` 篩選同一種 `AND` 疊加寫法。`feeds` 表本來就有
+  `language` 欄位（`Feed` model 早已有），不需要新 migration；語言選項清單沿用階段二十四剛加的
+  `GET /feeds/languages`。
+- **`frontend/src/app/services/feed.ts`**：`getFeeds()` 簽名插入 `language` 參數（`page,
+  pageSize, category, language, tag, search`），唯一呼叫端 `feed-list.ts` 一併更新。
+- **`frontend/src/app/components/feed-list`**：
+  - 篩選列加一個語言 `<select>`，選項來自新增的 `loadLanguages()`（`getLanguages()`，失敗時
+    降級成「全部語言」而不擋頁面，與 `loadCategories()` 同一套容錯）。
+  - 卡片上的標籤從純文字 `<li class="ob-chip">` 改成 `<button class="ob-chip">`，點擊即以該
+    標籤篩選、再點一次清除（`filterByTag()`）——與偏好設定 UI 的 toggle chip 同一套寫法。目前
+    篩選中的標籤會反白（`ob-chip--success`），篩選列上方另外顯示一個可點擊清除的「標籤篩選：
+    ⟨tag⟩」提示。
+  - 標籤按鈕疊在卡片標題連結的 stretched `::after` 之上（`position: relative; z-index: 1`），
+    沿用 `.subscribe-btn`／`.subscribe-chip` 已有的做法，點擊標籤不會被卡片本身的導覽連結吃掉。
+  - `hasFilters`／`clearFilters()` 一併涵蓋 `language`／`tag`。
+- **測試**：`backend/tests/test_feeds.py` 新增 `test_list_feeds_filters_by_language`。
+  `frontend/.../feed-list.spec.ts` 新增一個 describe block：分類/語言/標籤三者一起送進
+  `getFeeds()`、點同一個標籤兩次會清除（toggle）、`hasFilters`／`clearFilters()` 涵蓋新欄位。
+- **不做的部分**：受控 category/tag vocabulary（同義詞、大小寫、多語標籤正規化）仍是 TODO.md
+  同一節底下的獨立項目；feed-detail／discover 頁面上的標籤目前維持純文字展示，沒有一併改成連回
+  目錄頁篩選的連結（`feed-list` 本身也還沒有 query-param 同步，留給需要深連結時的後續 PR）。
+- **本 sandbox 的已知限制**：`npm ci` 仍卡在 `zod-to-json-schema` 依賴鏈（403），
+  `pip install pytest` 被 PyPI allowlist 擋下，backend／frontend 測試都無法在本機實際執行，與
+  階段二十一至二十四相同；已用 `python3 -m py_compile` 過 backend 改動、系統 `tsc`
+  （`--ignoreConfig --noResolve`，僅語法檢查）過 frontend 改動，交給 CI 實際跑過驗證。
+- 對應文件更新：`docs/FEATURES.md`（`GET /feeds` 參數說明、信息源瀏覽功能列）、`TODO.md`
+  （兩項打勾，「建議開發批次」第 5 項改為進行中）。

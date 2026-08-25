@@ -28,9 +28,23 @@
   font-family: var(--font-mono);
 }
 
-.category .ob-select {
+.category .ob-select,
+.language .ob-select {
   width: auto;
   min-width: 160px;
+}
+
+.tag-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+
+  .ob-chip {
+    cursor: pointer;
+  }
 }
 
 .cards {
@@ -135,6 +149,15 @@
   flex-wrap: wrap;
   gap: var(--sp-1);
   list-style: none;
+
+  // Same reasoning as .subscribe-btn/.subscribe-chip above: raised above the
+  // title link's stretched ::after so each tag stays independently clickable
+  // instead of the whole card swallowing the click as a navigation.
+  button {
+    position: relative;
+    z-index: 1;
+    cursor: pointer;
+  }
 }
 
 .count {
@@ -151,7 +174,8 @@
     align-items: stretch;
   }
 
-  .category .ob-select {
+  .category .ob-select,
+  .language .ob-select {
     width: 100%;
   }
 }

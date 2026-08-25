@@ -41,6 +41,23 @@ def test_list_categories_uses_db_side_dedup(client):
     mock_db.table.assert_not_called()
 
 
+def test_list_feeds_filters_by_language(client):
+    # GET /feeds?language=... narrows the catalogue the same way category and
+    # tag already do — this pins the query.eq("language", ...) call so the
+    # combined category/language/tag filtering the frontend now offers has
+    # somewhere real to land.
+    c, mock_db = client
+    chain = mock_db.table.return_value.select.return_value.is_.return_value
+    chain.eq.return_value.range.return_value.order.return_value.execute.return_value = MagicMock(
+        data=[], count=0
+    )
+
+    resp = c.get("/api/feeds?language=en")
+
+    assert resp.status_code == 200
+    chain.eq.assert_called_once_with("language", "en")
+
+
 def test_list_languages_uses_db_side_dedup(client):
     # Same shape as list_categories above, backed by list_feed_languages()
     # (migration 014).

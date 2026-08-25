@@ -77,8 +77,13 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### 標籤、語言與偏好設定
 
-- [ ] Feed tag 改為可點擊篩選。
-- [ ] Feed 目錄加入 language、category、tag 的組合篩選。
+- [x] Feed tag 改為可點擊篩選。
+      （`frontend/src/app/components/feed-list`：分類卡片與作用中篩選列上的標籤都是
+      `<button class="ob-chip">`，點擊即以該標籤篩選，再點一次清除——與偏好設定 UI 的
+      toggle chip 同一套寫法）
+- [x] Feed 目錄加入 language、category、tag 的組合篩選。
+      （`GET /feeds` 新增 `language` 查詢參數，與既有 `category`／`tag` 一樣是 `AND` 疊加；
+      前端加一個語言 `<select>`，選項來自 `GET /feeds/languages`，與分類下拉同一套寫法）
 - [x] 建立偏好設定 UI，接上既有 `getPreferences()`／`updatePreferences()`。
       （`frontend/src/app/components/preferences`，`/me/preferences`；分類／語言選項各自來自
       `GET /feeds/categories`／新增的 `GET /feeds/languages`（migration 014），不是寫死清單）
@@ -206,7 +211,8 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       （runtime config 機制已實作，見上方「Runtime Supabase 設定」；真的容器 + 瀏覽器登入驗證尚未執行）
 3. [x] 訂閱 CTA、訂閱狀態與核心流程整合。
 4. [ ] 我的閱讀流、未讀數與已讀管理。
-5. [ ] 標籤／語言篩選、偏好設定與匯入後分類。
+5. [~] 標籤／語言篩選、偏好設定與匯入後分類。
+      （標籤／語言篩選與偏好設定 UI 已完成，見上方「標籤、語言與偏好設定」；匯入後自動分類尚未開始）
 6. [ ] 回饋持久化、可解釋推薦權重與推薦理由。
 7. [ ] Feed 完整文章分頁、全文搜尋與資料夾管理。
 8. [ ] 查詢效能、migration lock、JWT/JWKS、extension auth 與 CI hardening。

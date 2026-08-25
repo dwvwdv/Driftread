@@ -9,7 +9,7 @@
 
 | 功能 | 狀態 | 說明 | 相關程式 |
 |------|------|------|----------|
-| 信息源瀏覽 | ✅ | 分頁、分類 / tag 篩選、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
+| 信息源瀏覽 | ✅ | 分頁、分類 / 語言 / tag 組合篩選（可從卡片上的 tag 直接點擊篩選）、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
@@ -229,9 +229,9 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
-| GET | `/feeds` | 列表；支援分頁、`category`、`tag`（單一 tag，對 `tags` 陣列做 contains）、`search`（`search` 上限 200 字） |
-| GET | `/feeds/categories` | 所有分類 |
-| GET | `/feeds/languages` | 所有語言（供偏好設定 UI 的語言選項） |
+| GET | `/feeds` | 列表；支援分頁、`category`、`language`、`tag`（單一 tag，對 `tags` 陣列做 contains）、`search`（`search` 上限 200 字），四個篩選條件彼此 `AND` 疊加 |
+| GET | `/feeds/categories` | 所有分類（供 Feed 目錄的分類篩選與偏好設定 UI） |
+| GET | `/feeds/languages` | 所有語言（供 Feed 目錄的語言篩選與偏好設定 UI） |
 | GET | `/feeds/{feed_id}` | feed 詳情 + 文章（不存在回 404） |
 | GET | `/feeds/{feed_id}/articles` | 該 feed 的文章分頁 |
 | GET | `/articles/{article_id}` | 單篇文章全文（不存在回 404） |

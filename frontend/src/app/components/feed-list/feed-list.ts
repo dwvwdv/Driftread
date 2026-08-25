@@ -45,10 +45,14 @@ export class FeedList implements OnInit {
   pageSize = signal(20);
   search = '';
   category = '';
+  language = '';
+  tag = '';
   categories = signal<string[]>([]);
+  languages = signal<string[]>([]);
 
   ngOnInit(): void {
     this.loadCategories();
+    this.loadLanguages();
     this.loadFeeds();
   }
 
@@ -61,6 +65,14 @@ export class FeedList implements OnInit {
     });
   }
 
+  loadLanguages(): void {
+    this.feedService.getLanguages().subscribe({
+      next: (l) => this.languages.set(l),
+      // Same degrade-to-"全部" reasoning as loadCategories above.
+      error: () => this.languages.set([]),
+    });
+  }
+
   loadFeeds(): void {
     this.loading.set(true);
     this.error.set('');
@@ -69,7 +81,8 @@ export class FeedList implements OnInit {
         this.page(),
         this.pageSize(),
         this.category || undefined,
-        undefined,
+        this.language || undefined,
+        this.tag || undefined,
         this.search || undefined,
       )
       .subscribe({
@@ -104,11 +117,20 @@ export class FeedList implements OnInit {
   clearFilters(): void {
     this.search = '';
     this.category = '';
+    this.language = '';
+    this.tag = '';
     this.onSearch();
   }
 
   get hasFilters(): boolean {
-    return Boolean(this.search || this.category);
+    return Boolean(this.search || this.category || this.language || this.tag);
+  }
+
+  /** A tag chip on a card narrows the catalogue to that tag, same as picking
+   * a category from the select — clicking the same tag again clears it. */
+  filterByTag(tag: string): void {
+    this.tag = this.tag === tag ? '' : tag;
+    this.onSearch();
   }
 
   isSubscribed(feedId: string): boolean {
