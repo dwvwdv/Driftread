@@ -42,7 +42,7 @@ export class Preferences {
    * form seeded with two empty Sets, where clicking "儲存偏好" would silently
    * overwrite the reader's real preferences with an empty selection.
    */
-  error = signal<string | null>(null);
+  error = signal('');
 
   categoryOptions = signal<string[]>([]);
   languageOptions = signal<string[]>([]);
@@ -81,7 +81,7 @@ export class Preferences {
   load(): void {
     const generation = ++this.loadGeneration;
     this.loading.set(true);
-    this.error.set(null);
+    this.error.set('');
 
     // Options and the saved selection are independent reads; run them
     // together rather than chaining, since neither depends on the other's
