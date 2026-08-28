@@ -201,7 +201,7 @@ async def list_stream(
 ) -> PaginatedStream:
     """The unified article timeline across every feed the caller is
     subscribed to (TODO.md "我的閱讀流") — sorted by published_at (falling
-    back to fetched_at for undated articles, see migration 013), cursor
+    back to fetched_at for undated articles, see migration 015), cursor
     (keyset) paginated the same way GET /me/reads is, with `unread_only` and
     `feed_id` filters and each row's read state joined in so the frontend
     doesn't need a second request per page to know what's already read."""

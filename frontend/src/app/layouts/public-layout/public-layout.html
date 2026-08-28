@@ -54,6 +54,7 @@
             </a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/feeds">我的訂閱</a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/bookmarks">收藏</a>
+            <a class="ob-menu-item" role="menuitem" routerLink="/me/preferences">偏好設定</a>
             <button class="ob-menu-item" type="button" role="menuitem" (click)="signOut()">
               登出
             </button>
@@ -127,6 +128,9 @@
         </a>
         <a class="ob-menu-item" routerLink="/me/feeds" routerLinkActive="is-active">我的訂閱</a>
         <a class="ob-menu-item" routerLink="/me/bookmarks" routerLinkActive="is-active">收藏</a>
+        <a class="ob-menu-item" routerLink="/me/preferences" routerLinkActive="is-active">
+          偏好設定
+        </a>
         <button type="button" class="ob-menu-item" (click)="signOut()">
           登出（{{ auth.userEmail }}）
         </button>

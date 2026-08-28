@@ -13,6 +13,7 @@ from models import (
     Feed,
     FeedCreate,
     FeedHealthSummary,
+    FeedRefreshResult,
     ImportFeedsRequest,
     PaginatedFeeds,
     RefreshDueSummary,
@@ -108,11 +109,15 @@ async def unarchive_feed(
     return Feed(**updated.data[0])
 
 
-@router.post("/feeds/{feed_id}/refresh", response_model=dict, dependencies=[Depends(_require_api_key)])
+@router.post(
+    "/feeds/{feed_id}/refresh",
+    response_model=FeedRefreshResult,
+    dependencies=[Depends(_require_api_key)],
+)
 async def refresh_feed(
     feed_id: UUID,
     db: Client = Depends(get_client),
-) -> dict:
+) -> FeedRefreshResult:
     feed_result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
     if not feed_result or not feed_result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
@@ -123,15 +128,13 @@ async def refresh_feed(
     if result.status == "failed":
         raise HTTPException(status_code=502, detail="Failed to fetch feed")
 
-    # Response key stays "inserted" with its original rows-touched meaning —
-    # the browser extension and any external scripts already read it.
-    return {
-        "inserted": result.upserted,
-        "feed_id": str(feed_id),
-        "status": result.status,
-        "new_articles": result.new_articles,
-        "total_articles": result.total_articles,
-    }
+    return FeedRefreshResult(
+        inserted=result.upserted,
+        feed_id=feed_id,
+        status=result.status,
+        new_articles=result.new_articles,
+        total_articles=result.total_articles,
+    )
 
 
 @router.post("/feeds/from-url", response_model=Feed, dependencies=[Depends(_require_api_key)])

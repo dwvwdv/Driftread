@@ -16,6 +16,7 @@ async def list_feeds(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     category: str | None = None,
+    language: str | None = None,
     tag: str | None = None,
     search: str | None = Query(default=None, max_length=200),
     db: Client = Depends(get_client),
@@ -26,6 +27,8 @@ async def list_feeds(
 
     if category:
         query = query.eq("category", category)
+    if language:
+        query = query.eq("language", language)
     if tag:
         query = query.contains("tags", [tag])
     if search:
@@ -46,6 +49,12 @@ async def list_feeds(
 async def list_categories(db: Client = Depends(get_client)) -> list[str]:
     result = db.rpc("list_feed_categories", {}).execute()
     return [row["category"] for row in result.data]
+
+
+@router.get("/languages", response_model=list[str])
+async def list_languages(db: Client = Depends(get_client)) -> list[str]:
+    result = db.rpc("list_feed_languages", {}).execute()
+    return [row["language"] for row in result.data]
 
 
 @router.get("/{feed_id}", response_model=FeedWithArticles)

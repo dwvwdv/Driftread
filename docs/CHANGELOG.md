@@ -596,7 +596,126 @@ Discover 與「猜你喜歡」都沒有訂閱入口，也沒有任何地方能�
 - 對應文件更新：`docs/FEATURES.md` 第 1 節、第 7 節（新增 Frontend 測試列）、`TODO.md`
   （批次 3 打勾，勾掉 frontend CI 補跑單元測試那條）。
 
-## 階段二十二：我的閱讀流、未讀數與已讀管理（2026-08-19）
+## 階段二十二：手動 refresh response contract、bookmarks 複合 index（2026-08-19）
+
+- **`POST /admin/feeds/{feed_id}/refresh` 補上型別化 response model**：原本
+  `response_model=dict`，回傳的 dict 完全沒有欄位驗證與 OpenAPI schema。新增
+  `models.py::FeedRefreshResult`（`inserted` / `feed_id` / `status` / `new_articles` /
+  `total_articles`），沿用既有欄位名稱與語意——`inserted` 這個名字本身就是既有外部合約（瀏覽器
+  擴充與外部腳本會讀），沒有改名。`status` 收斂成 `Literal["updated", "not_modified", "failed"]`，
+  對齊 `services/feed_refresh.py::Status` 本來就有的型別。既有測試
+  `test_refresh_feed_success_keeps_inserted_key` 不需要改動斷言就能通過，額外補了一條
+  `status` 欄位的斷言。這條路由原本的測試就已經用 `patch()` 蓋掉
+  `fetch_and_parse_conditional`，沒有打過真實網路，TODO.md 那條「測試不得依賴真實 DNS」其實
+  早就成立，這次一併打勾。
+- **`user_bookmarks` 補複合 index**：migration 013 新增
+  `user_bookmarks_user_type_created_idx (user_id, bookmark_type, created_at DESC)`。
+  `GET /me/bookmarks` 的查詢型態是 `.eq(user_id).eq(bookmark_type).order(created_at desc)`，
+  既有的 `user_bookmarks_user_type_idx (user_id, bookmark_type)` 只覆蓋兩個等值篩選，
+  `ORDER BY` 仍要另外排序；新 index 讓整條查詢一次索引掃描就能滿足，做法比照 migration 012
+  幫 `user_article_reads` 補 keyset index 的先例——保留舊 index，只新增，不做風險較高的欄位替換。
+- **`TODO.md` 補打勾**：盤點「技術與可靠性優化」整節時發現 `GET /me/bookmarks` 只回傳
+  `ArticleSummary`（PR #37 就做了）、`GET /categories` 已經是 SQL 端 `DISTINCT` RPC
+  （`driftread.list_feed_categories()`，migration 011）都是先前漏勾，一併補上；
+  `user_feeds` / `user_article_reads` 的複合 index 現況也一併記錄——`user_feeds` 查詢只有
+  單一等值篩選，PK 前導欄位已經夠用，不需要額外 index。
+- 本 sandbox 的 pip index allowlist 卡在同一類限制（`pip install -r requirements.txt` 連
+  `pytest` 都裝不出來），無法在本機跑 `pytest`，交給 CI 的 `backend.yml` 實際跑過；已對兩處改
+  動（Pydantic model 型別、純 additive 的 index migration）做語法檢查與人工重讀。
+- 對應文件更新：`docs/FEATURES.md` 第 5 節（索引清單補 012／013 兩條，先前也漏了 012）、
+  `TODO.md`（本節五個項目打勾／補說明）。
+
+## 階段二十三：部署／回滾 runbook，GHCR image 補 commit sha tag（2026-08-24）
+
+- **新增 `docs/RUNBOOK.md`**：對照 `TODO.md`「補上升級與回滾 runbook，特別記錄 schema
+  exposure、grant、RLS 與 runtime config 的部署順序」這條，寫一份給實際操作
+  `docker-compose.yml` 的人看的操作手冊——一般部署四步、會動到 Supabase Dashboard
+  Exposed Schemas／grant 的部署要先後順序（Dashboard 手動步驟必須先於帶新 migration 的
+  `api` image 部署，理由是反過來的話 API 對新 schema／表的請求會直接壞掉而非優雅降級）、
+  migration 010 保留的 `public._migrations` 相容 view 何時能安全移除、以及環境變數檢查
+  指到 `CLAUDE.md` 既有的三處同步規則。
+- **意外發現並修掉的缺口**：寫回滾章節時發現 `.github/workflows/{backend,frontend}.yml`
+  的 `docker/build-push-action` 只打 `:latest` 一個 tag——這代表「回滾」在此之前根本沒有
+  對應的 image 可指，只能等一次新的、修好的部署把 `:latest` 蓋掉。兩個 workflow 都加上
+  `sha-${{ github.sha }}` 第二個 tag（`docker/build-push-action` 的 `tags:` 本來就支援多行
+  多個 tag），永久保留、不會被覆寫，回滾 runbook 因此有真的可以操作的步驟：改
+  `docker-compose.yml` 三個 `image:` 欄位指到 `:sha-<sha>`。
+- **TODO.md 盤點**：連帶重讀「Migration 與部署」整節時發現兩條已經做了但沒打勾——
+  migration runner 的 PostgreSQL advisory lock（`migrate.py::acquire_migration_lock`，
+  `run_backfills()` 也共用同一把）、以及 migration／backfill 的可追蹤可重試狀態（兩者都記在
+  `driftread._migrations`，成功才 commit，重跑會跳過已套用項目）——都補上勾。
+- 本 sandbox 沒有網路能跑 `actions/lint` 之類的工具驗證 workflow YAML，用系統已有的
+  PyYAML（`python3 -c "import yaml; yaml.safe_load(...)"`）對兩個改動過的 workflow 檔案
+  各跑一次 `safe_load` 確認語法正確；多行 `tags:` 寫法本身沿用
+  `docker/build-push-action@v6` 官方文件既有的用法。
+- 對應文件更新：`docs/FEATURES.md` 第 7 節（部署列補 sha tag 與 RUNBOOK 連結）、
+  `TODO.md`（「Migration 與部署」四項打勾／補說明）。
+
+## 階段二十四：偏好設定 UI（2026-08-24）
+
+TODO.md「P1：偏好、推薦與內容探索」的「建立偏好設定 UI，接上既有 `getPreferences()`／
+`updatePreferences()`」——後端與 frontend service 早已存在（`routers/me.py` 的
+`GET`/`PUT /me/preferences`、`services/me.ts` 的 `getPreferences()`/`updatePreferences()`），
+只是沒有頁面可以呼叫它們。
+
+- **`backend/migrations/014_feed_languages_rpc.sql`**：新增 `driftread.list_feed_languages()`，
+  仿照 migration 011 的 `list_feed_categories()`——db-side `DISTINCT`、`REVOKE ALL FROM PUBLIC,
+  anon, authenticated`，只有 service_role 能 `EXECUTE`。`routers/feeds.py` 新增
+  `GET /feeds/languages`，回傳型別與既有的 `GET /feeds/categories` 一致（`list[str]`）。
+- **`frontend/src/app/components/preferences`**（新元件，`/me/preferences`）：分類與語言各自
+  以 `ob-chip` 呈現成可複選的 toggle 清單，選項來自 `GET /feeds/categories` /
+  `GET /feeds/languages`（實際目錄的詞彙，不是寫死的清單），已選狀態載入自
+  `GET /me/preferences`，按「儲存偏好」呼叫 `PUT /me/preferences`。沿用
+  `bookmarks`/`my-feeds` 既有的「依 `auth.session()` 的 user id 判斷是否已載入」`effect()`
+  寫法，避免 `AuthService` 還原 session 前就用空清單渲染。導覽列帳號選單與行動版抽屜都加上
+  「偏好設定」連結，排在「收藏」之後。
+- **不做的部分**：受控 category/tag vocabulary（同義詞、大小寫、多語標籤正規化）與推薦理由顯示
+  是 TODO.md 同一節底下的獨立項目，留給各自的後續 PR；這批只接上既有的兩個欄位。
+- **測試**：`backend/tests/test_feeds.py` 新增 `test_list_languages_uses_db_side_dedup`，比照
+  既有的 `test_list_categories_uses_db_side_dedup`。`frontend/.../preferences.spec.ts` 覆蓋
+  選項與已選狀態載入、toggle 的 immutable 更新、儲存成功/失敗的 toast 與 `saving()` 狀態。
+- **本 sandbox 的已知限制**：`npm ci` 仍卡在 `zod-to-json-schema` 那條依賴鏈（403），
+  `pip install pytest` 也被 PyPI allowlist 擋下，backend／frontend 測試都無法在本機實際執行，
+  與階段二十一、二十二遇到的限制相同；已用 `python3 -m py_compile` 過 backend 改動、系統 `tsc`
+  （`--ignoreConfig --noResolve`，僅語法檢查）過 frontend 改動，交給 CI 實際跑過驗證。
+- 對應文件更新：`docs/FEATURES.md`（API 端點、DB function、前端路由）、`TODO.md`
+  （「建立偏好設定 UI」打勾）。
+
+## 階段二十五：Feed 目錄的語言篩選與可點擊標籤（2026-08-25）
+
+TODO.md「P1：標籤、語言與偏好設定」剩下的兩項——「Feed tag 改為可點擊篩選」與「Feed 目錄加入
+language、category、tag 的組合篩選」。`category`／`tag` 篩選、偏好設定 UI 的分類/語言 chip 都已
+存在，這批把兩者接起來：目錄頁補上語言篩選，卡片上的標籤本身也能點。
+
+- **`backend/routers/feeds.py`**：`GET /feeds` 新增 `language` 查詢參數，`query.eq("language",
+  language)`，與既有 `category`／`tag` 篩選同一種 `AND` 疊加寫法。`feeds` 表本來就有
+  `language` 欄位（`Feed` model 早已有），不需要新 migration；語言選項清單沿用階段二十四剛加的
+  `GET /feeds/languages`。
+- **`frontend/src/app/services/feed.ts`**：`getFeeds()` 簽名插入 `language` 參數（`page,
+  pageSize, category, language, tag, search`），唯一呼叫端 `feed-list.ts` 一併更新。
+- **`frontend/src/app/components/feed-list`**：
+  - 篩選列加一個語言 `<select>`，選項來自新增的 `loadLanguages()`（`getLanguages()`，失敗時
+    降級成「全部語言」而不擋頁面，與 `loadCategories()` 同一套容錯）。
+  - 卡片上的標籤從純文字 `<li class="ob-chip">` 改成 `<button class="ob-chip">`，點擊即以該
+    標籤篩選、再點一次清除（`filterByTag()`）——與偏好設定 UI 的 toggle chip 同一套寫法。目前
+    篩選中的標籤會反白（`ob-chip--success`），篩選列上方另外顯示一個可點擊清除的「標籤篩選：
+    ⟨tag⟩」提示。
+  - 標籤按鈕疊在卡片標題連結的 stretched `::after` 之上（`position: relative; z-index: 1`），
+    沿用 `.subscribe-btn`／`.subscribe-chip` 已有的做法，點擊標籤不會被卡片本身的導覽連結吃掉。
+  - `hasFilters`／`clearFilters()` 一併涵蓋 `language`／`tag`。
+- **測試**：`backend/tests/test_feeds.py` 新增 `test_list_feeds_filters_by_language`。
+  `frontend/.../feed-list.spec.ts` 新增一個 describe block：分類/語言/標籤三者一起送進
+  `getFeeds()`、點同一個標籤兩次會清除（toggle）、`hasFilters`／`clearFilters()` 涵蓋新欄位。
+- **不做的部分**：受控 category/tag vocabulary（同義詞、大小寫、多語標籤正規化）仍是 TODO.md
+  同一節底下的獨立項目；feed-detail／discover 頁面上的標籤目前維持純文字展示，沒有一併改成連回
+  目錄頁篩選的連結（`feed-list` 本身也還沒有 query-param 同步，留給需要深連結時的後續 PR）。
+- **本 sandbox 的已知限制**：`npm ci` 仍卡在 `zod-to-json-schema` 依賴鏈（403），
+  `pip install pytest` 被 PyPI allowlist 擋下，backend／frontend 測試都無法在本機實際執行，與
+  階段二十一至二十四相同；已用 `python3 -m py_compile` 過 backend 改動、系統 `tsc`
+  （`--ignoreConfig --noResolve`，僅語法檢查）過 frontend 改動，交給 CI 實際跑過驗證。
+- 對應文件更新：`docs/FEATURES.md`（`GET /feeds` 參數說明、信息源瀏覽功能列）、`TODO.md`
+  （兩項打勾，「建議開發批次」第 5 項改為進行中）。
+## 階段二十六：我的閱讀流、未讀數與已讀管理（2026-08-19）
 
 TODO.md 建議開發批次第 4 批。此前「已讀」只有 `POST /me/articles/{id}/read`（單篇標記、無法
 復原）與 `GET /me/reads`（回原始 read receipt id 列表，cursor 分頁但前端從未使用），沒有任何一個
@@ -605,7 +724,7 @@ feed 詳情頁翻最新 10 篇。也沒有未讀數，也沒有批次已讀。
 
 - **`user_article_reads` 不新增表**：一列存在即代表「已讀」，這批只加查詢端的 DB function 與
   index，讀寫路徑仍是同一張 002 建的表——`DELETE` 該列就是「標為未讀」。
-- **`backend/migrations/013_reading_stream.sql`（新）**：三個 `driftread` schema 內的 DB
+- **`backend/migrations/015_reading_stream.sql`（新）**：三個 `driftread` schema 內的 DB
   function，EXECUTE 只授權 `service_role`（同 `sample_feed_candidates` / `list_feed_categories`
   的鎖法）：
   - `list_reading_stream(...)`：跨 `user_feeds` 聚合每個已訂閱來源的 `articles`，LEFT JOIN

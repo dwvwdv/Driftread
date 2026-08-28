@@ -1,0 +1,23 @@
+.group {
+  margin-top: var(--sp-4);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.chips button {
+  cursor: pointer;
+}
+
+.empty-hint {
+  color: var(--text-dim);
+  margin-top: var(--sp-2);
+}
+
+.actions {
+  margin-top: var(--sp-5);
+}

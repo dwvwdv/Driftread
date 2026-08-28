@@ -9,12 +9,12 @@
 
 | 功能 | 狀態 | 說明 | 相關程式 |
 |------|------|------|----------|
-| 信息源瀏覽 | ✅ | 分頁、分類 / tag 篩選、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
+| 信息源瀏覽 | ✅ | 分頁、分類 / 語言 / tag 組合篩選（可從卡片上的 tag 直接點擊篩選）、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
-| **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/013_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
+| **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/015_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
 | **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
 | OPML 匯入 / 匯出 | ✅ | 與 Feedly / Inoreader 互通 | `routers/opml.py` |
@@ -230,8 +230,9 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
-| GET | `/feeds` | 列表；支援分頁、`category`、`tag`（單一 tag，對 `tags` 陣列做 contains）、`search`（`search` 上限 200 字） |
-| GET | `/feeds/categories` | 所有分類 |
+| GET | `/feeds` | 列表；支援分頁、`category`、`language`、`tag`（單一 tag，對 `tags` 陣列做 contains）、`search`（`search` 上限 200 字），四個篩選條件彼此 `AND` 疊加 |
+| GET | `/feeds/categories` | 所有分類（供 Feed 目錄的分類篩選與偏好設定 UI） |
+| GET | `/feeds/languages` | 所有語言（供 Feed 目錄的語言篩選與偏好設定 UI） |
 | GET | `/feeds/{feed_id}` | feed 詳情 + 文章（不存在回 404） |
 | GET | `/feeds/{feed_id}/articles` | 該 feed 的文章分頁 |
 | GET | `/articles/{article_id}` | 單篇文章全文（不存在回 404） |
@@ -318,6 +319,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/me/stream` | `reading-stream`（主要閱讀入口——聚合所有已訂閱來源的文章時間流，見下）|
 | `/me/feeds` | `my-feeds`（來源管理：訂閱清單、OPML；不再是主要閱讀入口）|
 | `/me/bookmarks` | `bookmarks` |
+| `/me/preferences` | `preferences` |
 | `**` | 轉回 `/` |
 
 ### 後台（`AdminLayout`，`canMatch: [adminGuard]`）
@@ -385,7 +387,12 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
 （不建新表）：供 `routers/recommendations.py` 以 `ORDER BY random()` 抽樣候選池，見上方第 2 節。
 
-Migration 013（我的閱讀流，不建新表——「已讀」仍是 `user_article_reads` 一列存在與否）另外定義三個
+Migration 011 / 014 分別定義 `list_feed_categories()` / `list_feed_languages()`（不建新表）：
+db-side dedup，供 `GET /feeds/categories`、`GET /feeds/languages` 與偏好設定 UI 使用。兩者皆
+`REVOKE ALL FROM PUBLIC, anon, authenticated`，只有 service_role 能 EXECUTE，同
+`sample_feed_candidates` 的鎖法。
+
+Migration 015（我的閱讀流，不建新表——「已讀」仍是 `user_article_reads` 一列存在與否）另外定義三個
 DB function，供 `routers/me.py` 的 `/me/stream*`、`/me/reads/mark-all` 呼叫：
 
 - `list_reading_stream(p_user_id, p_feed_id, p_unread_only, p_cursor_sort_at, p_cursor_id, p_limit)`——
@@ -416,7 +423,11 @@ read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key
 `feeds(next_fetch_at) WHERE archived_at IS NULL`（partial，供到期佇列）、
 `feeds(next_harvest_at) WHERE archived_at IS NULL`（partial，供收割佇列）、`articles(feed_id)`、
 `articles(published_at DESC)`、`user_feeds(user_id)`、`user_feeds(feed_id)`、
-`user_article_reads(user_id)`、`user_bookmarks(user_id, bookmark_type)`、
+`user_article_reads(user_id)`、
+`user_article_reads(user_id, read_at DESC, article_id DESC)`（012，供 `GET /me/reads` 的 keyset pagination）、
+`user_bookmarks(user_id, bookmark_type)`、
+`user_bookmarks(user_id, bookmark_type, created_at DESC)`（013，供 `GET /me/bookmarks` 的
+`ORDER BY created_at DESC` 免額外排序）、
 `discovery_targets(referring_feed_count DESC, next_probe_at) WHERE status='pending'`（partial，供探測佇列）、
 `discovery_targets(host)`、`discovery_targets(status)`、
 `discovery_candidates(referring_feed_count DESC, discovered_at DESC) WHERE status='pending'`（partial，供審核佇列）、
@@ -488,7 +499,7 @@ DELETE FROM discovery_targets
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
 | 測試 | Backend：pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試）。Frontend：Vitest（`@angular/build:unit-test`，jsdom，無需瀏覽器），`*.spec.ts` 與被測檔同目錄；`frontend.yml` 的 Build job 在 `npm run build` 前先跑 `npm test` |
-| 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理 |
+| 部署 | GHCR image + docker-compose（`api` / `worker` / `frontend`；worker 與 api 共用同一個 image，只換 `command`），前端接外部 `web_network` 供反向代理。每個 image 同時打 `:latest` 與 `:sha-<commit sha>` 兩個 tag，供回滾指定版本用，見 `docs/RUNBOOK.md` |
 
 `worker` 容器跑兩個獨立迴圈（refresh 與 discovery），共用同一個 event loop 與同一個 stop
 event，各有自己的開關與 tick。兩者皆停用時 worker 記一行 log 後 exit 0（`restart: on-failure`

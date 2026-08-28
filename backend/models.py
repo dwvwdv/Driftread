@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints
@@ -110,7 +110,7 @@ class PaginatedReads(BaseModel):
 class StreamArticle(BaseModel):
     """One row of GET /me/stream — an ArticleSummary plus which feed it came
     from and this caller's read state, as returned by the
-    `list_reading_stream` DB function (migration 013)."""
+    `list_reading_stream` DB function (migration 015)."""
     id: UUID
     feed_id: UUID
     feed_title: str
@@ -214,6 +214,19 @@ class RefreshDueSummary(BaseModel):
     failed: int
     archived: int
     new_articles: int
+
+
+class FeedRefreshResult(BaseModel):
+    """Response for a single manual feed refresh.
+
+    `inserted` keeps its original rows-touched meaning — the browser
+    extension and any external scripts already read this field name.
+    """
+    inserted: int
+    feed_id: UUID
+    status: Literal["updated", "not_modified", "failed"]
+    new_articles: int
+    total_articles: int | None = None
 
 
 class FeedHealthSummary(BaseModel):

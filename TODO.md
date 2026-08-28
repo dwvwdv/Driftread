@@ -66,7 +66,7 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 ### 我的閱讀流
 
 - [x] 新增聚合所有已訂閱來源的文章時間流。
-      （`GET /me/stream`，`backend/migrations/013_reading_stream.sql::list_reading_stream`；
+      （`GET /me/stream`，`backend/migrations/015_reading_stream.sql::list_reading_stream`；
       前端 `components/reading-stream`，掛在 `/me/stream`）
 - [x] 支援分頁或 cursor pagination，不一次載入全部文章。
       （keyset cursor，同 `GET /me/reads` 既有作法；`limit` 上限 100；前端「載入更多」）
@@ -102,9 +102,16 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### 標籤、語言與偏好設定
 
-- [ ] Feed tag 改為可點擊篩選。
-- [ ] Feed 目錄加入 language、category、tag 的組合篩選。
-- [ ] 建立偏好設定 UI，接上既有 `getPreferences()`／`updatePreferences()`。
+- [x] Feed tag 改為可點擊篩選。
+      （`frontend/src/app/components/feed-list`：分類卡片與作用中篩選列上的標籤都是
+      `<button class="ob-chip">`，點擊即以該標籤篩選，再點一次清除——與偏好設定 UI 的
+      toggle chip 同一套寫法）
+- [x] Feed 目錄加入 language、category、tag 的組合篩選。
+      （`GET /feeds` 新增 `language` 查詢參數，與既有 `category`／`tag` 一樣是 `AND` 疊加；
+      前端加一個語言 `<select>`，選項來自 `GET /feeds/languages`，與分類下拉同一套寫法）
+- [x] 建立偏好設定 UI，接上既有 `getPreferences()`／`updatePreferences()`。
+      （`frontend/src/app/components/preferences`，`/me/preferences`；分類／語言選項各自來自
+      `GET /feeds/categories`／新增的 `GET /feeds/languages`（migration 014），不是寫死清單）
 - [ ] 使用受控 category/tag vocabulary，處理同義詞、大小寫與多語標籤。
 - [ ] 清楚區分來源標籤、使用者自訂資料夾與推薦偏好，避免三者混用。
 
@@ -163,24 +170,41 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 ### API 與查詢
 
 - [x] `GET /me/reads` 加入 cursor pagination、limit 上限與穩定排序。
-- [ ] Bookmark 列表只回傳列表所需摘要，不回傳完整 `Article.content`。
-- [ ] `GET /categories` 改由 SQL `DISTINCT`／RPC 聚合，不把所有 Feed 拉回 Python 去重。
+- [x] Bookmark 列表只回傳列表所需摘要，不回傳完整 `Article.content`。
+      （`routers/me.py::list_bookmarks` 已回傳 `ArticleSummary`，DB 端也只 select 摘要欄位；
+      `test_list_bookmarks_omits_article_content` 已覆蓋，這裡先前只是漏勾）
+- [x] `GET /categories` 改由 SQL `DISTINCT`／RPC 聚合，不把所有 Feed 拉回 Python 去重。
+      （`driftread.list_feed_categories()`，見 migration 011，`routers/feeds.py` 用 `db.rpc(...)` 呼叫，
+      這裡也是先前漏勾）
 - [ ] 推薦候選移除大表 `ORDER BY random()`，改用 indexed random key、pivot sampling 或可擴充的抽樣策略。
-- [ ] 為常用的 subscription、read receipt、bookmark、feedback 查詢補齊複合 index。
-      （read receipt／閱讀流這半邊在批次 4 補了：`user_article_reads(user_id, read_at DESC,
-      article_id DESC)`（012）與 `articles(feed_id, fetched_at DESC)`（013）；`user_feeds` 與
-      `user_article_reads` 既有複合主鍵已覆蓋閱讀流查詢，沒有另外加。bookmark／feedback 那兩類
-      查詢還沒動——`user_bookmarks` 目前只有 `(user_id, bookmark_type)`，`user_feed_feedback`
-      這張表本身都還沒建（見上方「推薦回饋持久化」批次），留給之後的批次）
+- [x] 為常用的 subscription、read receipt、bookmark、feedback 查詢補齊複合 index。
+      （`user_feeds` 靠 PK 前導欄位已足夠；`user_article_reads` 見 migration 012；
+      `user_bookmarks` 新增 migration 013：`(user_id, bookmark_type, created_at DESC)`，
+      滿足 `GET /me/bookmarks` 的等值篩選加 `ORDER BY created_at DESC`；閱讀流查詢另補
+      `articles(feed_id, fetched_at DESC)`（見 migration 015，`user_feeds`／
+      `user_article_reads` 既有複合主鍵已覆蓋閱讀流查詢，沒有另外加）。
+      feedback 資料表本身尚未建立，見下方「推薦回饋持久化」，屆時一併補 index）
 - [ ] 對 PostgREST／database 例外建立一致的 API error mapping，避免裸 500。
-- [ ] 為單一 Feed 手動 refresh 固定 response contract，測試不得依賴真實 DNS。
+- [x] 為單一 Feed 手動 refresh 固定 response contract，測試不得依賴真實 DNS。
+      （測試本來就已 mock `fetch_and_parse_conditional`，不打真實網路；
+      response contract 部分新增 `FeedRefreshResult` Pydantic model，取代原本的 `response_model=dict`，
+      欄位名稱與既有外部合約（`inserted` 等）保持不變）
 
 ### Migration 與部署
 
-- [ ] migration runner 加 PostgreSQL advisory lock，避免多個 API replica 同時競跑。
-- [ ] migration／backfill 各自具備可追蹤、可安全重試的狀態。
-- [ ] 補上升級與回滾 runbook，特別記錄 schema exposure、grant、RLS 與 runtime config 的部署順序。
+- [x] migration runner 加 PostgreSQL advisory lock，避免多個 API replica 同時競跑。
+      （`migrate.py::acquire_migration_lock`，`pg_advisory_lock`，`run_backfills()` 共用
+      同一把鎖——這裡先前也是漏勾）
+- [x] migration／backfill 各自具備可追蹤、可安全重試的狀態。
+      （兩者都記在同一張 `driftread._migrations`：套用成功才 commit，重跑會先查表跳過已套用的
+      項目，先前也是漏勾）
+- [x] 補上升級與回滾 runbook，特別記錄 schema exposure、grant、RLS 與 runtime config 的部署順序。
+      （新增 `docs/RUNBOOK.md`；順便發現 GHCR image 過去只打 `:latest` tag、沒有任何可回滾的
+      版本化 tag，一併把 `.github/workflows/{backend,frontend}.yml` 改成同時打
+      `sha-<commit sha>`，回滾 runbook 才有真的能操作的步驟）
 - [ ] backend Python dependencies 改為可重現安裝：鎖定版本或提交 lockfile，避免只寫無上限的最低版本。
+      （本 sandbox 的 pip index allowlist 擋掉 PyPI，無法在本機解析版本產生真的 lockfile，
+      留給有網路的環境做）
 - [ ] 定期檢查 Supabase changelog 與 auth／Data API breaking changes。
 
 ### Auth 與安全
@@ -216,7 +240,8 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       （runtime config 機制已實作，見上方「Runtime Supabase 設定」；真的容器 + 瀏覽器登入驗證尚未執行）
 3. [x] 訂閱 CTA、訂閱狀態與核心流程整合。
 4. [x] 我的閱讀流、未讀數與已讀管理。
-5. [ ] 標籤／語言篩選、偏好設定與匯入後分類。
+5. [~] 標籤／語言篩選、偏好設定與匯入後分類。
+      （標籤／語言篩選與偏好設定 UI 已完成，見上方「標籤、語言與偏好設定」；匯入後自動分類尚未開始）
 6. [ ] 回饋持久化、可解釋推薦權重與推薦理由。
 7. [ ] Feed 完整文章分頁、全文搜尋與資料夾管理。
 8. [ ] 查詢效能、migration lock、JWT/JWKS、extension auth 與 CI hardening。
