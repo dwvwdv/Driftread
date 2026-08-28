@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
-import { Subject, of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { FeedDetail } from './feed-detail';
 import { ArticleService } from '../../services/article';
 import { FeedService } from '../../services/feed';
@@ -147,13 +147,13 @@ describe('FeedDetail subscribe action', () => {
 describe('FeedDetail article list', () => {
   let articleService: {
     calls: (string | null)[];
-    getArticles: (feedId: string, cursor?: string | null) => ReturnType<typeof of<PaginatedFeedArticles>>;
+    getArticles: (feedId: string, cursor?: string | null) => Observable<PaginatedFeedArticles>;
   };
   let me: {
-    markRead: (id: string) => ReturnType<typeof of<void>>;
-    markUnread: (id: string) => ReturnType<typeof of<void>>;
-    addBookmark: (id: string, type: string) => ReturnType<typeof of<void>>;
-    removeBookmark: (id: string, type: string) => ReturnType<typeof of<void>>;
+    markRead: (id: string) => Observable<void>;
+    markUnread: (id: string) => Observable<void>;
+    addBookmark: (id: string, type: string) => Observable<void>;
+    removeBookmark: (id: string, type: string) => Observable<void>;
   };
   let firstPage: PaginatedFeedArticles;
   let secondPage: PaginatedFeedArticles;
