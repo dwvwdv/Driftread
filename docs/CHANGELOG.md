@@ -834,6 +834,15 @@ TODO.md 建議開發批次第 7 批的第一部分。此前 feed 詳情頁只顯
   `AuthService.session` 用真的 `signal()` 而非普通函式（否則 Angular 的 `effect()` 沒有訊號可以
   追蹤，測不出重新載入的行為），`session.set(...)` 後 `fixture.detectChanges()` 讓元件自己的
   effect 重新 flush。
+
+  這個修法本身又引入新的競態：identity effect 觸發已登入的重新載入時，前一輪匿名請求可能還在
+  飛行中——若它比已登入的回應晚到，會用全部是 false 的 `is_read`／`is_bookmarked` 蓋掉剛套用好
+  的已登入狀態；同理，`loadMoreArticles()` 的回應若晚於一次新的 identity 重新載入落地，也會把
+  舊身分的文章接到新載入的列表後面。Codex 第二輪抓到這點，修法是加一個 `articlesGeneration`
+  計數器（`loadArticles()` 每次呼叫遞增，`loadMoreArticles()` 只讀取不遞增），`next`／`error`
+  callback 落地時比對呼叫當下記下的值，不相符就丟棄——與 `ReadingStreamService` 的
+  `_itemsGeneration` 同一套 pattern。新增迴歸測試：用 `Subject` 手動控制兩個請求的 resolve
+  順序，讓匿名回應刻意晚於已登入回應落地，斷言最終畫面是已登入那份、不是被匿名回應蓋掉。
 - **本 sandbox 的已知限制**：`pip install pytest`／`npm ci` 仍被 allowlist 擋下，backend／
   frontend 測試都無法在本機實際執行——與階段二十一至二十六相同；已用 `python3 -m py_compile`
   過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`，僅語法檢查，過濾掉預期內的

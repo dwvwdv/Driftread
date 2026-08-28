@@ -47,6 +47,16 @@ export class FeedDetail implements OnInit {
   private nextCursor = signal<string | null>(null);
   hasMoreArticles = () => this.nextCursor() !== null;
 
+  /** Bumped by every `loadArticles()` call. A fresh load (fired for the
+   * initial anonymous page, an identity change from the effect below, or a
+   * manual retry) supersedes anything already in flight — `loadArticles()`
+   * and `loadMoreArticles()` both capture this when they fire and drop
+   * their response if a newer `loadArticles()` has since started, so a slow
+   * anonymous response can't land after the authenticated reload and wipe
+   * out its is_read/is_bookmarked flags (same generation-counter pattern
+   * `ReadingStreamService` uses for the same reason). */
+  private articlesGeneration = 0;
+
   /** Article ids with an in-flight read/bookmark toggle — separate sets since
    * the two actions are independent and can both be in flight at once. */
   private pendingRead = signal<ReadonlySet<string>>(new Set());
@@ -120,15 +130,22 @@ export class FeedDetail implements OnInit {
    * a feed with metadata that fails to load could still, in principle, list
    * its articles, and the two requests have no reason to block each other. */
   loadArticles(): void {
+    const generation = ++this.articlesGeneration;
     this.articlesLoading.set(true);
+    // A fresh load supersedes any load-more in flight for the previous
+    // generation — that request's own callback will now bail out on the
+    // generation check below without ever clearing this flag itself.
+    this.articlesLoadingMore.set(false);
     this.articlesError.set('');
     this.articleService.getArticles(this.feedId, null, ARTICLES_PAGE_SIZE).subscribe({
       next: (page) => {
+        if (generation !== this.articlesGeneration) return;
         this.articles.set(page.items);
         this.nextCursor.set(page.next_cursor);
         this.articlesLoading.set(false);
       },
       error: () => {
+        if (generation !== this.articlesGeneration) return;
         this.articlesError.set('無法載入文章列表。');
         this.articlesLoading.set(false);
       },
@@ -140,14 +157,17 @@ export class FeedDetail implements OnInit {
   loadMoreArticles(): void {
     const cursor = this.nextCursor();
     if (!cursor || this.articlesLoadingMore()) return;
+    const generation = this.articlesGeneration;
     this.articlesLoadingMore.set(true);
     this.articleService.getArticles(this.feedId, cursor, ARTICLES_PAGE_SIZE).subscribe({
       next: (page) => {
+        if (generation !== this.articlesGeneration) return;
         this.articles.update((current) => [...current, ...page.items]);
         this.nextCursor.set(page.next_cursor);
         this.articlesLoadingMore.set(false);
       },
       error: (err: unknown) => {
+        if (generation !== this.articlesGeneration) return;
         this.articlesLoadingMore.set(false);
         this.toast.danger(apiMessage(err, '載入更多文章失敗'));
       },

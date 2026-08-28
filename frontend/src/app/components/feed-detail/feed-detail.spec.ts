@@ -311,4 +311,73 @@ describe('FeedDetail article list', () => {
 
     expect(articleService.calls).toEqual([null]); // no extra reload
   });
+
+  it('discards a stale anonymous response that resolves after an identity reload', () => {
+    // The initial anonymous load and the authenticated reload race — the
+    // authenticated one is not guaranteed to resolve first. A stale
+    // anonymous response landing after it must not wipe out the
+    // authenticated is_read/is_bookmarked flags it just applied.
+    const requests: Subject<PaginatedFeedArticles>[] = [];
+    const controlledArticleService = {
+      getArticles: () => {
+        const subject = new Subject<PaginatedFeedArticles>();
+        requests.push(subject);
+        return subject;
+      },
+    };
+    const localSession = signal<{ user: { id: string } } | null>(null);
+    const localMe = {
+      markRead: () => of(undefined),
+      markUnread: () => of(undefined),
+      addBookmark: () => of(undefined),
+      removeBookmark: () => of(undefined),
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FeedDetail],
+      providers: [
+        provideRouter([]),
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { paramMap: convertToParamMap({ id: 'feed-1' }) } },
+        },
+        { provide: FeedService, useValue: { getFeed: () => of(feed) } },
+        { provide: ArticleService, useValue: controlledArticleService },
+        { provide: MeService, useValue: localMe },
+        { provide: RecommendationService, useValue: { liked: () => [], disliked: () => [] } },
+        {
+          provide: SubscriptionService,
+          useValue: { isSubscribed: () => false, isPending: () => false },
+        },
+        { provide: AuthService, useValue: { session: localSession } },
+        {
+          provide: ToastService,
+          useValue: { info: () => {}, danger: () => {}, success: () => {}, warning: () => {} },
+        },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(FeedDetail);
+    fixture.detectChanges(); // fires the initial anonymous load -> requests[0]
+
+    localSession.set({ user: { id: 'user-1' } }); // session resolves
+    fixture.detectChanges(); // fires the authenticated reload -> requests[1]
+
+    // Authenticated response arrives first.
+    requests[1].next({
+      items: [makeArticle({ id: 'authed', is_read: true })],
+      next_cursor: null,
+    });
+    requests[1].complete();
+
+    // Stale anonymous response arrives late — must be discarded, not applied.
+    requests[0].next({
+      items: [makeArticle({ id: 'anon', is_read: false })],
+      next_cursor: null,
+    });
+    requests[0].complete();
+
+    expect(fixture.componentInstance.articles().map((a) => a.id)).toEqual(['authed']);
+  });
 });
