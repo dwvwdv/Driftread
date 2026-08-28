@@ -107,6 +107,55 @@ class PaginatedReads(BaseModel):
     next_cursor: str | None = None
 
 
+class StreamArticle(BaseModel):
+    """One row of GET /me/stream — an ArticleSummary plus which feed it came
+    from and this caller's read state, as returned by the
+    `list_reading_stream` DB function (migration 015)."""
+    id: UUID
+    feed_id: UUID
+    feed_title: str
+    title: str
+    url: str
+    summary: str | None = None
+    author: str | None = None
+    published_at: datetime | None = None
+    fetched_at: datetime
+    is_read: bool
+    read_at: datetime | None = None
+
+
+class PaginatedStream(BaseModel):
+    items: list[StreamArticle]
+    next_cursor: str | None = None
+
+
+class FeedUnreadCount(BaseModel):
+    feed_id: UUID
+    feed_title: str
+    unread_count: int
+
+
+class UnreadSummary(BaseModel):
+    total_unread: int
+    feeds: list[FeedUnreadCount] = []
+
+
+class MarkAllReadRequest(BaseModel):
+    """See routers/me.py::mark_all_read for how the two scopes are chosen.
+
+    `article_ids` caps at 500 — generous headroom over GET /me/stream's own
+    page-size cap of 100 (the "current page" case), while still bounding a
+    single request's upsert batch.
+    """
+    article_ids: list[UUID] | None = Field(default=None, max_length=500)
+    feed_id: UUID | None = None
+    before: datetime | None = None
+
+
+class MarkAllReadResult(BaseModel):
+    marked: int
+
+
 class BookmarkCreate(BaseModel):
     article_id: UUID
     bookmark_type: str  # 'favorite' | 'read_later'

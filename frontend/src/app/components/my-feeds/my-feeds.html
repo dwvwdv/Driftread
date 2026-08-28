@@ -3,7 +3,12 @@
     <a class="ob-btn ob-btn--primary" routerLink="/login">前往登入</a>
   </ob-empty>
 } @else {
-  <ob-page-header kicker="SUBSCRIPTIONS" heading="我的訂閱" subtitle="與其他閱讀器以 OPML 互通">
+  <ob-page-header
+    kicker="SUBSCRIPTIONS"
+    heading="我的訂閱"
+    subtitle="管理已訂閱的來源；要開始閱讀請前往「我的閱讀」"
+  >
+    <a class="ob-btn ob-btn--primary ob-btn--sm" routerLink="/me/stream">前往我的閱讀</a>
     <input
       #opmlInput
       type="file"

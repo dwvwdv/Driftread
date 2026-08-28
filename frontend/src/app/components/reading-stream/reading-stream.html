@@ -1,0 +1,134 @@
+@if (!auth.session()) {
+  <ob-empty message="請先登入才能查看你的閱讀流。">
+    <a class="ob-btn ob-btn--primary" routerLink="/login">前往登入</a>
+  </ob-empty>
+} @else {
+  <ob-page-header kicker="STREAM" heading="我的閱讀" subtitle="跨所有已訂閱來源的文章時間流">
+    <a class="ob-btn ob-btn--ghost ob-btn--sm" routerLink="/me/feeds">管理訂閱來源</a>
+    <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm ob-btn--icon" aria-label="重新整理" (click)="reload()">
+      <ob-icon name="refresh" [size]="14" />
+    </button>
+  </ob-page-header>
+
+  <div class="stats">
+    <ob-stat label="總未讀" [value]="stream.totalUnread()" tone="accent" />
+    <ob-stat label="本頁未讀" [value]="stream.unreadInView()" />
+  </div>
+
+  <div class="controls">
+    <div class="toggles">
+      <label class="ob-checkbox">
+        <input
+          type="checkbox"
+          [checked]="unreadOnly()"
+          (change)="onUnreadOnly($any($event.target).checked)"
+        />
+        只看未讀
+      </label>
+      <label class="ob-checkbox">
+        <input
+          type="checkbox"
+          [checked]="hideRead()"
+          (change)="hideRead.set($any($event.target).checked)"
+        />
+        隱藏已讀
+      </label>
+    </div>
+
+    <label class="source">
+      <span class="ob-visually-hidden">篩選來源</span>
+      <select
+        class="ob-select"
+        [value]="feedId() ?? ''"
+        (change)="onFeedFilter($any($event.target).value)"
+      >
+        <option value="">全部來源</option>
+        @for (f of stream.feedCounts(); track f.feed_id) {
+          <option [value]="f.feed_id">{{ f.feed_title }}（{{ f.unread_count }}）</option>
+        }
+      </select>
+    </label>
+
+    <div class="mark-all">
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="stream.unreadInView() === 0"
+        (click)="markPageRead()"
+      >
+        本頁全部已讀
+      </button>
+      <button type="button" class="ob-btn ob-btn--subtle ob-btn--sm" (click)="markScopeRead()">
+        {{ feedId() ? '此來源全部已讀' : '全部已讀' }}
+      </button>
+    </div>
+  </div>
+
+  @if (stream.loading()) {
+    <ob-loading label="讀取閱讀流中" />
+  } @else if (error()) {
+    <ob-error [message]="error()">
+      <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="reload()">重試</button>
+    </ob-error>
+  } @else if (visibleItems().length === 0) {
+    <ob-empty [message]="emptyMessage">
+      @if (feedId() || unreadOnly() || hideRead()) {
+        <button type="button" class="ob-btn ob-btn--ghost" (click)="clearFilters()">清除篩選</button>
+      } @else {
+        <a class="ob-btn ob-btn--ghost" routerLink="/">去找些信息源訂閱</a>
+      }
+    </ob-empty>
+  } @else {
+    <div class="list">
+      @for (row of rows(); track row.article.id) {
+        <ob-list-row>
+          <a rowTitle [class.is-read]="row.article.is_read" [routerLink]="['/articles', row.article.id]">
+            {{ row.article.title }}
+          </a>
+          <div rowLines>
+            <span>
+              {{ row.article.feed_title }}
+              @if (row.article.author) {
+                ・ {{ row.article.author }}
+              }
+              @if (row.article.published_at) {
+                ・ {{ row.article.published_at | date: 'yyyy-MM-dd HH:mm' }}
+              }
+            </span>
+            @if (row.preview) {
+              <span class="summary">{{ row.preview }}</span>
+            }
+          </div>
+          <div rowMeta>
+            @if (!row.article.is_read) {
+              <span class="ob-chip">未讀</span>
+            }
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm ob-btn--icon"
+              [attr.aria-label]="row.article.is_read ? '標為未讀' : '標為已讀'"
+              [attr.aria-pressed]="row.article.is_read"
+              [disabled]="stream.isPending(row.article.id)"
+              (click)="toggleRead(row.article)"
+            >
+              <ob-icon name="check" [size]="14" />
+            </button>
+          </div>
+        </ob-list-row>
+      }
+    </div>
+
+    @if (stream.hasMore()) {
+      <div class="load-more">
+        <button
+          type="button"
+          class="ob-btn ob-btn--subtle"
+          [disabled]="stream.loadingMore()"
+          (click)="loadMore()"
+        >
+          {{ stream.loadingMore() ? '載入中…' : '載入更多' }}
+        </button>
+      </div>
+    }
+  }
+}

@@ -46,6 +46,12 @@
             (click)="closeAccount()"
           ></button>
           <div class="menu" id="account-menu" role="menu" (keydown)="onAccountKeydown($event)">
+            <a class="ob-menu-item" role="menuitem" routerLink="/me/stream">
+              我的閱讀
+              @if (stream.totalUnread() > 0) {
+                <span class="ob-chip unread-chip">{{ stream.totalUnread() }}</span>
+              }
+            </a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/feeds">我的訂閱</a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/bookmarks">收藏</a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/preferences">偏好設定</a>
@@ -114,6 +120,12 @@
       <hr class="ob-divider" />
 
       @if (auth.session()) {
+        <a class="ob-menu-item" routerLink="/me/stream" routerLinkActive="is-active">
+          我的閱讀
+          @if (stream.totalUnread() > 0) {
+            <span class="ob-chip unread-chip">{{ stream.totalUnread() }}</span>
+          }
+        </a>
         <a class="ob-menu-item" routerLink="/me/feeds" routerLinkActive="is-active">我的訂閱</a>
         <a class="ob-menu-item" routerLink="/me/bookmarks" routerLinkActive="is-active">收藏</a>
         <a class="ob-menu-item" routerLink="/me/preferences" routerLinkActive="is-active">

@@ -1,5 +1,3 @@
-import base64
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,12 +10,18 @@ from models import (
     Bookmark,
     BookmarkCreate,
     Feed,
+    FeedUnreadCount,
+    MarkAllReadRequest,
+    MarkAllReadResult,
     PaginatedReads,
+    PaginatedStream,
     ReadReceipt,
+    StreamArticle,
+    UnreadSummary,
     UserPreferences,
     UserPreferencesUpdate,
 )
-from utils import escape_postgrest_literal
+from utils import decode_keyset_cursor, encode_keyset_cursor, escape_postgrest_literal
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -78,20 +82,14 @@ async def mark_read(
     ).execute()
 
 
-def _encode_reads_cursor(read_at: datetime, article_id: UUID) -> str:
-    raw = f"{read_at.isoformat()}|{article_id}"
-    return base64.urlsafe_b64encode(raw.encode()).decode()
-
-
-def _decode_reads_cursor(cursor: str) -> tuple[str, str]:
+def _decode_cursor_or_400(cursor: str) -> tuple[str, str]:
+    """Shared by /reads and /stream — both are (timestamp, id) keyset pages
+    and both want the same "malformed cursor -> 400" behavior rather than a
+    decode error leaking through as an unhandled ValueError -> 500."""
     try:
-        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-        read_at_raw, article_id_raw = raw.rsplit("|", 1)
-        datetime.fromisoformat(read_at_raw)
-        UUID(article_id_raw)
-    except (ValueError, UnicodeDecodeError) as exc:
+        return decode_keyset_cursor(cursor)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid cursor") from exc
-    return read_at_raw, article_id_raw
 
 
 @router.get("/reads", response_model=PaginatedReads)
@@ -109,7 +107,7 @@ async def list_reads(
     # read_at timestamp (e.g. a bulk "mark all read").
     query = db.table("user_article_reads").select("article_id, read_at").eq("user_id", user.id)
     if cursor:
-        read_at, article_id = _decode_reads_cursor(cursor)
+        read_at, article_id = _decode_cursor_or_400(cursor)
         read_at_lit = escape_postgrest_literal(read_at)
         article_id_lit = escape_postgrest_literal(article_id)
         query = query.or_(
@@ -126,11 +124,124 @@ async def list_reads(
 
     items = [ReadReceipt(**row) for row in rows.data]
     next_cursor = (
-        _encode_reads_cursor(items[-1].read_at, items[-1].article_id)
+        encode_keyset_cursor(items[-1].read_at, items[-1].article_id)
         if len(items) == limit
         else None
     )
     return PaginatedReads(items=items, next_cursor=next_cursor)
+
+
+@router.delete("/articles/{article_id}/read", status_code=204)
+async def mark_unread(
+    article_id: UUID,
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> None:
+    """The unmark counterpart of mark_read — lets a reader undo an accidental
+    or premature "read" (including the automatic one article-reader fires on
+    open) from the reading stream."""
+    db.table("user_article_reads").delete().eq("user_id", user.id).eq(
+        "article_id", str(article_id)
+    ).execute()
+
+
+@router.post("/reads/mark-all", response_model=MarkAllReadResult)
+async def mark_all_read(
+    body: MarkAllReadRequest,
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> MarkAllReadResult:
+    """Two scopes, matching TODO.md's "目前頁面全部標已讀，以及明確範圍的全部標已讀":
+
+    - `article_ids` given: exactly those articles (the "current page" case —
+      the frontend already has the page's ids in hand from GET /me/stream, no
+      extra round trip to recompute the same set server-side).
+    - `article_ids` omitted: an explicit *filtered* scope — optionally one
+      feed, optionally articles at-or-before a timestamp, or (both omitted)
+      every subscribed article — evaluated server-side via
+      mark_reading_stream_read() so marking, say, "this whole feed" as read
+      doesn't require shipping every one of its article ids to the client
+      first just to hand them back.
+    """
+    if body.article_ids is not None:
+        if not body.article_ids:
+            return MarkAllReadResult(marked=0)
+        # Dedupe: a single upsert with the same article_id twice makes
+        # Postgres raise "ON CONFLICT DO UPDATE command cannot affect row a
+        # second time" (same constraint services/articles.py::upsert_articles
+        # already dedupes around for feed ingestion).
+        unique_ids = {str(aid) for aid in body.article_ids}
+        rows = [{"user_id": user.id, "article_id": aid} for aid in unique_ids]
+        db.table("user_article_reads").upsert(rows, on_conflict="user_id,article_id").execute()
+        return MarkAllReadResult(marked=len(rows))
+
+    result = db.rpc(
+        "mark_reading_stream_read",
+        {
+            "p_user_id": user.id,
+            "p_feed_id": str(body.feed_id) if body.feed_id else None,
+            "p_before": body.before.isoformat() if body.before else None,
+        },
+    ).execute()
+    marked = result.data[0]["marked"] if result.data else 0
+    return MarkAllReadResult(marked=marked)
+
+
+# --- Reading stream ------------------------------------------------------
+
+
+@router.get("/stream", response_model=PaginatedStream)
+async def list_stream(
+    feed_id: UUID | None = None,
+    unread_only: bool = False,
+    cursor: str | None = None,
+    limit: int = Query(30, ge=1, le=100),
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> PaginatedStream:
+    """The unified article timeline across every feed the caller is
+    subscribed to (TODO.md "我的閱讀流") — sorted by published_at (falling
+    back to fetched_at for undated articles, see migration 015), cursor
+    (keyset) paginated the same way GET /me/reads is, with `unread_only` and
+    `feed_id` filters and each row's read state joined in so the frontend
+    doesn't need a second request per page to know what's already read."""
+    cursor_sort_at: str | None = None
+    cursor_id: str | None = None
+    if cursor:
+        cursor_sort_at, cursor_id = _decode_cursor_or_400(cursor)
+
+    result = db.rpc(
+        "list_reading_stream",
+        {
+            "p_user_id": user.id,
+            "p_feed_id": str(feed_id) if feed_id else None,
+            "p_unread_only": unread_only,
+            "p_cursor_sort_at": cursor_sort_at,
+            "p_cursor_id": cursor_id,
+            "p_limit": limit,
+        },
+    ).execute()
+
+    items = [StreamArticle(**row) for row in result.data]
+    next_cursor = None
+    if len(items) == limit:
+        last = items[-1]
+        next_cursor = encode_keyset_cursor(last.published_at or last.fetched_at, last.id)
+    return PaginatedStream(items=items, next_cursor=next_cursor)
+
+
+@router.get("/stream/unread-counts", response_model=UnreadSummary)
+async def stream_unread_counts(
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> UnreadSummary:
+    """Total unread plus a per-feed breakdown, for the stream's header and
+    per-source filter chips. One RPC call rather than the client summing a
+    fully-loaded stream: the stream itself is paginated and deliberately
+    never loads everything at once."""
+    result = db.rpc("reading_stream_unread_counts", {"p_user_id": user.id}).execute()
+    feeds = [FeedUnreadCount(**row) for row in result.data]
+    return UnreadSummary(total_unread=sum(f.unread_count for f in feeds), feeds=feeds)
 
 
 # --- Bookmarks ---------------------------------------------------------------

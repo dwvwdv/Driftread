@@ -57,6 +57,51 @@ export interface PaginatedReads {
   next_cursor: string | null;
 }
 
+// ── Reading stream (GET /me/stream) ────────────────────────────────────────
+
+/** One row of the aggregated article timeline across every subscribed feed. */
+export interface StreamArticle {
+  id: string;
+  feed_id: string;
+  feed_title: string;
+  title: string;
+  url: string;
+  summary: string | null;
+  author: string | null;
+  published_at: string | null;
+  fetched_at: string;
+  is_read: boolean;
+  read_at: string | null;
+}
+
+export interface PaginatedStream {
+  items: StreamArticle[];
+  next_cursor: string | null;
+}
+
+export interface FeedUnreadCount {
+  feed_id: string;
+  feed_title: string;
+  unread_count: number;
+}
+
+export interface UnreadSummary {
+  total_unread: number;
+  feeds: FeedUnreadCount[];
+}
+
+/** Body of POST /me/reads/mark-all — see routers/me.py::mark_all_read for
+ * how the two scopes (explicit ids vs. server-evaluated filter) are chosen. */
+export interface MarkAllReadRequest {
+  article_ids?: string[];
+  feed_id?: string;
+  before?: string;
+}
+
+export interface MarkAllReadResult {
+  marked: number;
+}
+
 export interface DiscoveredFeed {
   feed_url: string;
   title: string | null;
