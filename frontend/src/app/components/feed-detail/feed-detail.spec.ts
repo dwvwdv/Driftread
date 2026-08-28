@@ -380,4 +380,74 @@ describe('FeedDetail article list', () => {
 
     expect(fixture.componentInstance.articles().map((a) => a.id)).toEqual(['authed']);
   });
+
+  it('discards a toggle rollback and clears its pending flag after an identity reload', () => {
+    // A reader toggles read, then signs out or switches accounts before the
+    // request settles. The identity effect reloads the list first — the
+    // late toggle response must not roll back the newly loaded article, and
+    // must not leave it stuck "pending" forever either.
+    const requests: Subject<PaginatedFeedArticles>[] = [];
+    const controlledArticleService = {
+      getArticles: () => {
+        const subject = new Subject<PaginatedFeedArticles>();
+        requests.push(subject);
+        return subject;
+      },
+    };
+    const pendingMarkRead = new Subject<void>();
+    const localMe = {
+      markRead: () => pendingMarkRead,
+      markUnread: () => of(undefined),
+      addBookmark: () => of(undefined),
+      removeBookmark: () => of(undefined),
+    };
+    const localSession = signal<{ user: { id: string } } | null>({ user: { id: 'user-1' } });
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FeedDetail],
+      providers: [
+        provideRouter([]),
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { paramMap: convertToParamMap({ id: 'feed-1' }) } },
+        },
+        { provide: FeedService, useValue: { getFeed: () => of(feed) } },
+        { provide: ArticleService, useValue: controlledArticleService },
+        { provide: MeService, useValue: localMe },
+        { provide: RecommendationService, useValue: { liked: () => [], disliked: () => [] } },
+        {
+          provide: SubscriptionService,
+          useValue: { isSubscribed: () => false, isPending: () => false },
+        },
+        { provide: AuthService, useValue: { session: localSession } },
+        {
+          provide: ToastService,
+          useValue: { info: () => {}, danger: () => {}, success: () => {}, warning: () => {} },
+        },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(FeedDetail);
+    fixture.detectChanges(); // initial load as user-1 -> requests[0]
+    requests[0].next({ items: [makeArticle({ is_read: false })], next_cursor: null });
+    requests[0].complete();
+
+    const page = fixture.componentInstance;
+    page.toggleRead(page.articles()[0]); // optimistic is_read -> true; markRead still in flight
+    expect(page.isReadPending('article-1')).toBe(true);
+
+    localSession.set({ user: { id: 'user-2' } }); // switches before the toggle settles
+    fixture.detectChanges(); // reloads the list -> requests[1], clears pending flags
+
+    expect(page.isReadPending('article-1')).toBe(false); // not stuck pending from the old toggle
+
+    requests[1].next({ items: [makeArticle({ is_read: true })], next_cursor: null }); // user-2's own state
+    requests[1].complete();
+
+    pendingMarkRead.error(new Error('boom')); // the stale toggle finally fails
+
+    expect(page.articles()[0].is_read).toBe(true); // still user-2's real value, not rolled back
+    expect(page.isReadPending('article-1')).toBe(false); // still not stuck
+  });
 });

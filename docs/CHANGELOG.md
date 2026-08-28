@@ -843,6 +843,20 @@ TODO.md 建議開發批次第 7 批的第一部分。此前 feed 詳情頁只顯
   callback 落地時比對呼叫當下記下的值，不相符就丟棄——與 `ReadingStreamService` 的
   `_itemsGeneration` 同一套 pattern。新增迴歸測試：用 `Subject` 手動控制兩個請求的 resolve
   順序，讓匿名回應刻意晚於已登入回應落地，斷言最終畫面是已登入那份、不是被匿名回應蓋掉。
+
+  Codex 第三輪接著抓出 `articlesGeneration` 還沒涵蓋到的另一半：讀者點了已讀／收藏切換、
+  request 還沒回來時登出或換帳號，identity effect 會先把列表重新載入成新身分的資料，但舊切換的
+  `error` callback 落地時原本會無條件把 `wasRead`／`wasBookmarked` 蓋回去——蓋的不是它自己那份
+  已經不在畫面上的舊列表，而是新身分剛載入、正確的那份。`pendingRead`／`pendingBookmark` 也是同一
+  個問題的另一面：舊切換的 callback 現在被 generation 檢查擋下，不會再走到原本清除 pending flag
+  的那行，若同一個 article id 剛好也在新身分的列表裡（同一個 feed，通常就是），它的已讀／收藏
+  按鈕會卡在永久 disabled。修法：`toggleRead()`／`toggleBookmark()` 進入時各自記下當下的
+  `articlesGeneration`，`next`／`error` callback 落地時比對，不符就整段跳過；`loadArticles()`
+  額外把 `pendingRead`／`pendingBookmark` 重置成空集合（放在遞增 generation 的同一個地方）——
+  這兩個 pending set 的清除本來就只會發生在切換自己的 callback 裡，換代後那條路徑不會再走到，
+  只能由取代它的那次載入自己負責清乾淨。迴歸測試：用 `Subject` 卡住一次 `markRead`，切換身分
+  觸發重新載入並斷言 pending flag 立刻歸零（不是卡住），接著讓新身分的真實資料落地，最後讓卡住
+  的舊 `markRead` 才失敗，斷言畫面停留在新身分的正確值、不是被蓋回舊的樂觀回滾值。
 - **本 sandbox 的已知限制**：`pip install pytest`／`npm ci` 仍被 allowlist 擋下，backend／
   frontend 測試都無法在本機實際執行——與階段二十一至二十六相同；已用 `python3 -m py_compile`
   過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`，僅語法檢查，過濾掉預期內的

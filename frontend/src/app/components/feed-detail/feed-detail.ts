@@ -132,10 +132,16 @@ export class FeedDetail implements OnInit {
   loadArticles(): void {
     const generation = ++this.articlesGeneration;
     this.articlesLoading.set(true);
-    // A fresh load supersedes any load-more in flight for the previous
-    // generation — that request's own callback will now bail out on the
-    // generation check below without ever clearing this flag itself.
+    // A fresh load supersedes any load-more, or read/bookmark toggle, in
+    // flight for the previous generation — those requests' own callbacks
+    // will now bail out on the generation check without ever clearing their
+    // flag themselves, so the flags have to be reset here instead. Without
+    // this, a toggle started under a since-replaced identity would leave its
+    // article permanently stuck "pending" once that same article id
+    // reappears under the new identity's freshly loaded page.
     this.articlesLoadingMore.set(false);
+    this.pendingRead.set(new Set());
+    this.pendingBookmark.set(new Set());
     this.articlesError.set('');
     this.articleService.getArticles(this.feedId, null, ARTICLES_PAGE_SIZE).subscribe({
       next: (page) => {
@@ -196,13 +202,22 @@ export class FeedDetail implements OnInit {
   toggleRead(article: FeedArticle): void {
     if (this.isReadPending(article.id)) return;
     const wasRead = article.is_read;
+    // If sign-out/account-switch reloads the list before this settles, the
+    // reload bumps articlesGeneration — this toggle's own callback below
+    // then knows its optimistic patch and pending flag belong to a list
+    // that's no longer on screen, and skips touching the new one.
+    const generation = this.articlesGeneration;
     this.setPending('read', article.id, true);
     this.patchArticle(article.id, { is_read: !wasRead });
 
     const request = wasRead ? this.me.markUnread(article.id) : this.me.markRead(article.id);
     request.subscribe({
-      next: () => this.setPending('read', article.id, false),
+      next: () => {
+        if (generation !== this.articlesGeneration) return;
+        this.setPending('read', article.id, false);
+      },
       error: (err: unknown) => {
+        if (generation !== this.articlesGeneration) return;
         this.setPending('read', article.id, false);
         this.patchArticle(article.id, { is_read: wasRead });
         this.toast.danger(apiMessage(err, wasRead ? '標為未讀失敗' : '標為已讀失敗'));
@@ -213,6 +228,7 @@ export class FeedDetail implements OnInit {
   toggleBookmark(article: FeedArticle): void {
     if (this.isBookmarkPending(article.id)) return;
     const wasBookmarked = article.is_bookmarked;
+    const generation = this.articlesGeneration;
     this.setPending('bookmark', article.id, true);
     this.patchArticle(article.id, { is_bookmarked: !wasBookmarked });
 
@@ -220,8 +236,12 @@ export class FeedDetail implements OnInit {
       ? this.me.removeBookmark(article.id, 'favorite')
       : this.me.addBookmark(article.id, 'favorite');
     request.subscribe({
-      next: () => this.setPending('bookmark', article.id, false),
+      next: () => {
+        if (generation !== this.articlesGeneration) return;
+        this.setPending('bookmark', article.id, false);
+      },
       error: (err: unknown) => {
+        if (generation !== this.articlesGeneration) return;
         this.setPending('bookmark', article.id, false);
         this.patchArticle(article.id, { is_bookmarked: wasBookmarked });
         this.toast.danger(apiMessage(err, wasBookmarked ? '取消收藏失敗' : '收藏失敗'));
