@@ -93,15 +93,23 @@
   </header>
 
   <section aria-labelledby="articles-heading">
-    <h2 id="articles-heading" class="ob-label section">最新文章</h2>
+    <h2 id="articles-heading" class="ob-label section">文章</h2>
 
-    @if (f.articles.length === 0) {
+    @if (articlesLoading()) {
+      <ob-loading label="讀取文章中" />
+    } @else if (articlesError()) {
+      <ob-error [message]="articlesError()">
+        <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="loadArticles()">重試</button>
+      </ob-error>
+    } @else if (articles().length === 0) {
       <ob-empty message="這個來源目前還沒有抓到文章。" />
     } @else {
       <div class="list">
-        @for (article of f.articles; track article.id) {
+        @for (article of articles(); track article.id) {
           <ob-list-row>
-            <a rowTitle [routerLink]="['/articles', article.id]">{{ article.title }}</a>
+            <a rowTitle [class.is-read]="article.is_read" [routerLink]="['/articles', article.id]">
+              {{ article.title }}
+            </a>
             <div rowLines>
               <span>
                 @if (article.author) {
@@ -110,9 +118,46 @@
                 {{ article.published_at | date: 'yyyy-MM-dd' }}
               </span>
             </div>
+            @if (auth.session()) {
+              <div rowMeta>
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm ob-btn--icon"
+                  [attr.aria-label]="article.is_bookmarked ? '取消收藏' : '收藏'"
+                  [attr.aria-pressed]="article.is_bookmarked"
+                  [disabled]="isBookmarkPending(article.id)"
+                  (click)="toggleBookmark(article)"
+                >
+                  <ob-icon name="bookmark" [size]="14" [filled]="article.is_bookmarked" />
+                </button>
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm ob-btn--icon"
+                  [attr.aria-label]="article.is_read ? '標為未讀' : '標為已讀'"
+                  [attr.aria-pressed]="article.is_read"
+                  [disabled]="isReadPending(article.id)"
+                  (click)="toggleRead(article)"
+                >
+                  <ob-icon name="check" [size]="14" />
+                </button>
+              </div>
+            }
           </ob-list-row>
         }
       </div>
+
+      @if (hasMoreArticles()) {
+        <div class="load-more">
+          <button
+            type="button"
+            class="ob-btn ob-btn--subtle"
+            [disabled]="articlesLoadingMore()"
+            (click)="loadMoreArticles()"
+          >
+            {{ articlesLoadingMore() ? '載入中…' : '載入更多' }}
+          </button>
+        </div>
+      }
     }
   </section>
 }

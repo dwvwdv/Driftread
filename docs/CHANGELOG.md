@@ -778,3 +778,55 @@ feed 詳情頁翻最新 10 篇。也沒有未讀數，也沒有批次已讀。
   已開啟的閱讀流頁面上，要等下一次 `reload()`。兩者都留給之後的批次或後續 PR。
 - 對應文件更新：`docs/FEATURES.md` 第 1、3、4、5 節、`TODO.md`（批次 4「我的閱讀流」七項全部
   打勾，「建議開發批次」第 4 項打勾）。
+
+## 階段二十七：Feed 完整文章列表（cursor 分頁、已讀／收藏內嵌切換）（2026-08-28）
+
+TODO.md 建議開發批次第 7 批的第一部分。此前 feed 詳情頁只顯示 `GET /feeds/{feed_id}` 內嵌的最新
+10 篇文章，完全沒用到 `GET /feeds/{feed_id}/articles`——這個 offset 分頁端點寫好之後，前端
+`ArticleService.getArticles()` 從未被任何元件呼叫過。而且它排序只靠單一 `published_at` 欄位，
+`published_at` 為 NULL 的文章會落進 Postgres `DESC` 預設的 `NULLS FIRST`，offset 分頁在新文章
+持續進站的情況下也會讓「載入更多」重複或漏掉文章——同 migration 015 替我的閱讀流解決過的問題。
+
+- **`backend/migrations/016_feed_article_list.sql`（新）**：`list_feed_articles(p_feed_id,
+  p_user_id, p_cursor_sort_at, p_cursor_id, p_limit)`，`driftread` schema 內的 DB function，
+  排序鍵與 cursor 形狀直接沿用 `list_reading_stream`（migration 015）的
+  `COALESCE(published_at, fetched_at) DESC, id DESC`，索引也沿用同一個
+  `articles_feed_id_sort_at_idx`，不需要新索引。`p_user_id` 可為 NULL——這個 function 服務公開
+  端點，未登入呼叫時兩個 LEFT JOIN（`user_article_reads`／`user_bookmarks`，後者固定
+  `bookmark_type = 'favorite'`）的條件都不成立，`is_read`／`is_bookmarked` 自然是 false，不需要
+  額外分支。`SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同 `list_reading_stream` 一套
+  鎖法。
+- **`backend/models.py`**：新增 `FeedArticle`（`ArticleSummary` 加 `fetched_at`／`is_read`／
+  `is_bookmarked`）與 `PaginatedFeedArticles`；移除不再使用的 `PaginatedArticles`。
+- **`backend/routers/articles.py`**：`GET /feeds/{feed_id}/articles` 從 `page`／`page_size`
+  offset 分頁改成 `cursor`／`limit`（上限 100）keyset 分頁，寫法與 `routers/me.py` 的
+  `/me/stream` 完全對稱（`decode_keyset_cursor` 解 400、`encode_keyset_cursor` 編下一頁
+  cursor）。新增 `get_optional_user` 依賴（同 `routers/recommendations.py`／`discover.py` 已有的
+  模式）：帶有效 token 時傳 `p_user_id`，否則傳 `None`，端點本身維持公開、不需要登入才能看文章
+  列表。
+- **`frontend/src/app/services/article.ts`**：`getArticles()` 簽名改成
+  `(feedId, cursor?, limit?)`，回傳 `PaginatedFeedArticles`。
+- **`frontend/src/app/components/feed-detail`**：文章列表獨立於 feed metadata 載入（各自的
+  loading／error 狀態，互不阻塞），「載入更多」同 `reading-stream` 的 pattern；每列在登入後顯示
+  已讀／收藏切換按鈕（未登入不顯示——單篇的已讀狀態沒有像訂閱那樣的「登入後回來完成」流程可以
+  接，直接不出現比較誠實），樂觀更新＋失敗回滾＋pending 期間忽略重複點擊，寫法與
+  `ReadingStreamService` 的 `markRead`/`markUnread` 同一套，但因為 feed 詳情頁本身不追蹤未讀數，
+  這裡的 pending/patch 邏輯直接寫在元件裡，沒有另外拉一個 service。收藏固定走 `favorite` 類型
+  （同「稍後讀」共用同一個 `POST /me/bookmarks`，這裡只是預設分類，UI 上仍可另外用既有的
+  `/me/bookmarks` 頁面管理兩種收藏）。已讀文章的標題同 `reading-stream` 用 `.is-read` 降低對比而
+  非劃掉，維持可讀性。
+- **不做的部分**：`GET /feeds/{feed_id}` 內嵌的固定 10 篇 `articles` 欄位維持不動——沒有其他前端
+  消費它，但這是開放 API 的一部分，拿掉有未知的外部風險，維持它的成本也接近零；`feed-detail` 頁
+  本身已經不再讀這個欄位。
+- **測試**：`backend/tests/test_articles.py` 新增 `list_feed_articles` 呼叫參數（含匿名／已登入
+  兩種 `p_user_id`）、cursor 編解碼與分頁邊界的案例。`frontend/.../feed-detail.spec.ts` 新增
+  `FeedDetail article list` describe block：首頁載入、載入更多、已讀／收藏樂觀更新與失敗回滾、
+  pending 期間忽略重複點擊（用 `Subject` 卡住尚未 resolve 的請求驗證，而非假設 `of()` 的同步
+  resolve 能測出 in-flight 狀態）。
+- **本 sandbox 的已知限制**：`pip install pytest`／`npm ci` 仍被 allowlist 擋下，backend／
+  frontend 測試都無法在本機實際執行——與階段二十一至二十六相同；已用 `python3 -m py_compile`
+  過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`，僅語法檢查，過濾掉預期內的
+  module-not-found／implicit-any／缺 test runner 型別錯誤後沒有其他訊息）過 frontend 改動，交給
+  CI 實際跑過驗證。
+- 對應文件更新：`docs/FEATURES.md`（Feeds/Articles API、文章預覽功能列、第 5 節資料表）、
+  `TODO.md`（「Feed 完整文章列表」四項打勾，「建議開發批次」第 7 項改為進行中）。

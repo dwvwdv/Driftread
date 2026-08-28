@@ -90,11 +90,19 @@ class PaginatedFeeds(BaseModel):
     page_size: int
 
 
-class PaginatedArticles(BaseModel):
-    items: list[ArticleSummary]
-    total: int
-    page: int
-    page_size: int
+class FeedArticle(ArticleSummary):
+    """One row of GET /feeds/{feed_id}/articles — an ArticleSummary plus this
+    caller's read/bookmark state (false for both when the caller is
+    anonymous), as returned by the `list_feed_articles` DB function
+    (migration 016)."""
+    fetched_at: datetime
+    is_read: bool = False
+    is_bookmarked: bool = False
+
+
+class PaginatedFeedArticles(BaseModel):
+    items: list[FeedArticle]
+    next_cursor: str | None = None
 
 
 class ReadReceipt(BaseModel):

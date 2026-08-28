@@ -115,3 +115,15 @@ h1 {
     color: var(--accent);
   }
 }
+
+// Same treatment as reading-stream: dimmed, not washed out, so scanning the
+// page reads unread-first without making read articles hard to read back.
+.list a.is-read {
+  color: var(--text-dim);
+}
+
+.load-more {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--sp-5);
+}
