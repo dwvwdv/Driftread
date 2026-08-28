@@ -822,7 +822,18 @@ TODO.md 建議開發批次第 7 批的第一部分。此前 feed 詳情頁只顯
   兩種 `p_user_id`）、cursor 編解碼與分頁邊界的案例。`frontend/.../feed-detail.spec.ts` 新增
   `FeedDetail article list` describe block：首頁載入、載入更多、已讀／收藏樂觀更新與失敗回滾、
   pending 期間忽略重複點擊（用 `Subject` 卡住尚未 resolve 的請求驗證，而非假設 `of()` 的同步
-  resolve 能測出 in-flight 狀態）。
+  resolve 能測出 in-flight 狀態）、session 從 null 非同步解析出已登入身分後重新載入（見下）。
+- **PR review 修正**（Codex）：`ngOnInit()` 原本只在元件建立時呼叫一次 `loadArticles()`；但
+  `AuthService.session` 是非同步還原的持久化 session（見 `services/auth.ts`），直接訪問頁面時
+  即使讀者其實已登入，`session()` 一開始仍是 `null`。原本的一次性載入會因此在還沒拿到 token 前
+  就送出請求，`is_read`／`is_bookmarked` 全部回 false，且 session 還原後不會重新載入——同
+  `bookmarks.ts`／`my-feeds.ts` 已經處理過的那類問題。改成建構子內的 `effect()`，依
+  `auth.session()` 的使用者 id 觸發載入（`articlesLoadedFor` 記錄目前是替誰載入的，`undefined`
+  代表「還沒載入過」，用來與「已登入但 id 為 null 沒有意義」的匿名情況區分），涵蓋初始匿名載入、
+  session 非同步解析、登出與換帳號四種情況。測試沿用 `my-feeds.spec.ts` 的 pattern：
+  `AuthService.session` 用真的 `signal()` 而非普通函式（否則 Angular 的 `effect()` 沒有訊號可以
+  追蹤，測不出重新載入的行為），`session.set(...)` 後 `fixture.detectChanges()` 讓元件自己的
+  effect 重新 flush。
 - **本 sandbox 的已知限制**：`pip install pytest`／`npm ci` 仍被 allowlist 擋下，backend／
   frontend 測試都無法在本機實際執行——與階段二十一至二十六相同；已用 `python3 -m py_compile`
   過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`，僅語法檢查，過濾掉預期內的

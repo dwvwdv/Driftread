@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, effect, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ArticleService } from '../../services/article';
 import { FeedService } from '../../services/feed';
@@ -54,6 +54,29 @@ export class FeedDetail implements OnInit {
   isReadPending = (id: string) => this.pendingRead().has(id);
   isBookmarkPending = (id: string) => this.pendingBookmark().has(id);
 
+  /** Identity the currently loaded article page was fetched for.
+   * `undefined` means "never loaded" — distinct from `null` (anonymous) so
+   * the effect below still fires the very first load. */
+  private articlesLoadedFor: string | null | undefined = undefined;
+
+  constructor() {
+    // AuthService restores a persisted session asynchronously — `session()`
+    // starts null even for an already-signed-in reader on a direct visit —
+    // so a one-shot load in ngOnInit can go out anonymous, get back
+    // is_read/is_bookmarked all false, and never refresh once the real
+    // session arrives (same class of bug bookmarks.ts and my-feeds.ts guard
+    // against for their own user-scoped loads). Reacting to identity here
+    // instead covers the initial anonymous load, the async session-restore
+    // case, and sign-out/account-switch — all of which change what
+    // is_read/is_bookmarked should read.
+    effect(() => {
+      const userId = this.auth.session()?.user?.id ?? null;
+      if (this.articlesLoadedFor === userId) return;
+      this.articlesLoadedFor = userId;
+      this.loadArticles();
+    });
+  }
+
   get feedId(): string {
     return this.route.snapshot.paramMap.get('id') ?? '';
   }
@@ -76,7 +99,6 @@ export class FeedDetail implements OnInit {
 
   ngOnInit(): void {
     this.load();
-    this.loadArticles();
   }
 
   load(): void {

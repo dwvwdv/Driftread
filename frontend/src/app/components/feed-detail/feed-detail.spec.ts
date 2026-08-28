@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing';
+import { signal } from '@angular/core';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { FeedDetail } from './feed-detail';
@@ -157,8 +158,17 @@ describe('FeedDetail article list', () => {
   };
   let firstPage: PaginatedFeedArticles;
   let secondPage: PaginatedFeedArticles;
+  let session: ReturnType<typeof signal<{ user: { id: string } } | null>>;
+  // Re-detects changes on the same fixture — how FeedDetail's own
+  // constructor effect (which reacts to auth.session()) actually flushes in
+  // tests, same as MyFeeds' equivalent effect (see my-feeds.spec.ts).
+  let detect: () => void;
 
-  function setup() {
+  /** `initialSession` defaults to already-signed-in; pass `null` to start
+   * signed out — needed for the async session-restore regression test
+   * below, which starts anonymous and only signs in after the fixture's
+   * first change detection. */
+  function setup(initialSession: { user: { id: string } } | null = { user: { id: 'user-1' } }) {
     firstPage = { items: [makeArticle()], next_cursor: 'cursor-1' };
     secondPage = { items: [makeArticle({ id: 'article-2' })], next_cursor: null };
     articleService = {
@@ -174,6 +184,7 @@ describe('FeedDetail article list', () => {
       addBookmark: () => of(undefined),
       removeBookmark: () => of(undefined),
     };
+    session = signal(initialSession);
 
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -192,7 +203,7 @@ describe('FeedDetail article list', () => {
           provide: SubscriptionService,
           useValue: { isSubscribed: () => false, isPending: () => false },
         },
-        { provide: AuthService, useValue: { session: () => ({ user: { id: 'user-1' } }) } },
+        { provide: AuthService, useValue: { session } },
         {
           provide: ToastService,
           useValue: { info: () => {}, danger: () => {}, success: () => {}, warning: () => {} },
@@ -201,7 +212,8 @@ describe('FeedDetail article list', () => {
     });
 
     const fixture = TestBed.createComponent(FeedDetail);
-    fixture.detectChanges();
+    detect = () => fixture.detectChanges();
+    detect();
     return fixture.componentInstance;
   }
 
@@ -274,5 +286,29 @@ describe('FeedDetail article list', () => {
     pending.next();
     pending.complete();
     expect(page.isReadPending('article-1')).toBe(false);
+  });
+
+  it('reloads the article list once a persisted session resolves after an initial anonymous load', () => {
+    // AuthService.session() starts null even for an already-signed-in reader
+    // on a direct visit — it restores a persisted session asynchronously.
+    // A one-shot load that fires before that resolves would otherwise never
+    // pick up the (now available) is_read/is_bookmarked state.
+    const page = setup(null);
+    expect(articleService.calls).toEqual([null]);
+
+    session.set({ user: { id: 'user-1' } }); // session resolves
+    detect();
+
+    expect(articleService.calls).toEqual([null, null]); // reloaded from the top, not appended
+    expect(page.articles().map((a) => a.id)).toEqual(['article-1']);
+  });
+
+  it('does not reload when the signed-in identity is unchanged', () => {
+    setup(); // signed in from the start (default initialSession)
+    expect(articleService.calls).toEqual([null]);
+
+    detect(); // another change-detection pass, same identity
+
+    expect(articleService.calls).toEqual([null]); // no extra reload
   });
 });
