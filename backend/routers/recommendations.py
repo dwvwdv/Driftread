@@ -168,10 +168,11 @@ def _fetch_candidate_pool(
     return preferred, combined[:exploration_n]
 
 
-# Public and unauthenticated, and (since migration 007) each call can run up
-# to three `ORDER BY random()` passes over `feeds` via sample_feed_candidates
-# — a full scan-and-sort per pool, not an indexed point lookup. Restricting
-# the RPC's own grants (migration 007) stops a caller bypassing this endpoint
+# Public and unauthenticated, and each call can run up to three sampling
+# queries against `feeds` via sample_feed_candidates — an indexed pivot scan
+# per pool since migration 018, not the full scan-and-sort migration 007
+# originally shipped, but still real per-request DB work. Restricting the
+# RPC's own grants (migration 007) stops a caller bypassing this endpoint
 # entirely, but does nothing about plain request-volume flooding straight at
 # this route, unlike /discover and /discover/import (rate-limited since
 # SECURITY.md #18) which this endpoint had been missing.
@@ -250,8 +251,8 @@ async def get_recommendations(
         top.sort(key=lambda row: _score(row, categories, tags, languages), reverse=True)
     else:
         # No signal at all means `_fetch_candidate_pool` ran in "unfiltered"
-        # mode, which is already `ORDER BY random()` server-side (migration
-        # 007) — no need to reshuffle client-side on top of that.
+        # mode, which is already randomly sampled server-side (migration 007,
+        # indexed since 018) — no need to reshuffle client-side on top of that.
         top = candidates[:limit]
 
     return [Feed(**row) for row in top]
