@@ -38,12 +38,18 @@
 未登入者只吃 query 帶的 `liked`。已訂閱與 `liked` / `disliked` 內的 feed 會被排除。
 `liked` / `disliked` 各上限 50 筆，`limit` 為 1–50（預設 10）。
 
-候選池的抽樣透過 DB function `sample_feed_candidates()`（migration 007）做 `ORDER BY random()`，
+候選池的抽樣透過 DB function `sample_feed_candidates()`（migration 007）在資料庫端隨機抽樣，
 而非應用層 `.limit()` 後才 shuffle —— PostgREST 的 query builder 沒有 random order，單純
 `.limit(n)` 在候選數大於抓取量的目錄上永遠只會拿到同一批「預設排序的前 n 筆」，應用層 shuffle
 只能重排這固定的一批，永遠碰不到表裡其餘的列。四種候選池形狀（無過濾 / category 命中 /
 category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後端程式碼決定、不接受呼叫端輸入，
 不會重開 SECURITY.md #14 修過的 PostgREST filter injection 那類洞。
+
+抽樣機制本身：migration 007 原本是 `ORDER BY random()`，對符合條件的列做全表排序再取前 N 筆，
+目錄變大後這個排序成本會持續變貴。migration 018 改為每列存一個索引化的 `sample_key`
+（`double precision DEFAULT random()`），每次呼叫從一個隨機 pivot 值開始做有界的索引範圍掃描，
+掃到 `LIMIT` 就停止；pivot 落在 key 空間尾端時，用第二個有界掃描從頭補滿剩餘的 `p_limit`。
+兩段掃描都是索引掃描而非全表排序，呼叫成本不再隨目錄大小線性成長。
 
 ## 2b. 自動抓取管道
 
@@ -236,7 +242,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/feeds/{feed_id}` | feed 詳情 + 最新 10 篇文章摘要（不存在回 404） |
 | GET | `/feeds/{feed_id}/articles` | 該 feed 的完整文章列表，keyset（cursor）分頁（`cursor`／`limit`，上限 100）。帶有效 Supabase token 時，每篇文章一併回傳呼叫者自己的 `is_read`／`is_bookmarked`（收藏類型固定 `favorite`），未登入則兩者皆為 false |
 | GET | `/articles/{article_id}` | 單篇文章全文（不存在回 404） |
-| GET | `/recommendations` | 猜你喜歡（帶 token 時個人化）。**有 rate limit**：每個 client IP 20 requests / 60 秒，獨立配額，超過回 `429` 並帶 `Retry-After`（migration 007 起每次呼叫最多對 `feeds` 做三次 `ORDER BY random()` 全表掃描，比原本單純的 `.limit()` 貴得多，因此補上）|
+| GET | `/recommendations` | 猜你喜歡（帶 token 時個人化）。**有 rate limit**：每個 client IP 20 requests / 60 秒，獨立配額，超過回 `429` 並帶 `Retry-After`（migration 007 起每次呼叫最多對 `feeds` 做三次資料庫端隨機抽樣，比原本單純的 `.limit()` 貴得多，因此補上；抽樣本身自 migration 018 起是索引範圍掃描，不再是全表排序，見上方第 2 節）|
 | GET | `/health` | 健康檢查（compose healthcheck 使用） |
 
 ### Discover（公開，有 rate limit）
@@ -385,7 +391,9 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 
 Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
-（不建新表）：供 `routers/recommendations.py` 以 `ORDER BY random()` 抽樣候選池，見上方第 2 節。
+（不建新表）：供 `routers/recommendations.py` 抽樣候選池，見上方第 2 節。migration 018 為
+`feeds` 加上索引化的 `sample_key`（`double precision DEFAULT random()`）欄位並改寫這個
+function 的抽樣機制，欄位定義與呼叫介面本身沒變。
 
 Migration 011 / 014 分別定義 `list_feed_categories()` / `list_feed_languages()`（不建新表）：
 db-side dedup，供 `GET /feeds/categories`、`GET /feeds/languages` 與偏好設定 UI 使用。兩者皆

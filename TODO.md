@@ -185,7 +185,11 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [x] `GET /categories` 改由 SQL `DISTINCT`／RPC 聚合，不把所有 Feed 拉回 Python 去重。
       （`driftread.list_feed_categories()`，見 migration 011，`routers/feeds.py` 用 `db.rpc(...)` 呼叫，
       這裡也是先前漏勾）
-- [ ] 推薦候選移除大表 `ORDER BY random()`，改用 indexed random key、pivot sampling 或可擴充的抽樣策略。
+- [x] 推薦候選移除大表 `ORDER BY random()`，改用 indexed random key、pivot sampling 或可擴充的抽樣策略。
+      （migration 018：`feeds.sample_key`，索引化 `double precision DEFAULT random()`；
+      `sample_feed_candidates()` 改為從隨機 pivot 值起做有界索引範圍掃描，pivot 落在 key
+      空間尾端時用第二段有界掃描從頭補滿，兩段都是 index scan 不再是全表排序；本地
+      200k 列驗證：舊版 ~56ms、新版 ~2.7ms，且差距隨表變大而擴大）
 - [x] 為常用的 subscription、read receipt、bookmark、feedback 查詢補齊複合 index。
       （`user_feeds` 靠 PK 前導欄位已足夠；`user_article_reads` 見 migration 012；
       `user_bookmarks` 新增 migration 013：`(user_id, bookmark_type, created_at DESC)`，
