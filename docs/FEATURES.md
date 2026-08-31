@@ -10,7 +10,7 @@
 | 功能 | 狀態 | 說明 | 相關程式 |
 |------|------|------|----------|
 | 信息源瀏覽 | ✅ | 分頁、分類 / 語言 / tag 組合篩選（可從卡片上的 tag 直接點擊篩選）、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
-| 文章預覽與全文閱讀 | ✅ | feed 詳情帶文章列表；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/article-reader` |
+| 文章預覽與全文閱讀 | ✅ | feed 詳情帶完整文章列表（cursor 分頁「載入更多」，登入後每篇可直接切換已讀／收藏）；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/feed-detail`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
@@ -233,8 +233,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/feeds` | 列表；支援分頁、`category`、`language`、`tag`（單一 tag，對 `tags` 陣列做 contains）、`search`（`search` 上限 200 字），四個篩選條件彼此 `AND` 疊加 |
 | GET | `/feeds/categories` | 所有分類（供 Feed 目錄的分類篩選與偏好設定 UI） |
 | GET | `/feeds/languages` | 所有語言（供 Feed 目錄的語言篩選與偏好設定 UI） |
-| GET | `/feeds/{feed_id}` | feed 詳情 + 文章（不存在回 404） |
-| GET | `/feeds/{feed_id}/articles` | 該 feed 的文章分頁 |
+| GET | `/feeds/{feed_id}` | feed 詳情 + 最新 10 篇文章摘要（不存在回 404） |
+| GET | `/feeds/{feed_id}/articles` | 該 feed 的完整文章列表，keyset（cursor）分頁（`cursor`／`limit`，上限 100）。帶有效 Supabase token 時，每篇文章一併回傳呼叫者自己的 `is_read`／`is_bookmarked`（收藏類型固定 `favorite`），未登入則兩者皆為 false |
 | GET | `/articles/{article_id}` | 單篇文章全文（不存在回 404） |
 | GET | `/recommendations` | 猜你喜歡（帶 token 時個人化）。**有 rate limit**：每個 client IP 20 requests / 60 秒，獨立配額，超過回 `429` 並帶 `Retry-After`（migration 007 起每次呼叫最多對 `feeds` 做三次 `ORDER BY random()` 全表掃描，比原本單純的 `.limit()` 貴得多，因此補上）|
 | GET | `/health` | 健康檢查（compose healthcheck 使用） |
@@ -411,6 +411,14 @@ DB function，供 `routers/me.py` 的 `/me/stream*`、`/me/reads/mark-all` 呼�
 `service_role`，與 `sample_feed_candidates`／`list_feed_categories` 同一套鎖法——後端一律經
 `service_role` client 呼叫並顯式帶入 `user_id`，隔離仍在應用層，不是 RLS + user-scoped JWT
 （Phase 0 尚待完成項）。
+
+Migration 016（Feed 完整文章列表，不建新表）定義 `list_feed_articles(p_feed_id, p_user_id,
+p_cursor_sort_at, p_cursor_id, p_limit)`，供 `GET /feeds/{feed_id}/articles` 呼叫：單一 feed 的
+文章，keyset 分頁、排序鍵與 cursor 形狀與 `list_reading_stream` 完全相同，直接沿用它索引的
+`articles_feed_id_sort_at_idx`（migration 015）不需要新索引。`p_user_id` 可為 NULL——這個
+function 服務公開端點，未登入呼叫時兩個 LEFT JOIN（`user_article_reads`／`user_bookmarks`，後者
+固定 `bookmark_type = 'favorite'`）的條件都不成立，`is_read`／`is_bookmarked` 自然是 false。同
+`SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。
 
 RLS：四張 `user_*` 表為 permanent-user owner-only policy（002；同時檢查 `auth.uid()` 與
 JWT `is_anonymous = false`）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。

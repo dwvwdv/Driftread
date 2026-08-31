@@ -1,13 +1,16 @@
 import { TestBed } from '@angular/core/testing';
+import { signal } from '@angular/core';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { FeedDetail } from './feed-detail';
+import { ArticleService } from '../../services/article';
 import { FeedService } from '../../services/feed';
+import { MeService } from '../../services/me';
 import { RecommendationService } from '../../services/recommendation';
 import { SubscriptionService } from '../../services/subscription';
 import { AuthService } from '../../services/auth';
 import { ToastService } from '../../ui/toast/toast';
-import { FeedWithArticles } from '../../models';
+import { FeedArticle, FeedWithArticles, PaginatedFeedArticles } from '../../models';
 
 const feed: FeedWithArticles = {
   id: 'feed-1',
@@ -25,6 +28,24 @@ const feed: FeedWithArticles = {
   updated_at: '2026-01-01T00:00:00Z',
   articles: [],
 };
+
+const noArticles: PaginatedFeedArticles = { items: [], next_cursor: null };
+
+function makeArticle(overrides: Partial<FeedArticle> = {}): FeedArticle {
+  return {
+    id: 'article-1',
+    feed_id: 'feed-1',
+    title: 'Article One',
+    url: 'https://example.com/a',
+    summary: null,
+    author: null,
+    published_at: '2026-01-01T00:00:00Z',
+    fetched_at: '2026-01-01T00:00:00Z',
+    is_read: false,
+    is_bookmarked: false,
+    ...overrides,
+  };
+}
 
 describe('FeedDetail subscribe action', () => {
   // Signed in by default; a test that needs signed-out sets this to null
@@ -67,6 +88,8 @@ describe('FeedDetail subscribe action', () => {
           useValue: { snapshot: { paramMap: convertToParamMap({ id: 'feed-1' }) } },
         },
         { provide: FeedService, useValue: { getFeed: () => of(feed) } },
+        { provide: ArticleService, useValue: { getArticles: () => of(noArticles) } },
+        { provide: MeService, useValue: {} },
         { provide: RecommendationService, useValue: { liked: () => [], disliked: () => [] } },
         { provide: SubscriptionService, useValue: subs },
         { provide: AuthService, useValue: { session: () => session } },
@@ -119,5 +142,312 @@ describe('FeedDetail subscribe action', () => {
 
     expect(subs.unsubscribeCalls).toEqual(['feed-1']);
     expect(subs.subscribeCalls).toEqual([]);
+  });
+});
+
+describe('FeedDetail article list', () => {
+  let articleService: {
+    calls: (string | null)[];
+    getArticles: (feedId: string, cursor?: string | null) => Observable<PaginatedFeedArticles>;
+  };
+  let me: {
+    markRead: (id: string) => Observable<void>;
+    markUnread: (id: string) => Observable<void>;
+    addBookmark: (id: string, type: string) => Observable<void>;
+    removeBookmark: (id: string, type: string) => Observable<void>;
+  };
+  let firstPage: PaginatedFeedArticles;
+  let secondPage: PaginatedFeedArticles;
+  let session: ReturnType<typeof signal<{ user: { id: string } } | null>>;
+  // Re-detects changes on the same fixture — how FeedDetail's own
+  // constructor effect (which reacts to auth.session()) actually flushes in
+  // tests, same as MyFeeds' equivalent effect (see my-feeds.spec.ts).
+  let detect: () => void;
+
+  /** `initialSession` defaults to already-signed-in; pass `null` to start
+   * signed out — needed for the async session-restore regression test
+   * below, which starts anonymous and only signs in after the fixture's
+   * first change detection. */
+  function setup(initialSession: { user: { id: string } } | null = { user: { id: 'user-1' } }) {
+    firstPage = { items: [makeArticle()], next_cursor: 'cursor-1' };
+    secondPage = { items: [makeArticle({ id: 'article-2' })], next_cursor: null };
+    articleService = {
+      calls: [],
+      getArticles: (_feedId: string, cursor: string | null = null) => {
+        articleService.calls.push(cursor);
+        return of(cursor ? secondPage : firstPage);
+      },
+    };
+    me = {
+      markRead: () => of(undefined),
+      markUnread: () => of(undefined),
+      addBookmark: () => of(undefined),
+      removeBookmark: () => of(undefined),
+    };
+    session = signal(initialSession);
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FeedDetail],
+      providers: [
+        provideRouter([]),
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { paramMap: convertToParamMap({ id: 'feed-1' }) } },
+        },
+        { provide: FeedService, useValue: { getFeed: () => of(feed) } },
+        { provide: ArticleService, useValue: articleService },
+        { provide: MeService, useValue: me },
+        { provide: RecommendationService, useValue: { liked: () => [], disliked: () => [] } },
+        {
+          provide: SubscriptionService,
+          useValue: { isSubscribed: () => false, isPending: () => false },
+        },
+        { provide: AuthService, useValue: { session } },
+        {
+          provide: ToastService,
+          useValue: { info: () => {}, danger: () => {}, success: () => {}, warning: () => {} },
+        },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(FeedDetail);
+    detect = () => fixture.detectChanges();
+    detect();
+    return fixture.componentInstance;
+  }
+
+  it('loads the first page of articles on init', () => {
+    const page = setup();
+
+    expect(page.articles().map((a) => a.id)).toEqual(['article-1']);
+    expect(page.hasMoreArticles()).toBe(true);
+    expect(articleService.calls).toEqual([null]);
+  });
+
+  it('appends the next page and clears hasMoreArticles once exhausted', () => {
+    const page = setup();
+
+    page.loadMoreArticles();
+
+    expect(page.articles().map((a) => a.id)).toEqual(['article-1', 'article-2']);
+    expect(page.hasMoreArticles()).toBe(false);
+    expect(articleService.calls).toEqual([null, 'cursor-1']);
+  });
+
+  it('optimistically marks an article read, then confirms on success', () => {
+    const page = setup();
+    let seenId = '';
+    me.markRead = (id: string) => {
+      seenId = id;
+      return of(undefined);
+    };
+
+    page.toggleRead(page.articles()[0]);
+
+    expect(page.articles()[0].is_read).toBe(true);
+    expect(seenId).toBe('article-1');
+    expect(page.isReadPending('article-1')).toBe(false);
+  });
+
+  it('rolls back the optimistic is_read flip on failure', () => {
+    const page = setup();
+    me.markRead = () => throwError(() => new Error('boom'));
+
+    page.toggleRead(page.articles()[0]);
+
+    expect(page.articles()[0].is_read).toBe(false);
+  });
+
+  it('rolls back the optimistic is_bookmarked flip on failure', () => {
+    const page = setup();
+    me.addBookmark = () => throwError(() => new Error('boom'));
+
+    page.toggleBookmark(page.articles()[0]);
+
+    expect(page.articles()[0].is_bookmarked).toBe(false);
+  });
+
+  it('ignores a toggle while one is already pending for that article', () => {
+    const page = setup();
+    const pending = new Subject<void>();
+    let calls = 0;
+    me.markRead = () => {
+      calls++;
+      return pending;
+    };
+
+    page.toggleRead(page.articles()[0]); // now pending — markRead not yet resolved
+    expect(page.isReadPending('article-1')).toBe(true);
+    page.toggleRead(page.articles()[0]); // ignored: a toggle is already in flight
+
+    expect(calls).toBe(1);
+
+    pending.next();
+    pending.complete();
+    expect(page.isReadPending('article-1')).toBe(false);
+  });
+
+  it('reloads the article list once a persisted session resolves after an initial anonymous load', () => {
+    // AuthService.session() starts null even for an already-signed-in reader
+    // on a direct visit — it restores a persisted session asynchronously.
+    // A one-shot load that fires before that resolves would otherwise never
+    // pick up the (now available) is_read/is_bookmarked state.
+    const page = setup(null);
+    expect(articleService.calls).toEqual([null]);
+
+    session.set({ user: { id: 'user-1' } }); // session resolves
+    detect();
+
+    expect(articleService.calls).toEqual([null, null]); // reloaded from the top, not appended
+    expect(page.articles().map((a) => a.id)).toEqual(['article-1']);
+  });
+
+  it('does not reload when the signed-in identity is unchanged', () => {
+    setup(); // signed in from the start (default initialSession)
+    expect(articleService.calls).toEqual([null]);
+
+    detect(); // another change-detection pass, same identity
+
+    expect(articleService.calls).toEqual([null]); // no extra reload
+  });
+
+  it('discards a stale anonymous response that resolves after an identity reload', () => {
+    // The initial anonymous load and the authenticated reload race — the
+    // authenticated one is not guaranteed to resolve first. A stale
+    // anonymous response landing after it must not wipe out the
+    // authenticated is_read/is_bookmarked flags it just applied.
+    const requests: Subject<PaginatedFeedArticles>[] = [];
+    const controlledArticleService = {
+      getArticles: () => {
+        const subject = new Subject<PaginatedFeedArticles>();
+        requests.push(subject);
+        return subject;
+      },
+    };
+    const localSession = signal<{ user: { id: string } } | null>(null);
+    const localMe = {
+      markRead: () => of(undefined),
+      markUnread: () => of(undefined),
+      addBookmark: () => of(undefined),
+      removeBookmark: () => of(undefined),
+    };
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FeedDetail],
+      providers: [
+        provideRouter([]),
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { paramMap: convertToParamMap({ id: 'feed-1' }) } },
+        },
+        { provide: FeedService, useValue: { getFeed: () => of(feed) } },
+        { provide: ArticleService, useValue: controlledArticleService },
+        { provide: MeService, useValue: localMe },
+        { provide: RecommendationService, useValue: { liked: () => [], disliked: () => [] } },
+        {
+          provide: SubscriptionService,
+          useValue: { isSubscribed: () => false, isPending: () => false },
+        },
+        { provide: AuthService, useValue: { session: localSession } },
+        {
+          provide: ToastService,
+          useValue: { info: () => {}, danger: () => {}, success: () => {}, warning: () => {} },
+        },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(FeedDetail);
+    fixture.detectChanges(); // fires the initial anonymous load -> requests[0]
+
+    localSession.set({ user: { id: 'user-1' } }); // session resolves
+    fixture.detectChanges(); // fires the authenticated reload -> requests[1]
+
+    // Authenticated response arrives first.
+    requests[1].next({
+      items: [makeArticle({ id: 'authed', is_read: true })],
+      next_cursor: null,
+    });
+    requests[1].complete();
+
+    // Stale anonymous response arrives late — must be discarded, not applied.
+    requests[0].next({
+      items: [makeArticle({ id: 'anon', is_read: false })],
+      next_cursor: null,
+    });
+    requests[0].complete();
+
+    expect(fixture.componentInstance.articles().map((a) => a.id)).toEqual(['authed']);
+  });
+
+  it('discards a toggle rollback and clears its pending flag after an identity reload', () => {
+    // A reader toggles read, then signs out or switches accounts before the
+    // request settles. The identity effect reloads the list first — the
+    // late toggle response must not roll back the newly loaded article, and
+    // must not leave it stuck "pending" forever either.
+    const requests: Subject<PaginatedFeedArticles>[] = [];
+    const controlledArticleService = {
+      getArticles: () => {
+        const subject = new Subject<PaginatedFeedArticles>();
+        requests.push(subject);
+        return subject;
+      },
+    };
+    const pendingMarkRead = new Subject<void>();
+    const localMe = {
+      markRead: () => pendingMarkRead,
+      markUnread: () => of(undefined),
+      addBookmark: () => of(undefined),
+      removeBookmark: () => of(undefined),
+    };
+    const localSession = signal<{ user: { id: string } } | null>({ user: { id: 'user-1' } });
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FeedDetail],
+      providers: [
+        provideRouter([]),
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { paramMap: convertToParamMap({ id: 'feed-1' }) } },
+        },
+        { provide: FeedService, useValue: { getFeed: () => of(feed) } },
+        { provide: ArticleService, useValue: controlledArticleService },
+        { provide: MeService, useValue: localMe },
+        { provide: RecommendationService, useValue: { liked: () => [], disliked: () => [] } },
+        {
+          provide: SubscriptionService,
+          useValue: { isSubscribed: () => false, isPending: () => false },
+        },
+        { provide: AuthService, useValue: { session: localSession } },
+        {
+          provide: ToastService,
+          useValue: { info: () => {}, danger: () => {}, success: () => {}, warning: () => {} },
+        },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(FeedDetail);
+    fixture.detectChanges(); // initial load as user-1 -> requests[0]
+    requests[0].next({ items: [makeArticle({ is_read: false })], next_cursor: null });
+    requests[0].complete();
+
+    const page = fixture.componentInstance;
+    page.toggleRead(page.articles()[0]); // optimistic is_read -> true; markRead still in flight
+    expect(page.isReadPending('article-1')).toBe(true);
+
+    localSession.set({ user: { id: 'user-2' } }); // switches before the toggle settles
+    fixture.detectChanges(); // reloads the list -> requests[1], clears pending flags
+
+    expect(page.isReadPending('article-1')).toBe(false); // not stuck pending from the old toggle
+
+    requests[1].next({ items: [makeArticle({ is_read: true })], next_cursor: null }); // user-2's own state
+    requests[1].complete();
+
+    pendingMarkRead.error(new Error('boom')); // the stale toggle finally fails
+
+    expect(page.articles()[0].is_read).toBe(true); // still user-2's real value, not rolled back
+    expect(page.isReadPending('article-1')).toBe(false); // still not stuck
   });
 });

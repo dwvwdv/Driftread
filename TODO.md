@@ -133,10 +133,19 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### Feed 完整文章列表
 
-- [ ] Feed 詳情接上既有 articles 分頁 API，不再固定只顯示最新 10 篇。
-- [ ] 支援載入更多／cursor pagination。
-- [ ] 保持排序穩定，避免 refresh 後重複或漏掉文章。
-- [ ] 顯示已讀、收藏狀態，並能在列表直接切換。
+- [x] Feed 詳情接上既有 articles 分頁 API，不再固定只顯示最新 10 篇。
+      （`GET /feeds/{feed_id}/articles` 從 offset 分頁改成 keyset／cursor 分頁，見下）
+- [x] 支援載入更多／cursor pagination。
+      （`backend/migrations/016_feed_article_list.sql::list_feed_articles`，沿用
+      `list_reading_stream` 同一套 `COALESCE(published_at, fetched_at) DESC, id DESC` 排序鍵與
+      cursor 形狀；前端 feed-detail 頁「載入更多」）
+- [x] 保持排序穩定，避免 refresh 後重複或漏掉文章。
+      （同上——舊版用 `.range()` offset 分頁＋單欄 `published_at` 排序，NULL 值排序不穩定，
+      新文章插隊時翻頁也會重複/漏掉；改用 keyset 分頁後兩個問題都不存在）
+- [x] 顯示已讀、收藏狀態，並能在列表直接切換。
+      （`list_feed_articles` 在呼叫者已登入時一併帶出 `is_read`／`is_bookmarked`（收藏類型固定
+      `favorite`）；未登入者兩者皆為 false。前端每列有已讀／收藏切換按鈕，僅登入後顯示，
+      樂觀更新＋失敗回滾，同 `ReadingStreamService`／`SubscriptionService` 的既有 pattern）
 
 ### 匯入後自動分類
 
@@ -243,7 +252,8 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 5. [~] 標籤／語言篩選、偏好設定與匯入後分類。
       （標籤／語言篩選與偏好設定 UI 已完成，見上方「標籤、語言與偏好設定」；匯入後自動分類尚未開始）
 6. [ ] 回饋持久化、可解釋推薦權重與推薦理由。
-7. [ ] Feed 完整文章分頁、全文搜尋與資料夾管理。
+7. [~] Feed 完整文章分頁、全文搜尋與資料夾管理。
+      （Feed 完整文章分頁已完成，見上方「Feed 完整文章列表」；全文搜尋與資料夾管理尚未開始）
 8. [ ] 查詢效能、migration lock、JWT/JWKS、extension auth 與 CI hardening。
 
 ## 完成定義

@@ -778,3 +778,89 @@ feed 詳情頁翻最新 10 篇。也沒有未讀數，也沒有批次已讀。
   已開啟的閱讀流頁面上，要等下一次 `reload()`。兩者都留給之後的批次或後續 PR。
 - 對應文件更新：`docs/FEATURES.md` 第 1、3、4、5 節、`TODO.md`（批次 4「我的閱讀流」七項全部
   打勾，「建議開發批次」第 4 項打勾）。
+
+## 階段二十七：Feed 完整文章列表（cursor 分頁、已讀／收藏內嵌切換）（2026-08-28）
+
+TODO.md 建議開發批次第 7 批的第一部分。此前 feed 詳情頁只顯示 `GET /feeds/{feed_id}` 內嵌的最新
+10 篇文章，完全沒用到 `GET /feeds/{feed_id}/articles`——這個 offset 分頁端點寫好之後，前端
+`ArticleService.getArticles()` 從未被任何元件呼叫過。而且它排序只靠單一 `published_at` 欄位，
+`published_at` 為 NULL 的文章會落進 Postgres `DESC` 預設的 `NULLS FIRST`，offset 分頁在新文章
+持續進站的情況下也會讓「載入更多」重複或漏掉文章——同 migration 015 替我的閱讀流解決過的問題。
+
+- **`backend/migrations/016_feed_article_list.sql`（新）**：`list_feed_articles(p_feed_id,
+  p_user_id, p_cursor_sort_at, p_cursor_id, p_limit)`，`driftread` schema 內的 DB function，
+  排序鍵與 cursor 形狀直接沿用 `list_reading_stream`（migration 015）的
+  `COALESCE(published_at, fetched_at) DESC, id DESC`，索引也沿用同一個
+  `articles_feed_id_sort_at_idx`，不需要新索引。`p_user_id` 可為 NULL——這個 function 服務公開
+  端點，未登入呼叫時兩個 LEFT JOIN（`user_article_reads`／`user_bookmarks`，後者固定
+  `bookmark_type = 'favorite'`）的條件都不成立，`is_read`／`is_bookmarked` 自然是 false，不需要
+  額外分支。`SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同 `list_reading_stream` 一套
+  鎖法。
+- **`backend/models.py`**：新增 `FeedArticle`（`ArticleSummary` 加 `fetched_at`／`is_read`／
+  `is_bookmarked`）與 `PaginatedFeedArticles`；移除不再使用的 `PaginatedArticles`。
+- **`backend/routers/articles.py`**：`GET /feeds/{feed_id}/articles` 從 `page`／`page_size`
+  offset 分頁改成 `cursor`／`limit`（上限 100）keyset 分頁，寫法與 `routers/me.py` 的
+  `/me/stream` 完全對稱（`decode_keyset_cursor` 解 400、`encode_keyset_cursor` 編下一頁
+  cursor）。新增 `get_optional_user` 依賴（同 `routers/recommendations.py`／`discover.py` 已有的
+  模式）：帶有效 token 時傳 `p_user_id`，否則傳 `None`，端點本身維持公開、不需要登入才能看文章
+  列表。
+- **`frontend/src/app/services/article.ts`**：`getArticles()` 簽名改成
+  `(feedId, cursor?, limit?)`，回傳 `PaginatedFeedArticles`。
+- **`frontend/src/app/components/feed-detail`**：文章列表獨立於 feed metadata 載入（各自的
+  loading／error 狀態，互不阻塞），「載入更多」同 `reading-stream` 的 pattern；每列在登入後顯示
+  已讀／收藏切換按鈕（未登入不顯示——單篇的已讀狀態沒有像訂閱那樣的「登入後回來完成」流程可以
+  接，直接不出現比較誠實），樂觀更新＋失敗回滾＋pending 期間忽略重複點擊，寫法與
+  `ReadingStreamService` 的 `markRead`/`markUnread` 同一套，但因為 feed 詳情頁本身不追蹤未讀數，
+  這裡的 pending/patch 邏輯直接寫在元件裡，沒有另外拉一個 service。收藏固定走 `favorite` 類型
+  （同「稍後讀」共用同一個 `POST /me/bookmarks`，這裡只是預設分類，UI 上仍可另外用既有的
+  `/me/bookmarks` 頁面管理兩種收藏）。已讀文章的標題同 `reading-stream` 用 `.is-read` 降低對比而
+  非劃掉，維持可讀性。
+- **不做的部分**：`GET /feeds/{feed_id}` 內嵌的固定 10 篇 `articles` 欄位維持不動——沒有其他前端
+  消費它，但這是開放 API 的一部分，拿掉有未知的外部風險，維持它的成本也接近零；`feed-detail` 頁
+  本身已經不再讀這個欄位。
+- **測試**：`backend/tests/test_articles.py` 新增 `list_feed_articles` 呼叫參數（含匿名／已登入
+  兩種 `p_user_id`）、cursor 編解碼與分頁邊界的案例。`frontend/.../feed-detail.spec.ts` 新增
+  `FeedDetail article list` describe block：首頁載入、載入更多、已讀／收藏樂觀更新與失敗回滾、
+  pending 期間忽略重複點擊（用 `Subject` 卡住尚未 resolve 的請求驗證，而非假設 `of()` 的同步
+  resolve 能測出 in-flight 狀態）、session 從 null 非同步解析出已登入身分後重新載入（見下）。
+- **PR review 修正**（Codex）：`ngOnInit()` 原本只在元件建立時呼叫一次 `loadArticles()`；但
+  `AuthService.session` 是非同步還原的持久化 session（見 `services/auth.ts`），直接訪問頁面時
+  即使讀者其實已登入，`session()` 一開始仍是 `null`。原本的一次性載入會因此在還沒拿到 token 前
+  就送出請求，`is_read`／`is_bookmarked` 全部回 false，且 session 還原後不會重新載入——同
+  `bookmarks.ts`／`my-feeds.ts` 已經處理過的那類問題。改成建構子內的 `effect()`，依
+  `auth.session()` 的使用者 id 觸發載入（`articlesLoadedFor` 記錄目前是替誰載入的，`undefined`
+  代表「還沒載入過」，用來與「已登入但 id 為 null 沒有意義」的匿名情況區分），涵蓋初始匿名載入、
+  session 非同步解析、登出與換帳號四種情況。測試沿用 `my-feeds.spec.ts` 的 pattern：
+  `AuthService.session` 用真的 `signal()` 而非普通函式（否則 Angular 的 `effect()` 沒有訊號可以
+  追蹤，測不出重新載入的行為），`session.set(...)` 後 `fixture.detectChanges()` 讓元件自己的
+  effect 重新 flush。
+
+  這個修法本身又引入新的競態：identity effect 觸發已登入的重新載入時，前一輪匿名請求可能還在
+  飛行中——若它比已登入的回應晚到，會用全部是 false 的 `is_read`／`is_bookmarked` 蓋掉剛套用好
+  的已登入狀態；同理，`loadMoreArticles()` 的回應若晚於一次新的 identity 重新載入落地，也會把
+  舊身分的文章接到新載入的列表後面。Codex 第二輪抓到這點，修法是加一個 `articlesGeneration`
+  計數器（`loadArticles()` 每次呼叫遞增，`loadMoreArticles()` 只讀取不遞增），`next`／`error`
+  callback 落地時比對呼叫當下記下的值，不相符就丟棄——與 `ReadingStreamService` 的
+  `_itemsGeneration` 同一套 pattern。新增迴歸測試：用 `Subject` 手動控制兩個請求的 resolve
+  順序，讓匿名回應刻意晚於已登入回應落地，斷言最終畫面是已登入那份、不是被匿名回應蓋掉。
+
+  Codex 第三輪接著抓出 `articlesGeneration` 還沒涵蓋到的另一半：讀者點了已讀／收藏切換、
+  request 還沒回來時登出或換帳號，identity effect 會先把列表重新載入成新身分的資料，但舊切換的
+  `error` callback 落地時原本會無條件把 `wasRead`／`wasBookmarked` 蓋回去——蓋的不是它自己那份
+  已經不在畫面上的舊列表，而是新身分剛載入、正確的那份。`pendingRead`／`pendingBookmark` 也是同一
+  個問題的另一面：舊切換的 callback 現在被 generation 檢查擋下，不會再走到原本清除 pending flag
+  的那行，若同一個 article id 剛好也在新身分的列表裡（同一個 feed，通常就是），它的已讀／收藏
+  按鈕會卡在永久 disabled。修法：`toggleRead()`／`toggleBookmark()` 進入時各自記下當下的
+  `articlesGeneration`，`next`／`error` callback 落地時比對，不符就整段跳過；`loadArticles()`
+  額外把 `pendingRead`／`pendingBookmark` 重置成空集合（放在遞增 generation 的同一個地方）——
+  這兩個 pending set 的清除本來就只會發生在切換自己的 callback 裡，換代後那條路徑不會再走到，
+  只能由取代它的那次載入自己負責清乾淨。迴歸測試：用 `Subject` 卡住一次 `markRead`，切換身分
+  觸發重新載入並斷言 pending flag 立刻歸零（不是卡住），接著讓新身分的真實資料落地，最後讓卡住
+  的舊 `markRead` 才失敗，斷言畫面停留在新身分的正確值、不是被蓋回舊的樂觀回滾值。
+- **本 sandbox 的已知限制**：`pip install pytest`／`npm ci` 仍被 allowlist 擋下，backend／
+  frontend 測試都無法在本機實際執行——與階段二十一至二十六相同；已用 `python3 -m py_compile`
+  過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`，僅語法檢查，過濾掉預期內的
+  module-not-found／implicit-any／缺 test runner 型別錯誤後沒有其他訊息）過 frontend 改動，交給
+  CI 實際跑過驗證。
+- 對應文件更新：`docs/FEATURES.md`（Feeds/Articles API、文章預覽功能列、第 5 節資料表）、
+  `TODO.md`（「Feed 完整文章列表」四項打勾，「建議開發批次」第 7 項改為進行中）。

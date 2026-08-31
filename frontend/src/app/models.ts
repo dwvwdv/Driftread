@@ -40,11 +40,19 @@ export interface PaginatedFeeds {
   page_size: number;
 }
 
-export interface PaginatedArticles {
-  items: ArticleSummary[];
-  total: number;
-  page: number;
-  page_size: number;
+// ── Feed article list (GET /feeds/{feed_id}/articles) ──────────────────────
+
+/** One row of a feed's full article list — an ArticleSummary plus this
+ * caller's read/bookmark state (false for both when signed out). */
+export interface FeedArticle extends ArticleSummary {
+  fetched_at: string;
+  is_read: boolean;
+  is_bookmarked: boolean;
+}
+
+export interface PaginatedFeedArticles {
+  items: FeedArticle[];
+  next_cursor: string | null;
 }
 
 export interface ReadReceipt {
