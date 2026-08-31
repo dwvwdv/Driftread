@@ -45,6 +45,22 @@ def test_detector_classifies_clear_chinese_sample():
     assert detect_feed_language(_feed(text)) == "zh"
 
 
+def test_detector_classifies_japanese_kana_sample():
+    text = (
+        "これはソフトウェア工学とシステム設計についての記事です。テストの改善や"
+        "コードの品質向上、サービスの監視について説明します。"
+    ) * 4
+    assert detect_feed_language(_feed(text)) == "ja"
+
+
+def test_detector_classifies_korean_hangul_sample():
+    text = (
+        "이 기사는 소프트웨어 공학과 시스템 설계에 관한 내용입니다. "
+        "테스트 프로세스를 개선하고 코드 품질을 높이는 방법을 다룹니다."
+    ) * 4
+    assert detect_feed_language(_feed(text)) == "ko"
+
+
 def test_detector_refuses_too_short_sample():
     assert detect_feed_language(_feed("Hello world")) is None
 

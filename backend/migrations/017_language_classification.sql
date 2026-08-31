@@ -48,3 +48,45 @@ WHERE archived_at IS NULL
 CREATE INDEX IF NOT EXISTS feeds_language_idx
   ON driftread.feeds (language)
   WHERE language IS NOT NULL AND archived_at IS NULL;
+
+-- The recommendation scorer compares feed languages to
+-- user_preferences.preferred_languages by exact string equality, so a saved
+-- preference in the old locale/legacy shape (en-US, eng, ...) would silently
+-- stop matching feeds that this migration just canonicalized to en. Apply the
+-- same canonicalization to preferences, deduplicating per user.
+WITH normalized AS (
+  SELECT
+    up.user_id,
+    COALESCE(
+      array_agg(DISTINCT canonical.lang) FILTER (WHERE canonical.lang ~ '^[a-z]{2}$'),
+      '{}'
+    ) AS langs
+  FROM driftread.user_preferences up
+  LEFT JOIN LATERAL unnest(up.preferred_languages) AS raw_lang ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT CASE lower(split_part(replace(trim(raw_lang), '_', '-'), '-', 1))
+      WHEN 'chi' THEN 'zh' WHEN 'zho' THEN 'zh'
+      WHEN 'eng' THEN 'en'
+      WHEN 'jpn' THEN 'ja'
+      WHEN 'kor' THEN 'ko'
+      WHEN 'deu' THEN 'de' WHEN 'ger' THEN 'de'
+      WHEN 'fra' THEN 'fr' WHEN 'fre' THEN 'fr'
+      WHEN 'spa' THEN 'es'
+      WHEN 'ita' THEN 'it'
+      WHEN 'por' THEN 'pt'
+      WHEN 'rus' THEN 'ru'
+      WHEN 'ukr' THEN 'uk'
+      WHEN 'vie' THEN 'vi'
+      WHEN 'tha' THEN 'th'
+      WHEN 'ind' THEN 'id'
+      ELSE lower(split_part(replace(trim(raw_lang), '_', '-'), '-', 1))
+    END AS lang
+  ) canonical ON TRUE
+  GROUP BY up.user_id
+)
+UPDATE driftread.user_preferences up
+SET preferred_languages = normalized.langs,
+    updated_at = now()
+FROM normalized
+WHERE up.user_id = normalized.user_id
+  AND up.preferred_languages IS DISTINCT FROM normalized.langs;

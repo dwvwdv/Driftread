@@ -34,6 +34,16 @@ _MIN_LETTER_CHARS = 40
 _MIN_CONFIDENCE = 0.85
 _LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
+# Hangul and kana are exclusive to Korean and Japanese respectively, unlike Han
+# ideographs which both Chinese and Japanese use. langdetect's n-gram model is
+# trained on short Wikipedia text and is known to confuse Han-only samples
+# between Chinese, Japanese and Korean, so script membership is checked first
+# as a much stronger, deterministic signal before falling back to it.
+_HANGUL_RE = re.compile(r"[\uac00-\ud7a3]")
+_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+_HAN_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
+_SCRIPT_RATIO = 0.3
+
 # Common ISO-639-2 / legacy values seen in real RSS metadata.  Unknown 3-letter
 # values are left alone rather than guessed; the detector itself emits ISO-639-1.
 _ALIASES = {
@@ -96,6 +106,21 @@ def _sample_text(feed: "ParsedFeed") -> str:
     return "\n".join(chunks)[:_MAX_SAMPLE_CHARS]
 
 
+def _script_language(sample: str, letter_count: int) -> str | None:
+    """Disambiguate CJK samples directly from Unicode script, before statistics.
+
+    Kana is checked first since Japanese text mixes it with Han ideographs;
+    a pure-Han sample with no kana or hangul defaults to Chinese.
+    """
+    if len(_KANA_RE.findall(sample)) / letter_count >= _SCRIPT_RATIO:
+        return "ja"
+    if len(_HANGUL_RE.findall(sample)) / letter_count >= _SCRIPT_RATIO:
+        return "ko"
+    if len(_HAN_RE.findall(sample)) / letter_count >= _SCRIPT_RATIO:
+        return "zh"
+    return None
+
+
 def detect_feed_language(feed: "ParsedFeed") -> str | None:
     """Detect a feed language from cached text, conservatively.
 
@@ -104,8 +129,12 @@ def detect_feed_language(feed: "ParsedFeed") -> str | None:
     while a wrong language silently pollutes filters and recommendation signals.
     """
     sample = _sample_text(feed)
-    if len(_LETTER_RE.findall(sample)) < _MIN_LETTER_CHARS:
+    letter_count = len(_LETTER_RE.findall(sample))
+    if letter_count < _MIN_LETTER_CHARS:
         return None
+    script_lang = _script_language(sample, letter_count)
+    if script_lang:
+        return script_lang
     try:
         candidates = detect_langs(sample)
     except LangDetectException:
