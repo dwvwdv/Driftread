@@ -50,11 +50,12 @@ def _auth(sub: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {_token(sub)}"}
 
 
-def _assert_isolated(call_args_list, *, index: int = 0) -> None:
+def _assert_isolated(call_args_list, *, index: int = 1) -> None:
     """Both calls happened, and the user id argument differs between them —
     the two prerequisites for "each request only ever touched its own
     caller's row", i.e. the exact filter value at `index` in each call's
-    positional args."""
+    positional args. Default index 1 matches `.eq("user_id", <value>)` —
+    index 0 is the column name literal, not the id."""
     assert len(call_args_list) == 2
     user_ids = [c[0][index] for c in call_args_list]
     assert user_ids == [USER_A, USER_B]
