@@ -948,3 +948,18 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
     resume 讀取後即清除、query param 版的 `importFeedUrl` 不會被採用、換帳號後不
     `markSubscribed()`。`discover.spec.ts` 既有的登出點擊匯入測試改斷言寫入 `sessionStorage`
     而非帶 query param。
+- **PR review 修正第三輪（Codex，P2）**：第二輪把 stash 換成 `sessionStorage` 後，還留一個缺口：
+  `Login.submit()` 是「只要登入成功就讀 sessionStorage 裡有沒有待匯入的值」，沒有檢查這次登入
+  是不是真的從那個匯入導頁過來的。讀者點匯入、在 `/login` 按上一頁放棄、之後在同一個分頁因為
+  別的原因（例如想看自己的訂閱）正常登入，會在完全沒有再點過匯入的情況下，把那個早已放棄的
+  URL 悄悄匯入並訂閱——把「任何後續登入」錯當成「使用者確認了這個舊決定」。修法：
+  `setPendingImportFeedUrl()` 改成回傳一次性 nonce（`crypto.randomUUID()`），連同 URL 一起存成
+  `{url, nonce}`；`Discover.importFeed()` 把這個 nonce 一併放進導去 `/login` 的
+  `importNonce` query param。`Login.submit()` 只有在目前這次登入的 query string 裡帶著
+  `importNonce`、且與 sessionStorage 存的 nonce 相符時才會 resume；沒有 `importNonce`（不是從
+  這個匯入流程來的登入）完全不去碰 sessionStorage，讓被放棄的項目留在原地——之後讀者若真的
+  重新點一次匯入，會覆蓋掉舊的 `{url, nonce}`，舊 nonce 自然失效，不需要額外清理。
+  `pending-import.ts`／`discover.ts`／`login.ts` 的內部說明同步更新；`login.spec.ts` 新增
+  「沒有 `importNonce` 不 resume」「nonce 不相符不 resume（且仍清掉舊值）」兩個案例，既有的
+  resume／錯誤／換帳號三個案例補上 `importNonce` 與新的 stash 格式；`discover.spec.ts` 的既有
+  案例改成驗證回傳的 `importNonce` 與 sessionStorage 內容能對上，而非驗證固定字串。

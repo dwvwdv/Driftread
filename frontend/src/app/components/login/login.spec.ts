@@ -28,6 +28,13 @@ describe('Login redirect after sign-in', () => {
   let queryParams: Record<string, string>;
   let importResult: Observable<Feed> | undefined;
 
+  const PENDING_KEY = 'driftread:pendingImportFeedUrl';
+
+  /** Mirrors pending-import.ts's stash format, with a caller-chosen nonce. */
+  function stashImport(url: string, nonce: string): void {
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ url, nonce }));
+  }
+
   const feed: Feed = {
     id: 'feed-1',
     title: 'Feed One',
@@ -138,9 +145,9 @@ describe('Login redirect after sign-in', () => {
   });
 
   it('resumes an import stashed by Discover and marks the result subscribed', async () => {
-    queryParams = { redirect: '/discover' };
+    queryParams = { redirect: '/discover', importNonce: 'nonce-1' };
     const page = setup();
-    sessionStorage.setItem('driftread:pendingImportFeedUrl', 'https://example.com/feed.xml');
+    stashImport('https://example.com/feed.xml', 'nonce-1');
 
     await page.submit();
 
@@ -149,13 +156,14 @@ describe('Login redirect after sign-in', () => {
     expect(navigateCalls).toEqual(['/discover']);
     expect(danger).toEqual([]);
     // Read-once: a stale value must not resume again on a later login.
-    expect(sessionStorage.getItem('driftread:pendingImportFeedUrl')).toBeNull();
+    expect(sessionStorage.getItem(PENDING_KEY)).toBeNull();
   });
 
   it('does not act on importFeedUrl passed as a query param', async () => {
-    // Codex review on PR #52: a crafted /login?importFeedUrl=<attacker URL>
+    // Codex review on PR #52 (round 2): a crafted /login?importFeedUrl=<url>
     // link must not trigger an import — only Discover.importFeed()'s own
-    // sessionStorage stash (an actual click) can.
+    // sessionStorage stash (an actual click) can, and only via the matching
+    // nonce it handed out, not this now-unused legacy param name.
     queryParams = { redirect: '/discover', importFeedUrl: 'https://attacker.example/feed.xml' };
     const page = setup();
 
@@ -164,10 +172,39 @@ describe('Login redirect after sign-in', () => {
     expect(discover.importByUrlCalls).toEqual([]);
   });
 
-  it('toasts an error without blocking the redirect when the resumed import fails', async () => {
-    queryParams = { redirect: '/discover' };
+  it('does not resume a stashed import when the login was not reached via its redirect', async () => {
+    // Codex review on PR #52 (round 3): a reader who clicks Import, backs out
+    // of /login without submitting, and later signs in for something
+    // unrelated must not have the abandoned import silently resumed — no
+    // importNonce in the query string means this login didn't come from that
+    // redirect at all.
+    queryParams = { redirect: '/me/feeds' };
     const page = setup();
-    sessionStorage.setItem('driftread:pendingImportFeedUrl', 'https://example.com/feed.xml');
+    stashImport('https://example.com/feed.xml', 'nonce-1');
+
+    await page.submit();
+
+    expect(discover.importByUrlCalls).toEqual([]);
+    expect(navigateCalls).toEqual(['/me/feeds']);
+  });
+
+  it('does not resume a stashed import when the nonce does not match', async () => {
+    queryParams = { redirect: '/discover', importNonce: 'stale-nonce' };
+    const page = setup();
+    // A later click overwrote the stash with a fresh nonce before this
+    // (older) login attempt landed.
+    stashImport('https://example.com/feed.xml', 'current-nonce');
+
+    await page.submit();
+
+    expect(discover.importByUrlCalls).toEqual([]);
+    expect(sessionStorage.getItem(PENDING_KEY)).toBeNull();
+  });
+
+  it('toasts an error without blocking the redirect when the resumed import fails', async () => {
+    queryParams = { redirect: '/discover', importNonce: 'nonce-1' };
+    const page = setup();
+    stashImport('https://example.com/feed.xml', 'nonce-1');
     importResult = throwError(() => new Error('boom'));
 
     await page.submit();
@@ -178,9 +215,9 @@ describe('Login redirect after sign-in', () => {
   });
 
   it('does not mark subscribed if the signed-in identity changed before the import resolved', async () => {
-    queryParams = { redirect: '/discover' };
+    queryParams = { redirect: '/discover', importNonce: 'nonce-1' };
     const page = setup();
-    sessionStorage.setItem('driftread:pendingImportFeedUrl', 'https://example.com/feed.xml');
+    stashImport('https://example.com/feed.xml', 'nonce-1');
     const pending = new Subject<Feed>();
     importResult = pending;
 

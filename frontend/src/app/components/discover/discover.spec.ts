@@ -136,8 +136,17 @@ describe('Discover subscribe actions', () => {
     // Stashed in sessionStorage, not a query param — a query param would let
     // a crafted /login?importFeedUrl=... link trigger an import the reader
     // never asked for (Codex review on PR #52; see shared/pending-import.ts).
-    expect(navCalls).toEqual([[['/login'], { queryParams: { redirect: '/discover' } }]]);
-    expect(sessionStorage.getItem('driftread:pendingImportFeedUrl')).toBe(feed.url);
+    // The nonce carried in the redirect must match the one just stashed, so
+    // Login only resumes an import reached via *this* redirect.
+    expect(navCalls.length).toBe(1);
+    const [commands, extras] = navCalls[0] as [unknown, { queryParams: Record<string, string> }];
+    expect(commands).toEqual(['/login']);
+    expect(extras.queryParams['redirect']).toBe('/discover');
+    const nonce = extras.queryParams['importNonce'];
+    expect(nonce).toBeTruthy();
+    expect(sessionStorage.getItem('driftread:pendingImportFeedUrl')).toBe(
+      JSON.stringify({ url: feed.url, nonce }),
+    );
     expect(called).toBe(false);
     expect(subs.markSubscribedCalls).toEqual([]);
   });

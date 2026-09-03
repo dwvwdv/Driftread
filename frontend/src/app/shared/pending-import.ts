@@ -10,16 +10,43 @@
  * defeats the entire point of requiring a signed-in *user action* to write
  * to the catalog (docs/SECURITY.md #30; Codex review on PR #52). Only this
  * app's own JS, running on Discover after a real click, can set this key.
+ *
+ * Also bound to a one-time nonce carried in the login redirect's query
+ * string, not just "any subsequent successful login": sessionStorage
+ * outlives a single navigation, so without the nonce check, a reader who
+ * clicks Import, backs out of /login without submitting, and later signs in
+ * normally for something unrelated would silently have the abandoned import
+ * resumed — treating that unrelated login as confirmation of a decision they
+ * never made (second-round Codex review on PR #52). The nonce ties resumption
+ * to the exact redirect Discover generated, not to login as a generic event.
  */
 const KEY = 'driftread:pendingImportFeedUrl';
 
-export function setPendingImportFeedUrl(url: string): void {
-  sessionStorage.setItem(KEY, url);
+interface PendingImport {
+  url: string;
+  nonce: string;
 }
 
-/** Reads and clears the pending URL in one step — each stored URL resumes at most once. */
-export function takePendingImportFeedUrl(): string | null {
-  const url = sessionStorage.getItem(KEY);
-  if (url !== null) sessionStorage.removeItem(KEY);
-  return url;
+/** Stashes the URL and returns a nonce to carry in the login redirect's query string. */
+export function setPendingImportFeedUrl(url: string): string {
+  const nonce = crypto.randomUUID();
+  sessionStorage.setItem(KEY, JSON.stringify({ url, nonce } satisfies PendingImport));
+  return nonce;
+}
+
+/**
+ * Reads and clears the pending URL in one step, but only returns it when
+ * `nonce` matches the one `setPendingImportFeedUrl()` handed out — any other
+ * nonce (or none) clears a stale entry without resuming it.
+ */
+export function takePendingImportFeedUrl(nonce: string): string | null {
+  const raw = sessionStorage.getItem(KEY);
+  if (raw === null) return null;
+  sessionStorage.removeItem(KEY);
+  try {
+    const stored = JSON.parse(raw) as PendingImport;
+    return stored.nonce === nonce ? stored.url : null;
+  } catch {
+    return null;
+  }
 }

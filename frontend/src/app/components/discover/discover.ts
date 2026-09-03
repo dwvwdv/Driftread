@@ -90,11 +90,13 @@ export class Discover implements OnDestroy {
     // stashing the URL so Login.submit() can resume the import instead of
     // dropping the reader back on a blank form (Codex review on PR #52) — in
     // sessionStorage rather than a query param, so a crafted login link can't
-    // trigger an import the reader never asked for (see pending-import.ts).
+    // trigger an import the reader never asked for; the nonce it returns ties
+    // resumption to *this* redirect, not to any later, unrelated login
+    // (see pending-import.ts).
     if (!this.auth.session()) {
-      setPendingImportFeedUrl(candidate.feed_url);
+      const importNonce = setPendingImportFeedUrl(candidate.feed_url);
       void this.router.navigate(['/login'], {
-        queryParams: { redirect: '/discover' },
+        queryParams: { redirect: '/discover', importNonce },
       });
       return;
     }

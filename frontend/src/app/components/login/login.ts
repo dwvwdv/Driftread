@@ -37,7 +37,10 @@ import { ToastService } from '../../ui/toast/toast';
  *    and a query param read here would just move that same hole to a crafted
  *    `/login?importFeedUrl=...` link acted on by a login this page did not
  *    initiate (Codex review on PR #52). sessionStorage can only be written by
- *    this app's own JS running on Discover after an actual click.
+ *    this app's own JS running on Discover after an actual click — and even
+ *    then only resumed when `importNonce` matches the one that stash handed
+ *    out, so backing out of /login and later signing in for something
+ *    unrelated doesn't silently resume an abandoned import.
  */
 @Component({
   selector: 'app-login',
@@ -112,7 +115,12 @@ export class Login {
       this.subs.subscribe(feedId, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
     }
 
-    const importFeedUrl = takePendingImportFeedUrl();
+    // Only resume when this login was actually reached via that redirect
+    // (importNonce present and matching) — not on any other login that
+    // happens to follow an abandoned import click in the same tab (third-
+    // round Codex review on PR #52).
+    const importNonce = this.route.snapshot.queryParamMap.get('importNonce');
+    const importFeedUrl = importNonce ? takePendingImportFeedUrl(importNonce) : null;
     if (importFeedUrl) {
       // Resumes the import Discover.importFeed() deferred for a signed-out
       // click, instead of dropping the reader back on a blank /discover form
