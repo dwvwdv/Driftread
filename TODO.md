@@ -227,7 +227,14 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [ ] 匿名 `/api/discover/import` 改為要求登入，或先寫入候選審核佇列，不直接寫入全域 catalog。
 - [ ] 瀏覽器擴充若提供一般使用者使用，改採 PKCE 登入與個人訂閱，不保存 Admin API Key。
 - [ ] 檢查 public client 僅使用 publishable key，任何 frontend／extension 都不得含 `service_role` 或 secret key。
-- [ ] 為登入後的 user-scoped API 加上跨使用者資料隔離測試。
+- [x] 為登入後的 user-scoped API 加上跨使用者資料隔離測試。
+      （`backend/tests/test_me_isolation.py`：`routers/me.py` 全部 14 個端點與
+      `routers/opml.py::export_opml`，各自以兩個不同使用者的 JWT 呼叫兩次，斷言送進
+      Supabase 查詢／RPC 的 `user_id` 對應各自呼叫者，兩次呼叫的值不同——防的是「硬寫
+      user_id」「跨請求沿用前一個使用者」這類會讓應用層隔離悄悄失效的回歸，因為這些資料表
+      的 RLS 對本專案自己的查詢不生效（service_role client 繞過 RLS，見 Phase 0 與
+      docs/FEATURES.md 第 5 節），唯一的隔離機制就是每個 handler 自己記得用 `user.id` 過濾。
+      `POST /me/import/opml` 因涉及檔案上傳與外部 fetch mocking，複雜度不同，留給後續 PR）
 
 ### Frontend 與 CI
 
