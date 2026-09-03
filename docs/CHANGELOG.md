@@ -895,3 +895,22 @@ docs/FEATURES.md 第 5 節與 TODO.md Phase 0 的記錄），RLS 對這個 clien
   .eq...` 的分層結構、`_reads_chain` 同款 keyset 分頁 mock）手動核對每個測試的 mock 設置與
   斷言路徑，交給 CI 實際跑過驗證。
 - 對應文件更新：`TODO.md`（「Auth 與安全」一項打勾，並記錄範圍與未涵蓋的 `import/opml`）。
+
+## 階段二十九：補上 /me/import/opml 的跨使用者隔離測試（2026-09-03）
+
+同一個「持續改善專案」排程任務，接續階段二十八明確列為範圍以外的 `POST /me/import/opml`——
+當時因為要驅動這個端點走到真正寫入 `user_feeds` 的那一步，除了 mock DB 之外還得先讓
+`validate_fetch_url()`／`fetch_and_parse()` 兩個外部呼叫成功，複雜度與其餘「純 DB 查詢/寫入
+斷言」型態的測試不同，故另開一批。
+
+- **`backend/tests/test_me_isolation.py` 新增 `test_import_opml_subscribes_with_calling_users_id`**：
+  用 `unittest.mock.patch("routers.opml.validate_fetch_url", ...)` 與
+  `patch("routers.opml.fetch_and_parse", ...)`（兩者皆為 `routers/opml.py` 從
+  `services/feed_discovery.py`／`rss_parser.py` import 進自己命名空間的名字，故照本專案既有
+  慣例——見 `test_discover.py::test_discover_checks_existing_feeds_without_bulk_in_filter` 對
+  `routers.discover.discover_feeds` 的 patch 寫法——patch 在使用處而非定義處）把兩者換成回傳固定值的假 `async def` 函式，讓一份
+  單一 outline 的 OPML 檔案能真的跑到 `db.table("feeds").upsert()` 與
+  `db.table("user_feeds").upsert()` 兩次寫入。兩個使用者各自匯入一次，斷言 `user_feeds` 那次
+  upsert（用「dict 裡有沒有 `user_id` 鍵」跟同一個 mock 上的 `feeds` upsert 分開）帶的
+  `user_id` 對應各自呼叫者。
+- 對應文件更新：`TODO.md`（「跨使用者資料隔離測試」項目補記 `import_opml` 已涵蓋）。
