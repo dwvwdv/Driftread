@@ -963,3 +963,13 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   「沒有 `importNonce` 不 resume」「nonce 不相符不 resume（且仍清掉舊值）」兩個案例，既有的
   resume／錯誤／換帳號三個案例補上 `importNonce` 與新的 stash 格式；`discover.spec.ts` 的既有
   案例改成驗證回傳的 `importNonce` 與 sessionStorage 內容能對上，而非驗證固定字串。
+- **PR review 修正第四輪（Codex，P2）**：`pending-import.ts` 直接呼叫 `sessionStorage.setItem`／
+  `getItem`／`removeItem`，沒有考慮 storage 不可用的情況（無痕模式、封鎖 cookie／storage）——
+  這類環境下 `setItem()` 可能直接 throw，而這個呼叫發生在 `Discover.importFeed()` 導向
+  `/login` 之前，未接住的例外會讓整個點擊沒有反應：既不導去登入頁，也沒有任何錯誤訊息。專案裡
+  `AdminKeyStore`（`services/admin-key.ts`）已有處理同一種失效模式的既有寫法。修法：`set`／
+  `take` 兩個函式的 storage 呼叫都包進 `try/catch`——寫入失敗時仍照常回傳 nonce（讓導頁繼續
+  進行，只是登入後沒有東西可以 resume，等同讀者沒點過匯入）；讀取失敗時回傳 `null`（等同沒有
+  待處理的匯入），不讓例外往外冒。新增 `pending-import.spec.ts`，涵蓋一般 set／take 往返、
+  read-once、nonce 不符、storage 為空，以及 `setItem`／`getItem` 各自 throw 時的容錯行為
+  （`vi.spyOn(Storage.prototype, ...)`）。

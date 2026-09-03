@@ -19,6 +19,12 @@
  * resumed — treating that unrelated login as confirmation of a decision they
  * never made (second-round Codex review on PR #52). The nonce ties resumption
  * to the exact redirect Discover generated, not to login as a generic event.
+ *
+ * sessionStorage access is wrapped in try/catch, same as AdminKeyStore
+ * (services/admin-key.ts): it can throw (private browsing, disabled storage —
+ * third-round Codex review on PR #52). Failing here must not stop the click
+ * itself from reaching /login — it just means the import can't be resumed
+ * automatically, same as if the reader had never clicked at all.
  */
 const KEY = 'driftread:pendingImportFeedUrl';
 
@@ -30,7 +36,12 @@ interface PendingImport {
 /** Stashes the URL and returns a nonce to carry in the login redirect's query string. */
 export function setPendingImportFeedUrl(url: string): string {
   const nonce = crypto.randomUUID();
-  sessionStorage.setItem(KEY, JSON.stringify({ url, nonce } satisfies PendingImport));
+  try {
+    sessionStorage.setItem(KEY, JSON.stringify({ url, nonce } satisfies PendingImport));
+  } catch {
+    // Nothing was actually stashed; takePendingImportFeedUrl() will find
+    // nothing to resume, which is the correct outcome here.
+  }
   return nonce;
 }
 
@@ -40,10 +51,10 @@ export function setPendingImportFeedUrl(url: string): string {
  * nonce (or none) clears a stale entry without resuming it.
  */
 export function takePendingImportFeedUrl(nonce: string): string | null {
-  const raw = sessionStorage.getItem(KEY);
-  if (raw === null) return null;
-  sessionStorage.removeItem(KEY);
   try {
+    const raw = sessionStorage.getItem(KEY);
+    if (raw === null) return null;
+    sessionStorage.removeItem(KEY);
     const stored = JSON.parse(raw) as PendingImport;
     return stored.nonce === nonce ? stored.url : null;
   } catch {
