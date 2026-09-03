@@ -41,6 +41,7 @@ describe('Discover subscribe actions', () => {
 
   beforeEach(() => {
     session = { user: { id: 'user-1' } };
+    sessionStorage.clear();
   });
 
   function setup(importByUrl?: () => ReturnType<DiscoverService['importByUrl']>) {
@@ -116,7 +117,7 @@ describe('Discover subscribe actions', () => {
     expect(subs.subscribeCalls).toEqual([]);
   });
 
-  it('importFeed sends a signed-out reader to log in first, without calling the backend', () => {
+  it('importFeed stashes the URL and sends a signed-out reader to log in, without calling the backend', () => {
     session = null;
     let called = false;
     const page = setup(() => {
@@ -132,9 +133,11 @@ describe('Discover subscribe actions', () => {
       existing_feed_id: null,
     });
 
-    expect(navCalls).toEqual([
-      [['/login'], { queryParams: { redirect: '/discover', importFeedUrl: feed.url } }],
-    ]);
+    // Stashed in sessionStorage, not a query param — a query param would let
+    // a crafted /login?importFeedUrl=... link trigger an import the reader
+    // never asked for (Codex review on PR #52; see shared/pending-import.ts).
+    expect(navCalls).toEqual([[['/login'], { queryParams: { redirect: '/discover' } }]]);
+    expect(sessionStorage.getItem('driftread:pendingImportFeedUrl')).toBe(feed.url);
     expect(called).toBe(false);
     expect(subs.markSubscribedCalls).toEqual([]);
   });

@@ -5,6 +5,7 @@ import { AuthService } from '../../services/auth';
 import { DiscoverService } from '../../services/discover';
 import { SubscriptionService } from '../../services/subscription';
 import { apiMessage } from '../../shared/http-errors';
+import { takePendingImportFeedUrl } from '../../shared/pending-import';
 import { ObCallout } from '../../ui/callout/callout';
 import { ToastService } from '../../ui/toast/toast';
 
@@ -28,14 +29,15 @@ import { ToastService } from '../../ui/toast/toast';
  *    and lands back on that exact feed with the subscription already done,
  *    instead of on the home page having to find it and click subscribe again.
  *
- *  - Also honors `importFeedUrl` (see Discover.importFeed): a reader who
- *    pasted a URL, found a not-yet-catalogued candidate and clicked import
- *    while signed out is sent here instead of straight to the backend
- *    (POST /discover/import now requires a signed-in caller — see
- *    docs/SECURITY.md #30). Without resuming it here, they'd land back on a
- *    blank /discover form and have to re-paste the URL, re-run discovery and
- *    click import again — the same loss `subscribeFeed` already avoids for
- *    an existing feed's subscribe button.
+ *  - Also resumes a pending feed import stashed by Discover.importFeed() (see
+ *    shared/pending-import.ts) via sessionStorage — deliberately not a query
+ *    param the way `subscribeFeed` is: POST /discover/import now requires a
+ *    signed-in caller (docs/SECURITY.md #30) specifically to stop arbitrary
+ *    URLs being fetched and written to the global catalog on request alone,
+ *    and a query param read here would just move that same hole to a crafted
+ *    `/login?importFeedUrl=...` link acted on by a login this page did not
+ *    initiate (Codex review on PR #52). sessionStorage can only be written by
+ *    this app's own JS running on Discover after an actual click.
  */
 @Component({
   selector: 'app-login',
@@ -61,10 +63,6 @@ export class Login {
 
   get pendingSubscribeFeed(): string | null {
     return this.route.snapshot.queryParamMap.get('subscribeFeed');
-  }
-
-  get pendingImportFeedUrl(): string | null {
-    return this.route.snapshot.queryParamMap.get('importFeedUrl');
   }
 
   setMode(mode: 'login' | 'signup'): void {
@@ -114,15 +112,27 @@ export class Login {
       this.subs.subscribe(feedId, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
     }
 
-    const importFeedUrl = this.pendingImportFeedUrl;
+    const importFeedUrl = takePendingImportFeedUrl();
     if (importFeedUrl) {
       // Resumes the import Discover.importFeed() deferred for a signed-out
       // click, instead of dropping the reader back on a blank /discover form
       // (Codex review on PR #52). Fire-and-forget like the subscribe branch
       // above — this page navigates away immediately either way, so there's
       // nowhere here to await a result other than a toast.
+      //
+      // requestedFor guards against a sign-out/account-switch landing between
+      // firing this request and its response — same class of bug, same fix,
+      // as Discover.importFeed()'s own guard (Codex review on PR #52):
+      // without it, a slow response would credit whoever is signed in *now*
+      // with a subscription the backend actually created for whoever had
+      // just signed in when this request was sent.
+      const requestedFor = this.auth.session()?.user?.id ?? null;
       this.discover.importByUrl(importFeedUrl).subscribe({
-        next: (feed) => this.subs.markSubscribed(feed.id),
+        next: (feed) => {
+          if (requestedFor && (this.auth.session()?.user?.id ?? null) === requestedFor) {
+            this.subs.markSubscribed(feed.id);
+          }
+        },
         error: (err: unknown) => this.toast.danger(apiMessage(err, '匯入失敗')),
       });
     }

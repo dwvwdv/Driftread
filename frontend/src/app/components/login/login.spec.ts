@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { Login } from './login';
 import { AuthService } from '../../services/auth';
 import { DiscoverService } from '../../services/discover';
@@ -9,7 +9,11 @@ import { ToastService } from '../../ui/toast/toast';
 import { Feed } from '../../models';
 
 describe('Login redirect after sign-in', () => {
-  let auth: { isConfigured: () => boolean; signIn: (e: string, p: string) => Promise<{ error: string | null }> };
+  let auth: {
+    isConfigured: () => boolean;
+    signIn: (e: string, p: string) => Promise<{ error: string | null }>;
+    session: () => { user: { id: string } } | null;
+  };
   let subs: {
     calls: string[];
     subscribeCalls: string[];
@@ -44,8 +48,10 @@ describe('Login redirect after sign-in', () => {
     auth = {
       isConfigured: () => true,
       signIn: async () => ({ error: null }),
+      session: () => ({ user: { id: 'user-1' } }),
     };
     importResult = undefined;
+    sessionStorage.clear();
     subs = {
       calls: [],
       subscribeCalls: [],
@@ -131,9 +137,10 @@ describe('Login redirect after sign-in', () => {
     expect(navigateCalls).toEqual(['/']);
   });
 
-  it('resumes a deferred import and marks the result subscribed', async () => {
-    queryParams = { redirect: '/discover', importFeedUrl: 'https://example.com/feed.xml' };
+  it('resumes an import stashed by Discover and marks the result subscribed', async () => {
+    queryParams = { redirect: '/discover' };
     const page = setup();
+    sessionStorage.setItem('driftread:pendingImportFeedUrl', 'https://example.com/feed.xml');
 
     await page.submit();
 
@@ -141,11 +148,26 @@ describe('Login redirect after sign-in', () => {
     expect(subs.markSubscribedCalls).toEqual(['feed-1']);
     expect(navigateCalls).toEqual(['/discover']);
     expect(danger).toEqual([]);
+    // Read-once: a stale value must not resume again on a later login.
+    expect(sessionStorage.getItem('driftread:pendingImportFeedUrl')).toBeNull();
+  });
+
+  it('does not act on importFeedUrl passed as a query param', async () => {
+    // Codex review on PR #52: a crafted /login?importFeedUrl=<attacker URL>
+    // link must not trigger an import — only Discover.importFeed()'s own
+    // sessionStorage stash (an actual click) can.
+    queryParams = { redirect: '/discover', importFeedUrl: 'https://attacker.example/feed.xml' };
+    const page = setup();
+
+    await page.submit();
+
+    expect(discover.importByUrlCalls).toEqual([]);
   });
 
   it('toasts an error without blocking the redirect when the resumed import fails', async () => {
-    queryParams = { redirect: '/discover', importFeedUrl: 'https://example.com/feed.xml' };
+    queryParams = { redirect: '/discover' };
     const page = setup();
+    sessionStorage.setItem('driftread:pendingImportFeedUrl', 'https://example.com/feed.xml');
     importResult = throwError(() => new Error('boom'));
 
     await page.submit();
@@ -153,5 +175,22 @@ describe('Login redirect after sign-in', () => {
     expect(subs.markSubscribedCalls).toEqual([]);
     expect(danger.length).toBe(1);
     expect(navigateCalls).toEqual(['/discover']);
+  });
+
+  it('does not mark subscribed if the signed-in identity changed before the import resolved', async () => {
+    queryParams = { redirect: '/discover' };
+    const page = setup();
+    sessionStorage.setItem('driftread:pendingImportFeedUrl', 'https://example.com/feed.xml');
+    const pending = new Subject<Feed>();
+    importResult = pending;
+
+    await page.submit();
+    auth.session = () => ({ user: { id: 'user-2' } }); // switches before the response returns
+    pending.next(feed);
+    pending.complete();
+
+    // The backend created this subscription for user-1, not whoever is
+    // signed in when the (slow) response happens to arrive.
+    expect(subs.markSubscribedCalls).toEqual([]);
   });
 });

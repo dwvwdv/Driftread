@@ -6,6 +6,7 @@ import { AuthService } from '../../services/auth';
 import { SubscriptionService } from '../../services/subscription';
 import { DiscoveredFeed } from '../../models';
 import { apiMessage, isRateLimited, retryAfterSeconds } from '../../shared/http-errors';
+import { setPendingImportFeedUrl } from '../../shared/pending-import';
 import { ObIcon } from '../../ui/icon/icon';
 import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
 import { ObPageHeader } from '../../ui/page-header/page-header';
@@ -86,11 +87,14 @@ export class Discover implements OnDestroy {
     // #30): it writes third-party-supplied metadata straight into the global
     // feeds catalog, and rate limiting alone doesn't stop pollution across
     // rotated IPs. Same redirect-to-login shape as subscribeExisting(), plus
-    // importFeedUrl so Login.submit() can resume the import instead of
-    // dropping the reader back on a blank form (Codex review on PR #52).
+    // stashing the URL so Login.submit() can resume the import instead of
+    // dropping the reader back on a blank form (Codex review on PR #52) — in
+    // sessionStorage rather than a query param, so a crafted login link can't
+    // trigger an import the reader never asked for (see pending-import.ts).
     if (!this.auth.session()) {
+      setPendingImportFeedUrl(candidate.feed_url);
       void this.router.navigate(['/login'], {
-        queryParams: { redirect: '/discover', importFeedUrl: candidate.feed_url },
+        queryParams: { redirect: '/discover' },
       });
       return;
     }

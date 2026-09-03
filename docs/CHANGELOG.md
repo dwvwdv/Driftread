@@ -923,11 +923,28 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   與 `ruff check` 過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`）過 frontend 改動，
   交給 CI 實際跑過驗證。
 - 對應文件更新：`docs/SECURITY.md`（新增 #30）、`TODO.md`（「Auth 與安全」該項打勾）。
-- **PR review 修正（Codex，P2）**：未登入點擊匯入時，原本只把 `redirect=/discover` 帶去登入頁，
-  候選清單與選中的 feed URL 都會在導頁後消失，讀者得重新貼一次網址、重新發現、再點一次匯入。
-  修法比照既有的 `subscribeFeed` 模式：`Discover.importFeed()` 的 redirect 多帶一個
-  `importFeedUrl` 參數，`Login.submit()`（新增注入 `DiscoverService`）在登入成功後若偵測到這個
-  參數，直接呼叫 `importByUrl()` 並在成功時 `markSubscribed()`、失敗時 toast 錯誤——與既有
-  `subscribeFeed` 分支同一套 fire-and-forget 寫法，登入後仍導向靜態的 `redirect`（`/discover`）
-  而非動態導去新建立的 feed 詳情頁，維持改動範圍最小。新增 `login.spec.ts` 兩個案例（成功、
-  失敗各一），`discover.spec.ts` 既有的登出導頁測試補上 `importFeedUrl` 斷言。
+- **PR review 修正第一輪（Codex，P2）**：未登入點擊匯入時，原本只把 `redirect=/discover` 帶去
+  登入頁，候選清單與選中的 feed URL 都會在導頁後消失，讀者得重新貼一次網址、重新發現、再點一次
+  匯入。第一版修法比照既有的 `subscribeFeed` query param 模式，帶一個 `importFeedUrl` 參數，
+  `Login.submit()`（新增注入 `DiscoverService`）登入成功後偵測到就呼叫 `importByUrl()`。
+- **PR review 修正第二輪（Codex，兩個 P2）**：
+  1. 第一版的 `importFeedUrl` 是直接讀 query string——任何人都能構造
+     `/login?importFeedUrl=<攻擊者網址>` 連結，受害者只要照常登入，就會在完全沒點過「匯入」的
+     情況下，被伺服器抓取那個攻擊者網址、把回應寫進全域 catalog、還自動訂閱受害者帳號——正好
+     繞過這個 PR 原本要補的「需要使用者主動操作才能寫入 catalog」防線。修法：改用
+     `sessionStorage`（新增 `frontend/src/app/shared/pending-import.ts`，
+     `setPendingImportFeedUrl()`／`takePendingImportFeedUrl()`，讀取即清除、只能被重放一次）
+     取代 query param——只有 Discover 頁面自己的 JS 在讀者真的點擊匯入後才會寫入這把 key，
+     外部連結無法注入。`subscribeFeed` 沿用既有的 query param 設計不動：它訂閱的是已在目錄裡、
+     經過驗證的既有 feed id，不會觸發伺服器對任意網址的抓取與寫入，風險層級不同，不在這次修法
+     範圍內。
+  2. 呼叫 `importByUrl()` 到回應落地之間，若讀者登出或換帳號，原本會無條件把這筆訂閱
+     `markSubscribed()` 到*現在*登入的身分上，即使伺服器實際上是替*發起請求當下*的使用者建立的
+     ——同 `Discover.importFeed()` 已有的 `requestedFor` 防線是同一類問題，只是這條 resume 路徑
+     漏補。修法：`Login.submit()` 在送出 `importByUrl()` 前記下 `auth.session()?.user?.id`，
+     回應落地時比對現在的身分，不符就跳過 `markSubscribed()`，同 `Discover.importFeed()` 一套
+     寫法。
+  - 新增 `frontend/src/app/shared/pending-import.ts`。`login.spec.ts` 新增／改寫案例涵蓋：
+    resume 讀取後即清除、query param 版的 `importFeedUrl` 不會被採用、換帳號後不
+    `markSubscribed()`。`discover.spec.ts` 既有的登出點擊匯入測試改斷言寫入 `sessionStorage`
+    而非帶 query param。
