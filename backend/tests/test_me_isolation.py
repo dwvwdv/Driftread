@@ -16,13 +16,17 @@ request's own authenticated user and differs between the two calls. A
 regression that hardcodes a user id, reuses one across requests, or reads it
 from the wrong place would make one of these calls silently look like the
 other user, and none of the single-user tests in test_me.py would catch it.
+
+Covers all of routers/me.py plus routers/opml.py (both import and export).
 """
 from __future__ import annotations
 import os
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import jwt
+
+from rss_parser import ParsedFeed
 
 os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-please-change-and-make-32-bytes-long")
 
@@ -273,7 +277,7 @@ def test_update_preferences_writes_calling_users_id(client):
     assert upserted == [USER_A, USER_B]
 
 
-# --- OPML export -------------------------------------------------------------
+# --- OPML import/export -------------------------------------------------------
 
 
 def test_export_opml_scoped_per_user(client):
@@ -285,3 +289,54 @@ def test_export_opml_scoped_per_user(client):
     assert r1.status_code == r2.status_code == 200
 
     _assert_isolated(mock_db.table.return_value.select.return_value.eq.call_args_list)
+
+
+def test_import_opml_subscribes_with_calling_users_id(client):
+    """The one /me/* endpoint left out of the isolation batch above (see the
+    module docstring) — it needs the external fetch path (validate_fetch_url,
+    fetch_and_parse) mocked out rather than just the DB, since a successful
+    import has to get past both before it ever writes to user_feeds."""
+    c, mock_db = client
+    feed_id_a = "33333333-3333-3333-3333-333333333333"
+    feed_id_b = "44444444-4444-4444-4444-444444444444"
+    # Two calls per import (feeds upsert, then user_feeds upsert), in that
+    # order, once per request — both land on the same mock_db.table.upsert
+    # mock regardless of which table name was passed.
+    mock_db.table.return_value.upsert.return_value.execute.side_effect = [
+        MagicMock(data=[{"id": feed_id_a}]),
+        MagicMock(data=[{"user_id": USER_A, "feed_id": feed_id_a}]),
+        MagicMock(data=[{"id": feed_id_b}]),
+        MagicMock(data=[{"user_id": USER_B, "feed_id": feed_id_b}]),
+    ]
+
+    opml_body = b'<opml version="2.0"><body><outline text="f" xmlUrl="https://example.com/rss"/></body></opml>'
+    parsed = ParsedFeed(title="Example", url="https://example.com/rss")
+
+    async def fake_validate_fetch_url(url, **kw):
+        return url
+
+    async def fake_fetch_and_parse(url):
+        return parsed
+
+    with patch("routers.opml.validate_fetch_url", new=fake_validate_fetch_url), patch(
+        "routers.opml.fetch_and_parse", new=fake_fetch_and_parse
+    ):
+        r1 = c.post(
+            "/api/me/import/opml",
+            headers=_auth(USER_A),
+            files={"file": ("feeds.opml", opml_body, "text/x-opml")},
+        )
+        r2 = c.post(
+            "/api/me/import/opml",
+            headers=_auth(USER_B),
+            files={"file": ("feeds.opml", opml_body, "text/x-opml")},
+        )
+
+    assert r1.status_code == r2.status_code == 200
+    assert r1.json()["subscribed"] == 1
+    assert r2.json()["subscribed"] == 1
+
+    user_feeds_writes = [
+        c_[0][0] for c_ in mock_db.table.return_value.upsert.call_args_list if "user_id" in c_[0][0]
+    ]
+    assert [row["user_id"] for row in user_feeds_writes] == [USER_A, USER_B]
