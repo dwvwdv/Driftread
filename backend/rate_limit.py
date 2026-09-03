@@ -1,11 +1,12 @@
 """In-process rate limiting for endpoints that trigger outbound network fetches.
 
-The public, unauthenticated /api/discover and /api/discover/import endpoints
-each make one or more outbound HTTP requests to a client-chosen URL (see
-services/feed_discovery.py). Without a limit, anyone can call them in a tight
-loop to run the server as a free network scanner/amplifier — the existing
-SSRF guard (validate_fetch_url) stops requests from reaching private targets,
-but does nothing to stop volume against public ones.
+/api/discover (unauthenticated) and /api/discover/import (requires a signed-in
+user — see routers/discover.py) each make one or more outbound HTTP requests
+to a client-chosen URL (see services/feed_discovery.py). Without a limit,
+anyone who can call them could run the server as a free network
+scanner/amplifier in a tight loop — the existing SSRF guard
+(validate_fetch_url) stops requests from reaching private targets, but does
+nothing to stop volume against public ones.
 
 This is a per-process sliding-window counter, not a distributed one (no
 Redis) — the project runs as a single backend container (see

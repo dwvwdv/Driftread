@@ -41,6 +41,7 @@ describe('Discover subscribe actions', () => {
 
   beforeEach(() => {
     session = { user: { id: 'user-1' } };
+    sessionStorage.clear();
   });
 
   function setup(importByUrl?: () => ReturnType<DiscoverService['importByUrl']>) {
@@ -116,9 +117,13 @@ describe('Discover subscribe actions', () => {
     expect(subs.subscribeCalls).toEqual([]);
   });
 
-  it('does not mark subscribed for a signed-out import', () => {
+  it('importFeed stashes the URL and sends a signed-out reader to log in, without calling the backend', () => {
     session = null;
-    const page = setup();
+    let called = false;
+    const page = setup(() => {
+      called = true;
+      return of(feed);
+    });
 
     page.importFeed({
       feed_url: feed.url,
@@ -128,6 +133,21 @@ describe('Discover subscribe actions', () => {
       existing_feed_id: null,
     });
 
+    // Stashed in sessionStorage, not a query param — a query param would let
+    // a crafted /login?importFeedUrl=... link trigger an import the reader
+    // never asked for (Codex review on PR #52; see shared/pending-import.ts).
+    // The nonce carried in the redirect must match the one just stashed, so
+    // Login only resumes an import reached via *this* redirect.
+    expect(navCalls.length).toBe(1);
+    const [commands, extras] = navCalls[0] as [unknown, { queryParams: Record<string, string> }];
+    expect(commands).toEqual(['/login']);
+    expect(extras.queryParams['redirect']).toBe('/discover');
+    const nonce = extras.queryParams['importNonce'];
+    expect(nonce).toBeTruthy();
+    expect(sessionStorage.getItem('driftread:pendingImportFeedUrl')).toBe(
+      JSON.stringify({ url: feed.url, nonce }),
+    );
+    expect(called).toBe(false);
     expect(subs.markSubscribedCalls).toEqual([]);
   });
 
