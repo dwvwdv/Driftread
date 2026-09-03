@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from supabase import Client
 
-from auth import AuthUser, get_optional_user
+from auth import AuthUser, get_current_user
 from database import get_client
 from models import (
     DiscoveredFeed,
@@ -72,7 +72,14 @@ async def discover(
 )
 async def discover_and_import(
     body: DiscoverImportRequest,
-    user: AuthUser | None = Depends(get_optional_user),
+    # Requires a permanent account: this writes straight into the global
+    # `feeds` catalog (title/description/language are attacker-influenced
+    # third-party text lifted from whatever body.feed_url serves — see the
+    # comment on discover() above). Rate limiting alone doesn't stop
+    # catalog pollution across rotated IPs; requiring a real account does
+    # (docs/FEATURES.md, TODO.md "Auth 與安全"). Anonymous readers can still
+    # explore results via POST /discover, which never writes.
+    user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
 ) -> Feed:
     try:
@@ -96,11 +103,10 @@ async def discover_and_import(
         raise HTTPException(status_code=500, detail="Failed to upsert feed")
     feed = Feed(**result.data[0])
 
-    if user:
-        db.table("user_feeds").upsert(
-            {"user_id": user.id, "feed_id": str(feed.id)},
-            on_conflict="user_id,feed_id",
-        ).execute()
+    db.table("user_feeds").upsert(
+        {"user_id": user.id, "feed_id": str(feed.id)},
+        on_conflict="user_id,feed_id",
+    ).execute()
 
     now = datetime.now(timezone.utc).isoformat()
     inserted = upsert_articles(db, str(feed.id), parsed.articles)

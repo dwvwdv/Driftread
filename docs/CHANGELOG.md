@@ -895,3 +895,90 @@ docs/FEATURES.md 第 5 節與 TODO.md Phase 0 的記錄），RLS 對這個 clien
   .eq...` 的分層結構、`_reads_chain` 同款 keyset 分頁 mock）手動核對每個測試的 mock 設置與
   斷言路徑，交給 CI 實際跑過驗證。
 - 對應文件更新：`TODO.md`（「Auth 與安全」一項打勾，並記錄範圍與未涵蓋的 `import/opml`）。
+
+## 階段二十九：`POST /api/discover/import` 改為要求登入（2026-09-03）
+
+TODO.md「Auth 與安全」批次的第一項：這個端點原本 `get_optional_user`，未登入呼叫者一樣能把
+遠端 feed 回應的第三方文字（`title`／`description`／`website_url`／`language`）直接 upsert 進
+公開、無使用者範圍的 `feeds` catalog，供所有使用者的目錄瀏覽／發現／猜你喜歡共用。既有的
+per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且每次成功呼叫都會在全域目錄留下
+一筆無法歸責的紀錄。
+
+- **`backend/routers/discover.py`**：`discover_and_import` 的 `user` 參數從
+  `AuthUser | None = Depends(get_optional_user)` 改成 `AuthUser = Depends(get_current_user)`，
+  未帶合法 bearer token 在任何抓取或 DB 寫入之前就回 `401`。原本「已登入才順便訂閱」的
+  `if user:` 分支跟著拿掉——訂閱一律發生。`POST /discover`（只回傳候選清單，從不寫入）維持
+  公開不需要登入。
+- **`frontend/src/app/components/discover/discover.ts`**：`importFeed()` 未登入時不再直接呼叫
+  後端，改為導向 `/login?redirect=/discover`，同既有 `subscribeExisting()` 對已存在 feed 的
+  處理模式；按鈕文字對應從「匯入到資料庫」改成「登入以匯入並訂閱」。
+- **測試**：`backend/tests/test_discover.py` 新增未登入 401（DB 從未被呼叫）與已登入完整匯入
+  ＋自動訂閱路徑兩個案例；既有的私網 URL／metadata URL／rate limit 系列測試（`test_discover.py`
+  ／`test_main.py`／`test_rate_limit.py`）補上合法 bearer token，讓它們繼續驗證各自原本要測的
+  行為（URL 驗證、rate limit），不被新加的 401 蓋過去。`discover.spec.ts` 新增對應的
+  「未登入導向登入頁、不呼叫後端」案例，取代原本測「未登入匯入不標記訂閱」的案例（該行為已不
+  適用——未登入現在根本不會呼叫匯入）。
+- **本 sandbox 的已知限制**：`pip install pytest`／`npm ci` 仍被 allowlist 擋下，backend／
+  frontend 測試都無法在本機實際執行——與階段二十一至二十七相同；已用 `python3 -m py_compile`
+  與 `ruff check` 過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`）過 frontend 改動，
+  交給 CI 實際跑過驗證。
+- 對應文件更新：`docs/SECURITY.md`（新增 #30）、`TODO.md`（「Auth 與安全」該項打勾）。
+- **PR review 修正第一輪（Codex，P2）**：未登入點擊匯入時，原本只把 `redirect=/discover` 帶去
+  登入頁，候選清單與選中的 feed URL 都會在導頁後消失，讀者得重新貼一次網址、重新發現、再點一次
+  匯入。第一版修法比照既有的 `subscribeFeed` query param 模式，帶一個 `importFeedUrl` 參數，
+  `Login.submit()`（新增注入 `DiscoverService`）登入成功後偵測到就呼叫 `importByUrl()`。
+- **PR review 修正第二輪（Codex，兩個 P2）**：
+  1. 第一版的 `importFeedUrl` 是直接讀 query string——任何人都能構造
+     `/login?importFeedUrl=<攻擊者網址>` 連結，受害者只要照常登入，就會在完全沒點過「匯入」的
+     情況下，被伺服器抓取那個攻擊者網址、把回應寫進全域 catalog、還自動訂閱受害者帳號——正好
+     繞過這個 PR 原本要補的「需要使用者主動操作才能寫入 catalog」防線。修法：改用
+     `sessionStorage`（新增 `frontend/src/app/shared/pending-import.ts`，
+     `setPendingImportFeedUrl()`／`takePendingImportFeedUrl()`，讀取即清除、只能被重放一次）
+     取代 query param——只有 Discover 頁面自己的 JS 在讀者真的點擊匯入後才會寫入這把 key，
+     外部連結無法注入。`subscribeFeed` 沿用既有的 query param 設計不動：它訂閱的是已在目錄裡、
+     經過驗證的既有 feed id，不會觸發伺服器對任意網址的抓取與寫入，風險層級不同，不在這次修法
+     範圍內。
+  2. 呼叫 `importByUrl()` 到回應落地之間，若讀者登出或換帳號，原本會無條件把這筆訂閱
+     `markSubscribed()` 到*現在*登入的身分上，即使伺服器實際上是替*發起請求當下*的使用者建立的
+     ——同 `Discover.importFeed()` 已有的 `requestedFor` 防線是同一類問題，只是這條 resume 路徑
+     漏補。修法：`Login.submit()` 在送出 `importByUrl()` 前記下 `auth.session()?.user?.id`，
+     回應落地時比對現在的身分，不符就跳過 `markSubscribed()`，同 `Discover.importFeed()` 一套
+     寫法。
+  - 新增 `frontend/src/app/shared/pending-import.ts`。`login.spec.ts` 新增／改寫案例涵蓋：
+    resume 讀取後即清除、query param 版的 `importFeedUrl` 不會被採用、換帳號後不
+    `markSubscribed()`。`discover.spec.ts` 既有的登出點擊匯入測試改斷言寫入 `sessionStorage`
+    而非帶 query param。
+- **PR review 修正第三輪（Codex，P2）**：第二輪把 stash 換成 `sessionStorage` 後，還留一個缺口：
+  `Login.submit()` 是「只要登入成功就讀 sessionStorage 裡有沒有待匯入的值」，沒有檢查這次登入
+  是不是真的從那個匯入導頁過來的。讀者點匯入、在 `/login` 按上一頁放棄、之後在同一個分頁因為
+  別的原因（例如想看自己的訂閱）正常登入，會在完全沒有再點過匯入的情況下，把那個早已放棄的
+  URL 悄悄匯入並訂閱——把「任何後續登入」錯當成「使用者確認了這個舊決定」。修法：
+  `setPendingImportFeedUrl()` 改成回傳一次性 nonce（`crypto.randomUUID()`），連同 URL 一起存成
+  `{url, nonce}`；`Discover.importFeed()` 把這個 nonce 一併放進導去 `/login` 的
+  `importNonce` query param。`Login.submit()` 只有在目前這次登入的 query string 裡帶著
+  `importNonce`、且與 sessionStorage 存的 nonce 相符時才會 resume；沒有 `importNonce`（不是從
+  這個匯入流程來的登入）完全不去碰 sessionStorage，讓被放棄的項目留在原地——之後讀者若真的
+  重新點一次匯入，會覆蓋掉舊的 `{url, nonce}`，舊 nonce 自然失效，不需要額外清理。
+  `pending-import.ts`／`discover.ts`／`login.ts` 的內部說明同步更新；`login.spec.ts` 新增
+  「沒有 `importNonce` 不 resume」「nonce 不相符不 resume（且仍清掉舊值）」兩個案例，既有的
+  resume／錯誤／換帳號三個案例補上 `importNonce` 與新的 stash 格式；`discover.spec.ts` 的既有
+  案例改成驗證回傳的 `importNonce` 與 sessionStorage 內容能對上，而非驗證固定字串。
+- **PR review 修正第四輪（Codex，P2）**：`pending-import.ts` 直接呼叫 `sessionStorage.setItem`／
+  `getItem`／`removeItem`，沒有考慮 storage 不可用的情況（無痕模式、封鎖 cookie／storage）——
+  這類環境下 `setItem()` 可能直接 throw，而這個呼叫發生在 `Discover.importFeed()` 導向
+  `/login` 之前，未接住的例外會讓整個點擊沒有反應：既不導去登入頁，也沒有任何錯誤訊息。專案裡
+  `AdminKeyStore`（`services/admin-key.ts`）已有處理同一種失效模式的既有寫法。修法：`set`／
+  `take` 兩個函式的 storage 呼叫都包進 `try/catch`——寫入失敗時仍照常回傳 nonce（讓導頁繼續
+  進行，只是登入後沒有東西可以 resume，等同讀者沒點過匯入）；讀取失敗時回傳 `null`（等同沒有
+  待處理的匯入），不讓例外往外冒。新增 `pending-import.spec.ts`，涵蓋一般 set／take 往返、
+  read-once、nonce 不符、storage 為空，以及 `setItem`／`getItem` 各自 throw 時的容錯行為
+  （`vi.spyOn(Storage.prototype, ...)`）。
+- **PR review 修正第五輪（Codex，P2）**：第四輪把 storage 呼叫包進 `try/catch`，但
+  `crypto.randomUUID()` 的呼叫本身留在 `try` 區塊外——在不安全來源（非 HTTPS、非
+  localhost）或較舊瀏覽器上，`crypto.randomUUID` 可能整個不存在，直接呼叫會 throw，而這發生在
+  `Discover.importFeed()` 呼叫 `router.navigate()` 之前且未接住，一樣會讓整個點擊沒有反應。
+  修法：新增 `generateNonce()`，把 `crypto.randomUUID()` 包進 `try/catch`，失敗時退回
+  `Date.now()`／`Math.random()` 組成的字串。這個 nonce 不需要密碼學等級的不可猜測性——全程只在
+  同一個分頁內產生與比對，從未傳輸到任何攻擊者觀察得到的地方——退回方案在這裡是安全的。
+  `pending-import.spec.ts` 新增案例：`vi.spyOn(crypto, 'randomUUID')` 模擬拋出，斷言仍能拿到
+  可用且彼此不同的 nonce，且能正常完成 resume。
