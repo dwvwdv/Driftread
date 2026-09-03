@@ -295,6 +295,13 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
   `supabase/1_create_schema.sql`、`2_migrate_tables.sql`、`3_rls_policies.sql` 保留為可審核的三層
   定義，010 是相同 SQL 的可部署版本。
 
+### #30 — `POST /api/discover/import` 免認證即可寫入全域 `feeds` catalog（09-03）
+
+- **問題**：`routers/discover.py::discover_and_import` 用 `get_optional_user`，未登入呼叫者一樣能通過。這個端點會抓取呼叫者指定的 URL，把回應解析出的 `title`／`description`／`website_url`／`language`——全是第三方文字，遠端 feed 想回什麼就回什麼——直接 `upsert` 進公開、無使用者範圍的 `feeds` catalog 表，供所有使用者的目錄瀏覽／發現／猜你喜歡共用。#18 加的 rate limit（每 IP 每分鐘 20 次）只限制單一位址的速率，擋不住輪換 IP 的長期灌入；每次成功呼叫都會在全域目錄留下一筆難以歸責的紀錄（無 `created_by`，且來源 URL 本身也是攻擊者選的）。管理端已經有專門處理「未經信任來源」的候選審核佇列（`services/discovery_candidates.py` 的 `feed_candidates` 表與 `/admin/discovery/candidates` 的 approve／hold／reject 流程），但那條路徑只餵給自主爬蟲（`services/discovery.py`），這個使用者觸發的匯入端點完全繞過它。
+- **修法**：`user` 參數改用 `get_current_user`（必要、非 optional），未帶合法 bearer token 直接 `401`，在任何抓取或 DB 呼叫之前擋下——比照 TODO.md「Auth 與安全」列出的兩個選項裡較不影響現有回應介面的一個（要求登入，而非另外接進候選審核佇列，避免把目前同步回傳 `Feed` 的介面改成非同步的「已提交待審」）。原本「已登入才順便訂閱」的 `if user:` 分支跟著拿掉——`user` 現在保證存在，訂閱一律發生。`POST /discover`（只回傳候選清單，從不寫入）維持不需要登入。
+- **前端**：`Discover.importFeed()` 未登入時不再直接呼叫 `/discover/import`，改為導向 `/login?redirect=/discover`（與既有 `subscribeExisting()` 對已存在 feed 的處理一致）；按鈕文字對應改成「登入以匯入並訂閱」。
+- **測試**：`backend/tests/test_discover.py` 新增 `test_discover_import_requires_authentication`（未帶 token 斷言 `401` 且 `mock_db.table` 從未被呼叫）與 `test_discover_import_succeeds_for_authenticated_user`（帶合法 token 驗證整條匯入＋自動訂閱路徑）；既有的私網 URL／metadata URL／rate limit 系列測試補上合法 bearer token，讓它們繼續驗證各自原本要測的行為（URL 驗證、rate limit），而不是被新加的 401 蓋過去。`frontend/src/app/components/discover/discover.spec.ts` 新增對應案例，比照 `subscribeExisting` 的既有測試。沒有網路能在本 sandbox 安裝依賴跑 `pytest`／`npm test`（與本專案歷史多輪修法同樣的既有限制），改用 `python3 -m py_compile` 驗證語法，實際執行結果交給 CI。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |

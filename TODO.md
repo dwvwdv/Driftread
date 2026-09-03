@@ -224,7 +224,11 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 - [ ] JWT 驗證由只接受 HS256 shared secret 改為依 Supabase JWKS 驗證 ES256／RS256 signing key。
 - [ ] 支援 signing key rotation 與 JWKS cache refresh。
-- [ ] 匿名 `/api/discover/import` 改為要求登入，或先寫入候選審核佇列，不直接寫入全域 catalog。
+- [x] 匿名 `/api/discover/import` 改為要求登入，或先寫入候選審核佇列，不直接寫入全域 catalog。
+      （改為要求登入：`user: AuthUser = Depends(get_current_user)`，未帶合法 token 在任何抓取／
+      DB 寫入前回 401；`POST /discover` 仍公開，只回傳候選清單不寫入。前端 `Discover.importFeed()`
+      未登入時導向 `/login?redirect=/discover`，同既有 `subscribeExisting()` 的模式。見
+      `docs/SECURITY.md` #30）
 - [ ] 瀏覽器擴充若提供一般使用者使用，改採 PKCE 登入與個人訂閱，不保存 Admin API Key。
 - [ ] 檢查 public client 僅使用 publishable key，任何 frontend／extension 都不得含 `service_role` 或 secret key。
 - [ ] 為登入後的 user-scoped API 加上跨使用者資料隔離測試。

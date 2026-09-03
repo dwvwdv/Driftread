@@ -116,9 +116,13 @@ describe('Discover subscribe actions', () => {
     expect(subs.subscribeCalls).toEqual([]);
   });
 
-  it('does not mark subscribed for a signed-out import', () => {
+  it('importFeed sends a signed-out reader to log in first, without calling the backend', () => {
     session = null;
-    const page = setup();
+    let called = false;
+    const page = setup(() => {
+      called = true;
+      return of(feed);
+    });
 
     page.importFeed({
       feed_url: feed.url,
@@ -128,6 +132,8 @@ describe('Discover subscribe actions', () => {
       existing_feed_id: null,
     });
 
+    expect(navCalls).toEqual([[['/login'], { queryParams: { redirect: '/discover' } }]]);
+    expect(called).toBe(false);
     expect(subs.markSubscribedCalls).toEqual([]);
   });
 

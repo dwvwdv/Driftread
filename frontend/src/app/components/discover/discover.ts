@@ -16,6 +16,10 @@ import { ToastService } from '../../ui/toast/toast';
  *
  * POST /api/discover and /discover/import are both rate limited at 20 requests per
  * 60 seconds per IP, so a 429 is told as a countdown rather than as "發現失敗".
+ *
+ * Discovering candidates works signed out; importing one requires a signed-in
+ * caller (docs/SECURITY.md #30 — /discover/import writes third-party metadata
+ * into the global feeds catalog), same as subscribing to an already-known feed.
  */
 @Component({
   selector: 'app-discover',
@@ -78,6 +82,17 @@ export class Discover implements OnDestroy {
   }
 
   importFeed(candidate: DiscoveredFeed): void {
+    // POST /discover/import now requires a signed-in caller (docs/SECURITY.md
+    // #30): it writes third-party-supplied metadata straight into the global
+    // feeds catalog, and rate limiting alone doesn't stop pollution across
+    // rotated IPs. Same redirect-to-login shape as subscribeExisting().
+    if (!this.auth.session()) {
+      void this.router.navigate(['/login'], {
+        queryParams: { redirect: '/discover' },
+      });
+      return;
+    }
+
     this.importing.set(candidate.feed_url);
     this.error.set('');
     // Captured so a response arriving after a sign-out/account switch can't
@@ -90,7 +105,7 @@ export class Discover implements OnDestroy {
       next: (feed) => {
         this.importing.set(null);
         this.imported.update((set) => new Set(set).add(candidate.feed_url));
-        // POST /discover/import auto-subscribes a signed-in importer server-side
+        // POST /discover/import auto-subscribes the importer server-side
         // (backend/routers/discover.py); this just keeps SubscriptionService's
         // cache in sync so the feed shows as subscribed elsewhere without a
         // reload.

@@ -864,3 +864,31 @@ TODO.md 建議開發批次第 7 批的第一部分。此前 feed 詳情頁只顯
   CI 實際跑過驗證。
 - 對應文件更新：`docs/FEATURES.md`（Feeds/Articles API、文章預覽功能列、第 5 節資料表）、
   `TODO.md`（「Feed 完整文章列表」四項打勾，「建議開發批次」第 7 項改為進行中）。
+
+## 階段二十八：`POST /api/discover/import` 改為要求登入（2026-09-03）
+
+TODO.md「Auth 與安全」批次的第一項：這個端點原本 `get_optional_user`，未登入呼叫者一樣能把
+遠端 feed 回應的第三方文字（`title`／`description`／`website_url`／`language`）直接 upsert 進
+公開、無使用者範圍的 `feeds` catalog，供所有使用者的目錄瀏覽／發現／猜你喜歡共用。既有的
+per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且每次成功呼叫都會在全域目錄留下
+一筆無法歸責的紀錄。
+
+- **`backend/routers/discover.py`**：`discover_and_import` 的 `user` 參數從
+  `AuthUser | None = Depends(get_optional_user)` 改成 `AuthUser = Depends(get_current_user)`，
+  未帶合法 bearer token 在任何抓取或 DB 寫入之前就回 `401`。原本「已登入才順便訂閱」的
+  `if user:` 分支跟著拿掉——訂閱一律發生。`POST /discover`（只回傳候選清單，從不寫入）維持
+  公開不需要登入。
+- **`frontend/src/app/components/discover/discover.ts`**：`importFeed()` 未登入時不再直接呼叫
+  後端，改為導向 `/login?redirect=/discover`，同既有 `subscribeExisting()` 對已存在 feed 的
+  處理模式；按鈕文字對應從「匯入到資料庫」改成「登入以匯入並訂閱」。
+- **測試**：`backend/tests/test_discover.py` 新增未登入 401（DB 從未被呼叫）與已登入完整匯入
+  ＋自動訂閱路徑兩個案例；既有的私網 URL／metadata URL／rate limit 系列測試（`test_discover.py`
+  ／`test_main.py`／`test_rate_limit.py`）補上合法 bearer token，讓它們繼續驗證各自原本要測的
+  行為（URL 驗證、rate limit），不被新加的 401 蓋過去。`discover.spec.ts` 新增對應的
+  「未登入導向登入頁、不呼叫後端」案例，取代原本測「未登入匯入不標記訂閱」的案例（該行為已不
+  適用——未登入現在根本不會呼叫匯入）。
+- **本 sandbox 的已知限制**：`pip install pytest`／`npm ci` 仍被 allowlist 擋下，backend／
+  frontend 測試都無法在本機實際執行——與階段二十一至二十七相同；已用 `python3 -m py_compile`
+  與 `ruff check` 過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`）過 frontend 改動，
+  交給 CI 實際跑過驗證。
+- 對應文件更新：`docs/SECURITY.md`（新增 #30）、`TODO.md`（「Auth 與安全」該項打勾）。
