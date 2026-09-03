@@ -59,4 +59,21 @@ describe('pending-import', () => {
     expect(() => takePendingImportFeedUrl(nonce)).not.toThrow();
     expect(takePendingImportFeedUrl(nonce)).toBeNull();
   });
+
+  it('still returns a usable, unique nonce when crypto.randomUUID is unavailable', () => {
+    // An insecure (non-HTTPS, non-localhost) origin or an older browser can
+    // lack crypto.randomUUID() entirely — throwing there, uncaught, would
+    // abort Discover.importFeed() before router.navigate() ever runs
+    // (fourth-round Codex review on PR #52).
+    vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+      throw new TypeError('crypto.randomUUID is not a function');
+    });
+
+    const first = setPendingImportFeedUrl('https://example.com/feed.xml');
+    const second = setPendingImportFeedUrl('https://example.com/feed.xml');
+
+    expect(first).toBeTruthy();
+    expect(first).not.toBe(second);
+    expect(takePendingImportFeedUrl(second)).toBe('https://example.com/feed.xml');
+  });
 });

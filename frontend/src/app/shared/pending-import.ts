@@ -24,7 +24,14 @@
  * (services/admin-key.ts): it can throw (private browsing, disabled storage —
  * third-round Codex review on PR #52). Failing here must not stop the click
  * itself from reaching /login — it just means the import can't be resumed
- * automatically, same as if the reader had never clicked at all.
+ * automatically, same as if the reader had never clicked at all. Nonce
+ * generation gets the same treatment (fourth-round Codex review on PR #52):
+ * `crypto.randomUUID()` needs a secure context and a fairly recent browser,
+ * and throwing there — outside any try/catch — would abort the click before
+ * `router.navigate()` ever runs. The fallback doesn't need to be
+ * cryptographically unguessable: this nonce is generated and compared
+ * entirely on this one tab, never transmitted anywhere an attacker could
+ * observe it.
  */
 const KEY = 'driftread:pendingImportFeedUrl';
 
@@ -33,9 +40,17 @@ interface PendingImport {
   nonce: string;
 }
 
+function generateNonce(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
 /** Stashes the URL and returns a nonce to carry in the login redirect's query string. */
 export function setPendingImportFeedUrl(url: string): string {
-  const nonce = crypto.randomUUID();
+  const nonce = generateNonce();
   try {
     sessionStorage.setItem(KEY, JSON.stringify({ url, nonce } satisfies PendingImport));
   } catch {

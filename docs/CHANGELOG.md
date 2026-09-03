@@ -973,3 +973,12 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   待處理的匯入），不讓例外往外冒。新增 `pending-import.spec.ts`，涵蓋一般 set／take 往返、
   read-once、nonce 不符、storage 為空，以及 `setItem`／`getItem` 各自 throw 時的容錯行為
   （`vi.spyOn(Storage.prototype, ...)`）。
+- **PR review 修正第五輪（Codex，P2）**：第四輪把 storage 呼叫包進 `try/catch`，但
+  `crypto.randomUUID()` 的呼叫本身留在 `try` 區塊外——在不安全來源（非 HTTPS、非
+  localhost）或較舊瀏覽器上，`crypto.randomUUID` 可能整個不存在，直接呼叫會 throw，而這發生在
+  `Discover.importFeed()` 呼叫 `router.navigate()` 之前且未接住，一樣會讓整個點擊沒有反應。
+  修法：新增 `generateNonce()`，把 `crypto.randomUUID()` 包進 `try/catch`，失敗時退回
+  `Date.now()`／`Math.random()` 組成的字串。這個 nonce 不需要密碼學等級的不可猜測性——全程只在
+  同一個分頁內產生與比對，從未傳輸到任何攻擊者觀察得到的地方——退回方案在這裡是安全的。
+  `pending-import.spec.ts` 新增案例：`vi.spyOn(crypto, 'randomUUID')` 模擬拋出，斷言仍能拿到
+  可用且彼此不同的 nonce，且能正常完成 resume。
