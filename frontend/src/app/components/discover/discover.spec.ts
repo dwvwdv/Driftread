@@ -132,7 +132,9 @@ describe('Discover subscribe actions', () => {
       existing_feed_id: null,
     });
 
-    expect(navCalls).toEqual([[['/login'], { queryParams: { redirect: '/discover' } }]]);
+    expect(navCalls).toEqual([
+      [['/login'], { queryParams: { redirect: '/discover', importFeedUrl: feed.url } }],
+    ]);
     expect(called).toBe(false);
     expect(subs.markSubscribedCalls).toEqual([]);
   });

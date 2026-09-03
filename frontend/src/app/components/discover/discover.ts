@@ -85,10 +85,12 @@ export class Discover implements OnDestroy {
     // POST /discover/import now requires a signed-in caller (docs/SECURITY.md
     // #30): it writes third-party-supplied metadata straight into the global
     // feeds catalog, and rate limiting alone doesn't stop pollution across
-    // rotated IPs. Same redirect-to-login shape as subscribeExisting().
+    // rotated IPs. Same redirect-to-login shape as subscribeExisting(), plus
+    // importFeedUrl so Login.submit() can resume the import instead of
+    // dropping the reader back on a blank form (Codex review on PR #52).
     if (!this.auth.session()) {
       void this.router.navigate(['/login'], {
-        queryParams: { redirect: '/discover' },
+        queryParams: { redirect: '/discover', importFeedUrl: candidate.feed_url },
       });
       return;
     }

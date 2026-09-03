@@ -923,3 +923,11 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   與 `ruff check` 過 backend 改動、系統 `tsc`（`--ignoreConfig --noResolve`）過 frontend 改動，
   交給 CI 實際跑過驗證。
 - 對應文件更新：`docs/SECURITY.md`（新增 #30）、`TODO.md`（「Auth 與安全」該項打勾）。
+- **PR review 修正（Codex，P2）**：未登入點擊匯入時，原本只把 `redirect=/discover` 帶去登入頁，
+  候選清單與選中的 feed URL 都會在導頁後消失，讀者得重新貼一次網址、重新發現、再點一次匯入。
+  修法比照既有的 `subscribeFeed` 模式：`Discover.importFeed()` 的 redirect 多帶一個
+  `importFeedUrl` 參數，`Login.submit()`（新增注入 `DiscoverService`）在登入成功後若偵測到這個
+  參數，直接呼叫 `importByUrl()` 並在成功時 `markSubscribed()`、失敗時 toast 錯誤——與既有
+  `subscribeFeed` 分支同一套 fire-and-forget 寫法，登入後仍導向靜態的 `redirect`（`/discover`）
+  而非動態導去新建立的 feed 詳情頁，維持改動範圍最小。新增 `login.spec.ts` 兩個案例（成功、
+  失敗各一），`discover.spec.ts` 既有的登出導頁測試補上 `importFeedUrl` 斷言。

@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/cor
 import { ActivatedRoute, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth';
+import { DiscoverService } from '../../services/discover';
 import { SubscriptionService } from '../../services/subscription';
 import { apiMessage } from '../../shared/http-errors';
 import { ObCallout } from '../../ui/callout/callout';
@@ -26,6 +27,15 @@ import { ToastService } from '../../ui/toast/toast';
  *    FeedDetail.toggleSubscribe, FeedList.quickSubscribe, Discover.subscribeExisting),
  *    and lands back on that exact feed with the subscription already done,
  *    instead of on the home page having to find it and click subscribe again.
+ *
+ *  - Also honors `importFeedUrl` (see Discover.importFeed): a reader who
+ *    pasted a URL, found a not-yet-catalogued candidate and clicked import
+ *    while signed out is sent here instead of straight to the backend
+ *    (POST /discover/import now requires a signed-in caller — see
+ *    docs/SECURITY.md #30). Without resuming it here, they'd land back on a
+ *    blank /discover form and have to re-paste the URL, re-run discovery and
+ *    click import again — the same loss `subscribeFeed` already avoids for
+ *    an existing feed's subscribe button.
  */
 @Component({
   selector: 'app-login',
@@ -39,6 +49,7 @@ export class Login {
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private subs = inject(SubscriptionService);
+  private discover = inject(DiscoverService);
   private toast = inject(ToastService);
 
   mode = signal<'login' | 'signup'>('login');
@@ -50,6 +61,10 @@ export class Login {
 
   get pendingSubscribeFeed(): string | null {
     return this.route.snapshot.queryParamMap.get('subscribeFeed');
+  }
+
+  get pendingImportFeedUrl(): string | null {
+    return this.route.snapshot.queryParamMap.get('importFeedUrl');
   }
 
   setMode(mode: 'login' | 'signup'): void {
@@ -97,6 +112,19 @@ export class Login {
       // requestedFor guard once the effect does catch up.
       this.subs.syncIdentity();
       this.subs.subscribe(feedId, (err) => this.toast.danger(apiMessage(err, '訂閱失敗')));
+    }
+
+    const importFeedUrl = this.pendingImportFeedUrl;
+    if (importFeedUrl) {
+      // Resumes the import Discover.importFeed() deferred for a signed-out
+      // click, instead of dropping the reader back on a blank /discover form
+      // (Codex review on PR #52). Fire-and-forget like the subscribe branch
+      // above — this page navigates away immediately either way, so there's
+      // nowhere here to await a result other than a toast.
+      this.discover.importByUrl(importFeedUrl).subscribe({
+        next: (feed) => this.subs.markSubscribed(feed.id),
+        error: (err: unknown) => this.toast.danger(apiMessage(err, '匯入失敗')),
+      });
     }
 
     const redirect = this.route.snapshot.queryParamMap.get('redirect') || '/';
