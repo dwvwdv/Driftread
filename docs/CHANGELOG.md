@@ -865,7 +865,38 @@ TODO.md 建議開發批次第 7 批的第一部分。此前 feed 詳情頁只顯
 - 對應文件更新：`docs/FEATURES.md`（Feeds/Articles API、文章預覽功能列、第 5 節資料表）、
   `TODO.md`（「Feed 完整文章列表」四項打勾，「建議開發批次」第 7 項改為進行中）。
 
-## 階段二十八：`POST /api/discover/import` 改為要求登入（2026-09-03）
+## 階段二十八：/me/* 端點的跨使用者資料隔離測試（2026-09-02）
+
+同一個「持續改善專案」排程任務。接續 TODO.md「技術與可靠性優化 / Auth 與安全」一直未打勾的
+「為登入後的 user-scoped API 加上跨使用者資料隔離測試」——這批端點的隔離完全不靠 RLS：
+`user_feeds`／`user_article_reads`／`user_bookmarks`／`user_preferences` 四張表雖然開了
+owner-only policy（見 migration 002），但後端一律用 `service_role` client 呼叫（見
+docs/FEATURES.md 第 5 節與 TODO.md Phase 0 的記錄），RLS 對這個 client 完全不生效；真正把
+使用者資料隔開的只有 `routers/me.py`／`routers/opml.py` 裡每個 handler 自己記得在查詢與寫入時
+帶上 `user.id`。這件事此前完全沒有回歸測試守著——`test_me.py` 的既有測試只覆蓋單一使用者
+（固定 `sub: "user-abc"`）的行為是否正確，抓不到「兩個不同使用者的請求互相污染」這類錯誤。
+
+- **新增 `backend/tests/test_me_isolation.py`**：涵蓋 `routers/me.py` 全部 14 個端點
+  （訂閱清單／訂閱／取消訂閱、標記已讀／取消已讀、`GET /me/reads`、`POST /me/reads/mark-all`
+  的兩條路徑——`article_ids` 走 table upsert、不帶則走 `mark_reading_stream_read` RPC——
+  `GET /me/stream`、`GET /me/stream/unread-counts`、收藏清單／加入／移除、偏好設定
+  讀取／更新）與 `routers/opml.py::export_opml`。每個測試用兩個不同使用者（各自簽發合法
+  JWT，`sub` 不同）呼叫同一端點兩次，共用同一個 mock_db，斷言送進 Supabase `.eq("user_id",
+  ...)` 過濾條件、`upsert()` 寫入 dict 或 RPC 的 `p_user_id` 參數，在兩次呼叫裡分別對應各自
+  呼叫者、且彼此不同——會抓到「user_id 被硬寫」「跨請求沿用前一個使用者的值」「從錯的地方
+  （而非驗證過的 JWT）取 id」這幾類會讓應用層隔離悄悄失效、但單一使用者測試看不出來的回歸。
+- **範圍以外**：`POST /me/import/opml` 雖然也是 user-scoped（訂閱寫入帶 `user.id`），但要
+  driving 這個端點需要 mock 檔案上傳與逐一 feed 的 `fetch_and_parse` 外部請求，複雜度與這批
+  「查詢/寫入參數斷言」型態的測試不同，留給後續 PR。
+- **本 sandbox 的已知限制**：`pip install pytest` 仍被 PyPI allowlist 擋下（`No matching
+  distribution found for pytest`），backend 測試無法在本機實際執行——與階段二十一至二十七
+  相同；已用 `python3 -m py_compile` 過新檔案，並逐一比對 `routers/me.py`／`routers/opml.py`
+  的每個查詢鏈與既有 `test_me.py` 的 mock 慣例（`mock_db.table.return_value.select.return_value
+  .eq...` 的分層結構、`_reads_chain` 同款 keyset 分頁 mock）手動核對每個測試的 mock 設置與
+  斷言路徑，交給 CI 實際跑過驗證。
+- 對應文件更新：`TODO.md`（「Auth 與安全」一項打勾，並記錄範圍與未涵蓋的 `import/opml`）。
+
+## 階段二十九：`POST /api/discover/import` 改為要求登入（2026-09-03）
 
 TODO.md「Auth 與安全」批次的第一項：這個端點原本 `get_optional_user`，未登入呼叫者一樣能把
 遠端 feed 回應的第三方文字（`title`／`description`／`website_url`／`language`）直接 upsert 進
