@@ -87,16 +87,18 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       （導覽列帳號選單「我的閱讀」排在「我的訂閱」之前；`/me/feeds` 頁首加「前往我的閱讀」按鈕，
       subtitle 改成「管理已訂閱的來源；要開始閱讀請前往『我的閱讀』」；OPML／取消訂閱等來源管理
       功能沒有被移除）
-- [ ] `ReadingStreamService` 補齊 pending-write 與並發 GET 的 reconciliation（同
+- [x] `ReadingStreamService` 補齊 pending-write 與並發 GET 的 reconciliation（同
       `SubscriptionService` 的 `beginFetch`/`confirmWrite`/`asOf` ticketing，見該檔案開頭註解）。
-      （PR #43 code review 過程中確認的已知缺口，故意不在該 PR 修：目前只有
-      `_itemsGeneration`／`_countsGeneration` 兩個「較新請求蓋掉較舊請求」的計數器，沒有「這篇
-      文章有 pending 寫入，GET 回來的舊快照不能贏」的機制。已知會踩到的情境——都是窄視窗、只影響
-      UI 顯示到下次 reload／filter 變更為止，不影響伺服器端資料正確性：
-      在第一次 `loadCounts()` 回來前就 markRead/markUnread，未讀數會卡在 clamp 後的錯誤值；
-      `load()`/`loadMore()` 的 GET 若與同一篇文章的 markRead/markUnread POST 交錯，較舊的 GET
-      快照可能覆蓋掉樂觀的已讀狀態；`markAllReadInView` 批次寫入期間，同一篇文章的單篇
-      markRead/markUnread 沒有被視為 pending，兩者可能互相覆蓋）
+      （PR #43 code review 過程中確認的已知缺口，當時故意不修：`_itemsGeneration`／
+      `_countsGeneration` 只解決「較新請求蓋掉較舊請求」，沒解決「這篇文章有 pending 寫入，GET
+      回來的舊快照不能贏」。現改為單一共用的 `version` 序號，`load()`/`loadMore()` 依
+      `_pending`（in-flight 寫入優先於快照）與 `_confirmedRead`/`_confirmedReadAt`（比 GET
+      的 `asOf` 更新的已確認寫入優先於快照）重建回傳的頁面；未讀數改成「最後一次接受的 GET
+      快照＋尚未確認被該快照涵蓋的本地 delta」，GET 回應一律套用而不是整批丟棄——舊版在還沒有任何
+      快照時就因為與本地寫入競速而整包丟棄回應，還是照樣把 `countsLoaded` 設成 true，未讀數會卡在
+      clamp 後的錯誤值到永遠；`markAllReadInView` 現在也會把批次的目標 id 一併登記進
+      `_pending`，同一篇文章的單篇 markRead/markUnread 與批次寫入互斥，不會各自套用一次
+      optimistic delta 而重複計算。三個情境各自新增 `reading-stream.spec.ts` 案例）
 
 ## P1：偏好、推薦與內容探索
 

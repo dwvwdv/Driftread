@@ -280,7 +280,10 @@ describe('ReadingStreamService', () => {
   it('markUnread optimistically flips the row back and restores unread counts', () => {
     const svc = setup();
     TestBed.flushEffects();
-    streamPage = { items: [article('a', { is_read: true, read_at: '2026-08-14T10:00:00+00:00' })], next_cursor: null };
+    streamPage = {
+      items: [article('a', { is_read: true, read_at: '2026-08-14T10:00:00+00:00' })],
+      next_cursor: null,
+    };
     svc.load({});
 
     svc.markUnread('a');
@@ -382,7 +385,9 @@ describe('ReadingStreamService', () => {
     me.markAllRead = (body: unknown) => {
       const b = body as { article_ids: string[] };
       call++;
-      return call === 1 ? of({ marked: b.article_ids.length }) : throwError(() => new Error('boom'));
+      return call === 1
+        ? of({ marked: b.article_ids.length })
+        : throwError(() => new Error('boom'));
     };
 
     let marked = -1;
@@ -400,9 +405,9 @@ describe('ReadingStreamService', () => {
     expect(items.slice(0, 500).every((a) => svc.items().find((x) => x.id === a.id)?.is_read)).toBe(
       true,
     );
-    expect(
-      items.slice(500).every((a) => !svc.items().find((x) => x.id === a.id)?.is_read),
-    ).toBe(true);
+    expect(items.slice(500).every((a) => !svc.items().find((x) => x.id === a.id)?.is_read)).toBe(
+      true,
+    );
   });
 
   it('markAllReadInView ignores its outcome after the signed-in identity changes', () => {
@@ -544,6 +549,125 @@ describe('ReadingStreamService', () => {
     expect(errored).toBe(false);
     expect(svc.items()).toEqual([]);
     expect(svc.totalUnread()).toBe(0);
+  });
+
+  it('loadCounts() still applies its real baseline even if a markRead commits before the first response ever returns', () => {
+    const svc = setup();
+    const counts = new Subject<UnreadSummary>();
+    me.getUnreadCounts = () => counts; // the automatic page-entry fetch below never resolves yet
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    // Commits before the first loadCounts() has ever resolved — there is no
+    // baseline yet, so the optimistic decrement clamps at 0.
+    svc.markRead('a');
+    expect(svc.totalUnread()).toBe(0);
+
+    // The real baseline lands afterwards. It must still be applied — not
+    // discarded outright — with the already-committed markRead delta
+    // reapplied on top, rather than leaving totalUnread stuck at the
+    // clamped guess forever.
+    counts.next({
+      total_unread: 2,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 2 }],
+    });
+    counts.complete();
+
+    expect(svc.countsLoaded()).toBe(true);
+    expect(svc.totalUnread()).toBe(1);
+  });
+
+  it('load() keeps the optimistic read state for an article with its own write still pending', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    const pendingMarkRead = new Subject<void>();
+    me.markRead = () => pendingMarkRead;
+    svc.markRead('a');
+    expect(svc.items()[0].is_read).toBe(true); // optimistic
+
+    // A reload's GET resolves with the pre-write (unread) snapshot while
+    // the markRead above is still in flight.
+    const reload = new Subject<PaginatedStream>();
+    me.getStream = () => reload;
+    svc.load({});
+    reload.next({ items: [article('a', { is_read: false })], next_cursor: null });
+    reload.complete();
+
+    expect(svc.items()[0].is_read).toBe(true);
+  });
+
+  it('load() applies a confirmed write over a GET snapshot issued before it committed', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    const reload = new Subject<PaginatedStream>();
+    me.getStream = () => reload; // this GET is issued before the markRead below commits
+    svc.load({});
+
+    svc.markRead('a'); // me.markRead resolves synchronously (see setup()), confirming immediately
+
+    reload.next({ items: [article('a', { is_read: false })], next_cursor: null });
+    reload.complete();
+
+    expect(svc.items()[0].is_read).toBe(true);
+  });
+
+  it('markAllReadInView excludes an article with its own pending markUnread', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = {
+      items: [
+        article('a', { is_read: true, read_at: '2026-08-14T10:00:00+00:00' }),
+        article('b', { is_read: false }),
+      ],
+      next_cursor: null,
+    };
+    svc.load({});
+
+    const pendingMarkUnread = new Subject<void>();
+    me.markUnread = () => pendingMarkUnread;
+    svc.markUnread('a'); // still pending; 'a' is now optimistically unread
+
+    let sentBody: unknown;
+    me.markAllRead = (body: unknown) => {
+      sentBody = body;
+      return of({ marked: 1 });
+    };
+    let marked = -1;
+    svc.markAllReadInView((n) => (marked = n));
+
+    // 'a' just went optimistically unread as part of its own in-flight
+    // markUnread — the batch must not immediately re-mark it read out from
+    // under that write.
+    expect(sentBody).toEqual({ article_ids: ['b'] });
+    expect(marked).toBe(1);
+  });
+
+  it('markRead is a no-op for an article a batch markAllReadInView currently has pending', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    const pendingBatch = new Subject<MarkAllReadResult>();
+    me.markAllRead = () => pendingBatch;
+    svc.markAllReadInView();
+    expect(svc.isPending('a')).toBe(true);
+
+    let calls = 0;
+    me.markRead = () => {
+      calls++;
+      return of(undefined);
+    };
+    svc.markRead('a');
+
+    expect(calls).toBe(0);
   });
 
   it('loadCounts() supersedes an older still-in-flight loadCounts() call', () => {
