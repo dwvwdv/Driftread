@@ -201,9 +201,13 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       feedback 資料表本身尚未建立，見下方「推薦回饋持久化」，屆時一併補 index）
 - [x] 對 PostgREST／database 例外建立一致的 API error mapping，避免裸 500。
       （`backend/errors.py::map_postgrest_error`，`main.py` 以 `app.exception_handler(APIError)`
-      註冊；unique/foreign-key/not-null/check violation 與 RLS 拒絕分別映射到
-      409／409／400／400／403，未知或缺 `code` 的一律回通用 500，不把 `message`／`details`
-      洩漏給呼叫端——真正的錯誤內容只寫進 server-side log）
+      註冊；unique/foreign-key/not-null/check violation/invalid input 分別映射到
+      409／409／400／400／400；`PGRST116`（`.single()`／`maybe_single()` 的零筆或多筆）只有
+      零筆才映射 404，多筆是資料/查詢異常，落回通用 500；`42501`（insufficient_privilege）
+      刻意不映射成 403——本專案唯一的 DB client 永遠用 service_role key，沒有
+      per-request 身分，`42501` 只可能是 key／grant 設定錯誤，也落回通用 500。未知或缺
+      `code` 的同樣一律回通用 500，不把 `message`／`details` 洩漏給呼叫端——真正的錯誤內容
+      只寫進 server-side log）
 - [x] 為單一 Feed 手動 refresh 固定 response contract，測試不得依賴真實 DNS。
       （測試本來就已 mock `fetch_and_parse_conditional`，不打真實網路；
       response contract 部分新增 `FeedRefreshResult` Pydantic model，取代原本的 `response_model=dict`，

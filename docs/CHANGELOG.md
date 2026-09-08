@@ -1145,3 +1145,8 @@ call site。
   （`(req) => req.url.endsWith(...)`）比對路徑尾端，不管前面解析出的是相對還是絕對網址；
   `beforeEach` 補上 `TestBed.resetTestingModule()`（`discover.spec.ts` 既有的寫法），
   每個測試都從乾淨的 TestBed 開始，不互相依賴前一個測試有沒有正常收尾。
+- **PR review 修正第五輪（Codex，P2）**：`TODO.md` 這一項的完成說明從第一版之後就沒再更新，
+  還寫著「RLS 拒絕映射到 403」，但第三輪已經把 `42501` 從映射表移除、改落回通用 500；也完全
+  沒提到 `22P02`（invalid_text_representation）跟 `PGRST116` 零筆／多筆的區分。修法：改寫
+  說明文字對齊 `errors.py` 最終版的實際行為，避免之後的維護者照著這段過期說明去猜 API
+  contract。
