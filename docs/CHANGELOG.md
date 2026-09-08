@@ -1111,3 +1111,18 @@ call site。
   `hint`／`details`／traceback log）。程式碼註解與 `tests/test_errors.py` 同步更新；等
   TODO.md「一般使用者路徑改用 user JWT scoped client」那項真的做了，`42501` 才會重新變成
   一個有意義的 per-request 403，到時要把這個排除規則拿掉。
+- **PR review 修正第四輪（Codex，P2）**：`errors.py` 把 `23505`（unique_violation）全域映射成
+  409 之後，出現一個沒預料到的跨層副作用——`frontend/src/app/services/admin.ts::report()` 是
+  所有 admin API 呼叫共用的錯誤處理，原本把「任何 409」都當成「`approveCandidate` 核准了一個
+  已被拒絕的候選」，顯示對應提示。這個假設在這個 PR 之前是對的，因為在此之前只有
+  `approve` 端點自己用 `HTTPException(409, ...)` 明確丟過 409；但現在
+  `seedTargets()`（`POST /admin/discovery/targets`）這類完全不相關的寫入，一旦與
+  `discovery_targets.url` 的 unique constraint 競爭，也會經過新的全域 handler 變成 409，
+  卻被 `report()` 誤判成「候選已被拒絕」，讓操作者看到完全對不上的提示。
+  修法：`report()` 的 `case 409` 改成只在 `context === '核准失敗'`（`approveCandidate()`
+  自己的 context 字串）時才顯示候選專屬訊息，其他 context 一律走既有的
+  `${context}：${apiMessage(...)}` 通用衝突訊息；同步更新 `AdminService` 頂部說明 409
+  語意的註解。新增 `frontend/src/app/services/admin.spec.ts`（這個服務先前完全沒有測試，
+  也是本專案第一個用 `HttpTestingController` 直接測 HttpClient-based service 的案例）：
+  `approveCandidate()` 收到 409 時顯示候選訊息、`seedTargets()` 收到 409 時顯示通用衝突訊息
+  兩個案例。
