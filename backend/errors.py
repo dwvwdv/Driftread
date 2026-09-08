@@ -16,17 +16,11 @@ responsible for logging the real `exc.message`/`exc.details` server-side.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # PostgreSQL SQLSTATE codes (stable, defined by Postgres itself:
-# https://www.postgresql.org/docs/current/errcodes-appendix.html) plus
-# PGRST116, which is in PostgREST's own "PGRSTxxx" namespace rather than
-# SQLSTATE — the error `.single()` raises for zero or multiple matching
-# rows. This project only uses `.maybe_single()` today (see the
-# postgrest-py version-defensive comments in routers/feeds.py and
-# routers/admin.py), but the code is well-known and stable enough to map
-# proactively rather than leave it defaulting to 500 the day `.single()`
-# is first reached for.
+# https://www.postgresql.org/docs/current/errcodes-appendix.html).
 _STATUS_BY_CODE: dict[str, tuple[int, str]] = {
     "23505": (409, "Resource already exists"),  # unique_violation
     "23503": (409, "Referenced resource does not exist"),  # foreign_key_violation
@@ -34,20 +28,43 @@ _STATUS_BY_CODE: dict[str, tuple[int, str]] = {
     "23514": (400, "Value violates a data constraint"),  # check_violation
     "22P02": (400, "Invalid input value"),  # invalid_text_representation
     "42501": (403, "Not permitted"),  # insufficient_privilege (RLS denial)
-    "PGRST116": (404, "Not found"),  # .single(): zero or multiple rows
 }
+
+# PGRST116 is in PostgREST's own "PGRSTxxx" namespace, not SQLSTATE — it
+# covers *both* zero rows and multiple rows matching a query that asked for
+# exactly one (`.single()`, or `.maybe_single()` once more than one row
+# matches — maybe_single() only suppresses the zero-row case, see
+# routers/feeds.py's version-defensive comments). Those two cases aren't the
+# same problem: zero rows is an ordinary 404, but multiple rows means a
+# query written to expect at most one match found several — e.g.
+# routers/admin_discovery.py's seed_targets does `.eq("host", host)
+# .maybe_single()`, and migration 006 explicitly allows several
+# discovery_targets rows per host (unique on url, not host). That's a real
+# bug/data-integrity condition worth investigating, not "not found", so it
+# falls through to the generic 500 (and gets logged) instead.
+_ROWS_IN_DETAILS = re.compile(r"Results contain (\d+) rows?")
 
 _DEFAULT_STATUS_CODE = 500
 _DEFAULT_DETAIL = "Internal server error"
+_NOT_FOUND = (404, "Not found")
 
 
 def map_postgrest_error(exc: Exception) -> tuple[int, dict[str, Any]]:
     """Returns `(status_code, json_body)` for a postgrest-py `APIError`.
 
-    Reads `code` defensively via `getattr` rather than assuming the
-    attribute is always present, matching this codebase's existing
+    Reads `code`/`details` defensively via `getattr` rather than assuming
+    the attributes are always present, matching this codebase's existing
     postgrest-py version-tolerance elsewhere.
     """
     code = getattr(exc, "code", None) or ""
-    status_code, detail = _STATUS_BY_CODE.get(code, (_DEFAULT_STATUS_CODE, _DEFAULT_DETAIL))
+    if code == "PGRST116":
+        match = _ROWS_IN_DETAILS.search(getattr(exc, "details", None) or "")
+        # Unparseable details is treated the same as "not zero" — safer to
+        # fall through to the generic 500 than to assume a routine miss.
+        status_code, detail = _NOT_FOUND if match and match.group(1) == "0" else (
+            _DEFAULT_STATUS_CODE,
+            _DEFAULT_DETAIL,
+        )
+    else:
+        status_code, detail = _STATUS_BY_CODE.get(code, (_DEFAULT_STATUS_CODE, _DEFAULT_DETAIL))
     return status_code, {"detail": detail}

@@ -1074,3 +1074,19 @@ call site。
   `backend.yml` 實際跑過 `pytest` 驗證。
 - 對應文件更新：`TODO.md`（「PostgREST／database 例外...API error mapping」項目打勾並補上
   機制說明）。
+- **PR review 修正（Codex，兩個 P2）**：
+  1. 500 的 log 只記 `code`／`message`，沒有 `details`／`hint`，也沒有帶 traceback——這個
+     handler 本來就是取代 Starlette 預設會印出完整 traceback 的行為，只記兩個欄位等於讓真正
+     需要調查的未知錯誤反而少了診斷資訊。`main.py` 補上 `hint`／`details`、`request.method`／
+     `request.url.path`，並加上 `exc_info=exc` 保留 traceback。
+  2. `PGRST116` 不是只代表「零筆」，PostgREST 對 `.single()`／`maybe_single()` 這個 code 同時
+     覆蓋零筆跟多筆兩種情況（`maybe_single()` 只吃掉零筆的例外，多筆仍會 raise）——原本無條件
+     映射成 404 是錯的，`routers/admin_discovery.py::seed_targets` 的
+     `.eq("host", host).maybe_single()` 就是個真的會踩到的案例：migration 006 說明
+     `discovery_targets` 對 `host`沒有 unique constraint（只 unique 在 `url`，因為一個 OPML
+     目錄可以在同一個 host 貢獻多筆 feed），一個熱門 host 累積多筆是預期中的正常狀態,
+     多筆同 host 時把它報成「找不到」還吞掉 log，會讓這類資料狀態異常變得無法被發現。
+     修法：`errors.py` 改成讀 `details` 欄位裡的 `"Results contain N rows"`（PostgREST 在零筆
+     跟多筆時 `message` 相同，只有 `details` 的筆數不同），`N == 0` 才映射 404，其他情況
+     （含 `details` 無法解析或缺漏）一律落回一般 500，交給上面補強的 log 記下來。
+     `tests/test_errors.py` 新增零筆／多筆／`details` 無法解析／`details` 缺漏四個案例。

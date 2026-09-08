@@ -167,13 +167,22 @@ app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 async def handle_postgrest_api_error(request: Request, exc: APIError) -> JSONResponse:
     status_code, body = map_postgrest_error(exc)
     if status_code >= 500:
-        # Only the unmapped case is logged with the real error detail — mapped
-        # cases (409/400/403/404) are ordinary request-shaped outcomes, not
-        # operational problems worth a log line.
+        # Only the unmapped case is logged — mapped cases (409/400/403/404)
+        # are ordinary request-shaped outcomes, not operational problems.
+        # This handler otherwise replaces Starlette's default "log the
+        # traceback" behavior for the exception, so exc_info plus every
+        # postgrest-supplied diagnostic field (not just code/message) is
+        # kept here, or the one detail an investigation actually needs
+        # (why it was multi-row, what constraint fired, ...) is lost.
         logging.getLogger(__name__).error(
-            "Unhandled PostgREST error: code=%s message=%s",
+            "Unhandled PostgREST error: %s %s code=%s message=%s hint=%s details=%s",
+            request.method,
+            request.url.path,
             getattr(exc, "code", None),
             getattr(exc, "message", None),
+            getattr(exc, "hint", None),
+            getattr(exc, "details", None),
+            exc_info=exc,
         )
     return JSONResponse(status_code=status_code, content=body)
 
