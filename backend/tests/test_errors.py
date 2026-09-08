@@ -31,9 +31,15 @@ def test_check_violation_maps_to_400():
     assert status_code == 400
 
 
-def test_insufficient_privilege_maps_to_403():
+def test_insufficient_privilege_maps_to_generic_500_not_403():
+    # database.py::get_client() always authenticates as the service_role
+    # key (TODO.md Phase 0) — there's no per-request/user-scoped client —
+    # so 42501 here can only mean the service_role key or its grants
+    # (migration 010) are themselves misconfigured, not a legitimate
+    # per-request denial. It must fall through to the logged 500, not a
+    # silent 403.
     status_code, body = map_postgrest_error(_api_error("42501"))
-    assert status_code == 403
+    assert status_code == 500
 
 
 @pytest.mark.parametrize(

@@ -2,10 +2,10 @@
 status codes and safe, generic response bodies.
 
 Without this, any `APIError` raised out of a `.execute()` call — a unique
-constraint violation on insert, a check constraint, an RLS denial, ... —
-falls straight through to Starlette's default handler as a bare 500 with no
-structured detail. See TODO.md's "技術與可靠性優化" entry for the gap this
-closes; `main.py` registers `map_postgrest_error` against `APIError` via
+constraint violation on insert, a check constraint, ... — falls straight
+through to Starlette's default handler as a bare 500 with no structured
+detail. See TODO.md's "技術與可靠性優化" entry for the gap this closes;
+`main.py` registers `map_postgrest_error` against `APIError` via
 `app.exception_handler`.
 
 Only the codes below get a specific status and message. Anything else
@@ -21,13 +21,24 @@ from typing import Any
 
 # PostgreSQL SQLSTATE codes (stable, defined by Postgres itself:
 # https://www.postgresql.org/docs/current/errcodes-appendix.html).
+#
+# 42501 (insufficient_privilege) is deliberately *not* mapped here.
+# database.py::get_client() is the only client construction point in this
+# project and it always authenticates as SUPABASE_KEY — required to be the
+# service_role key (see TODO.md's Phase 0), which bypasses RLS entirely and
+# has no per-request/user-scoped identity. So a 42501 in this deployment
+# can only mean the service_role key or its schema/function grants
+# (migration 010) are themselves misconfigured — a deployment bug, not a
+# legitimate per-request denial — and it falls through to the generic,
+# *logged* 500 below rather than a silent 403. Revisit this once (if)
+# TODO.md's planned user-JWT-scoped client for user-facing routes lands,
+# at which point a 42501 there would mean a real RLS denial again.
 _STATUS_BY_CODE: dict[str, tuple[int, str]] = {
     "23505": (409, "Resource already exists"),  # unique_violation
     "23503": (409, "Referenced resource does not exist"),  # foreign_key_violation
     "23502": (400, "Missing required field"),  # not_null_violation
     "23514": (400, "Value violates a data constraint"),  # check_violation
     "22P02": (400, "Invalid input value"),  # invalid_text_representation
-    "42501": (403, "Not permitted"),  # insufficient_privilege (RLS denial)
 }
 
 # PGRST116 is in PostgREST's own "PGRSTxxx" namespace, not SQLSTATE — it

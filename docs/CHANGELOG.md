@@ -1100,3 +1100,14 @@ call site。
   `r"results?\s+contains?\s+(\d+)\s+rows?"`（`re.IGNORECASE`），同時吃兩種版本的措辭，不釘死
   在其中一種。`tests/test_errors.py` 的零筆／多筆案例都改成 `@pytest.mark.parametrize`，兩種
   措辭各測一次。
+- **PR review 修正第三輪（Codex，P2）**：`42501`（insufficient_privilege）原本映射成 403，
+  隱含「這次請求的呼叫者沒有權限」——但 `database.py::get_client()` 是全專案唯一的 client
+  建構點，永遠用 `SUPABASE_KEY`（依 TODO.md Phase 0，必須是 service_role key），完全繞過
+  RLS，也沒有任何 per-request／per-user 的身分。這個架構下 `42501`唯一可能的成因是
+  service_role key 本身或它的 schema／function grant（migration 010）設定錯誤——是部署層級
+  的錯誤設定，不是某次請求真的被拒絕；映射成 403 不只講錯故事，還讓它跳過
+  `status_code >= 500` 才會走的完整診斷 log，變成一次完全沒有留下痕跡的資料庫權限失效。
+  修法：把 `42501` 從 `_STATUS_BY_CODE` 移除，讓它落回一般 500（連同上面已經補好的
+  `hint`／`details`／traceback log）。程式碼註解與 `tests/test_errors.py` 同步更新；等
+  TODO.md「一般使用者路徑改用 user JWT scoped client」那項真的做了，`42501` 才會重新變成
+  一個有意義的 per-request 403，到時要把這個排除規則拿掉。
