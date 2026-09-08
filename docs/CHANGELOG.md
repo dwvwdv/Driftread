@@ -1001,3 +1001,40 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   同一個分頁內產生與比對，從未傳輸到任何攻擊者觀察得到的地方——退回方案在這裡是安全的。
   `pending-import.spec.ts` 新增案例：`vi.spyOn(crypto, 'randomUUID')` 模擬拋出，斷言仍能拿到
   可用且彼此不同的 nonce，且能正常完成 resume。
+
+## 階段三十一：`ReadingStreamService` 補齊 pending-write 與並發 GET 的 reconciliation（2026-09-07）
+
+- **背景**：PR #43 code review 時就記錄在 TODO.md 的已知缺口——`ReadingStreamService`
+  只有 `_itemsGeneration`／`_countsGeneration` 兩個「較新請求蓋掉較舊請求」的計數器，沒有
+  `SubscriptionService` 那套「這個 id 有 pending 寫入或已確認的較新寫入，GET 回來的舊快照不能
+  贏」的 ticketing。當時故意留給後續 PR，因為都是窄視窗、只影響畫面顯示到下次 reload／filter
+  變更為止，不影響伺服器端資料正確性。
+- **改動**：`frontend/src/app/services/reading-stream.ts` 新增單一共用的 `version` 單調序號，
+  每次 `beginFetch()`（GET 前）與每次寫入 commit 都各自抽一個 ticket，同
+  `SubscriptionService` 的 `beginFetch`/`confirmWrite`/`asOf` 設計：
+  1. `load()`/`loadMore()` 回應套用前先 `reconcileItems()`：id 若仍在 `_pending`（該篇文章自己
+     的寫入還沒結束）就沿用回應前的舊值，而不是被可能落後的伺服器快照蓋掉；否則若
+     `_confirmedReadAt` 記錄的確認時間點晚於這個 GET 的 `asOf`，改採確認值——GET 有可能是在
+     那次確認送出「之前」就已經發出的。
+  2. 未讀數改成「最後一次接受的 GET 快照（baseline）＋尚未確認被該快照涵蓋的本地 delta 清單」，
+     `recomputeCounts()` 統一算出顯示值。GET 回應一律套用、更新 baseline 並把 ticket 早於等於
+     這次 `asOf` 的 delta 修剪掉，不再整批丟棄——舊版的 `_countsGeneration` 在偵測到「這次回應
+     比某個本地寫入舊」時會整包丟棄，包含第一次 `loadCounts()` 都還沒回來過的情況；那種情況下
+     即使丟棄也照樣把 `countsLoaded` 設成 `true`，之後沒有任何機制重試，未讀數就永遠卡在
+     clamp 過後的錯誤猜測值。
+  3. `markAllReadInView` 現在也把批次的目標 id 一併登記進 `_pending`（並在 settle 後清除），
+     `markRead`/`markUnread` 既有的 `isPending` guard 因此也會排除掉正在被批次處理的文章，
+     反之亦然——避免同一篇文章被批次與單篇操作各自套用一次 optimistic count delta，重複計算
+     同一次伺服器端變更。`markAllReadInScope` 的成功回呼比照排除仍 pending 的文章，不去覆蓋它
+     正在進行中的單篇寫入。
+- **測試**：`reading-stream.spec.ts` 新增四個案例，各自對應上面修掉的情境——`markRead` 在
+  `loadCounts()` 第一次回來前提交，斷言最終仍會拿到真正的 baseline 而不是卡住；`load()` 在
+  同一篇文章有 pending 寫入時保留樂觀值；`load()` 在寫入已確認、但 GET 是在確認之前發出時改採
+  確認值；`markAllReadInView` 排除掉正有 `markUnread` pending 的文章。既有測試不需要改動斷言即
+  可通過（唯一調整：移除已被新機制取代的 `_countsGeneration` 相關內部欄位，行為對外不變）。
+- **本 sandbox 的已知限制**：`npm ci` 被 `registry.npmjs.org` 的 network egress allowlist 擋下
+  （一個 `@angular/cli` 的間接依賴 `zod-to-json-schema`），與先前多個 PR 遇到的限制相同，無法在
+  本機實際跑 `vitest`／production build。已用系統 `tsc`（`--ignoreConfig --noResolve`）過新增
+  改動，並用專案的 `.prettierrc.json` 設定跑過 `prettier --check`；邏輯正確性以逐步手動追蹤三個
+  新增測試案例的 ticket／delta 數值驗證，交給 CI 的 `frontend.yml` 實際跑過 `npm test` 驗證。
+- 對應文件更新：`TODO.md`（「ReadingStreamService 補齊 pending-write...」打勾並補上機制說明）。
