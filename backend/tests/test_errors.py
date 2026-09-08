@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from postgrest.exceptions import APIError
 
 from errors import map_postgrest_error
@@ -35,21 +36,33 @@ def test_insufficient_privilege_maps_to_403():
     assert status_code == 403
 
 
-def test_pgrst116_zero_rows_maps_to_404():
-    status_code, body = map_postgrest_error(
-        _api_error("PGRST116", "Results contain 0 rows, application/vnd.pgrst.object+json requires 1 row")
-    )
+@pytest.mark.parametrize(
+    "details",
+    [
+        # Older PostgREST: "JSON object requested, multiple (or no) rows returned"
+        "Results contain 0 rows, application/vnd.pgrst.object+json requires 1 row",
+        # Newer PostgREST: "Cannot coerce the result to a single JSON object"
+        "The result contains 0 rows",
+    ],
+)
+def test_pgrst116_zero_rows_maps_to_404(details):
+    status_code, body = map_postgrest_error(_api_error("PGRST116", details))
     assert status_code == 404
 
 
-def test_pgrst116_multiple_rows_maps_to_generic_500_not_404():
+@pytest.mark.parametrize(
+    "details",
+    [
+        "Results contain 2 rows, application/vnd.pgrst.object+json requires 1 row",
+        "The result contains 2 rows",
+    ],
+)
+def test_pgrst116_multiple_rows_maps_to_generic_500_not_404(details):
     # A query written to expect at most one match (.maybe_single()) that
     # actually found several is a data-integrity/query bug, not "not
     # found" — see routers/admin_discovery.py's seed_targets, where
     # multiple discovery_targets rows can share a host (migration 006).
-    status_code, body = map_postgrest_error(
-        _api_error("PGRST116", "Results contain 2 rows, application/vnd.pgrst.object+json requires 1 row")
-    )
+    status_code, body = map_postgrest_error(_api_error("PGRST116", details))
     assert status_code == 500
     assert body == {"detail": "Internal server error"}
 

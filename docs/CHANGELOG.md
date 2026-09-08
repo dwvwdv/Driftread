@@ -1090,3 +1090,13 @@ call site。
      跟多筆時 `message` 相同，只有 `details` 的筆數不同），`N == 0` 才映射 404，其他情況
      （含 `details` 無法解析或缺漏）一律落回一般 500，交給上面補強的 log 記下來。
      `tests/test_errors.py` 新增零筆／多筆／`details` 無法解析／`details` 缺漏四個案例。
+- **PR review 修正第二輪（Codex，P2）**：第一輪的 `_ROWS_IN_DETAILS` 只認得舊版 PostgREST 的
+  `"Results contain N rows, application/vnd.pgrst.object+json requires 1 row"`——較新版本
+  （`message` 也從「JSON object requested, multiple (or no) rows returned」換成「Cannot
+  coerce the result to a single JSON object」）改成單數的 `"The result contains N rows"`，
+  原本的規則式（大小寫、`Results`／`result`、`contain`／`contains` 都是精確比對）在這個版本上
+  完全不會 match，等於每個零筆的 PGRST116 都會落回一般 500，而不是原本要的 404——跟這個 PR
+  想修的問題方向正好相反。修法：`_ROWS_IN_DETAILS` 改成
+  `r"results?\s+contains?\s+(\d+)\s+rows?"`（`re.IGNORECASE`），同時吃兩種版本的措辭，不釘死
+  在其中一種。`tests/test_errors.py` 的零筆／多筆案例都改成 `@pytest.mark.parametrize`，兩種
+  措辭各測一次。

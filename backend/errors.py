@@ -42,7 +42,15 @@ _STATUS_BY_CODE: dict[str, tuple[int, str]] = {
 # discovery_targets rows per host (unique on url, not host). That's a real
 # bug/data-integrity condition worth investigating, not "not found", so it
 # falls through to the generic 500 (and gets logged) instead.
-_ROWS_IN_DETAILS = re.compile(r"Results contain (\d+) rows?")
+#
+# The exact wording of `details` has changed across PostgREST versions —
+# older releases: "Results contain 0 rows, application/vnd.pgrst.object
+# +json requires 1 row"; newer ones: "The result contains 0 rows" (with
+# `message` itself also changing, from "JSON object requested, multiple
+# (or no) rows returned" to "Cannot coerce the result to a single JSON
+# object"). Both phrasings share "result(s) contain(s) N row(s)", so the
+# pattern below is written to match either rather than pinned to one.
+_ROWS_IN_DETAILS = re.compile(r"results?\s+contains?\s+(\d+)\s+rows?", re.IGNORECASE)
 
 _DEFAULT_STATUS_CODE = 500
 _DEFAULT_DETAIL = "Internal server error"
