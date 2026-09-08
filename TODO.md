@@ -199,7 +199,11 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       `articles(feed_id, fetched_at DESC)`（見 migration 015，`user_feeds`／
       `user_article_reads` 既有複合主鍵已覆蓋閱讀流查詢，沒有另外加）。
       feedback 資料表本身尚未建立，見下方「推薦回饋持久化」，屆時一併補 index）
-- [ ] 對 PostgREST／database 例外建立一致的 API error mapping，避免裸 500。
+- [x] 對 PostgREST／database 例外建立一致的 API error mapping，避免裸 500。
+      （`backend/errors.py::map_postgrest_error`，`main.py` 以 `app.exception_handler(APIError)`
+      註冊；unique/foreign-key/not-null/check violation 與 RLS 拒絕分別映射到
+      409／409／400／400／403，未知或缺 `code` 的一律回通用 500，不把 `message`／`details`
+      洩漏給呼叫端——真正的錯誤內容只寫進 server-side log）
 - [x] 為單一 Feed 手動 refresh 固定 response contract，測試不得依賴真實 DNS。
       （測試本來就已 mock `fetch_and_parse_conditional`，不打真實網路；
       response contract 部分新增 `FeedRefreshResult` Pydantic model，取代原本的 `response_model=dict`，

@@ -1038,3 +1038,39 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   改動，並用專案的 `.prettierrc.json` 設定跑過 `prettier --check`；邏輯正確性以逐步手動追蹤三個
   新增測試案例的 ticket／delta 數值驗證，交給 CI 的 `frontend.yml` 實際跑過 `npm test` 驗證。
 - 對應文件更新：`TODO.md`（「ReadingStreamService 補齊 pending-write...」打勾並補上機制說明）。
+
+## 階段三十二：PostgREST／database 例外的一致 API error mapping（2026-09-08）
+
+TODO.md「技術與可靠性優化」批次的最後一項：`backend/database.py::get_client()` 是全專案唯一的
+Supabase client 建構點，任何 route 呼叫 `.execute()` 時，一旦 postgrest-py 拋出 `APIError`
+（unique constraint、check constraint、not-null、RLS 拒絕……），因為沒有任何 handler 接住，
+會直接落到 Starlette 的預設行為——沒有 JSON body 的裸 500，前端拿不到任何可用資訊，也無法區分
+「資料衝突」跟「真的壞掉了」。目前已知會走到寫入路徑的是 `admin_discovery.py`／
+`discovery_candidates.py`／`link_harvest.py` 對 `discovery_targets`／`discovery_candidates`
+的 `.insert()`（前兩者的先查後寫在併發下仍有 race window），但這是一致性修法，不是只補這幾個
+call site。
+
+- **`backend/errors.py`（新）**：`map_postgrest_error(exc) -> (status_code, body)`。用一份
+  SQLSTATE（`23505`／`23503`／`23502`／`23514`／`22P02`／`42501`）＋PostgREST 自己的
+  `PGRST116`（`.single()` 零筆或多筆）對照表，分別映射到 409／409／400／400／400／403／404；
+  對照不到的一律回通用 `{"detail": "Internal server error"}` 的 500，不把 postgrest-py 的
+  `message`／`details`（可能含表名、欄位名、原始 constraint 名稱）洩漏給呼叫端——`code` 用
+  `getattr(exc, "code", None)` 讀取而非直接存取屬性，同 `routers/feeds.py` 既有對
+  postgrest-py 版本差異的防禦寫法。
+- **`backend/main.py`**：`@app.exception_handler(APIError)` 註冊上述映射；映射到 500（代表
+  對照表沒認得的錯誤碼）的情況才寫 server-side error log（帶真正的 `code`／`message`），
+  409／400／403／404 屬於正常的請求結果，不當成需要留意的操作問題來記。
+- **測試**：新增 `tests/test_errors.py`，涵蓋每個對照碼、未知碼、缺 `code`、以及完全沒有
+  `code` 屬性的物件（防禦寫法本身）；`tests/test_feeds.py` 新增一個透過真正的 `client` fixture
+  打 `GET /api/feeds/{id}`、讓 mock 的 `.execute()` 拋出 `APIError(code="23505")` 的整合測試，
+  斷言拿到的是映射後的 409 而不是未接住的例外——證明 handler 真的被 FastAPI 註冊上，不只是
+  `map_postgrest_error()` 本身邏輯正確。
+- **本 sandbox 的已知限制**：`pip install -r requirements.txt` 被 PyPI 的 network egress
+  allowlist 擋下，與先前多個 PR 遇到的限制相同，無法在本機安裝 `postgrest`／`fastapi` 實際跑
+  `pytest`。`postgrest.exceptions.APIError` 的建構子簽名（接受一個 dict，讀出
+  `message`／`code`／`hint`／`details` 四個屬性，`.get()` 帶預設值故缺鍵不會噴例外）已透過
+  postgrest-py 官方文件（readthedocs `api/exceptions.html`）核對過；已用
+  `python3 -m py_compile` 與 `ruff check` 過新增／改動的 backend 檔案，交給 CI 的
+  `backend.yml` 實際跑過 `pytest` 驗證。
+- 對應文件更新：`TODO.md`（「PostgREST／database 例外...API error mapping」項目打勾並補上
+  機制說明）。
