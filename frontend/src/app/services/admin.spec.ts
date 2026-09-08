@@ -42,15 +42,14 @@ describe('AdminService 409 handling', () => {
 
   afterEach(() => httpMock.verify());
 
-  it('shows the candidate-rejected message for approveCandidate', (done) => {
+  it('shows the candidate-rejected message for approveCandidate', () => {
     const service = TestBed.inject(AdminService);
 
-    service.approveCandidate('c1', { category: null, tags: [] }).subscribe({
-      error: () => {
-        expect(toastCalls).toEqual([{ tone: 'warning', text: '此候選先前已被拒絕，無法核准' }]);
-        done();
-      },
-    });
+    // HttpTestingController's flush() delivers to the subscriber
+    // synchronously, so no done()/async is needed — subscribing with a
+    // no-op error handler is enough to keep RxJS from treating the
+    // unhandled rejection as an uncaught error.
+    service.approveCandidate('c1', { category: null, tags: [] }).subscribe({ error: () => {} });
 
     httpMock
       .expectOne('/api/admin/discovery/candidates/c1/approve')
@@ -58,22 +57,21 @@ describe('AdminService 409 handling', () => {
         { detail: 'Candidate was rejected; re-approving must be done deliberately' },
         { status: 409, statusText: 'Conflict' },
       );
+
+    expect(toastCalls).toEqual([{ tone: 'warning', text: '此候選先前已被拒絕，無法核准' }]);
   });
 
-  it('shows a generic conflict message for a 409 from an unrelated call, not the candidate-rejected one', (done) => {
+  it('shows a generic conflict message for a 409 from an unrelated call, not the candidate-rejected one', () => {
     const service = TestBed.inject(AdminService);
 
-    service.seedTargets(['https://example.com/feed.xml']).subscribe({
-      error: () => {
-        expect(toastCalls).toEqual([
-          { tone: 'danger', text: '加入待探測失敗：Resource already exists' },
-        ]);
-        done();
-      },
-    });
+    service.seedTargets(['https://example.com/feed.xml']).subscribe({ error: () => {} });
 
     httpMock
       .expectOne('/api/admin/discovery/targets')
       .flush({ detail: 'Resource already exists' }, { status: 409, statusText: 'Conflict' });
+
+    expect(toastCalls).toEqual([
+      { tone: 'danger', text: '加入待探測失敗：Resource already exists' },
+    ]);
   });
 });

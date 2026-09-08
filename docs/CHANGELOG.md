@@ -1126,3 +1126,10 @@ call site。
   也是本專案第一個用 `HttpTestingController` 直接測 HttpClient-based service 的案例）：
   `approveCandidate()` 收到 409 時顯示候選訊息、`seedTargets()` 收到 409 時顯示通用衝突訊息
   兩個案例。
+- **CI 修正**：這是這個 PR 第一次改到 `frontend/`，第一次真的觸發 `frontend.yml`——結果
+  `Build`（跑 `npm test`／Vitest）失敗：`it('...', (done) => { ...; done(); })` 這種
+  Jasmine 風格的非同步寫法在這個專案的 Vitest 底下不成立，`done` 收到的是一個
+  `TestContext` 物件，不是可呼叫的 callback（`TS2349: This expression is not callable`）。
+  修法：拿掉 `done`，改成同步斷言——`HttpTestingController.flush()` 本來就是同一個
+  call stack 內同步送達 subscriber，`subscribe({ error: () => {} })` 之後接著呼叫
+  `.flush()`，再直接斷言 `toastCalls`，不需要任何 async/await 或 done。
