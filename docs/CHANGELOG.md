@@ -1133,3 +1133,15 @@ call site。
   修法：拿掉 `done`，改成同步斷言——`HttpTestingController.flush()` 本來就是同一個
   call stack 內同步送達 subscriber，`subscribe({ error: () => {} })` 之後接著呼叫
   `.flush()`，再直接斷言 `toastCalls`，不需要任何 async/await 或 done。
+- **CI 修正第二輪**：上面那次推上去之後還是紅——這次是真的執行到請求了，但
+  `httpMock.expectOne('/api/admin/discovery/candidates/c1/approve')`（字串形式的
+  `expectOne` 是對 `req.url` 做精確字串比對）找不到相符的請求：這個測試環境下
+  `HttpClient` 會把相對路徑解析成絕對網址（`http://localhost:8000/api/...`）才送進
+  mock backend，不是保持原本的相對路徑。第一個測試的 `expectOne` 因此直接 throw，連帶讓
+  `afterEach` 的 `httpMock.verify()` 抓到一個沒被 flush 掉的請求，而第二個測試的
+  `beforeEach` 又因為第一個測試中途失敗、沒能讓 TestBed 正常收尾而撞上
+  「Cannot configure the test module when the test module has already been
+  instantiated」——三個錯誤其實是同一個根因級聯出來的。修法：`expectOne` 改用 predicate
+  （`(req) => req.url.endsWith(...)`）比對路徑尾端，不管前面解析出的是相對還是絕對網址；
+  `beforeEach` 補上 `TestBed.resetTestingModule()`（`discover.spec.ts` 既有的寫法），
+  每個測試都從乾淨的 TestBed 開始，不互相依賴前一個測試有沒有正常收尾。

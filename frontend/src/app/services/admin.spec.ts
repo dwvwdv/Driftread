@@ -19,6 +19,7 @@ describe('AdminService 409 handling', () => {
 
   beforeEach(() => {
     toastCalls = [];
+    TestBed.resetTestingModule();
     TestBed.configureTestingModule({
       providers: [
         AdminService,
@@ -51,8 +52,12 @@ describe('AdminService 409 handling', () => {
     // unhandled rejection as an uncaught error.
     service.approveCandidate('c1', { category: null, tags: [] }).subscribe({ error: () => {} });
 
+    // A string passed to expectOne() is matched exactly against req.url, and
+    // in this test environment HttpClient resolves the relative path against
+    // http://localhost:8000 before the mock backend ever sees it — so match
+    // by suffix instead of assuming the relative path survives untouched.
     httpMock
-      .expectOne('/api/admin/discovery/candidates/c1/approve')
+      .expectOne((req) => req.url.endsWith('/admin/discovery/candidates/c1/approve'))
       .flush(
         { detail: 'Candidate was rejected; re-approving must be done deliberately' },
         { status: 409, statusText: 'Conflict' },
@@ -67,7 +72,7 @@ describe('AdminService 409 handling', () => {
     service.seedTargets(['https://example.com/feed.xml']).subscribe({ error: () => {} });
 
     httpMock
-      .expectOne('/api/admin/discovery/targets')
+      .expectOne((req) => req.url.endsWith('/admin/discovery/targets'))
       .flush({ detail: 'Resource already exists' }, { status: 409, statusText: 'Conflict' });
 
     expect(toastCalls).toEqual([
