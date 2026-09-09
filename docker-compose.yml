@@ -7,6 +7,9 @@ services:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_KEY: ${SUPABASE_KEY}
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      # Only needed to override the derived JWKS endpoint (see .env.example);
+      # leave unset for a standard Supabase project.
+      SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL:-}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DATABASE_URL: ${DATABASE_URL}

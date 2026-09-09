@@ -12,7 +12,7 @@
 | 信息源瀏覽 | ✅ | 分頁、分類 / 語言 / tag 組合篩選（可從卡片上的 tag 直接點擊篩選）、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶完整文章列表（cursor 分頁「載入更多」，登入後每篇可直接切換已讀／收藏）；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/feed-detail`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
-| 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
+| 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證，依 token `alg` 分流 HS256 shared secret 或 JWKS（ES256／RS256，見 `docs/SECURITY.md` #31）。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
 | **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/015_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |

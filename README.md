@@ -111,7 +111,8 @@ docker compose down
 | `SUPABASE_KEY` | ✅ | **service_role key**，非 anon key。後端需繞過 RLS 寫入 feeds / articles |
 | `SUPABASE_ANON_KEY` | ✅ | 瀏覽器用的 anon / publishable key。**不是給 backend 的** —— `frontend` 容器啟動時把它寫入 `env.js`，供 `AuthService` 讀取 |
 | `DATABASE_URL` | ✅ | 直連 PostgreSQL 連線字串，供 migration 使用（Dashboard → Settings → Database）|
-| `SUPABASE_JWT_SECRET` | ✅ | 驗證用戶 `Authorization: Bearer` token（Dashboard → Settings → API → JWT Settings）|
+| `SUPABASE_JWT_SECRET` | ✅ | 驗證用戶 `Authorization: Bearer` token（Dashboard → Settings → API → JWT Settings）。仍為必填：專案尚未輪替到 JWT signing key 時送來的 HS256 token 靠它驗證 |
+| `SUPABASE_JWKS_URL` | | 覆寫預設的 JWKS 端點（`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`）。多數部署不需要設定；用 ES256／RS256 JWT signing key 的專案送來的 token 會自動走這條路徑驗證，見 `docs/SECURITY.md` |
 | `ADMIN_API_KEY` | ✅ | 後台 / 開放 API 的 `X-API-Key` 標頭，由 `gen_env.py` 自動產生 |
 | `CORS_ORIGINS` | | 逗號分隔的允許來源，預設 `*` |
 | `DISCOVERY_USER_AGENT` | | 所有對外抓取（discover 與 feed 匯入 / refresh）的 User-Agent，預設 `Driftread/1.0` |
