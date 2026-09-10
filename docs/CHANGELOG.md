@@ -1077,6 +1077,47 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   cache refresh」兩項打勾）、`docs/SECURITY.md`（新增 #31）、`README.md` 與 `.env.example`
   （新增 `SUPABASE_JWKS_URL` 說明）。
 - 對應文件更新：`TODO.md`（「ReadingStreamService 補齊 pending-write...」打勾並補上機制說明）。
+- **PR review 修正第一輪（Codex，3 個 P2，均證實為真）**：
+  1. **未讀數的 ticket 修剪條件用錯了比較對象**：`loadCounts()` 接受一個新 baseline 時，原本用
+     「delta 的 commit ticket 是否 ≤ 這次 GET 的 `asOf`」決定要不要修剪掉這筆 delta——但
+     commit ticket 只記錄「client 端何時做出樂觀猜測」，不代表伺服器當時已經處理完那次寫入。
+     一個仍在 pending（尚未拿到伺服器回應）的寫入，即使它的 ticket 早於某次 GET 的 `asOf`，
+     那次 GET 抓到的也可能是寫入生效「之前」的伺服器狀態——照舊邏輯會把這筆 delta 誤判成
+     「已經反映在快照裡」而修剪掉，實際上該篇文章的寫入之後才確認成功，未讀數會憑空少算一次
+     直到下次真正刷新。修法：把 delta 儲存結構從「ticket 陣列」改成「依 article id 存淨值的
+     Map」（`_countDeltasByArticle`，同一篇文章的多次調整直接互相抵銷，不留兩筆），
+     `recomputeCounts()` 判斷「這筆 delta 現在還要不要疊加」的依據改成同 `reconcileItems()`
+     一致的規則：這篇文章若仍是 `_pending`，無論 ticket 為何一律疊加（寫入還沒有結果，任何
+     baseline 都不能假設已經反映它）；只有寫入已確認（`_confirmedReadAt` 有記錄）時，才拿
+     那次「確認」的 ticket 去跟 baseline 的 `asOf` 比。
+  2. **「較舊請求被較新請求蓋掉」只認已經套用的 baseline，沒認已經發出的請求**：`loadCounts()`
+     的 error handler 原本用「這次失敗的 `asOf` 是否早於目前 baseline 的 `asOf`」判斷要不要
+     忽略這個失敗——但如果兩個 `loadCounts()` 同時在飛、較舊的那個先失敗、較新的那個都還沒回來
+     （baseline 還沒被任何一個更新過），這個條件就抓不到「其實已經有更新的嘗試在路上」，較舊
+     那次的失敗會被誤判成整個操作失敗，把 `countsLoading` 提早關掉、`onError` 提早觸發，即使
+     真正較新的請求隨後成功。修法：新增 `_countsLatestIssuedAsOf`，在每次呼叫的當下（而非拿到
+     回應時）就更新——error handler 改成跟這個「最新已發出」的 ticket 比，不是跟「最新已套用」
+     的 baseline 比；success handler 也只在自己就是最新已發出的那次時才清 `countsLoading`。
+  3. **`load()`/`loadMore()` 用來 reconcile 的 `previous` 陣列在請求「發出當下」就截取了**：
+     若 GET 發出時文章還是未讀、`markRead()` 是在 GET 已經送出、回應尚未回來之間才啟動並樂觀
+     翻成已讀，`reconcileItems()` 看到這篇文章仍是 `_pending`，會拿舊的（GET 發出當下截取的）
+     `previous` 快照蓋回去——那個快照本身就還沒反映這次樂觀更新，所以會把已讀又蓋回未讀；
+     等到 POST 真的成功，成功回呼只呼叫 `confirmReadState()` 記錄確認結果，並不會重新
+     `patchItem()` 那一列，錯誤的未讀狀態會一直留到下一次 `load()`/`loadMore()` 才自動修正。
+     修法：`reconcileItems()` 不再吃外部傳入的 `previous` 參數，改成在方法內部呼又時當下讀
+     `this._items()`——這樣拿到的一定是回應抵達那一刻的最新狀態，包含回應抵達前才啟動的樂觀
+     更新。
+  - **測試**：`reading-stream.spec.ts` 新增三個案例，各自對應上面三點——`loadCounts()`
+    在寫入仍 pending 時，即使 delta 的 commit ticket 早於某次 GET 的 `asOf`，未讀數仍要保留該
+    delta（若照原本邏輯執行會斷言失敗，證實這是真的迴歸測試而非重複既有覆蓋）；`loadCounts()`
+    在較舊請求先失敗、較新請求還沒回來時忽略那次失敗且不提早關閉 `countsLoading`；
+    `load()` 在 GET 發出「之後」才啟動的 markRead optimistic 更新，回應抵達時仍要保留已讀狀態
+    （既有的「pending 保留樂觀值」案例其實沒踩到這個 bug——那個案例裡寫入是在 `load()` 呼叫
+    「之前」就啟動的，`previous` 截取當下已經反映過樂觀值，不足以證偽舊邏輯，故補這個更精確的
+    案例）。既有測試全數維持原斷言可通過。
+  - 本輪的網路限制與驗證方式同上——`npm ci` 仍被擋下，改用 `tsc --noResolve` 與
+    `prettier --check` 驗證這兩個檔案，邏輯正確性以手動逐步追蹤新增與既有測試案例的
+    ticket／delta 數值運算確認，實際 `npm test` 交給 PR #56 的 CI 跑過（`Build` job 綠燈）。
 
 ## 階段三十二：PostgREST／database 例外的一致 API error mapping（2026-09-08）
 
