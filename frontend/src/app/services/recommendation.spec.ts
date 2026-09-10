@@ -109,7 +109,7 @@ describe('RecommendationService', () => {
     expect(rec.liked()).toEqual(['feed-1']);
   });
 
-  it('getRecommendations sends the last 50 of each signal, most recent last', () => {
+  it('getRecommendations sends the last 50 of each signal, most recent last, when signed out', () => {
     const rec = setup();
     for (let i = 0; i < 55; i++) rec.like(`feed-${i}`);
 
@@ -121,5 +121,52 @@ describe('RecommendationService', () => {
     expect(likedIds[0]).toBe('feed-5');
     expect(likedIds[49]).toBe('feed-54');
     req.flush([]);
+  });
+
+  it('getRecommendations omits liked/disliked/skipped params when signed in', () => {
+    // Persisted server-side feedback is what a signed-in caller's
+    // _load_signals reads fresh on every call — resending the local copy
+    // too used to double-count a liked id's weight and, worse, keep an
+    // expired skipped id excluding its feed forever (this array has no
+    // timestamp to prune by, unlike the persisted row's own decay window).
+    const rec = setup();
+    session.set({ user: { id: 'user-1' } });
+    rec.like('feed-1');
+    rec.dislike('feed-2');
+    rec.skip('feed-3');
+
+    rec.getRecommendations(10).subscribe();
+
+    const req = httpMock.expectOne((r) => r.url.endsWith('/recommendations'));
+    expect(req.request.params.has('liked')).toBe(false);
+    expect(req.request.params.has('disliked')).toBe(false);
+    expect(req.request.params.has('skipped')).toBe(false);
+    req.flush([]);
+  });
+
+  it('cancels an in-flight persist request when a second action hits the same feed first', () => {
+    // Simulates 喜歡 then 不喜歡 clicked in quick succession on the same
+    // feed, before the first request's response arrives — without
+    // cancellation both PUTs would be in flight with no guarantee the
+    // server processes them in the order they were sent.
+    const rec = setup();
+    session.set({ user: { id: 'user-1' } });
+    let firstUnsubscribed = false;
+    let callCount = 0;
+    me.setFeedFeedback = (() => {
+      callCount++;
+      const isFirst = callCount === 1;
+      return new Observable(() => {
+        return () => {
+          if (isFirst) firstUnsubscribed = true;
+        };
+      });
+    }) as MeService['setFeedFeedback'];
+
+    rec.like('feed-1');
+    expect(firstUnsubscribed).toBe(false);
+    rec.dislike('feed-1');
+    expect(firstUnsubscribed).toBe(true);
+    expect(callCount).toBe(2);
   });
 });

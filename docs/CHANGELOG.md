@@ -1389,3 +1389,29 @@ recommendations.py` 也完全不知道使用者過去的回饋，只能靠呼叫
   不額外複製 `subscribed`／`unsubscribed` 進 `user_feed_feedback`、不做匿名登入自動合併；
   「建議開發批次」第 6 項打勾）、`docs/FEATURES.md`（第 1 節功能總覽、第 2 節推薦邏輯改寫
   為分層權重表、第 3 節新增三個 `/me/feed-feedback*` 端點、第 5 節新增資料表與索引）。
+- **PR review 修正（Codex，1 個 P1，2 個 P2，均證實為真）**：
+  1. **P1**：`test_final_order_reflects_score_not_quota_origin` 沒有跟著新的分層權重調整——
+     `_WEIGHT_LIKED` 的 category +2、tag +1，讓案例裡「category 命中」的 preferred（+2）跟
+     「兩個 tag 命中」的 exploratory（1+1=+2）同分，Python `sort()` 的 stable 特性讓同分時
+     preferred 留在前面，斷言因此必然失敗。修法：exploratory 改成三個 tag 命中（+3），
+     確保跟 preferred 的 +2 有明確差距，同時驗證過即使套用新權重仍然通過。
+  2. **P2**：`RecommendationService.getRecommendations()` 先前不論登入與否都把本地
+     `liked`／`disliked`／`skipped` 三個陣列當 query string 送出，原意是「已登入者的伺服器端
+     回饋跟本地陣列並存也無妨」——但兩個實際後果都是真的洞：(a) 已登入者的 `liked` 訊號會被
+     算兩次（一次來自 `_load_signals` 讀到的 persisted 列，一次來自這裡的 query param 重新
+     觸發 `add_liked()`），把 `_WEIGHT_LIKED` 的 +2／+1 悄悄疊成 +4／+2；(b) `skipped` 陣列
+     完全沒有時間戳可供前端自行判斷是否過期，只要還留在 localStorage 就會永遠隨每次請求送出，
+     讓伺服器端 `_SKIP_DECAY`（14 天）刻意設計的「過期後不再排除」失效——query param 路徑
+     不管新舊一律無條件加進 `excluded`。修法：`getRecommendations()` 只在**未登入**時才附上
+     這三個 query param；已登入者完全信任 `_load_signals` 每次都重新查表這件事，不再有本地
+     陣列可以干擾。
+  3. **P2**：同一個 feed 上快速連續操作（例如先按喜歡、還沒等回應就按不喜歡）會各自送出一個
+     獨立的 `PUT /me/feed-feedback/{feed_id}`，兩個請求之間沒有任何順序保證——如果先送出的
+     那個晚到伺服器（不同 replica、網路抖動……），upsert 最終落地的值就會是較舊的操作，
+     且不會有任何錯誤讓使用者或程式發現這筆資料其實跟本地狀態不一致，直到下次跨裝置推薦讀到
+     錯的立場。修法：`RecommendationService` 用一個 `Map<feedId, Subscription>` 追蹤每個
+     feed 目前唯一在途的 persist 請求，發出新請求前先 `unsubscribe()` 掉同一個 feed 舊的
+     那個（`HttpClient` 的 unsubscribe 會真的取消底層請求），保證同一個 feed 永遠只有最多
+     一個請求在飛，沒有兩個結果可以互相蓋過。
+  - **測試**：`recommendation.spec.ts` 新增已登入時不附加 query param、以及同一 feed 連續
+    操作會取消前一個請求兩個案例。

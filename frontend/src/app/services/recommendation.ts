@@ -1,6 +1,6 @@
 import { Injectable, WritableSignal, inject, signal } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 import { environment } from '../../environments/environment';
 import { FeedFeedbackType, RecommendedFeed } from '../models';
 import { AuthService } from './auth';
@@ -25,12 +25,19 @@ const MAX_SIGNALS = 50;
  *
  * Signed-in state additionally persists each action server-side
  * (MeService.setFeedFeedback) so it survives across devices — best-effort,
- * fire-and-forget, same as this service's local-only writes always were:
- * the three arrays here stay the immediate source of truth for this
- * browser's own UI (isLiked/isDisliked, the next getRecommendations() call),
- * and a failed persist call just means the next action from a fresh page
- * load tries again, not that anything here needs to roll back. Signed-out
- * state stays exactly as before — untouched by any of this.
+ * with at most one in-flight persist request per feed (a second action on
+ * the same feed before the first settles cancels it, so the two can't
+ * reach the server out of order and leave the wrong one as the final
+ * value), same as this service's local-only writes always were: the three
+ * arrays here stay the immediate source of truth for this browser's own UI
+ * (isLiked/isDisliked), and a failed persist call just means the next
+ * action from a fresh page load tries again, not that anything here needs
+ * to roll back. `getRecommendations()` only sends these arrays as query
+ * params when signed out — a signed-in caller's persisted feedback is
+ * already read fresh server-side, and resending the local copy too both
+ * double-counts a `liked` id's weight and defeats a `skipped` id's decay
+ * (see that method). Signed-out state stays exactly as before — untouched
+ * by any of this.
  */
 @Injectable({ providedIn: 'root' })
 export class RecommendationService {
@@ -89,9 +96,35 @@ export class RecommendationService {
     this._persist(feedId, 'skipped');
   }
 
+  // One in-flight persist request per feed at a time — clicking 喜歡 then
+  // 不喜歡 on the same feed in quick succession used to fire two independent
+  // PUTs with no ordering guarantee between them; if they reached the
+  // server (or its replicas) out of order, the row could settle on the
+  // *earlier* click's value while local state showed the later one, and
+  // that wrong value would then feed every future cross-device
+  // recommendation. Cancelling the previous request before starting a new
+  // one for the same feed means at most one is ever in flight, so there is
+  // nothing left to reorder.
+  private _pendingPersist = new Map<string, Subscription>();
+
   private _persist(feedId: string, type: FeedFeedbackType): void {
     if (!this.auth.session()) return;
-    this.me.setFeedFeedback(feedId, type).subscribe({ error: () => {} });
+    this._pendingPersist.get(feedId)?.unsubscribe();
+    // `let`, not `const`: a test double (or a genuinely cached HttpClient
+    // response) can call back synchronously from inside `subscribe()`,
+    // before the assignment below would otherwise have run — `done()`
+    // reading `sub` at that point needs a already-declared (if still
+    // `undefined`) binding, not a `const` still in its temporal dead zone.
+    let sub: Subscription;
+    // `error` and `complete` are mutually exclusive terminal notifications —
+    // both are needed here, or a failed request would never clear its own
+    // map entry and `unsubscribe()` above would be cancelling an already-
+    // finished (just not forgotten) subscription instead of a real one.
+    const done = () => {
+      if (this._pendingPersist.get(feedId) === sub) this._pendingPersist.delete(feedId);
+    };
+    sub = this.me.setFeedFeedback(feedId, type).subscribe({ error: done, complete: done });
+    this._pendingPersist.set(feedId, sub);
   }
 
   /**
@@ -104,16 +137,24 @@ export class RecommendationService {
    * Most recent wins: taste drifts, and the last 50 signals describe someone
    * better than their first 50 do.
    *
-   * Sent for a signed-in caller too, not just anonymous: the backend already
-   * reads persisted feedback independently for a signed-in caller, so this
-   * is a redundant-but-harmless belt-and-braces signal that also covers the
-   * gap between an action landing locally and its own persist call settling.
+   * Signed-in only: sent when there is no persisted server-side feedback to
+   * fall back on at all. A signed-in caller's `_load_signals`
+   * (backend/routers/recommendations.py) already reads persisted feedback
+   * fresh on every call, so resending these too used to double the effect
+   * of a `liked` id (query-param weight stacked on top of the persisted
+   * row's own weight) and, worse, kept an expired `skipped` id excluding
+   * its feed forever — this array has no timestamp to prune by, so a skip
+   * older than the persisted signal's own 14-day decay window would still
+   * be resent and re-excluded on every request, forever, defeating the
+   * decay entirely.
    */
   getRecommendations(limit = 10): Observable<RecommendedFeed[]> {
     let params = new HttpParams().set('limit', limit);
-    for (const id of this._liked().slice(-MAX_SIGNALS)) params = params.append('liked', id);
-    for (const id of this._disliked().slice(-MAX_SIGNALS)) params = params.append('disliked', id);
-    for (const id of this._skipped().slice(-MAX_SIGNALS)) params = params.append('skipped', id);
+    if (!this.auth.session()) {
+      for (const id of this._liked().slice(-MAX_SIGNALS)) params = params.append('liked', id);
+      for (const id of this._disliked().slice(-MAX_SIGNALS)) params = params.append('disliked', id);
+      for (const id of this._skipped().slice(-MAX_SIGNALS)) params = params.append('skipped', id);
+    }
     return this.http.get<RecommendedFeed[]>(`${this.base}/recommendations`, { params });
   }
 }
