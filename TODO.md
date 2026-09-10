@@ -112,6 +112,20 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       是窄視窗（需要兩個獨立寫入短時間內命中同一篇文章）且不影響伺服器端資料正確性，只影響
       UI 顯示到下次 reload 為止；PR #56 code review（Codex，P2）提出，因為需要新的決勝政策或
       API 合約變更才能穩妥解決，留在這裡待人工決定方向，未在該 PR 內強行修。
+- [ ] 未讀數的 `_countDeltasByArticle`：一篇文章的寫入仍是 `_pending` 時，它的 delta 無論
+      ticket 為何一律疊加（見 `recomputeCounts()` 的機制註解），這是刻意的選擇，但也有已知、
+      同上一項同類的窄視窗代價——若某篇文章的 markRead 已經在伺服器端 commit，但它自己的
+      回應還沒送達 client（`isPending` 仍是 true），此時一個「之後才發出、但先抵達」的
+      `loadCounts()` GET 剛好命中已經反映這次寫入之後的伺服器狀態，`recomputeCounts()` 仍會
+      把這篇文章的 `-1` delta 疊加在這個「其實已經包含這次寫入」的 baseline 之上，造成未讀數
+      被多扣一次，直到下一次完整的 `loadCounts()` 刷新才會修正。反過來讓 pending 的 delta
+      也比照已確認寫入去跟 baseline 的 ticket 比較，會直接讓本節上面「`ReadingStreamService`
+      補齊 pending-write...」那項修掉的原始 bug 重新出現（一個寫入還沒真的送達伺服器就被
+      baseline 判定「已經反映」而整個丟棄，未讀數永久少算直到下次刷新）——這兩個方向的 bug
+      無法只靠 client 端的 ticket 比較同時解掉，需要 API 額外提供能比較兩者先後的依據
+      （例如列版本／時間戳）才能穩妥解決，同上一項的根因。PR #56 code review（Codex，P2）
+      提出，故意保留現狀（一律疊加）而不修，因為對調方向只是把已修好的 bug 換回來，並在
+      `recomputeCounts()` 的註解記錄取捨理由。
 
 ### 標籤、語言與偏好設定
 

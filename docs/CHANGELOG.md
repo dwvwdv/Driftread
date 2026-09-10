@@ -1101,3 +1101,28 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
      限制類型（同本階段開頭「背景」段所述 PR #43 遺留缺口的精神），記錄在 TODO.md
      的「技術與可靠性優化」小節，留待有更明確的排序依據時再處理，不在本 PR 內強行猜一個
      決勝規則。
+- **PR review 修正第三輪（Codex，2 個 P2，1 修 1 記錄為已知限制）**：
+  1. **修**：`loadCounts()` 成功回呼原本只跟「最後一次被接受的 baseline」比較 ticket 決定
+     要不要丟棄這次回應——但如果一個較新（ticket 較大）的 `loadCounts()` 呼叫最終是以
+     **失敗**收場（例如 `markAllReadInScope` 寫入成功後觸發的刷新剛好打不到後端），
+     baseline 從來沒被那次較新的呼叫推進過，一個更舊、還在飛的請求解析回來時就會通過
+     這個比較被誤判成「還沒被蓋過」而被接受，用寫入前的舊數字覆蓋 badge——即使呼叫端才剛被
+     `onError` 告知這次刷新失敗。修法：把成功回呼的丟棄條件從「比 baseline 的 ticket 舊」
+     改成「比最後一次**發出**的 ticket（`_countsLatestIssuedAsOf`，失敗回呼已經在用同一個）
+     舊」——只要曾經發出過更新的請求，不管那個更新的請求最後是成功還是失敗，比它舊的回應
+     一律視為作廢，不再有機可乘；順便讓「什麼時候該清 `countsLoading`」的邏輯跟著簡化成
+     「接受回應就清」，因為現在能被接受的回應必然就是最後一次發出的那個。新增
+     `reading-stream.spec.ts` 案例：較新請求先失敗、較舊請求帶著假數字之後才回來，斷言
+     未讀數與 `countsLoaded` 都維持初始狀態（照舊邏輯執行會斷言失敗，證實是真的迴歸測試）。
+  2. **記錄為已知限制，未修**：`_countDeltasByArticle` 對「仍是 `_pending` 的文章」一律疊加
+     delta、完全不比較 ticket，這本來就是上一輪修 bug 時的刻意選擇，Codex 這輪指出它的
+     鏡像代價——若某篇文章的寫入其實已經在伺服器端 commit、只是自己的回應還沒送達
+     client，一個「之後才發出、卻先抵達」且已經反映這次寫入的 `loadCounts()` GET 會讓這篇
+     文章的 delta 被多算一次。改成比照已確認寫入去比較 ticket，會直接讓上一輪才修掉的原始
+     bug（pending 寫入被 baseline 誤判成「已反映」而整個丟棄）復發——兩個方向的 bug 無法只靠
+     client 端的 ticket 排序同時解掉，性質與根因和上面「`markAllReadInScope` 與 pending
+     markRead/markUnread」那項完全一樣。在 `recomputeCounts()` 的方法註解與 `TODO.md`
+     都記錄了這個取捨與原因，不強行對調方向。
+  - 本輪驗證方式同前兩輪：`npm ci` 仍被 network egress allowlist 擋下，改用
+    `tsc --noResolve` 與 `prettier --check` 驗證改動，邏輯以手動追蹤新增測試案例的
+    ticket 數值運算確認，實際跑測試交給 PR #56 的 CI。
