@@ -1077,7 +1077,147 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   cache refresh」兩項打勾）、`docs/SECURITY.md`（新增 #31）、`README.md` 與 `.env.example`
   （新增 `SUPABASE_JWKS_URL` 說明）。
 - 對應文件更新：`TODO.md`（「ReadingStreamService 補齊 pending-write...」打勾並補上機制說明）。
+- **PR review 修正第一輪（Codex，3 個 P2，均證實為真）**：
+  1. **未讀數的 ticket 修剪條件用錯了比較對象**：`loadCounts()` 接受一個新 baseline 時，原本用
+     「delta 的 commit ticket 是否 ≤ 這次 GET 的 `asOf`」決定要不要修剪掉這筆 delta——但
+     commit ticket 只記錄「client 端何時做出樂觀猜測」，不代表伺服器當時已經處理完那次寫入。
+     一個仍在 pending（尚未拿到伺服器回應）的寫入，即使它的 ticket 早於某次 GET 的 `asOf`，
+     那次 GET 抓到的也可能是寫入生效「之前」的伺服器狀態——照舊邏輯會把這筆 delta 誤判成
+     「已經反映在快照裡」而修剪掉，實際上該篇文章的寫入之後才確認成功，未讀數會憑空少算一次
+     直到下次真正刷新。修法：把 delta 儲存結構從「ticket 陣列」改成「依 article id 存淨值的
+     Map」（`_countDeltasByArticle`，同一篇文章的多次調整直接互相抵銷，不留兩筆），
+     `recomputeCounts()` 判斷「這筆 delta 現在還要不要疊加」的依據改成同 `reconcileItems()`
+     一致的規則：這篇文章若仍是 `_pending`，無論 ticket 為何一律疊加（寫入還沒有結果，任何
+     baseline 都不能假設已經反映它）；只有寫入已確認（`_confirmedReadAt` 有記錄）時，才拿
+     那次「確認」的 ticket 去跟 baseline 的 `asOf` 比。
+  2. **「較舊請求被較新請求蓋掉」只認已經套用的 baseline，沒認已經發出的請求**：`loadCounts()`
+     的 error handler 原本用「這次失敗的 `asOf` 是否早於目前 baseline 的 `asOf`」判斷要不要
+     忽略這個失敗——但如果兩個 `loadCounts()` 同時在飛、較舊的那個先失敗、較新的那個都還沒回來
+     （baseline 還沒被任何一個更新過），這個條件就抓不到「其實已經有更新的嘗試在路上」，較舊
+     那次的失敗會被誤判成整個操作失敗，把 `countsLoading` 提早關掉、`onError` 提早觸發，即使
+     真正較新的請求隨後成功。修法：新增 `_countsLatestIssuedAsOf`，在每次呼叫的當下（而非拿到
+     回應時）就更新——error handler 改成跟這個「最新已發出」的 ticket 比，不是跟「最新已套用」
+     的 baseline 比；success handler 也只在自己就是最新已發出的那次時才清 `countsLoading`。
+  3. **`load()`/`loadMore()` 用來 reconcile 的 `previous` 陣列在請求「發出當下」就截取了**：
+     若 GET 發出時文章還是未讀、`markRead()` 是在 GET 已經送出、回應尚未回來之間才啟動並樂觀
+     翻成已讀，`reconcileItems()` 看到這篇文章仍是 `_pending`，會拿舊的（GET 發出當下截取的）
+     `previous` 快照蓋回去——那個快照本身就還沒反映這次樂觀更新，所以會把已讀又蓋回未讀；
+     等到 POST 真的成功，成功回呼只呼叫 `confirmReadState()` 記錄確認結果，並不會重新
+     `patchItem()` 那一列，錯誤的未讀狀態會一直留到下一次 `load()`/`loadMore()` 才自動修正。
+     修法：`reconcileItems()` 不再吃外部傳入的 `previous` 參數，改成在方法內部呼又時當下讀
+     `this._items()`——這樣拿到的一定是回應抵達那一刻的最新狀態，包含回應抵達前才啟動的樂觀
+     更新。
+  - **測試**：`reading-stream.spec.ts` 新增三個案例，各自對應上面三點——`loadCounts()`
+    在寫入仍 pending 時，即使 delta 的 commit ticket 早於某次 GET 的 `asOf`，未讀數仍要保留該
+    delta（若照原本邏輯執行會斷言失敗，證實這是真的迴歸測試而非重複既有覆蓋）；`loadCounts()`
+    在較舊請求先失敗、較新請求還沒回來時忽略那次失敗且不提早關閉 `countsLoading`；
+    `load()` 在 GET 發出「之後」才啟動的 markRead optimistic 更新，回應抵達時仍要保留已讀狀態
+    （既有的「pending 保留樂觀值」案例其實沒踩到這個 bug——那個案例裡寫入是在 `load()` 呼叫
+    「之前」就啟動的，`previous` 截取當下已經反映過樂觀值，不足以證偽舊邏輯，故補這個更精確的
+    案例）。既有測試全數維持原斷言可通過。
+  - 本輪的網路限制與驗證方式同上——`npm ci` 仍被擋下，改用 `tsc --noResolve` 與
+    `prettier --check` 驗證這兩個檔案，邏輯正確性以手動逐步追蹤新增與既有測試案例的
+    ticket／delta 數值運算確認，實際 `npm test` 交給 PR #56 的 CI 跑過（`Build` job 綠燈）。
+- **PR review 修正第二輪（Codex，2 個 P2，1 修 1 記錄為已知限制）**：
+  1. **修**：`markAllReadInView` 的批次部分失敗時，原本先跑失敗批次的 rollback（呼叫
+     `commitCountDelta` 觸發 `recomputeCounts()`），才跑成功批次的 `confirmReadState()`。
+     成功批次的文章在 `_pending` 已於函式最前面被整批清掉、但還沒被
+     `confirmReadState()` 標記確認的這段空窗期裡，若剛好被失敗批次的 rollback
+     觸發一次 `recomputeCounts()`，會被誤判成「未 pending 且未確認、ticket 又早於等於
+     baseline」而排除在外——`confirmReadState()` 本身不會觸發 recompute，所以這筆遺漏
+     直到下次別的地方觸發 recompute 前都不會自己修正，未讀數／badge 會少扣那個成功批次
+     的量。修法：把「確認成功批次」的迴圈移到「處理失敗批次 rollback」之前，讓成功批次的
+     delta 在任何 rollback 觸發的 recompute 發生前，就已經進入「已確認且 ticket 新於
+     baseline」的可疊加狀態。新增 `reading-stream.spec.ts` 案例（620 篇、前 500 成功
+     後 120 失敗、baseline 未讀數設一個不會被 clamp 蓋掉差異的大數字），照舊順序執行會
+     斷言失敗（顯示未讀數完全沒扣），驗證這是真的迴歸測試。
+  2. **記錄為已知限制，未修**：同一篇文章身上，一個仍 pending 的單篇 markRead/markUnread
+     與一個涵蓋它的 `markAllReadInScope` 各自獨立送出去，client 端無法從兩個回應誰先抵達
+     推斷兩者在伺服器端真正的 commit 順序——任何用回應抵達順序或呼叫 `confirmReadState()`
+     先後當決勝規則的修法，都只是把現有的不確定性換一個方向，並不是真的解掉它，需要 API
+     額外提供列版本／時間戳之類的排序依據才能穩妥解決。這是窄視窗（兩個獨立寫入要短時間內
+     命中同一篇文章）、不影響伺服器端資料正確性、只影響 UI 顯示到下次 reload 為止的既有已知
+     限制類型（同本階段開頭「背景」段所述 PR #43 遺留缺口的精神），記錄在 TODO.md
+     的「技術與可靠性優化」小節，留待有更明確的排序依據時再處理，不在本 PR 內強行猜一個
+     決勝規則。
+- **PR review 修正第三輪（Codex，2 個 P2，1 修 1 記錄為已知限制）**：
+  1. **修**：`loadCounts()` 成功回呼原本只跟「最後一次被接受的 baseline」比較 ticket 決定
+     要不要丟棄這次回應——但如果一個較新（ticket 較大）的 `loadCounts()` 呼叫最終是以
+     **失敗**收場（例如 `markAllReadInScope` 寫入成功後觸發的刷新剛好打不到後端），
+     baseline 從來沒被那次較新的呼叫推進過，一個更舊、還在飛的請求解析回來時就會通過
+     這個比較被誤判成「還沒被蓋過」而被接受，用寫入前的舊數字覆蓋 badge——即使呼叫端才剛被
+     `onError` 告知這次刷新失敗。修法：把成功回呼的丟棄條件從「比 baseline 的 ticket 舊」
+     改成「比最後一次**發出**的 ticket（`_countsLatestIssuedAsOf`，失敗回呼已經在用同一個）
+     舊」——只要曾經發出過更新的請求，不管那個更新的請求最後是成功還是失敗，比它舊的回應
+     一律視為作廢，不再有機可乘；順便讓「什麼時候該清 `countsLoading`」的邏輯跟著簡化成
+     「接受回應就清」，因為現在能被接受的回應必然就是最後一次發出的那個。新增
+     `reading-stream.spec.ts` 案例：較新請求先失敗、較舊請求帶著假數字之後才回來，斷言
+     未讀數與 `countsLoaded` 都維持初始狀態（照舊邏輯執行會斷言失敗，證實是真的迴歸測試）。
+  2. **記錄為已知限制，未修**：`_countDeltasByArticle` 對「仍是 `_pending` 的文章」一律疊加
+     delta、完全不比較 ticket，這本來就是上一輪修 bug 時的刻意選擇，Codex 這輪指出它的
+     鏡像代價——若某篇文章的寫入其實已經在伺服器端 commit、只是自己的回應還沒送達
+     client，一個「之後才發出、卻先抵達」且已經反映這次寫入的 `loadCounts()` GET 會讓這篇
+     文章的 delta 被多算一次。改成比照已確認寫入去比較 ticket，會直接讓上一輪才修掉的原始
+     bug（pending 寫入被 baseline 誤判成「已反映」而整個丟棄）復發——兩個方向的 bug 無法只靠
+     client 端的 ticket 排序同時解掉，性質與根因和上面「`markAllReadInScope` 與 pending
+     markRead/markUnread」那項完全一樣。在 `recomputeCounts()` 的方法註解與 `TODO.md`
+     都記錄了這個取捨與原因，不強行對調方向。
+  - 本輪驗證方式同前兩輪：`npm ci` 仍被 network egress allowlist 擋下，改用
+    `tsc --noResolve` 與 `prettier --check` 驗證改動，邏輯以手動追蹤新增測試案例的
+    ticket 數值運算確認，實際跑測試交給 PR #56 的 CI。
 
+- **PR review 修正第四輪（Codex，2 個 P2，全修）**：
+  1. **`_countDeltas` 改成不合併、每寫入一筆 entry**：原本以 article id 為 key 合併淨值——
+     一篇文章連續兩次寫入會被相消成一個數字。問題情境：文章原本已讀，`markUnread` 成功確認
+     （`+1`），接著發出 `loadCounts()`；GET 還沒回來前，同一篇文章又被 `markRead`（`-1`）。
+     合併淨值 `+1-1=0`，整條記錄直接被刪掉——但這個「0」抹掉的是兩筆完全不同性質的資訊：
+     舊的 `+1` 已經確認成功、只是還不確定目前 baseline 有沒有反映它；新的 `-1` 則是還沒有
+     任何伺服器回應的樂觀猜測，兩者需要各自獨立判斷。等 GET 回來，剛好只反映了
+     `markUnread`（還沒反映 `markRead`），因為記錄已經被刪掉，未讀數少了「還有一個 pending
+     寫入尚未疊加」的資訊；`markRead` 之後真的成功時，也沒有任何機制再把未讀數修正回來，
+     卡住直到下次完整刷新。修法：`_countDeltas` 從 `Map<articleId, {feedId, amount}>` 改成
+     一個陣列，每次 `commitCountDelta()` 都新增一筆獨立 entry
+     `{articleId, feedId, amount, pending, confirmedAt}`，回傳該 entry 的參照；寫入成功時
+     呼叫新的 `confirmCountDelta(entry, ticket)` 原地標記確認（`ticket` 直接沿用
+     `confirmReadState()` 回傳的同一個，兩者代表同一個事件）；失敗時呼叫新的
+     `removeCountDelta(entry)` 整條移除，不再用推入相反數字相消的方式處理 rollback。
+     `recomputeCounts()`／`loadCounts()` 的 GC 迴圈都改成逐筆判斷
+     `entry.pending || entry.confirmedAt > baselineAsOf`，不再用 `isPending(articleId)`
+     查全域 `_pending` set——這帶來一個附帶好處：上一輪「批次成功要在失敗 rollback 觸發的
+     recompute 之前先確認」那個順序限制，現在因為 entry 自己的 `pending` 欄位與共用的
+     `_pending` set 已經脫鉤，兩個迴圈用哪個順序執行都不影響正確性，`markAllReadInView`
+     的註解一併更新說明這點（順序仍保留，只是原因換了）。
+  2. **`reconcileItems()` 的 pending 分支只該合併已讀狀態**：文章有 pending 寫入時，原本是
+     整個回傳 `previous` 裡的舊物件（`return prior`），這連同已讀狀態一起把該篇文章可能被
+     feed 重新抓取（`upsert_articles()`）更新過的標題／摘要／作者／發布時間等欄位也一併蓋回
+     舊快取值，直到下一次沒有寫入競爭的 reload 才會修正。修法：改成
+     `{ ...item, is_read: prior.is_read, read_at: prior.read_at }`，只從舊物件合併這兩個
+     真正在競爭中的欄位，同已確認分支原本就有的寫法一致。
+  - **測試**：`reading-stream.spec.ts` 新增兩案例——一篇文章先 `markUnread` 確認、
+    `loadCounts()` 發出後又 `markRead`（仍 pending）：斷言整個過程與最終未讀數都正確
+    （照舊的合併邏輯執行，GET 回來後與 `markRead` 成功後都會停在錯誤值，證實是真的迴歸
+    測試）；`load()` 在文章有 pending 讀取切換時，回應帶回的新標題不會被舊快取蓋掉。
+  - 本輪驗證方式同前——`npm ci` 仍被擋下，改用 `tsc --noResolve`／`prettier --check`；
+    這輪額外用一個獨立的最小重現檔案（不含 rxjs／Angular import）搭配完整型別解析的
+    `tsc` 驗證了 `(typeof this._countDeltas)[number]` 與 `new Map(...)` 這類寫法本身沒有
+    型別錯誤——本檔案內的 `--noResolve` 檢查在這幾行報的兩個型別錯誤經確認是
+    `--noResolve` 本身破壞 tuple 型別推導的假警報，不是真的問題。
+
+- **PR review 修正第五輪（Codex，1 個 P2，效能，已修）**：`markAllReadInView` 樂觀套用階段
+  對每個 target 各呼叫一次 `commitCountDelta()`，而 `recomputeCounts()` 的成本是 O(目前
+  未平倉 entry 數)——對同一批 target 逐篇呼叫，等於把「送出 HTTP 請求之前」這段準備工作做成
+  O(n²)；一次全部標已讀命中的文章數大時（例如單一多產來源一次數百篇）這段純本地運算會明顯
+  變慢，且發生在任何網路請求送出之前。失敗批次的 rollback 迴圈原本也是逐篇呼叫
+  `removeCountDelta()`，有同樣的問題（雖然單一批次上限是 `MARK_ALL_BATCH_SIZE=500`，量體
+  較小但邏輯一樣不划算）。修法：新增 `pushCountDelta()`（只建立 entry、不觸發 recompute）
+  取代樂觀套用迴圈裡的 `commitCountDelta()`，迴圈結束後才呼叫一次 `recomputeCounts()`；
+  新增 `removeCountDeltas()`（批次移除＋只 recompute 一次）取代失敗 rollback 迴圈裡逐篇呼叫
+  的 `removeCountDelta()`（該函式本身也改成呼叫 `removeCountDeltas([entry])`，避免重複邏輯）。
+  單篇 `markRead`/`markUnread` 沿用的 `commitCountDelta()`/`removeCountDelta()`（單次呼叫即
+  recompute）不受影響，因為那本來就只呼叫一次。未新增測試：這是可觀察行為不變、只有內部
+  呼叫次數／時機改變的效能修正，既有的大批次（620 篇）正確性測試已經覆蓋修改後的邏輯算出
+  同樣正確的結果；要斷言「recompute 只呼叫一次」需要暴露 signal `.set()` 呼叫次數這類內部
+  實作細節，不值得為此新增測試耦合，故只以人工推演確認前後行為一致、複雜度改善。
 ## 階段三十二：PostgREST／database 例外的一致 API error mapping（2026-09-08）
 
 TODO.md「技術與可靠性優化」批次的最後一項：`backend/database.py::get_client()` 是全專案唯一的

@@ -33,24 +33,36 @@ export interface StreamFilters {
  * Like SubscriptionService, every fetch and every write draws a ticket from
  * one shared monotonic `version` sequence (`beginFetch()` / a write's commit
  * point), so a GET and a concurrent write on the same article or the same
- * counts can be ordered against each other. Three races this guards against
- * (all previously open gaps — see TODO.md "技術與可靠性優化"):
+ * counts can be ordered against each other. Races this guards against (all
+ * previously open gaps — see TODO.md "技術與可靠性優化"):
  *
- * - `load()`/`loadMore()` reconciling a fetched page against `_pending`
- *   (a still-in-flight markRead/markUnread wins over the stale snapshot)
- *   and `_confirmedRead`/`_confirmedReadAt` (a write that committed *after*
- *   the GET started wins even once it's no longer `_pending`) — mirrors
- *   SubscriptionService's `sync()` exactly, just per-article instead of a
- *   single id set.
+ * - `load()`/`loadMore()` reconcile a fetched page, read at response time,
+ *   against `_pending` (a still-in-flight markRead/markUnread wins over the
+ *   stale snapshot even if the write only started *after* the GET was
+ *   issued) and `_confirmedRead`/`_confirmedReadAt` (a write that committed
+ *   *after* the GET started wins even once it's no longer `_pending`) —
+ *   mirrors SubscriptionService's `sync()` exactly, just per-article instead
+ *   of a single id set.
  * - Unread counts are a baseline (the last accepted GET) plus a ledger of
- *   deltas (`_countDeltas`) not yet known to be reflected by it — a GET
- *   response is *applied*, never wholesale discarded, with any delta
- *   committed after that GET started re-added on top. The previous
- *   generation-counter version discarded a stale-relative-to-a-local-write
- *   response outright, including on the very first load — a markRead/
- *   markUnread landing before that first response ever arrives left the
- *   total stuck at whatever the clamped optimistic guess was, forever,
- *   since nothing else ever retries once `countsLoaded` flips true.
+ *   per-write deltas (`_countDeltas` — one entry per outstanding write, not
+ *   merged per article, so two sequential writes on the same article can't
+ *   clobber each other's pending/confirmed state) not yet known to be
+ *   reflected by it. A GET response is *applied*, never wholesale discarded
+ *   — the previous generation-counter version discarded a stale-relative-
+ *   to-a-local-write response outright, including on the very first load, so
+ *   a markRead/markUnread landing before that first response ever arrives
+ *   left the total stuck at whatever the clamped optimistic guess was,
+ *   forever, since nothing else ever retries once `countsLoaded` flips true.
+ *   A delta belonging to a still-*pending* write always survives being
+ *   applied on top of a new baseline regardless of its own commit ticket —
+ *   that ticket only says when the optimistic guess was made, not whether
+ *   the server had processed it by the time some GET's snapshot was taken;
+ *   only a *confirmed* write's delta is ever judged against a baseline's
+ *   ticket. `loadCounts()` also tracks the most recently *issued* ticket
+ *   separately from the last *accepted* one, so an older request's late
+ *   failure can recognize it's been superseded by a newer one that simply
+ *   hasn't resolved yet, rather than surfacing a spurious error or clearing
+ *   `countsLoading` out from under the still-outstanding newer request.
  * - `markAllReadInView` now claims its targets through the same `_pending`
  *   set `markRead`/`markUnread` check, and vice versa — previously a batch
  *   mark-all and a per-article toggle for the same article could both
@@ -131,7 +143,28 @@ export class ReadingStreamService {
   private _countsBaselineTotal = 0;
   private _countsBaselineFeeds: FeedUnreadCount[] = [];
   private _countsBaselineAsOf = -1;
-  private _countDeltas: { ticket: number; feedId: string; amount: number }[] = [];
+  /** One entry per outstanding write's contribution to the unread counts,
+   * *not* merged per article — a second write starting on an article whose
+   * previous write is already confirmed (but not yet known to be reflected
+   * in the current baseline) needs its own independent pending/confirmed
+   * state; collapsing the two into a single net number loses whichever
+   * ticket the older, already-confirmed one needs to keep being judged by
+   * (see recomputeCounts()). A failed write's entry is removed outright
+   * (`removeCountDelta`) rather than netted against by pushing the reverse
+   * delta, for the same reason. */
+  private _countDeltas: {
+    articleId: string;
+    feedId: string;
+    amount: number;
+    pending: boolean;
+    confirmedAt: number;
+  }[] = [];
+  /** Ticket of the most recently *issued* loadCounts() call, updated the
+   * moment it's issued — not the moment (if any) it resolves. Lets an older
+   * request's late failure recognize it's been superseded by a newer one
+   * that simply hasn't resolved yet, distinct from `_countsBaselineAsOf`
+   * (only moves once a response is actually accepted). */
+  private _countsLatestIssuedAsOf = -1;
 
   constructor() {
     effect(() => {
@@ -151,6 +184,7 @@ export class ReadingStreamService {
       this._countsBaselineFeeds = [];
       this._countsBaselineAsOf = -1;
       this._countDeltas = [];
+      this._countsLatestIssuedAsOf = -1;
       if (userId) this.loadCounts();
     });
   }
@@ -173,31 +207,44 @@ export class ReadingStreamService {
     return ++this.version;
   }
 
-  private confirmReadState(articleId: string, isRead: boolean, readAt: string | null): void {
+  /** Records a write's confirmed outcome and returns the ticket it
+   * committed at, so callers can stamp a corresponding count-delta entry
+   * (`confirmCountDelta`) with the exact same ticket — the two represent
+   * the same real-world event and must be judged consistently against a
+   * baseline's `asOf`. */
+  private confirmReadState(articleId: string, isRead: boolean, readAt: string | null): number {
     const ticket = ++this.version;
     this._confirmedRead.set(articleId, { is_read: isRead, read_at: readAt });
     this._confirmedReadAt.set(articleId, ticket);
+    return ticket;
   }
 
   /**
    * Reconciles a freshly fetched page against in-flight and recently
    * confirmed per-article writes, mirroring SubscriptionService.sync():
-   * a `_pending` article keeps whatever `previous` (the items array right
-   * before this response landed) already showed for it — the write hasn't
-   * settled, so there's nothing authoritative to overwrite it with yet —
-   * and a confirmed write with a ticket *after* this GET's `asOf` wins over
-   * the fetched value, since the GET may predate that confirmation.
+   * a `_pending` article keeps whatever `this._items()` shows for it *right
+   * now* — read at reconcile time, not captured back when the GET was
+   * issued, since a write can start and optimistically patch the row after
+   * the GET went out but before its response lands — the write hasn't
+   * settled, so there's nothing authoritative to overwrite that optimistic
+   * value with yet — and a confirmed write with a ticket *after* this GET's
+   * `asOf` wins over the fetched value, since the GET may predate that
+   * confirmation.
    */
-  private reconcileItems(
-    incoming: StreamArticle[],
-    asOf: number,
-    previous: readonly StreamArticle[],
-  ): StreamArticle[] {
+  private reconcileItems(incoming: StreamArticle[], asOf: number): StreamArticle[] {
     const pending = this._pending();
+    const current = this._items();
     return incoming.map((item) => {
       if (pending.has(item.id)) {
-        const prior = previous.find((a) => a.id === item.id);
-        if (prior) return prior;
+        // Only the read state is actually in flux here — merge just that
+        // onto the freshly fetched `item` rather than returning `prior`
+        // wholesale, or a concurrent feed refresh's updates to title,
+        // summary, author, etc. (`upsert_articles()` can change any of
+        // those on an existing row) would get silently reverted to the
+        // stale cached copy until some unrelated future reload happens to
+        // land with nothing pending.
+        const prior = current.find((a) => a.id === item.id);
+        if (prior) return { ...item, is_read: prior.is_read, read_at: prior.read_at };
       }
       const confirmedAt = this._confirmedReadAt.get(item.id);
       if (confirmedAt !== undefined && confirmedAt > asOf) {
@@ -211,29 +258,40 @@ export class ReadingStreamService {
   loadCounts(onError?: (err: unknown) => void): void {
     const requestedFor = this.loadedFor;
     const asOf = this.beginFetch();
+    this._countsLatestIssuedAsOf = asOf;
     this._countsLoading.set(true);
     this.me.getUnreadCounts().subscribe({
       next: (summary) => {
         if (this.loadedFor !== requestedFor) return;
-        this._countsLoading.set(false);
-        // A newer loadCounts() (higher-ticketed) already landed and applied
-        // its own baseline — this response is stale relative to it, not
-        // relative to any local write, so it's simply moot.
-        if (asOf < this._countsBaselineAsOf) return;
+        // Only the most recently *issued* loadCounts() may ever affect
+        // state — a strictly older one is superseded outright, whatever it
+        // contains, and must not apply even if the newer one has since
+        // *failed*: comparing against the last *accepted* baseline instead
+        // would let this stale response slip through in exactly that case
+        // (a failed newer request never advances the baseline), silently
+        // overwriting the badge with pre-write totals right after the
+        // caller was told the refresh failed.
+        if (asOf < this._countsLatestIssuedAsOf) return;
         this._countsBaselineTotal = summary.total_unread;
         this._countsBaselineFeeds = summary.feeds;
         this._countsBaselineAsOf = asOf;
-        // Deltas at or before this GET's ticket are presumed already baked
-        // into `summary` — anything after is a write this snapshot can't
-        // have seen yet and must be re-applied on top.
-        this._countDeltas = this._countDeltas.filter((d) => d.ticket > asOf);
+        // A confirmed entry at or before this GET's ticket is presumed
+        // reflected in `summary` and can be dropped — see recomputeCounts()
+        // for why a still-pending entry is never eligible here regardless
+        // of ticket.
+        this._countDeltas = this._countDeltas.filter((d) => d.pending || d.confirmedAt > asOf);
         this.recomputeCounts();
         this._countsLoaded.set(true);
+        this._countsLoading.set(false);
       },
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
+        // A strictly newer loadCounts() has since been *issued* (whether or
+        // not it has resolved yet) — this failure belongs to a superseded
+        // attempt and must not surface as the operation's outcome, nor flip
+        // off loading while that newer attempt is still pending.
+        if (asOf < this._countsLatestIssuedAsOf) return;
         this._countsLoading.set(false);
-        if (asOf < this._countsBaselineAsOf) return;
         onError?.(err);
       },
     });
@@ -244,7 +302,6 @@ export class ReadingStreamService {
     const requestedFor = this.loadedFor;
     const generation = ++this._itemsGeneration;
     const asOf = this.beginFetch();
-    const previous = this._items();
     this._loading.set(true);
     // A fresh load supersedes any load-more in flight for the previous
     // generation — that request's own callback will now bail out on the
@@ -254,7 +311,7 @@ export class ReadingStreamService {
       next: (page) => {
         if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
         this._loading.set(false);
-        this._items.set(this.reconcileItems(page.items, asOf, previous));
+        this._items.set(this.reconcileItems(page.items, asOf));
         this._nextCursor.set(page.next_cursor);
       },
       error: (err: unknown) => {
@@ -275,7 +332,6 @@ export class ReadingStreamService {
     const requestedFor = this.loadedFor;
     const generation = this._itemsGeneration;
     const asOf = this.beginFetch();
-    const previous = this._items();
     this._loadingMore.set(true);
     this.me
       .getStream({ cursor, feedId: filters.feedId, unreadOnly: filters.unreadOnly })
@@ -283,7 +339,7 @@ export class ReadingStreamService {
         next: (page) => {
           if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
           this._loadingMore.set(false);
-          const reconciled = this.reconcileItems(page.items, asOf, previous);
+          const reconciled = this.reconcileItems(page.items, asOf);
           this._items.update((current) => [...current, ...reconciled]);
           this._nextCursor.set(page.next_cursor);
         },
@@ -308,16 +364,49 @@ export class ReadingStreamService {
   }
 
   /** Recomputes the displayed totals from the last accepted baseline plus
-   * every outstanding delta committed after it — see this class's header
-   * comment. Deltas for a feed absent from the baseline (shouldn't happen
-   * in practice — a delta always originates from an article already in
-   * `_feedCounts`) are simply dropped, same as the old code's `.map()`
-   * silently no-oping on an unmatched `feed_id`. */
+   * every outstanding `_countDeltas` entry not already accounted for in it.
+   * A still-*pending* entry is *always* included — its write hasn't
+   * settled, so no baseline (whenever it was taken) can be trusted to
+   * already reflect it. A *confirmed* entry is only included if that
+   * confirmation happened *after* the current baseline was taken
+   * (`confirmedAt > _countsBaselineAsOf`) — otherwise the baseline is
+   * presumed to already include it (loadCounts() also garbage-collects
+   * those once confirmed, so in steady state this only ever matters for the
+   * brief window right after a baseline lands). Entries are judged
+   * independently rather than merged per article — an article can carry
+   * both an older, already-confirmed entry not yet known to be reflected in
+   * the baseline *and* a newer pending one at once (mark read, then mark
+   * unread again before the count refresh catches up), and each needs its
+   * own pending/confirmed state to be judged correctly; merging them into a
+   * single net number loses whichever ticket the older one needs. Entries
+   * for a feed absent from the baseline (shouldn't happen in practice — an
+   * entry always originates from an article already in `_feedCounts`) are
+   * simply dropped, same as the old code's `.map()` silently no-oping on an
+   * unmatched `feed_id`.
+   *
+   * A still-pending entry being unconditionally included (never judged
+   * against a baseline's ticket) is a deliberate choice, not an oversight:
+   * the write's own optimistic-apply ticket only says when the *client*
+   * guessed, never when the server actually processed it, so comparing it
+   * to a baseline's `asOf` can't be made sound in either direction.
+   * Excluding it below some baseline ticket reintroduces the bug this
+   * class's ticketing was built to fix (a write that hasn't actually landed
+   * yet gets silently dropped the moment *any* later baseline is accepted,
+   * undercounting reads until an unrelated refresh happens to fix it).
+   * Always including it instead trades that for the mirror case — a GET
+   * that happens to reflect this exact write already, landing while it's
+   * still pending client-side, briefly double-counts it — which is
+   * narrower in practice (a write's own response is very rarely slower
+   * than a second request issued after it) and self-corrects the same way,
+   * on the next full GET. Resolving both directions at once would need the
+   * API to expose something the two operations could be soundly ordered by
+   * (e.g. a per-row version/`updated_at`), which isn't part of the current
+   * contract — see TODO.md. */
   private recomputeCounts(): void {
     const perFeed = new Map(this._countsBaselineFeeds.map((f) => [f.feed_id, { ...f }]));
     let total = this._countsBaselineTotal;
     for (const d of this._countDeltas) {
-      if (d.ticket <= this._countsBaselineAsOf) continue;
+      if (!d.pending && d.confirmedAt <= this._countsBaselineAsOf) continue;
       total += d.amount;
       const entry = perFeed.get(d.feedId);
       if (entry) entry.unread_count += d.amount;
@@ -328,9 +417,67 @@ export class ReadingStreamService {
     );
   }
 
-  private commitCountDelta(feedId: string, amount: number): void {
-    const ticket = ++this.version;
-    this._countDeltas.push({ ticket, feedId, amount });
+  /** Starts tracking a new write's (still-unsettled) contribution to the
+   * unread counts, without recomputing the displayed totals — for a caller
+   * about to push several of these at once (`markAllReadInView`'s targets)
+   * and recompute exactly once afterward, since `recomputeCounts()` is
+   * O(outstanding entries) and calling it once per push would make
+   * preparing an n-article batch O(n²) before a single HTTP request is even
+   * issued. `commitCountDelta()` is the single-write convenience that also
+   * recomputes immediately. */
+  private pushCountDelta(
+    articleId: string,
+    feedId: string,
+    amount: number,
+  ): (typeof this._countDeltas)[number] {
+    const entry = { articleId, feedId, amount, pending: true, confirmedAt: 0 };
+    this._countDeltas.push(entry);
+    return entry;
+  }
+
+  /** Starts tracking a new write's (still-unsettled) contribution to the
+   * unread counts and recomputes immediately. Returns the entry so the
+   * caller can later transition it via `confirmCountDelta` (write
+   * succeeded) or `removeCountDelta`/`removeCountDeltas` (write failed —
+   * undoing the optimistic guess outright, rather than netting a reverse
+   * delta against it, keeps this symmetric with every other entry always
+   * representing one real write attempt). */
+  private commitCountDelta(
+    articleId: string,
+    feedId: string,
+    amount: number,
+  ): (typeof this._countDeltas)[number] {
+    const entry = this.pushCountDelta(articleId, feedId, amount);
+    this.recomputeCounts();
+    return entry;
+  }
+
+  /** Marks a delta entry as confirmed at `ticket` — pass the same ticket
+   * `confirmReadState()` just returned for the same write, since they
+   * represent one event. Deliberately does not itself recompute: a
+   * newly-confirmed entry's ticket is always fresher than any existing
+   * baseline, so it stays included either way (via the pending branch just
+   * before, or the confirmed-newer-than-baseline branch just after) —
+   * nothing about the displayed totals actually changes at the moment of
+   * confirmation. */
+  private confirmCountDelta(entry: (typeof this._countDeltas)[number], ticket: number): void {
+    entry.pending = false;
+    entry.confirmedAt = ticket;
+  }
+
+  /** Discards a delta entry outright and recomputes — the write it
+   * represented failed, so there is nothing to keep tracking. */
+  private removeCountDelta(entry: (typeof this._countDeltas)[number]): void {
+    this.removeCountDeltas([entry]);
+  }
+
+  /** Batch counterpart of `removeCountDelta` — discards several entries and
+   * recomputes exactly once, for the same O(n²)-avoidance reason as
+   * `pushCountDelta`. */
+  private removeCountDeltas(entries: (typeof this._countDeltas)[number][]): void {
+    if (!entries.length) return;
+    const toRemove = new Set(entries);
+    this._countDeltas = this._countDeltas.filter((d) => !toRemove.has(d));
     this.recomputeCounts();
   }
 
@@ -348,19 +495,19 @@ export class ReadingStreamService {
     this.setPending(articleId, true);
     const readAt = new Date().toISOString();
     this.patchItem(articleId, { is_read: true, read_at: readAt });
-    this.commitCountDelta(current.feed_id, -1);
+    const delta = this.commitCountDelta(articleId, current.feed_id, -1);
 
     this.me.markRead(articleId).subscribe({
       next: () => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(articleId, false);
-        this.confirmReadState(articleId, true, readAt);
+        this.confirmCountDelta(delta, this.confirmReadState(articleId, true, readAt));
       },
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(articleId, false);
         this.patchItem(articleId, { is_read: false, read_at: null });
-        this.commitCountDelta(current.feed_id, 1);
+        this.removeCountDelta(delta);
         onError?.(err);
       },
     });
@@ -375,19 +522,19 @@ export class ReadingStreamService {
     const requestedFor = this.loadedFor;
     this.setPending(articleId, true);
     this.patchItem(articleId, { is_read: false, read_at: null });
-    this.commitCountDelta(current.feed_id, 1);
+    const delta = this.commitCountDelta(articleId, current.feed_id, 1);
 
     this.me.markUnread(articleId).subscribe({
       next: () => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(articleId, false);
-        this.confirmReadState(articleId, false, null);
+        this.confirmCountDelta(delta, this.confirmReadState(articleId, false, null));
       },
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
         this.setPending(articleId, false);
         this.patchItem(articleId, { is_read: true, read_at: current.read_at });
-        this.commitCountDelta(current.feed_id, -1);
+        this.removeCountDelta(delta);
         onError?.(err);
       },
     });
@@ -416,7 +563,13 @@ export class ReadingStreamService {
     this._items.update((items) =>
       items.map((a) => (targetIds.has(a.id) ? { ...a, is_read: true, read_at: now } : a)),
     );
-    for (const a of targets) this.commitCountDelta(a.feed_id, -1);
+    // `pushCountDelta()` + one `recomputeCounts()` after the loop, rather
+    // than `commitCountDelta()` per target — the latter would make this
+    // O(n²) in the number of targets (recomputeCounts() is O(outstanding
+    // entries), and it would run once per target added) before any HTTP
+    // request is even issued.
+    const deltas = new Map(targets.map((a) => [a.id, this.pushCountDelta(a.id, a.feed_id, -1)]));
+    this.recomputeCounts();
 
     // Batches aren't atomic as a set — one can commit while a later one
     // fails — so each batch's outcome is tracked independently instead of
@@ -439,17 +592,29 @@ export class ReadingStreamService {
       });
       const failed = outcomes.filter((o) => !o.ok);
       const marked = outcomes.filter((o) => o.ok).reduce((sum, o) => sum + o.marked, 0);
+      // Each delta entry's own `pending` flag (not the `_pending` set just
+      // cleared above) is what recomputeCounts() judges it by, so
+      // confirming the successful batches and rolling back the failed ones
+      // can happen in either order without a recompute from one ever
+      // mistaking the other's not-yet-settled entries for already having
+      // landed — see confirmCountDelta()/recomputeCounts().
+      for (const o of outcomes) {
+        if (!o.ok) continue;
+        for (const a of o.batch) {
+          const delta = deltas.get(a.id);
+          if (delta) this.confirmCountDelta(delta, this.confirmReadState(a.id, true, now));
+        }
+      }
       if (failed.length) {
         const failedIds = new Set(failed.flatMap((o) => o.batch.map((a) => a.id)));
         this._items.update((items) =>
           items.map((a) => (failedIds.has(a.id) ? { ...a, is_read: false, read_at: null } : a)),
         );
-        for (const o of failed) for (const a of o.batch) this.commitCountDelta(a.feed_id, 1);
+        const toRemove = failed
+          .flatMap((o) => o.batch.map((a) => deltas.get(a.id)))
+          .filter((d): d is (typeof this._countDeltas)[number] => d !== undefined);
+        this.removeCountDeltas(toRemove);
         onError?.(failed[0].err);
-      }
-      for (const o of outcomes) {
-        if (!o.ok) continue;
-        for (const a of o.batch) this.confirmReadState(a.id, true, now);
       }
       if (marked > 0 || !failed.length) onSuccess?.(marked);
     });

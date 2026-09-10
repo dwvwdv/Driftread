@@ -410,6 +410,41 @@ describe('ReadingStreamService', () => {
     );
   });
 
+  it("markAllReadInView keeps a succeeded batch's count decrement when a sibling batch's rollback recomputes", () => {
+    const svc = setup();
+    unreadSummary = {
+      total_unread: 1000,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 1000 }],
+    };
+    TestBed.flushEffects(); // establishes a baseline (asOf > -1) — required for the bug to surface
+    const items = Array.from({ length: 620 }, (_, i) =>
+      article(`a${i}`, { is_read: false, feed_id: 'feed-1' }),
+    );
+    streamPage = { items, next_cursor: null };
+    svc.load({});
+
+    // The first (500-id) batch succeeds; the second (120-id) batch fails.
+    let call = 0;
+    me.markAllRead = (body: unknown) => {
+      const b = body as { article_ids: string[] };
+      call++;
+      return call === 1
+        ? of({ marked: b.article_ids.length })
+        : throwError(() => new Error('boom'));
+    };
+
+    svc.markAllReadInView();
+
+    // The failed batch's rollback nets back to 0 (1000 - 0), but the
+    // succeeded batch's -500 must still show — confirming it *before* the
+    // rollback's recompute is what makes that so; confirming it after (the
+    // old order) left the successful batch's delta looking indistinguishable
+    // from "already reflected in the baseline" during that recompute, and
+    // it was silently dropped for good since confirming alone never
+    // triggers a recompute of its own.
+    expect(svc.totalUnread()).toBe(500);
+  });
+
   it('markAllReadInView ignores its outcome after the signed-in identity changes', () => {
     const svc = setup();
     TestBed.flushEffects();
@@ -578,6 +613,139 @@ describe('ReadingStreamService', () => {
     expect(svc.totalUnread()).toBe(1);
   });
 
+  it("loadCounts() keeps a still-pending write's count delta even if its own ticket predates the GET", () => {
+    const svc = setup();
+    TestBed.flushEffects(); // baseline total = 2
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    const pendingMarkRead = new Subject<void>();
+    me.markRead = () => pendingMarkRead;
+    svc.markRead('a'); // optimistic -1, still unconfirmed
+    expect(svc.totalUnread()).toBe(1);
+
+    // Issued *after* the optimistic delta above, but its response reflects
+    // server state from before that write actually landed — the delta's own
+    // commit ticket predates this GET's, but the write itself is still
+    // pending, so there's no way to know the snapshot already reflects it.
+    const counts = new Subject<UnreadSummary>();
+    me.getUnreadCounts = () => counts;
+    svc.loadCounts();
+    counts.next({
+      total_unread: 2,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 2 }],
+    });
+    counts.complete();
+
+    expect(svc.totalUnread()).toBe(1);
+
+    // Confirming the write afterwards must not perturb the (already
+    // correct) total.
+    pendingMarkRead.next();
+    pendingMarkRead.complete();
+    expect(svc.totalUnread()).toBe(1);
+  });
+
+  it('loadCounts() ignores a failure superseded by a newer request that has not resolved yet', () => {
+    const svc = setup();
+    const first = new Subject<UnreadSummary>();
+    const second = new Subject<UnreadSummary>();
+    let call = 0;
+    me.getUnreadCounts = () => (++call === 1 ? first : second);
+
+    svc.loadCounts();
+    let errored = false;
+    svc.loadCounts(() => (errored = true)); // supersedes the first at issuance
+
+    // The older request fails first, before the newer one has settled at
+    // all — it must not surface as a failure, nor flip off loading while
+    // the newer attempt is still outstanding.
+    first.error(new Error('boom'));
+
+    expect(errored).toBe(false);
+    expect(svc.countsLoading()).toBe(true);
+
+    second.next({ total_unread: 5, feeds: [] });
+    second.complete();
+
+    expect(svc.totalUnread()).toBe(5);
+    expect(svc.countsLoading()).toBe(false);
+  });
+
+  it('loadCounts() discards a stale success even when the newer request that superseded it failed', () => {
+    const svc = setup();
+    const first = new Subject<UnreadSummary>();
+    const second = new Subject<UnreadSummary>();
+    let call = 0;
+    me.getUnreadCounts = () => (++call === 1 ? first : second);
+
+    svc.loadCounts(); // e.g. some earlier, still in-flight refresh
+    let errored = false;
+    // e.g. markAllReadInScope's post-write refresh, issued after the above
+    svc.loadCounts(() => (errored = true));
+
+    // The newer request — the one that should be authoritative — fails
+    // first. It never advances the baseline.
+    second.error(new Error('boom'));
+    expect(errored).toBe(true);
+    expect(svc.countsLoading()).toBe(false);
+
+    // The older, now-superseded request resolves afterwards with a stale
+    // (pre-write) snapshot. It must not be accepted just because no newer
+    // *baseline* happens to exist yet — it was superseded at issuance,
+    // regardless of how the request that superseded it turned out.
+    first.next({ total_unread: 99, feeds: [] });
+    first.complete();
+
+    expect(svc.totalUnread()).toBe(0);
+    expect(svc.countsLoaded()).toBe(false);
+  });
+
+  it('keeps a sequential write on the same article distinct from an earlier already-confirmed one', () => {
+    const svc = setup();
+    unreadSummary = {
+      total_unread: 0,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 0 }],
+    };
+    TestBed.flushEffects(); // baseline: total = 0
+    streamPage = {
+      items: [article('a', { is_read: true, read_at: '2026-08-14T10:00:00+00:00' })],
+      next_cursor: null,
+    };
+    svc.load({});
+
+    // markUnread succeeds and confirms (me.markUnread resolves synchronously).
+    svc.markUnread('a');
+    expect(svc.totalUnread()).toBe(1);
+
+    // A loadCounts() is issued next, still in flight...
+    const counts = new Subject<UnreadSummary>();
+    me.getUnreadCounts = () => counts;
+    svc.loadCounts();
+
+    // ...and before it resolves, markRead starts on the *same* article.
+    const pendingMarkRead = new Subject<void>();
+    me.markRead = () => pendingMarkRead;
+    svc.markRead('a');
+    expect(svc.totalUnread()).toBe(0); // read again — net contribution back to 0
+
+    // The GET resolves reflecting the already-committed markUnread (1) but
+    // not the still-pending markRead. The older confirmed +1 must not have
+    // been merged away by the newer pending -1 — each needs to be judged on
+    // its own terms against this baseline.
+    counts.next({
+      total_unread: 1,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 1 }],
+    });
+    counts.complete();
+    expect(svc.totalUnread()).toBe(0);
+
+    // markRead finally succeeds — the total must still be correct.
+    pendingMarkRead.next();
+    pendingMarkRead.complete();
+    expect(svc.totalUnread()).toBe(0);
+  });
+
   it('load() keeps the optimistic read state for an article with its own write still pending', () => {
     const svc = setup();
     TestBed.flushEffects();
@@ -594,6 +762,63 @@ describe('ReadingStreamService', () => {
     const reload = new Subject<PaginatedStream>();
     me.getStream = () => reload;
     svc.load({});
+    reload.next({ items: [article('a', { is_read: false })], next_cursor: null });
+    reload.complete();
+
+    expect(svc.items()[0].is_read).toBe(true);
+  });
+
+  it('load() preserves fresh metadata for an article with a pending read toggle', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = {
+      items: [article('a', { is_read: false, title: 'Old Title' })],
+      next_cursor: null,
+    };
+    svc.load({});
+
+    const pendingMarkRead = new Subject<void>();
+    me.markRead = () => pendingMarkRead;
+    svc.markRead('a');
+
+    // A reload brings back updated metadata for the same article (e.g. the
+    // feed refresh worker re-fetched and the title changed) while the
+    // markRead above is still in flight.
+    const reload = new Subject<PaginatedStream>();
+    me.getStream = () => reload;
+    svc.load({});
+    reload.next({
+      items: [article('a', { is_read: false, title: 'New Title' })],
+      next_cursor: null,
+    });
+    reload.complete();
+
+    // The optimistic read state must still win (write still pending)...
+    expect(svc.items()[0].is_read).toBe(true);
+    // ...but only that field should come from the cached copy — the fresh
+    // title must not be silently reverted along with it.
+    expect(svc.items()[0].title).toBe('New Title');
+  });
+
+  it('load() reflects an optimistic write that starts after the GET was issued but before it resolves', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = { items: [article('a', { is_read: false })], next_cursor: null };
+    svc.load({});
+
+    // The GET below is issued while 'a' is still unread...
+    const reload = new Subject<PaginatedStream>();
+    me.getStream = () => reload;
+    svc.load({});
+
+    // ...and only afterwards does markRead start, optimistically patching
+    // the row — reconciling against a `previous` snapshot captured back
+    // when the GET was issued would still show the pre-write state here.
+    const pendingMarkRead = new Subject<void>();
+    me.markRead = () => pendingMarkRead;
+    svc.markRead('a');
+    expect(svc.items()[0].is_read).toBe(true);
+
     reload.next({ items: [article('a', { is_read: false })], next_cursor: null });
     reload.complete();
 
