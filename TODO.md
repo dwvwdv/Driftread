@@ -140,6 +140,18 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       更新過的標題／摘要／作者等欄位一起蓋回舊值；改成只從舊物件合併 `is_read`／`read_at`
       兩個實際在競爭的欄位。PR #56 code review（Codex，P2 ×2）提出，`reading-stream.spec.ts`
       各補一個案例。
+- [x] `markAllReadInView` 的樂觀套用階段對每個 target 各呼叫一次 `commitCountDelta()`，
+      而 `recomputeCounts()` 是 O(目前未平倉 entry 數)，對同一批 target 逐一呼叫等於把
+      準備階段做成 O(n²)——單一來源一次全部標已讀的文章數大時（例如一次數百篇），這段還沒送出
+      任何 HTTP 請求就先卡住 UI thread 的準備工作會明顯變慢；失敗批次的 rollback 迴圈原本也是
+      逐篇呼叫 `removeCountDelta()`，有同樣的問題。修法：新增 `pushCountDelta()`（只建立
+      entry，不觸發 recompute）與 `removeCountDeltas()`（批次移除＋只 recompute 一次），
+      `markAllReadInView` 的樂觀套用與失敗 rollback 都改成先批次處理、迴圈結束後才呼叫一次
+      `recomputeCounts()`；單篇 `markRead`/`markUnread` 沿用的 `commitCountDelta()`/
+      `removeCountDelta()`（單篇呼叫即 recompute）不受影響。PR #56 code review
+      （Codex，P2，效能）提出。未新增測試——這是可觀察行為不變、只有內部呼叫次數改變的效能
+      修正，既有的大批次（620 篇）正確性測試已經覆蓋修改後的邏輯仍然算對，錄影 signal
+      `.set()` 呼叫次數需要暴露內部實作細節，不值得為此新增測試耦合。
 
 ### 標籤、語言與偏好設定
 

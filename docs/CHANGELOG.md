@@ -1163,3 +1163,19 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
     `tsc` 驗證了 `(typeof this._countDeltas)[number]` 與 `new Map(...)` 這類寫法本身沒有
     型別錯誤——本檔案內的 `--noResolve` 檢查在這幾行報的兩個型別錯誤經確認是
     `--noResolve` 本身破壞 tuple 型別推導的假警報，不是真的問題。
+
+- **PR review 修正第五輪（Codex，1 個 P2，效能，已修）**：`markAllReadInView` 樂觀套用階段
+  對每個 target 各呼叫一次 `commitCountDelta()`，而 `recomputeCounts()` 的成本是 O(目前
+  未平倉 entry 數)——對同一批 target 逐篇呼叫，等於把「送出 HTTP 請求之前」這段準備工作做成
+  O(n²)；一次全部標已讀命中的文章數大時（例如單一多產來源一次數百篇）這段純本地運算會明顯
+  變慢，且發生在任何網路請求送出之前。失敗批次的 rollback 迴圈原本也是逐篇呼叫
+  `removeCountDelta()`，有同樣的問題（雖然單一批次上限是 `MARK_ALL_BATCH_SIZE=500`，量體
+  較小但邏輯一樣不划算）。修法：新增 `pushCountDelta()`（只建立 entry、不觸發 recompute）
+  取代樂觀套用迴圈裡的 `commitCountDelta()`，迴圈結束後才呼叫一次 `recomputeCounts()`；
+  新增 `removeCountDeltas()`（批次移除＋只 recompute 一次）取代失敗 rollback 迴圈裡逐篇呼叫
+  的 `removeCountDelta()`（該函式本身也改成呼叫 `removeCountDeltas([entry])`，避免重複邏輯）。
+  單篇 `markRead`/`markUnread` 沿用的 `commitCountDelta()`/`removeCountDelta()`（單次呼叫即
+  recompute）不受影響，因為那本來就只呼叫一次。未新增測試：這是可觀察行為不變、只有內部
+  呼叫次數／時機改變的效能修正，既有的大批次（620 篇）正確性測試已經覆蓋修改後的邏輯算出
+  同樣正確的結果；要斷言「recompute 只呼叫一次」需要暴露 signal `.set()` 呼叫次數這類內部
+  實作細節，不值得為此新增測試耦合，故只以人工推演確認前後行為一致、複雜度改善。
