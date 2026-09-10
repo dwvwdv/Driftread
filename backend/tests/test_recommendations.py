@@ -391,10 +391,15 @@ def test_final_order_reflects_score_not_quota_origin(client):
     c, mock_db = client
     liked_id = str(uuid4())
     weak_preferred = _feed_row(category="tech")
-    strong_exploratory = _feed_row(category="art", tags=["a", "b"])
+    # A `liked` (not subscribed) signal weighs category +2, each tag +1
+    # (_WEIGHT_LIKED) — three matching tags (+3) is needed to clearly
+    # outscore a category-only match (+2); two would tie and the
+    # (stable-sort) quota order would mask the bug this test exists to
+    # catch.
+    strong_exploratory = _feed_row(category="art", tags=["a", "b", "c"])
 
     liked_lookup = _chain(
-        MagicMock(data=[{"category": "tech", "tags": ["a", "b"], "language": None}])
+        MagicMock(data=[{"category": "tech", "tags": ["a", "b", "c"], "language": None}])
     )
     mock_db.table.side_effect = lambda name: {"feeds": liked_lookup}[name]
     mock_db.rpc.side_effect = _sampling_rpc(
