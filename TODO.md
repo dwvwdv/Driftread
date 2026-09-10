@@ -112,20 +112,34 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       是窄視窗（需要兩個獨立寫入短時間內命中同一篇文章）且不影響伺服器端資料正確性，只影響
       UI 顯示到下次 reload 為止；PR #56 code review（Codex，P2）提出，因為需要新的決勝政策或
       API 合約變更才能穩妥解決，留在這裡待人工決定方向，未在該 PR 內強行修。
-- [ ] 未讀數的 `_countDeltasByArticle`：一篇文章的寫入仍是 `_pending` 時，它的 delta 無論
-      ticket 為何一律疊加（見 `recomputeCounts()` 的機制註解），這是刻意的選擇，但也有已知、
-      同上一項同類的窄視窗代價——若某篇文章的 markRead 已經在伺服器端 commit，但它自己的
-      回應還沒送達 client（`isPending` 仍是 true），此時一個「之後才發出、但先抵達」的
-      `loadCounts()` GET 剛好命中已經反映這次寫入之後的伺服器狀態，`recomputeCounts()` 仍會
-      把這篇文章的 `-1` delta 疊加在這個「其實已經包含這次寫入」的 baseline 之上，造成未讀數
-      被多扣一次，直到下一次完整的 `loadCounts()` 刷新才會修正。反過來讓 pending 的 delta
-      也比照已確認寫入去跟 baseline 的 ticket 比較，會直接讓本節上面「`ReadingStreamService`
-      補齊 pending-write...」那項修掉的原始 bug 重新出現（一個寫入還沒真的送達伺服器就被
-      baseline 判定「已經反映」而整個丟棄，未讀數永久少算直到下次刷新）——這兩個方向的 bug
-      無法只靠 client 端的 ticket 比較同時解掉，需要 API 額外提供能比較兩者先後的依據
-      （例如列版本／時間戳）才能穩妥解決，同上一項的根因。PR #56 code review（Codex，P2）
-      提出，故意保留現狀（一律疊加）而不修，因為對調方向只是把已修好的 bug 換回來，並在
-      `recomputeCounts()` 的註解記錄取捨理由。
+- [ ] 未讀數的 `_countDeltas`：一篇文章的寫入仍是 pending 時，它的 delta entry 無論 ticket
+      為何一律疊加（見 `recomputeCounts()` 的機制註解），這是刻意的選擇，但也有已知、同上一項
+      同類的窄視窗代價——若某篇文章的 markRead 已經在伺服器端 commit，但它自己的回應還沒送達
+      client（entry 仍是 pending），此時一個「之後才發出、但先抵達」的 `loadCounts()` GET
+      剛好命中已經反映這次寫入之後的伺服器狀態，`recomputeCounts()` 仍會把這篇文章的 `-1`
+      delta 疊加在這個「其實已經包含這次寫入」的 baseline 之上，造成未讀數被多扣一次，直到
+      下一次完整的 `loadCounts()` 刷新才會修正。反過來讓 pending 的 entry 也比照已確認寫入去
+      跟 baseline 的 ticket 比較，會直接讓本節上面「`ReadingStreamService` 補齊
+      pending-write...」那項修掉的原始 bug 重新出現（一個寫入還沒真的送達伺服器就被 baseline
+      判定「已經反映」而整個丟棄，未讀數永久少算直到下次刷新）——這兩個方向的 bug 無法只靠
+      client 端的 ticket 比較同時解掉，需要 API 額外提供能比較兩者先後的依據（例如列版本／
+      時間戳）才能穩妥解決，同上一項的根因。PR #56 code review（Codex，P2）提出，故意保留現狀
+      （一律疊加）而不修，因為對調方向只是把已修好的 bug 換回來，並在 `recomputeCounts()`
+      的註解記錄取捨理由。
+- [x] `_countDeltas` 原本以 article id 為 key 合併淨值（一篇文章的多次寫入互相抵銷成一個
+      數字），但這會讓「較舊、已確認、但還沒被目前 baseline 反映」的寫入跟「較新、仍
+      pending」的寫入疊在一起被誤判——例如：文章從已讀狀態 `markUnread` 成功確認後，發出
+      `loadCounts()`，該次 GET 還沒回來前又對同一篇文章 `markRead`：合併淨值會直接把
+      `+1`／`-1` 相消刪掉整條記錄；等 GET 回來（剛好只反映了 `markUnread`，還沒反映
+      `markRead`）就少了「還有一個 pending 寫入尚未疊加」的紀錄，`markRead` 之後真的成功時
+      未讀數也不會再更新，卡在錯誤值。修法：`_countDeltas` 改成不合併、每個寫入各自一筆
+      entry（`{articleId, feedId, amount, pending, confirmedAt}`），成功時原地標記
+      `confirmCountDelta()`、失敗時整條移除 `removeCountDelta()`，不再用相消的方式處理
+      rollback。同一輪也修掉 `reconcileItems()` 的另一個問題：文章有 pending 寫入時，原本是
+      整個回傳快照前的舊物件（`return prior`），這會連同已讀狀態一起把 feed 重新抓取可能
+      更新過的標題／摘要／作者等欄位一起蓋回舊值；改成只從舊物件合併 `is_read`／`read_at`
+      兩個實際在競爭的欄位。PR #56 code review（Codex，P2 ×2）提出，`reading-stream.spec.ts`
+      各補一個案例。
 
 ### 標籤、語言與偏好設定
 

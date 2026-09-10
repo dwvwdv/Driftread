@@ -1126,3 +1126,40 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   - 本輪驗證方式同前兩輪：`npm ci` 仍被 network egress allowlist 擋下，改用
     `tsc --noResolve` 與 `prettier --check` 驗證改動，邏輯以手動追蹤新增測試案例的
     ticket 數值運算確認，實際跑測試交給 PR #56 的 CI。
+
+- **PR review 修正第四輪（Codex，2 個 P2，全修）**：
+  1. **`_countDeltas` 改成不合併、每寫入一筆 entry**：原本以 article id 為 key 合併淨值——
+     一篇文章連續兩次寫入會被相消成一個數字。問題情境：文章原本已讀，`markUnread` 成功確認
+     （`+1`），接著發出 `loadCounts()`；GET 還沒回來前，同一篇文章又被 `markRead`（`-1`）。
+     合併淨值 `+1-1=0`，整條記錄直接被刪掉——但這個「0」抹掉的是兩筆完全不同性質的資訊：
+     舊的 `+1` 已經確認成功、只是還不確定目前 baseline 有沒有反映它；新的 `-1` 則是還沒有
+     任何伺服器回應的樂觀猜測，兩者需要各自獨立判斷。等 GET 回來，剛好只反映了
+     `markUnread`（還沒反映 `markRead`），因為記錄已經被刪掉，未讀數少了「還有一個 pending
+     寫入尚未疊加」的資訊；`markRead` 之後真的成功時，也沒有任何機制再把未讀數修正回來，
+     卡住直到下次完整刷新。修法：`_countDeltas` 從 `Map<articleId, {feedId, amount}>` 改成
+     一個陣列，每次 `commitCountDelta()` 都新增一筆獨立 entry
+     `{articleId, feedId, amount, pending, confirmedAt}`，回傳該 entry 的參照；寫入成功時
+     呼叫新的 `confirmCountDelta(entry, ticket)` 原地標記確認（`ticket` 直接沿用
+     `confirmReadState()` 回傳的同一個，兩者代表同一個事件）；失敗時呼叫新的
+     `removeCountDelta(entry)` 整條移除，不再用推入相反數字相消的方式處理 rollback。
+     `recomputeCounts()`／`loadCounts()` 的 GC 迴圈都改成逐筆判斷
+     `entry.pending || entry.confirmedAt > baselineAsOf`，不再用 `isPending(articleId)`
+     查全域 `_pending` set——這帶來一個附帶好處：上一輪「批次成功要在失敗 rollback 觸發的
+     recompute 之前先確認」那個順序限制，現在因為 entry 自己的 `pending` 欄位與共用的
+     `_pending` set 已經脫鉤，兩個迴圈用哪個順序執行都不影響正確性，`markAllReadInView`
+     的註解一併更新說明這點（順序仍保留，只是原因換了）。
+  2. **`reconcileItems()` 的 pending 分支只該合併已讀狀態**：文章有 pending 寫入時，原本是
+     整個回傳 `previous` 裡的舊物件（`return prior`），這連同已讀狀態一起把該篇文章可能被
+     feed 重新抓取（`upsert_articles()`）更新過的標題／摘要／作者／發布時間等欄位也一併蓋回
+     舊快取值，直到下一次沒有寫入競爭的 reload 才會修正。修法：改成
+     `{ ...item, is_read: prior.is_read, read_at: prior.read_at }`，只從舊物件合併這兩個
+     真正在競爭中的欄位，同已確認分支原本就有的寫法一致。
+  - **測試**：`reading-stream.spec.ts` 新增兩案例——一篇文章先 `markUnread` 確認、
+    `loadCounts()` 發出後又 `markRead`（仍 pending）：斷言整個過程與最終未讀數都正確
+    （照舊的合併邏輯執行，GET 回來後與 `markRead` 成功後都會停在錯誤值，證實是真的迴歸
+    測試）；`load()` 在文章有 pending 讀取切換時，回應帶回的新標題不會被舊快取蓋掉。
+  - 本輪驗證方式同前——`npm ci` 仍被擋下，改用 `tsc --noResolve`／`prettier --check`；
+    這輪額外用一個獨立的最小重現檔案（不含 rxjs／Angular import）搭配完整型別解析的
+    `tsc` 驗證了 `(typeof this._countDeltas)[number]` 與 `new Map(...)` 這類寫法本身沒有
+    型別錯誤——本檔案內的 `--noResolve` 檢查在這幾行報的兩個型別錯誤經確認是
+    `--noResolve` 本身破壞 tuple 型別推導的假警報，不是真的問題。

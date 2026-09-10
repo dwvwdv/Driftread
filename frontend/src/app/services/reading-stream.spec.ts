@@ -701,6 +701,51 @@ describe('ReadingStreamService', () => {
     expect(svc.countsLoaded()).toBe(false);
   });
 
+  it('keeps a sequential write on the same article distinct from an earlier already-confirmed one', () => {
+    const svc = setup();
+    unreadSummary = {
+      total_unread: 0,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 0 }],
+    };
+    TestBed.flushEffects(); // baseline: total = 0
+    streamPage = {
+      items: [article('a', { is_read: true, read_at: '2026-08-14T10:00:00+00:00' })],
+      next_cursor: null,
+    };
+    svc.load({});
+
+    // markUnread succeeds and confirms (me.markUnread resolves synchronously).
+    svc.markUnread('a');
+    expect(svc.totalUnread()).toBe(1);
+
+    // A loadCounts() is issued next, still in flight...
+    const counts = new Subject<UnreadSummary>();
+    me.getUnreadCounts = () => counts;
+    svc.loadCounts();
+
+    // ...and before it resolves, markRead starts on the *same* article.
+    const pendingMarkRead = new Subject<void>();
+    me.markRead = () => pendingMarkRead;
+    svc.markRead('a');
+    expect(svc.totalUnread()).toBe(0); // read again — net contribution back to 0
+
+    // The GET resolves reflecting the already-committed markUnread (1) but
+    // not the still-pending markRead. The older confirmed +1 must not have
+    // been merged away by the newer pending -1 — each needs to be judged on
+    // its own terms against this baseline.
+    counts.next({
+      total_unread: 1,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 1 }],
+    });
+    counts.complete();
+    expect(svc.totalUnread()).toBe(0);
+
+    // markRead finally succeeds — the total must still be correct.
+    pendingMarkRead.next();
+    pendingMarkRead.complete();
+    expect(svc.totalUnread()).toBe(0);
+  });
+
   it('load() keeps the optimistic read state for an article with its own write still pending', () => {
     const svc = setup();
     TestBed.flushEffects();
@@ -721,6 +766,38 @@ describe('ReadingStreamService', () => {
     reload.complete();
 
     expect(svc.items()[0].is_read).toBe(true);
+  });
+
+  it('load() preserves fresh metadata for an article with a pending read toggle', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    streamPage = {
+      items: [article('a', { is_read: false, title: 'Old Title' })],
+      next_cursor: null,
+    };
+    svc.load({});
+
+    const pendingMarkRead = new Subject<void>();
+    me.markRead = () => pendingMarkRead;
+    svc.markRead('a');
+
+    // A reload brings back updated metadata for the same article (e.g. the
+    // feed refresh worker re-fetched and the title changed) while the
+    // markRead above is still in flight.
+    const reload = new Subject<PaginatedStream>();
+    me.getStream = () => reload;
+    svc.load({});
+    reload.next({
+      items: [article('a', { is_read: false, title: 'New Title' })],
+      next_cursor: null,
+    });
+    reload.complete();
+
+    // The optimistic read state must still win (write still pending)...
+    expect(svc.items()[0].is_read).toBe(true);
+    // ...but only that field should come from the cached copy — the fresh
+    // title must not be silently reverted along with it.
+    expect(svc.items()[0].title).toBe('New Title');
   });
 
   it('load() reflects an optimistic write that starts after the GET was issued but before it resolves', () => {
