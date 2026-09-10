@@ -1329,3 +1329,89 @@ call site。
   沒提到 `22P02`（invalid_text_representation）跟 `PGRST116` 零筆／多筆的區分。修法：改寫
   說明文字對齊 `errors.py` 最終版的實際行為，避免之後的維護者照著這段過期說明去猜 API
   contract。
+
+## 階段三十三：推薦回饋持久化——喜歡／不喜歡／跳過跨裝置、分層評分權重與推薦理由（2026-09-10）
+
+TODO.md「建議開發批次」第 6 批：猜你喜歡的喜歡／不喜歡／跳過過去完全只存在瀏覽器
+localStorage（`RecommendationService`），換裝置或清掉瀏覽器資料就整個消失，`routers/
+recommendations.py` 也完全不知道使用者過去的回饋，只能靠呼叫端把 `liked`／`disliked`
+（各上限 50 筆）老實帶回來。
+
+- **`backend/migrations/019_recommendation_feedback.sql`（新）**：`driftread.
+  user_feed_feedback`，`PRIMARY KEY (user_id, feed_id)`——一個使用者對一個 feed 只留最新
+  立場（`feedback_type`：`liked` / `disliked` / `skipped`），不是逐筆事件記錄，同
+  `user_feeds`／`user_preferences` 既有的單列狀態模式。RLS owner policy 沿用 migration 010
+  最終版寫法（init-plan 化 `auth.uid()` ＋排除 Supabase 匿名登入 session）；migration 010
+  已把 `driftread` schema 新表的預設權限 REVOKE 給 `authenticated`，這裡重新明確 GRANT。
+- **`backend/routers/me.py`**：`GET`／`PUT`／`DELETE /me/feed-feedback{,/​{feed_id}}`——
+  `PUT` upsert（`on_conflict="user_id,feed_id"`），每次都重寫 `created_at`（upsert 只在
+  INSERT 時套用欄位 DEFAULT，若不手動更新，改變立場不會更新時間戳，`skipped` 的短期衰減
+  就會用到第一次而非最新一次的時間）。
+- **`backend/routers/recommendations.py`**：評分從三個等權 flat set（category/tag/language
+  membership）改寫成 `Signals` dataclass——依訊號來源分層加權（`_WEIGHT_SUBSCRIBED`／
+  `_WEIGHT_LIKED`／`_WEIGHT_BOOKMARKED`／`_WEIGHT_DISLIKED`／`_WEIGHT_SKIPPED`，強度依
+  TODO.md「訂閱為強正向；喜歡為正向；收藏為中度正向」排序，外加不喜歡／跳過的負向權重）；
+  `_load_signals()` 一次查齊訂閱、`user_preferences`、`user_feed_feedback`、收藏文章所屬來源
+  四種來源，`_SKIP_DECAY`（14 天）內的 `skipped` 才排除與降權，過期則完全不影響排序（不是
+  永久排除）；`_reason()` 依訂閱／喜歡／收藏優先序，解釋候選命中的 category 或 tag，回應
+  model 改成 `RecommendedFeed { feed, reason }`。新增 `skipped` query 參數（獨立於
+  `disliked`），供匿名呼叫端沿用既有的純排除語意——沒有伺服器端時間戳可供衰減。順手清掉
+  `models.py` 定義了但從未被任何程式碼引用的 `RecommendationRequest`。
+- **`frontend/src/app/services/recommendation.ts`**：`liked`／`disliked`／`skipped` 三個
+  互斥的本地立場（喜歡一個 feed 會同時把它從不喜歡／跳過裡移除，反之亦然，鏡射伺服器端
+  一個 feed 只留一筆的模型）；新增 `skip()`，與 `dislike()`分開——猜你喜歡卡片的「跳過」
+  過去誤用 `dislike()`，讓一個輕量的「先不看」被記成 feed 詳情頁「不喜歡」按鈕那種明確負向
+  訊號。已登入時三個動作都額外呼叫 `MeService.setFeedFeedback()` 盡力持久化（fire-and-
+  forget，失敗不影響本地狀態或拋出）。**刻意不**在登入時把伺服器回饋合併進本地
+  localStorage：這三個 key 是瀏覽器層級、不分帳號的，合併等於讓一個帳號的喜好留在瀏覽器裡
+  影響下一個登入的帳號或匿名瀏覽——推薦排序本來就不依賴前端本地狀態（`_load_signals` 每次
+  重查資料庫），拿掉自動合併不影響跨裝置的推薦品質，只是本地 `isLiked`／`isDisliked` 這類
+  UI 提示在其他裝置上不會立刻反映，可接受的落差。
+- **`frontend/src/app/components/recommendations`**：`skip()` 改呼叫
+  `RecommendationService.skip()`；卡片新增推薦理由（`item.reason`，`null` 時不顯示）；
+  回應型別從 `Feed[]` 改為 `RecommendedFeed[]`。
+- **測試**：`backend/tests/test_me_feed_feedback.py`（新）涵蓋三個端點；
+  `test_me_isolation.py` 補三個跨使用者隔離案例；`test_recommendations.py` 的
+  `TestScoreCandidates` 改用 `Signals`，新增 `TestReason` 與已登入者 liked／disliked／
+  skipped（含過期衰減）／bookmarked 訊號端到端案例，既有案例改讀新的 `row["feed"][...]`
+  回應形狀。`frontend/src/app/services/recommendation.spec.ts`（新，這個 service 先前完全
+  沒有測試）涵蓋互斥立場、已登入才持久化、持久化失敗不影響本地狀態、`getRecommendations()`
+  的 50 筆上限與「最近的在後」排序。`recommendations.spec.ts` 同步改用 `RecommendedFeed`。
+- **本 sandbox 的已知限制**：`pip`／`npm` 的 PyPI／npm registry index 皆被 network egress
+  allowlist 擋下，與先前多輪修法相同的既有限制，無法在本機安裝依賴跑真正的
+  `pytest`／`vitest`。後端新增的純邏輯（`Signals`／`_score`／`_reason`／skip 衰減時間運算）
+  已用一組獨立的 stub 模組（替換 `fastapi`／`supabase`／`auth`／`database`／`models`／
+  `rate_limit`，只留 stdlib 依賴）直接 import 並執行實際的 `routers/recommendations.py`
+  逐案例驗證；`python3 -m py_compile` 與 `ruff check` 過所有新增／改動的 backend 檔案；
+  frontend 用系統 `tsc --ignoreConfig --noResolve` 驗證語法，實際 `npm test`／production
+  build 交給 CI 的 `frontend.yml`／`backend.yml` 執行。
+- 對應文件更新：`TODO.md`（「推薦回饋持久化」全數打勾並記錄與原規格的兩處刻意偏離：
+  不額外複製 `subscribed`／`unsubscribed` 進 `user_feed_feedback`、不做匿名登入自動合併；
+  「建議開發批次」第 6 項打勾）、`docs/FEATURES.md`（第 1 節功能總覽、第 2 節推薦邏輯改寫
+  為分層權重表、第 3 節新增三個 `/me/feed-feedback*` 端點、第 5 節新增資料表與索引）。
+- **PR review 修正（Codex，1 個 P1，2 個 P2，均證實為真）**：
+  1. **P1**：`test_final_order_reflects_score_not_quota_origin` 沒有跟著新的分層權重調整——
+     `_WEIGHT_LIKED` 的 category +2、tag +1，讓案例裡「category 命中」的 preferred（+2）跟
+     「兩個 tag 命中」的 exploratory（1+1=+2）同分，Python `sort()` 的 stable 特性讓同分時
+     preferred 留在前面，斷言因此必然失敗。修法：exploratory 改成三個 tag 命中（+3），
+     確保跟 preferred 的 +2 有明確差距，同時驗證過即使套用新權重仍然通過。
+  2. **P2**：`RecommendationService.getRecommendations()` 先前不論登入與否都把本地
+     `liked`／`disliked`／`skipped` 三個陣列當 query string 送出，原意是「已登入者的伺服器端
+     回饋跟本地陣列並存也無妨」——但兩個實際後果都是真的洞：(a) 已登入者的 `liked` 訊號會被
+     算兩次（一次來自 `_load_signals` 讀到的 persisted 列，一次來自這裡的 query param 重新
+     觸發 `add_liked()`），把 `_WEIGHT_LIKED` 的 +2／+1 悄悄疊成 +4／+2；(b) `skipped` 陣列
+     完全沒有時間戳可供前端自行判斷是否過期，只要還留在 localStorage 就會永遠隨每次請求送出，
+     讓伺服器端 `_SKIP_DECAY`（14 天）刻意設計的「過期後不再排除」失效——query param 路徑
+     不管新舊一律無條件加進 `excluded`。修法：`getRecommendations()` 只在**未登入**時才附上
+     這三個 query param；已登入者完全信任 `_load_signals` 每次都重新查表這件事，不再有本地
+     陣列可以干擾。
+  3. **P2**：同一個 feed 上快速連續操作（例如先按喜歡、還沒等回應就按不喜歡）會各自送出一個
+     獨立的 `PUT /me/feed-feedback/{feed_id}`，兩個請求之間沒有任何順序保證——如果先送出的
+     那個晚到伺服器（不同 replica、網路抖動……），upsert 最終落地的值就會是較舊的操作，
+     且不會有任何錯誤讓使用者或程式發現這筆資料其實跟本地狀態不一致，直到下次跨裝置推薦讀到
+     錯的立場。修法：`RecommendationService` 用一個 `Map<feedId, Subscription>` 追蹤每個
+     feed 目前唯一在途的 persist 請求，發出新請求前先 `unsubscribe()` 掉同一個 feed 舊的
+     那個（`HttpClient` 的 unsubscribe 會真的取消底層請求），保證同一個 feed 永遠只有最多
+     一個請求在飛，沒有兩個結果可以互相蓋過。
+  - **測試**：`recommendation.spec.ts` 新增已登入時不附加 query param、以及同一 feed 連續
+    操作會取消前一個請求兩個案例。

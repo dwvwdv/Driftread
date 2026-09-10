@@ -170,19 +170,37 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### 推薦回饋持久化
 
-- [ ] 新增 `user_feed_feedback`，至少保存：
-  - `liked`
-  - `disliked`
-  - `skipped`
-  - `subscribed`
-  - `unsubscribed`
-- [ ] 登入後回饋存入 Supabase，支援跨裝置；匿名狀態登入後可選擇合併。
-- [ ] `disliked` 不只排除單一 Feed，也降低相關 category/tag 權重。
-- [ ] `skipped` 只做短期降權，不等同明確不喜歡。
-- [ ] 訂閱為強正向訊號；喜歡為正向；收藏／稍後讀文章所屬來源為中度正向。
-- [ ] 保留約 30% exploration，避免推薦結果過度收窄。
-- [ ] 顯示推薦理由，例如「因為你訂閱了 Python、資安」。
-- [ ] 先以明確行為與可解釋權重迭代，不提前導入 embedding／AI 推薦。
+- [x] 新增 `user_feed_feedback`（migration 019），保存 `liked` / `disliked` / `skipped`。
+      `PRIMARY KEY (user_id, feed_id)`——一個使用者對一個 feed 只留最新立場，不是逐筆事件記錄
+      （同 feed 上先喜歡後不喜歡，只需要知道現在是不喜歡）。刻意**不**額外保存 `subscribed` /
+      `unsubscribed`：訂閱狀態已經是 `user_feeds` 的第一手事實，`_load_signals`
+      （`routers/recommendations.py`）直接查 `user_feeds` 取得訂閱訊號並給予比喜歡更高的權重
+      （見下）；把同一件事再複製一份進 `user_feed_feedback`，只會多一個要保持同步的資料來源，
+      不會多任何資訊。
+- [x] 登入後回饋存入 Supabase，透過 `PUT /me/feed-feedback/{feed_id}` 持久化，支援跨裝置
+      （`_load_signals` 每次呼叫 `GET /recommendations` 都重新查表，不依賴前端快取）。
+      **「匿名狀態登入後可選擇合併」未實作**：前端 `RecommendationService` 的 `liked` /
+      `disliked` / `skipped` 三個 localStorage 陣列刻意維持「這個瀏覽器本地的印象」角色不變，
+      不在登入時把伺服器資料寫回同一組 key——這組 key 是瀏覽器層級、不分帳號的，若登入時把
+      A 帳號的伺服器回饋合併進來，之後同一瀏覽器換登入 B 帳號（或登出回到匿名瀏覽）時，
+      A 的喜好會留在本地繼續影響 B 的推薦或匿名瀏覽的 query 帶入值，是個未經使用者同意的資料
+      外洩路徑。伺服器端的推薦排序本來就不依賴前端本地狀態（`_load_signals` 每次都重查
+      `user_feed_feedback`），所以拿掉自動合併不影響跨裝置的推薦品質，只影響前端 `isLiked` /
+      `isDisliked` 這類 UI 提示在其他裝置上不會立刻反映——可接受的落差，真正「選擇合併」的
+      互動介面留待之後有需要再做。
+- [x] `disliked` 不只排除單一 Feed，也降低相關 category/tag 權重（`_WEIGHT_DISLIKED`：
+      category −3、tag −2）。
+- [x] `skipped` 只做短期降權，不等同明確不喜歡：`_SKIP_DECAY`（14 天）內才排除與降權
+      （`_WEIGHT_SKIPPED`：category −1、tag −1），過期的 `skipped` 列完全不影響排序，該 feed
+      可以正常重新出現在推薦中。
+- [x] 訂閱為強正向訊號（`_WEIGHT_SUBSCRIBED`：category +3、tag +2、language +1，
+      `user_preferences` 同權重）；喜歡為正向（`_WEIGHT_LIKED`：+2 / +1 / +1）；收藏／稍後讀
+      文章所屬來源為中度正向（`_WEIGHT_BOOKMARKED`：+1 / +0.5 / 0，同一來源不論收藏幾篇只計
+      一次，避免收藏數量本身壓過明確的喜歡）。
+- [x] 保留約 30% exploration，避免推薦結果過度收窄（`_EXPLORATION_SHARE`，既有機制不變）。
+- [x] 顯示推薦理由（`RecommendedFeed.reason`），依訂閱／喜歡／收藏優先順序解釋候選命中的
+      category 或 tag；不喜歡／跳過只影響排序，不產生理由。
+- [x] 先以明確行為與可解釋權重迭代，不提前導入 embedding／AI 推薦（本批次維持純規則式評分）。
 
 ### Feed 完整文章列表
 
@@ -334,7 +352,7 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 4. [x] 我的閱讀流、未讀數與已讀管理。
 5. [~] 標籤／語言篩選、偏好設定與匯入後分類。
       （標籤／語言篩選與偏好設定 UI 已完成，見上方「標籤、語言與偏好設定」；匯入後自動分類尚未開始）
-6. [ ] 回饋持久化、可解釋推薦權重與推薦理由。
+6. [x] 回饋持久化、可解釋推薦權重與推薦理由。
 7. [~] Feed 完整文章分頁、全文搜尋與資料夾管理。
       （Feed 完整文章分頁已完成，見上方「Feed 完整文章列表」；全文搜尋與資料夾管理尚未開始）
 8. [ ] 查詢效能、migration lock、JWT/JWKS、extension auth 與 CI hardening。

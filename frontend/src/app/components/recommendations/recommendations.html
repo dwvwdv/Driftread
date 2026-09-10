@@ -18,49 +18,53 @@
   <ob-error [message]="error()">
     <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="loadMore()">重試</button>
   </ob-error>
-} @else if (current; as feed) {
+} @else if (current; as item) {
   <div class="stage">
     <article class="card">
       <div class="card-head">
-        <span class="ob-label">{{ feed.category || '未分類' }}</span>
-        @if (feed.language) {
-          <span class="ob-label">{{ feed.language }}</span>
+        <span class="ob-label">{{ item.feed.category || '未分類' }}</span>
+        @if (item.feed.language) {
+          <span class="ob-label">{{ item.feed.language }}</span>
         }
       </div>
 
       <div class="card-body">
-        <h2>{{ feed.title }}</h2>
+        <h2>{{ item.feed.title }}</h2>
 
-        @if (feed.description) {
-          <p class="desc">{{ feed.description }}</p>
+        @if (item.reason) {
+          <p class="reason">{{ item.reason }}</p>
         }
 
-        @if (feed.tags.length) {
+        @if (item.feed.description) {
+          <p class="desc">{{ item.feed.description }}</p>
+        }
+
+        @if (item.feed.tags.length) {
           <ul class="tags">
-            @for (tag of feed.tags; track tag) {
+            @for (tag of item.feed.tags; track tag) {
               <li class="ob-chip">{{ tag }}</li>
             }
           </ul>
         }
 
-        <p class="count">{{ feed.article_count }} 篇文章</p>
+        <p class="count">{{ item.feed.article_count }} 篇文章</p>
       </div>
     </article>
 
     <div class="controls">
-      <button type="button" class="ob-btn ob-btn--ghost" (click)="skip(feed)">
+      <button type="button" class="ob-btn ob-btn--ghost" (click)="skip(item)">
         <ob-icon name="close" [size]="16" />
         跳過
       </button>
 
-      <a class="ob-btn ob-btn--ghost" [routerLink]="['/feeds', feed.id]">看詳細</a>
+      <a class="ob-btn ob-btn--ghost" [routerLink]="['/feeds', item.feed.id]">看詳細</a>
 
-      <button type="button" class="ob-btn ob-btn--primary" (click)="like(feed)">
+      <button type="button" class="ob-btn ob-btn--primary" (click)="like(item)">
         <ob-icon name="heart" [size]="16" />
         喜歡
       </button>
 
-      @if (isSubscribed(feed.id)) {
+      @if (isSubscribed(item.feed.id)) {
         <span class="ob-chip ob-chip--success">
           <ob-icon name="check" [size]="12" />
           已訂閱
@@ -69,8 +73,8 @@
         <button
           type="button"
           class="ob-btn ob-btn--primary"
-          [disabled]="isSubscribePending(feed.id)"
-          (click)="subscribe(feed)"
+          [disabled]="isSubscribePending(item.feed.id)"
+          (click)="subscribe(item)"
         >
           <ob-icon name="plus" [size]="16" />
           訂閱

@@ -39,6 +39,12 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.reason {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
 .desc {
   font-size: var(--text-sm);
   line-height: var(--leading-normal);

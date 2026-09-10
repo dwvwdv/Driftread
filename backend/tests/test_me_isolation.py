@@ -5,7 +5,8 @@ None of these tables are protected by RLS against this backend's own queries —
 the service_role client bypasses RLS entirely (see docs/FEATURES.md #5 and
 TODO.md Phase 0's "使用者隔離目前仍全靠應用層手動加 user_id 條件"). The only
 thing standing between one user and another user's subscriptions, read state,
-bookmarks or preferences is every handler in routers/me.py (and
+bookmarks, recommendation feedback or preferences is every handler in
+routers/me.py (and
 routers/opml.py's export) remembering to filter by `user.id` taken from the
 verified JWT — never a client-supplied value, and never stale state left over
 from a previous request.
@@ -245,6 +246,45 @@ def test_remove_bookmark_scoped_per_user(client):
 
     r1 = c.delete(f"/api/me/bookmarks/{ARTICLE_ID}", headers=_auth(USER_A))
     r2 = c.delete(f"/api/me/bookmarks/{ARTICLE_ID}", headers=_auth(USER_B))
+    assert r1.status_code == r2.status_code == 204
+
+    _assert_isolated(mock_db.table.return_value.delete.return_value.eq.call_args_list)
+
+
+# --- Recommendation feedback --------------------------------------------------
+
+
+def test_list_feed_feedback_scoped_per_user(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+
+    r1 = c.get("/api/me/feed-feedback", headers=_auth(USER_A))
+    r2 = c.get("/api/me/feed-feedback", headers=_auth(USER_B))
+    assert r1.status_code == r2.status_code == 200
+
+    _assert_isolated(mock_db.table.return_value.select.return_value.eq.call_args_list)
+
+
+def test_set_feed_feedback_writes_calling_users_id(client):
+    c, mock_db = client
+    mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
+
+    body = {"feedback_type": "liked"}
+    r1 = c.put(f"/api/me/feed-feedback/{FEED_ID}", json=body, headers=_auth(USER_A))
+    r2 = c.put(f"/api/me/feed-feedback/{FEED_ID}", json=body, headers=_auth(USER_B))
+    assert r1.status_code == r2.status_code == 204
+
+    upserted = [c_[0][0]["user_id"] for c_ in mock_db.table.return_value.upsert.call_args_list]
+    assert upserted == [USER_A, USER_B]
+
+
+def test_clear_feed_feedback_scoped_per_user(client):
+    c, mock_db = client
+    chain = mock_db.table.return_value.delete.return_value.eq.return_value
+    chain.eq.return_value.execute.return_value = MagicMock(data=[])
+
+    r1 = c.delete(f"/api/me/feed-feedback/{FEED_ID}", headers=_auth(USER_A))
+    r2 = c.delete(f"/api/me/feed-feedback/{FEED_ID}", headers=_auth(USER_B))
     assert r1.status_code == r2.status_code == 204
 
     _assert_isolated(mock_db.table.return_value.delete.return_value.eq.call_args_list)

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,6 +11,8 @@ from models import (
     Bookmark,
     BookmarkCreate,
     Feed,
+    FeedFeedback,
+    FeedFeedbackCreate,
     FeedUnreadCount,
     MarkAllReadRequest,
     MarkAllReadResult,
@@ -298,6 +301,60 @@ async def remove_bookmark(
     db.table("user_bookmarks").delete().eq("user_id", user.id).eq(
         "article_id", str(article_id)
     ).eq("bookmark_type", bookmark_type).execute()
+
+
+# --- Recommendation feedback --------------------------------------------------
+#
+# Persists 猜你喜歡's 喜歡／不喜歡／跳過 server-side (TODO.md 推薦回饋持久化), so it
+# survives across devices instead of living only in the caller's
+# localStorage (RecommendationService). One row per (user, feed): a later
+# feedback_type for the same feed replaces the earlier one — this is "the
+# caller's current stance on this feed", not an append-only event log, same
+# modeling choice as user_feeds/user_preferences. routers/recommendations.py
+# reads this table directly for a signed-in caller rather than trusting the
+# liked/disliked query params alone.
+
+@router.get("/feed-feedback", response_model=list[FeedFeedback])
+async def list_feed_feedback(
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> list[FeedFeedback]:
+    rows = (
+        db.table("user_feed_feedback")
+        .select("feed_id, feedback_type, created_at")
+        .eq("user_id", user.id)
+        .execute()
+    )
+    return [FeedFeedback(**row) for row in rows.data]
+
+
+@router.put("/feed-feedback/{feed_id}", status_code=204)
+async def set_feed_feedback(
+    feed_id: UUID,
+    body: FeedFeedbackCreate,
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> None:
+    db.table("user_feed_feedback").upsert(
+        {
+            "user_id": user.id,
+            "feed_id": str(feed_id),
+            "feedback_type": body.feedback_type,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+        on_conflict="user_id,feed_id",
+    ).execute()
+
+
+@router.delete("/feed-feedback/{feed_id}", status_code=204)
+async def clear_feed_feedback(
+    feed_id: UUID,
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> None:
+    db.table("user_feed_feedback").delete().eq("user_id", user.id).eq(
+        "feed_id", str(feed_id)
+    ).execute()
 
 
 # --- Preferences -------------------------------------------------------------
