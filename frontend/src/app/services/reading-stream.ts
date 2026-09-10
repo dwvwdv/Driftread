@@ -497,6 +497,18 @@ export class ReadingStreamService {
       });
       const failed = outcomes.filter((o) => !o.ok);
       const marked = outcomes.filter((o) => o.ok).reduce((sum, o) => sum + o.marked, 0);
+      // Confirm every successful batch's articles *before* any failed
+      // batch's rollback below triggers a recompute: `_pending` was just
+      // cleared for everything above, so a successful article that isn't
+      // confirmed yet sits in neither the "still pending" nor "confirmed
+      // after the baseline" bucket recomputeCounts() knows to always
+      // include — a recompute in that gap (e.g. a different batch's
+      // rollback delta) would treat its still-outstanding -1 as already
+      // reflected in the baseline and silently drop it from the total.
+      for (const o of outcomes) {
+        if (!o.ok) continue;
+        for (const a of o.batch) this.confirmReadState(a.id, true, now);
+      }
       if (failed.length) {
         const failedIds = new Set(failed.flatMap((o) => o.batch.map((a) => a.id)));
         this._items.update((items) =>
@@ -504,10 +516,6 @@ export class ReadingStreamService {
         );
         for (const o of failed) for (const a of o.batch) this.commitCountDelta(a.id, a.feed_id, 1);
         onError?.(failed[0].err);
-      }
-      for (const o of outcomes) {
-        if (!o.ok) continue;
-        for (const a of o.batch) this.confirmReadState(a.id, true, now);
       }
       if (marked > 0 || !failed.length) onSuccess?.(marked);
     });

@@ -99,8 +99,19 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       clamp 後的錯誤值到永遠；`markAllReadInView` 現在也會把批次的目標 id 一併登記進
       `_pending`，同一篇文章的單篇 markRead/markUnread 與批次寫入互斥，不會各自套用一次
       optimistic delta 而重複計算。三個情境各自新增 `reading-stream.spec.ts` 案例）
-
-## P1：偏好、推薦與內容探索
+- [ ] `markAllReadInScope` 與同一篇文章的 pending markRead/markUnread 之間，仍有一個未解的
+      排序歧義：若某篇文章的 markUnread 已經在伺服器端 commit（該文章變成未讀），但回應還沒
+      送達 client（`isPending` 仍是 true），此時一個涵蓋該文章的 `markAllReadInScope` 緊接著
+      在伺服器端 commit（把這篇文章標已讀）——目前的寫法會因為 `isPending` 為 true 而跳過更新
+      這篇文章的本地列與 `confirmReadState`；等到那個延遲的 markUnread 回應終於抵達，它的
+      success handler 仍會照常呼叫 `confirmReadState(id, false, null)`，把已經被 mark-all
+      覆蓋過的「已讀」真相誤蓋回「未讀」，且未讀數的 delta 也會被錯誤地重新加回去。
+      根因是 client 端無法從回應抵達順序推斷兩個獨立寫入在伺服器端真正的 commit 順序——除非
+      API 額外回傳可比較的列版本／時間戳，否則任何用「哪個回應先抵達」或「哪個先呼叫
+      confirmReadState」當作決勝規則的修法，都只是把現有的不確定性換一個方向，不能真正解決。
+      是窄視窗（需要兩個獨立寫入短時間內命中同一篇文章）且不影響伺服器端資料正確性，只影響
+      UI 顯示到下次 reload 為止；PR #56 code review（Codex，P2）提出，因為需要新的決勝政策或
+      API 合約變更才能穩妥解決，留在這裡待人工決定方向，未在該 PR 內強行修。
 
 ### 標籤、語言與偏好設定
 

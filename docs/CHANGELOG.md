@@ -1079,3 +1079,25 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   - 本輪的網路限制與驗證方式同上——`npm ci` 仍被擋下，改用 `tsc --noResolve` 與
     `prettier --check` 驗證這兩個檔案，邏輯正確性以手動逐步追蹤新增與既有測試案例的
     ticket／delta 數值運算確認，實際 `npm test` 交給 PR #56 的 CI 跑過（`Build` job 綠燈）。
+- **PR review 修正第二輪（Codex，2 個 P2，1 修 1 記錄為已知限制）**：
+  1. **修**：`markAllReadInView` 的批次部分失敗時，原本先跑失敗批次的 rollback（呼叫
+     `commitCountDelta` 觸發 `recomputeCounts()`），才跑成功批次的 `confirmReadState()`。
+     成功批次的文章在 `_pending` 已於函式最前面被整批清掉、但還沒被
+     `confirmReadState()` 標記確認的這段空窗期裡，若剛好被失敗批次的 rollback
+     觸發一次 `recomputeCounts()`，會被誤判成「未 pending 且未確認、ticket 又早於等於
+     baseline」而排除在外——`confirmReadState()` 本身不會觸發 recompute，所以這筆遺漏
+     直到下次別的地方觸發 recompute 前都不會自己修正，未讀數／badge 會少扣那個成功批次
+     的量。修法：把「確認成功批次」的迴圈移到「處理失敗批次 rollback」之前，讓成功批次的
+     delta 在任何 rollback 觸發的 recompute 發生前，就已經進入「已確認且 ticket 新於
+     baseline」的可疊加狀態。新增 `reading-stream.spec.ts` 案例（620 篇、前 500 成功
+     後 120 失敗、baseline 未讀數設一個不會被 clamp 蓋掉差異的大數字），照舊順序執行會
+     斷言失敗（顯示未讀數完全沒扣），驗證這是真的迴歸測試。
+  2. **記錄為已知限制，未修**：同一篇文章身上，一個仍 pending 的單篇 markRead/markUnread
+     與一個涵蓋它的 `markAllReadInScope` 各自獨立送出去，client 端無法從兩個回應誰先抵達
+     推斷兩者在伺服器端真正的 commit 順序——任何用回應抵達順序或呼叫 `confirmReadState()`
+     先後當決勝規則的修法，都只是把現有的不確定性換一個方向，並不是真的解掉它，需要 API
+     額外提供列版本／時間戳之類的排序依據才能穩妥解決。這是窄視窗（兩個獨立寫入要短時間內
+     命中同一篇文章）、不影響伺服器端資料正確性、只影響 UI 顯示到下次 reload 為止的既有已知
+     限制類型（同本階段開頭「背景」段所述 PR #43 遺留缺口的精神），記錄在 TODO.md
+     的「技術與可靠性優化」小節，留待有更明確的排序依據時再處理，不在本 PR 內強行猜一個
+     決勝規則。

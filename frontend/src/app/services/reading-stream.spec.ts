@@ -410,6 +410,41 @@ describe('ReadingStreamService', () => {
     );
   });
 
+  it("markAllReadInView keeps a succeeded batch's count decrement when a sibling batch's rollback recomputes", () => {
+    const svc = setup();
+    unreadSummary = {
+      total_unread: 1000,
+      feeds: [{ feed_id: 'feed-1', feed_title: 'Feed One', unread_count: 1000 }],
+    };
+    TestBed.flushEffects(); // establishes a baseline (asOf > -1) — required for the bug to surface
+    const items = Array.from({ length: 620 }, (_, i) =>
+      article(`a${i}`, { is_read: false, feed_id: 'feed-1' }),
+    );
+    streamPage = { items, next_cursor: null };
+    svc.load({});
+
+    // The first (500-id) batch succeeds; the second (120-id) batch fails.
+    let call = 0;
+    me.markAllRead = (body: unknown) => {
+      const b = body as { article_ids: string[] };
+      call++;
+      return call === 1
+        ? of({ marked: b.article_ids.length })
+        : throwError(() => new Error('boom'));
+    };
+
+    svc.markAllReadInView();
+
+    // The failed batch's rollback nets back to 0 (1000 - 0), but the
+    // succeeded batch's -500 must still show — confirming it *before* the
+    // rollback's recompute is what makes that so; confirming it after (the
+    // old order) left the successful batch's delta looking indistinguishable
+    // from "already reflected in the baseline" during that recompute, and
+    // it was silently dropped for good since confirming alone never
+    // triggers a recompute of its own.
+    expect(svc.totalUnread()).toBe(500);
+  });
+
   it('markAllReadInView ignores its outcome after the signed-in identity changes', () => {
     const svc = setup();
     TestBed.flushEffects();
