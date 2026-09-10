@@ -62,8 +62,13 @@ export interface DiscoverySourceInput {
  *      422  the header was missing entirely (FastAPI's Header(...) is required),
  *           which means the key went empty, e.g. cleared in another tab. Same
  *           recovery as 403.
- *      409  approving a candidate that was already rejected — a state conflict,
- *           not a failure; the caller reloads so the stale row disappears
+ *      409  scoped to `approveCandidate`'s own context ("核准失敗"): approving a
+ *           candidate that was already rejected — a state conflict, not a
+ *           failure; the caller reloads so the stale row disappears. Since
+ *           backend/errors.py started mapping unique_violation (23505) to 409
+ *           too — reachable from unrelated writes like `seedTargets` racing on
+ *           `discovery_targets.url` — any other context gets a generic conflict
+ *           message instead of this candidate-specific one.
  *      502  the remote feed could not be fetched. Warning, not danger: nothing on
  *           our side is broken.
  *      503  autonomous discovery is switched off (FEED_DISCOVERY_ENABLED=false).
@@ -272,7 +277,17 @@ export class AdminService {
         break;
 
       case 409:
-        this.toast.warning('此候選先前已被拒絕，無法核准');
+        // Scoped to approveCandidate()'s own context string — a 409 from any
+        // other call (e.g. seedTargets() racing on discovery_targets.url's
+        // unique constraint, since backend/errors.py started mapping
+        // unique_violation to 409) is an unrelated conflict, not "already
+        // rejected", and showing that message for it would mislead the
+        // operator about what actually happened.
+        if (context === '核准失敗') {
+          this.toast.warning('此候選先前已被拒絕，無法核准');
+        } else {
+          this.toast.danger(`${context}：${apiMessage(error, '資源衝突，請重新整理後再試')}`);
+        }
         break;
 
       case 502:

@@ -1038,3 +1038,115 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   改動，並用專案的 `.prettierrc.json` 設定跑過 `prettier --check`；邏輯正確性以逐步手動追蹤三個
   新增測試案例的 ticket／delta 數值驗證，交給 CI 的 `frontend.yml` 實際跑過 `npm test` 驗證。
 - 對應文件更新：`TODO.md`（「ReadingStreamService 補齊 pending-write...」打勾並補上機制說明）。
+
+## 階段三十二：PostgREST／database 例外的一致 API error mapping（2026-09-08）
+
+TODO.md「技術與可靠性優化」批次的最後一項：`backend/database.py::get_client()` 是全專案唯一的
+Supabase client 建構點，任何 route 呼叫 `.execute()` 時，一旦 postgrest-py 拋出 `APIError`
+（unique constraint、check constraint、not-null、RLS 拒絕……），因為沒有任何 handler 接住，
+會直接落到 Starlette 的預設行為——沒有 JSON body 的裸 500，前端拿不到任何可用資訊，也無法區分
+「資料衝突」跟「真的壞掉了」。目前已知會走到寫入路徑的是 `admin_discovery.py`／
+`discovery_candidates.py`／`link_harvest.py` 對 `discovery_targets`／`discovery_candidates`
+的 `.insert()`（前兩者的先查後寫在併發下仍有 race window），但這是一致性修法，不是只補這幾個
+call site。
+
+- **`backend/errors.py`（新）**：`map_postgrest_error(exc) -> (status_code, body)`。用一份
+  SQLSTATE（`23505`／`23503`／`23502`／`23514`／`22P02`／`42501`）＋PostgREST 自己的
+  `PGRST116`（`.single()` 零筆或多筆）對照表，分別映射到 409／409／400／400／400／403／404；
+  對照不到的一律回通用 `{"detail": "Internal server error"}` 的 500，不把 postgrest-py 的
+  `message`／`details`（可能含表名、欄位名、原始 constraint 名稱）洩漏給呼叫端——`code` 用
+  `getattr(exc, "code", None)` 讀取而非直接存取屬性，同 `routers/feeds.py` 既有對
+  postgrest-py 版本差異的防禦寫法。
+- **`backend/main.py`**：`@app.exception_handler(APIError)` 註冊上述映射；映射到 500（代表
+  對照表沒認得的錯誤碼）的情況才寫 server-side error log（帶真正的 `code`／`message`），
+  409／400／403／404 屬於正常的請求結果，不當成需要留意的操作問題來記。
+- **測試**：新增 `tests/test_errors.py`，涵蓋每個對照碼、未知碼、缺 `code`、以及完全沒有
+  `code` 屬性的物件（防禦寫法本身）；`tests/test_feeds.py` 新增一個透過真正的 `client` fixture
+  打 `GET /api/feeds/{id}`、讓 mock 的 `.execute()` 拋出 `APIError(code="23505")` 的整合測試，
+  斷言拿到的是映射後的 409 而不是未接住的例外——證明 handler 真的被 FastAPI 註冊上，不只是
+  `map_postgrest_error()` 本身邏輯正確。
+- **本 sandbox 的已知限制**：`pip install -r requirements.txt` 被 PyPI 的 network egress
+  allowlist 擋下，與先前多個 PR 遇到的限制相同，無法在本機安裝 `postgrest`／`fastapi` 實際跑
+  `pytest`。`postgrest.exceptions.APIError` 的建構子簽名（接受一個 dict，讀出
+  `message`／`code`／`hint`／`details` 四個屬性，`.get()` 帶預設值故缺鍵不會噴例外）已透過
+  postgrest-py 官方文件（readthedocs `api/exceptions.html`）核對過；已用
+  `python3 -m py_compile` 與 `ruff check` 過新增／改動的 backend 檔案，交給 CI 的
+  `backend.yml` 實際跑過 `pytest` 驗證。
+- 對應文件更新：`TODO.md`（「PostgREST／database 例外...API error mapping」項目打勾並補上
+  機制說明）。
+- **PR review 修正（Codex，兩個 P2）**：
+  1. 500 的 log 只記 `code`／`message`，沒有 `details`／`hint`，也沒有帶 traceback——這個
+     handler 本來就是取代 Starlette 預設會印出完整 traceback 的行為，只記兩個欄位等於讓真正
+     需要調查的未知錯誤反而少了診斷資訊。`main.py` 補上 `hint`／`details`、`request.method`／
+     `request.url.path`，並加上 `exc_info=exc` 保留 traceback。
+  2. `PGRST116` 不是只代表「零筆」，PostgREST 對 `.single()`／`maybe_single()` 這個 code 同時
+     覆蓋零筆跟多筆兩種情況（`maybe_single()` 只吃掉零筆的例外，多筆仍會 raise）——原本無條件
+     映射成 404 是錯的，`routers/admin_discovery.py::seed_targets` 的
+     `.eq("host", host).maybe_single()` 就是個真的會踩到的案例：migration 006 說明
+     `discovery_targets` 對 `host`沒有 unique constraint（只 unique 在 `url`，因為一個 OPML
+     目錄可以在同一個 host 貢獻多筆 feed），一個熱門 host 累積多筆是預期中的正常狀態,
+     多筆同 host 時把它報成「找不到」還吞掉 log，會讓這類資料狀態異常變得無法被發現。
+     修法：`errors.py` 改成讀 `details` 欄位裡的 `"Results contain N rows"`（PostgREST 在零筆
+     跟多筆時 `message` 相同，只有 `details` 的筆數不同），`N == 0` 才映射 404，其他情況
+     （含 `details` 無法解析或缺漏）一律落回一般 500，交給上面補強的 log 記下來。
+     `tests/test_errors.py` 新增零筆／多筆／`details` 無法解析／`details` 缺漏四個案例。
+- **PR review 修正第二輪（Codex，P2）**：第一輪的 `_ROWS_IN_DETAILS` 只認得舊版 PostgREST 的
+  `"Results contain N rows, application/vnd.pgrst.object+json requires 1 row"`——較新版本
+  （`message` 也從「JSON object requested, multiple (or no) rows returned」換成「Cannot
+  coerce the result to a single JSON object」）改成單數的 `"The result contains N rows"`，
+  原本的規則式（大小寫、`Results`／`result`、`contain`／`contains` 都是精確比對）在這個版本上
+  完全不會 match，等於每個零筆的 PGRST116 都會落回一般 500，而不是原本要的 404——跟這個 PR
+  想修的問題方向正好相反。修法：`_ROWS_IN_DETAILS` 改成
+  `r"results?\s+contains?\s+(\d+)\s+rows?"`（`re.IGNORECASE`），同時吃兩種版本的措辭，不釘死
+  在其中一種。`tests/test_errors.py` 的零筆／多筆案例都改成 `@pytest.mark.parametrize`，兩種
+  措辭各測一次。
+- **PR review 修正第三輪（Codex，P2）**：`42501`（insufficient_privilege）原本映射成 403，
+  隱含「這次請求的呼叫者沒有權限」——但 `database.py::get_client()` 是全專案唯一的 client
+  建構點，永遠用 `SUPABASE_KEY`（依 TODO.md Phase 0，必須是 service_role key），完全繞過
+  RLS，也沒有任何 per-request／per-user 的身分。這個架構下 `42501`唯一可能的成因是
+  service_role key 本身或它的 schema／function grant（migration 010）設定錯誤——是部署層級
+  的錯誤設定，不是某次請求真的被拒絕；映射成 403 不只講錯故事，還讓它跳過
+  `status_code >= 500` 才會走的完整診斷 log，變成一次完全沒有留下痕跡的資料庫權限失效。
+  修法：把 `42501` 從 `_STATUS_BY_CODE` 移除，讓它落回一般 500（連同上面已經補好的
+  `hint`／`details`／traceback log）。程式碼註解與 `tests/test_errors.py` 同步更新；等
+  TODO.md「一般使用者路徑改用 user JWT scoped client」那項真的做了，`42501` 才會重新變成
+  一個有意義的 per-request 403，到時要把這個排除規則拿掉。
+- **PR review 修正第四輪（Codex，P2）**：`errors.py` 把 `23505`（unique_violation）全域映射成
+  409 之後，出現一個沒預料到的跨層副作用——`frontend/src/app/services/admin.ts::report()` 是
+  所有 admin API 呼叫共用的錯誤處理，原本把「任何 409」都當成「`approveCandidate` 核准了一個
+  已被拒絕的候選」，顯示對應提示。這個假設在這個 PR 之前是對的，因為在此之前只有
+  `approve` 端點自己用 `HTTPException(409, ...)` 明確丟過 409；但現在
+  `seedTargets()`（`POST /admin/discovery/targets`）這類完全不相關的寫入，一旦與
+  `discovery_targets.url` 的 unique constraint 競爭，也會經過新的全域 handler 變成 409，
+  卻被 `report()` 誤判成「候選已被拒絕」，讓操作者看到完全對不上的提示。
+  修法：`report()` 的 `case 409` 改成只在 `context === '核准失敗'`（`approveCandidate()`
+  自己的 context 字串）時才顯示候選專屬訊息，其他 context 一律走既有的
+  `${context}：${apiMessage(...)}` 通用衝突訊息；同步更新 `AdminService` 頂部說明 409
+  語意的註解。新增 `frontend/src/app/services/admin.spec.ts`（這個服務先前完全沒有測試，
+  也是本專案第一個用 `HttpTestingController` 直接測 HttpClient-based service 的案例）：
+  `approveCandidate()` 收到 409 時顯示候選訊息、`seedTargets()` 收到 409 時顯示通用衝突訊息
+  兩個案例。
+- **CI 修正**：這是這個 PR 第一次改到 `frontend/`，第一次真的觸發 `frontend.yml`——結果
+  `Build`（跑 `npm test`／Vitest）失敗：`it('...', (done) => { ...; done(); })` 這種
+  Jasmine 風格的非同步寫法在這個專案的 Vitest 底下不成立，`done` 收到的是一個
+  `TestContext` 物件，不是可呼叫的 callback（`TS2349: This expression is not callable`）。
+  修法：拿掉 `done`，改成同步斷言——`HttpTestingController.flush()` 本來就是同一個
+  call stack 內同步送達 subscriber，`subscribe({ error: () => {} })` 之後接著呼叫
+  `.flush()`，再直接斷言 `toastCalls`，不需要任何 async/await 或 done。
+- **CI 修正第二輪**：上面那次推上去之後還是紅——這次是真的執行到請求了，但
+  `httpMock.expectOne('/api/admin/discovery/candidates/c1/approve')`（字串形式的
+  `expectOne` 是對 `req.url` 做精確字串比對）找不到相符的請求：這個測試環境下
+  `HttpClient` 會把相對路徑解析成絕對網址（`http://localhost:8000/api/...`）才送進
+  mock backend，不是保持原本的相對路徑。第一個測試的 `expectOne` 因此直接 throw，連帶讓
+  `afterEach` 的 `httpMock.verify()` 抓到一個沒被 flush 掉的請求，而第二個測試的
+  `beforeEach` 又因為第一個測試中途失敗、沒能讓 TestBed 正常收尾而撞上
+  「Cannot configure the test module when the test module has already been
+  instantiated」——三個錯誤其實是同一個根因級聯出來的。修法：`expectOne` 改用 predicate
+  （`(req) => req.url.endsWith(...)`）比對路徑尾端，不管前面解析出的是相對還是絕對網址；
+  `beforeEach` 補上 `TestBed.resetTestingModule()`（`discover.spec.ts` 既有的寫法），
+  每個測試都從乾淨的 TestBed 開始，不互相依賴前一個測試有沒有正常收尾。
+- **PR review 修正第五輪（Codex，P2）**：`TODO.md` 這一項的完成說明從第一版之後就沒再更新，
+  還寫著「RLS 拒絕映射到 403」，但第三輪已經把 `42501` 從映射表移除、改落回通用 500；也完全
+  沒提到 `22P02`（invalid_text_representation）跟 `PGRST116` 零筆／多筆的區分。修法：改寫
+  說明文字對齊 `errors.py` 最終版的實際行為，避免之後的維護者照著這段過期說明去猜 API
+  contract。

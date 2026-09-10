@@ -3,6 +3,24 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from postgrest.exceptions import APIError
+
+
+def test_get_feed_postgrest_error_is_mapped_not_a_bare_500(client):
+    # Proves errors.map_postgrest_error is actually wired up as a FastAPI
+    # exception handler (main.py), not just correct in isolation — an
+    # APIError raised out of a real .execute() call must come back as the
+    # mapped status/body, not propagate as an unhandled exception.
+    c, mock_db = client
+    chain = mock_db.table.return_value.select.return_value.eq.return_value
+    chain.maybe_single.return_value.execute.side_effect = APIError(
+        {"message": "duplicate key value violates unique constraint", "code": "23505"}
+    )
+
+    resp = c.get(f"/api/feeds/{uuid4()}")
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "Resource already exists"}
 
 
 @pytest.mark.parametrize("execute_return", [MagicMock(data=None), None])

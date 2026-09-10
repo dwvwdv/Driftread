@@ -3,12 +3,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import PlainTextResponse
+from postgrest.exceptions import APIError
+from starlette.responses import JSONResponse, PlainTextResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from backfill import run_backfills
+from errors import map_postgrest_error
 from migrate import run_migrations
 from routers import (
     admin,
@@ -159,6 +161,31 @@ app.add_middleware(MaxBodySizeMiddleware, max_body_size=MAX_REQUEST_BODY_BYTES)
 # is safe specifically because nginx is the only possible peer here; it would
 # NOT be safe if this API were ever also reachable directly from the internet.
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
+
+@app.exception_handler(APIError)
+async def handle_postgrest_api_error(request: Request, exc: APIError) -> JSONResponse:
+    status_code, body = map_postgrest_error(exc)
+    if status_code >= 500:
+        # Only the unmapped case is logged — mapped cases (409/400/403/404)
+        # are ordinary request-shaped outcomes, not operational problems.
+        # This handler otherwise replaces Starlette's default "log the
+        # traceback" behavior for the exception, so exc_info plus every
+        # postgrest-supplied diagnostic field (not just code/message) is
+        # kept here, or the one detail an investigation actually needs
+        # (why it was multi-row, what constraint fired, ...) is lost.
+        logging.getLogger(__name__).error(
+            "Unhandled PostgREST error: %s %s code=%s message=%s hint=%s details=%s",
+            request.method,
+            request.url.path,
+            getattr(exc, "code", None),
+            getattr(exc, "message", None),
+            getattr(exc, "hint", None),
+            getattr(exc, "details", None),
+            exc_info=exc,
+        )
+    return JSONResponse(status_code=status_code, content=body)
+
 
 app.include_router(feeds.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
