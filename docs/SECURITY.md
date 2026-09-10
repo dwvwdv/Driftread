@@ -302,6 +302,27 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 - **前端**：`Discover.importFeed()` 未登入時不再直接呼叫 `/discover/import`，改為導向 `/login?redirect=/discover`（與既有 `subscribeExisting()` 對已存在 feed 的處理一致）；按鈕文字對應改成「登入以匯入並訂閱」。
 - **測試**：`backend/tests/test_discover.py` 新增 `test_discover_import_requires_authentication`（未帶 token 斷言 `401` 且 `mock_db.table` 從未被呼叫）與 `test_discover_import_succeeds_for_authenticated_user`（帶合法 token 驗證整條匯入＋自動訂閱路徑）；既有的私網 URL／metadata URL／rate limit 系列測試補上合法 bearer token，讓它們繼續驗證各自原本要測的行為（URL 驗證、rate limit），而不是被新加的 401 蓋過去。`frontend/src/app/components/discover/discover.spec.ts` 新增對應案例，比照 `subscribeExisting` 的既有測試。沒有網路能在本 sandbox 安裝依賴跑 `pytest`／`npm test`（與本專案歷史多輪修法同樣的既有限制），改用 `python3 -m py_compile` 驗證語法，實際執行結果交給 CI。
 
+### #31 — JWT 驗證改為支援 Supabase JWKS（ES256／RS256），保留 HS256 相容（09-09）
+
+- **背景**：不是修一個已發生的漏洞，是補 TODO.md「Auth 與安全」最後兩個未完成項目——`auth.py`
+  從一開始就只認 HS256 shared secret。Supabase 目前預設把新專案的 JWT signing key 改成非對稱
+  （ES256，也支援 RS256），HS256 secret 屬於逐步淘汰的舊路徑；只認 HS256 意味著已經／即將
+  輪替到新式 signing key 的專案會拿到完全驗證不了的 token，是可預期會發生、而不是「萬一」的
+  相容性缺口。
+- **改動**：`_verify_token` 先讀 token header 的 `alg` 再決定路徑——`HS256` 一律用
+  `SUPABASE_JWT_SECRET`；`ES256`／`RS256` 一律改用 `jwt.PyJWKClient` 向 JWKS 端點（預設
+  `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`，可用 `SUPABASE_JWKS_URL` 覆寫）取得該
+  `kid` 的公鑰驗證；其餘 `alg` 一律 401。兩條路徑的驗證方式與金鑰來源都是寫死的，不會因為
+  token header 內容而互相借用——不會重開「alg 混淆」（把 header 的 `alg` 換成 HS256、拿公鑰
+  當 HMAC secret 偽造簽章）這類洞。Rotation／cache refresh 交給 `PyJWKClient` 自己的機制：
+  `cache_keys=True` 快取 JWKS 文件 300 秒，快取裡找不到的 `kid` 觸發一次無條件重新抓取。
+  `requirements.txt` 的 `pyjwt` 加上 `[crypto]` extra——非對稱演算法需要 `cryptography`，
+  只用 HS256 時這個套件不是必要依賴。
+- **測試**：見 `docs/CHANGELOG.md` 階段三十二。本 sandbox 無法 `pip install` 完整依賴跑
+  `pytest`，改用獨立 venv（`cryptography`／`cffi` 從 uv 本地 wheel cache 離線裝）搭配最小
+  fastapi 替身模組，直接呼叫 `auth._verify_token()` 手動重現全部案例並逐一斷言，交給 CI 的
+  `backend.yml` 跑完整測試套件與 FastAPI 接線。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
@@ -316,7 +337,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 | XML 解析 | 全數 `defusedxml`（feed、OPML 上傳、遠端 OPML 目錄三條路徑） | `rss_parser.py`、`routers/opml.py`、`services/directory_sources.py` |
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter；id 類參數一律宣告 `UUID` 型別，格式錯誤在進 DB 呼叫前就回 422（見 #28） | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
 | 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
-| 認證 | Supabase JWT（`SUPABASE_JWT_SECRET`）；永久帳號必須帶 `is_anonymous=false`；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
+| 認證 | Supabase JWT，依 token `alg` 分流：`HS256` 用 `SUPABASE_JWT_SECRET`、`ES256`／`RS256` 用 JWKS（`jwt.PyJWKClient`，見 #31）；永久帳號必須帶 `is_anonymous=false`；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
 | 資料存取 | 專屬 `driftread` schema + scoped client；四張 `user_*` 表 RLS permanent-user owner-only；`feeds` / `articles` RLS + public read；四張 `discovery_*` 與 `_migrations` RLS + **零 policy**（僅 service_role） | `database.py`、`migrations/002`、`004`、`006`、`010` |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 

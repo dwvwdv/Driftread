@@ -131,6 +131,13 @@ def main():
         print("\n⚠ 請手動填入 .env 中的：SUPABASE_JWT_SECRET")
         print("  Supabase Dashboard → Settings → API → JWT Settings → JWT Secret")
 
+    # SUPABASE_JWKS_URL is optional — backend/auth.py derives it from
+    # SUPABASE_URL when absent, so it's reported rather than required.
+    if "SUPABASE_JWKS_URL" not in existing or not existing["SUPABASE_JWKS_URL"].strip():
+        print("\nℹ SUPABASE_JWKS_URL 未設定，預設使用")
+        print("  ${SUPABASE_URL}/auth/v1/.well-known/jwks.json")
+        print("  （只有自架或非標準網域的 Supabase Auth 才需要覆寫）")
+
     # Feed refresh scheduler settings. All have code-level defaults (see
     # backend/services/feed_refresh.py), so they're deliberately not part of the
     # missing check above — an unset .env still runs. Just report the effective

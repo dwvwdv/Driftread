@@ -1037,6 +1037,45 @@ per-IP rate limit（每分鐘 20 次）擋不住輪換 IP 的長期灌入，且�
   本機實際跑 `vitest`／production build。已用系統 `tsc`（`--ignoreConfig --noResolve`）過新增
   改動，並用專案的 `.prettierrc.json` 設定跑過 `prettier --check`；邏輯正確性以逐步手動追蹤三個
   新增測試案例的 ticket／delta 數值驗證，交給 CI 的 `frontend.yml` 實際跑過 `npm test` 驗證。
+
+## 階段三十二：JWT 驗證改為支援 Supabase JWKS（ES256／RS256），保留 HS256 相容（2026-09-09）
+
+- **背景**：TODO.md「Auth 與安全」批次最後兩個未完成項目——`backend/auth.py` 從一開始就只
+  接受 HS256 shared secret（`SUPABASE_JWT_SECRET`）。Supabase 目前預設把新專案的 JWT signing
+  key 改成非對稱（ES256，也支援 RS256），HS256 secret 仍可用但屬於逐步淘汰的舊路徑；只認
+  HS256 意味著已經（或將要）輪替到新式 signing key 的專案會拿到完全驗證不了的 token。
+- **改動**：`auth._verify_token` 從固定用一把密鑰改成先讀 token header 的 `alg`，再決定走哪條
+  固定路徑——`alg=HS256` 一律用 `SUPABASE_JWT_SECRET`；`alg` 為 `ES256`／`RS256` 一律改用
+  `jwt.PyJWKClient` 向 JWKS 端點（預設 `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`，可用
+  新增的 `SUPABASE_JWKS_URL` 覆寫）取得對應 `kid` 的公鑰驗證；其餘 `alg` 一律 401。兩條路徑各自
+  固定死對應的驗證方式與金鑰來源，不會因為 token header 而互相借用——不會重開「alg 混淆」
+  （攻擊者把 header 的 `alg` 換成 HS256、拿公鑰當 HMAC secret 偽造簽章）這類洞。
+  Signing key rotation／cache refresh 兩項直接交給 `PyJWKClient` 自己的機制，不另外手寫快取：
+  `cache_keys=True` 快取取回的 JWKS 文件 `lifespan`（300）秒；快取裡找不到的 `kid` 會觸發一次
+  無條件重新抓取，所以剛輪替的新 signing key 第一個帶新 `kid` 的 token 就能驗證，不必等快取
+  過期。`requirements.txt` 的 `pyjwt` 依賴加上 `[crypto]` extra（帶入 `cryptography`）——原本
+  只用 HS256 時不需要它，PyJWT 的非對稱演算法沒有這個套件會直接說「不支援該演算法」。
+- **相容性**：沒有新增必填環境變數。`SUPABASE_URL` 本來就必填，JWKS 端點預設由它推導；
+  `SUPABASE_JWKS_URL` 是選填覆寫，只有自架或非標準網域才需要。尚未輪替 signing key 的專案
+  送來的 token 仍是 `alg=HS256`，行為與改動前完全相同。
+- **測試**：`backend/tests/test_auth.py` 新增 `TestJwksVerification`——ES256／RS256 token 經
+  JWKS 驗證成功、匿名使用者仍被拒、不在 JWKS 裡的金鑰（含刻意選一個不存在的 `kid`）與缺
+  `kid` 的 token 都要 401、輪替情境（換一把新 `kid` 簽的 token，只在快取沒有該 `kid` 時觸發
+  「恰好一次」重新抓取，不是每次都打 JWKS 端點）、JWKS URL 推導與覆寫、`SUPABASE_URL` 未設定
+  時的非對稱驗證回退成 500。既有 HS256 案例不變，額外補了不支援的 `alg`（`none`）必須 401。
+- **本 sandbox 的已知限制**：`pip`／`uv` 的 PyPI index 被 network egress allowlist 擋下，
+  與先前多輪修法相同的既有限制，無法直接 `pip install -r requirements.txt` 跑專案的
+  `pytest`。改用 `python3 -m py_compile` 驗證語法、`ruff check` 過 lint；額外用一個獨立
+  venv（`uv venv` + 從 uv 的本地 wheel cache 離線裝 `cryptography`／`cffi`，並沿用系統既有的
+  `PyJWT` 套件目錄）搭配一個只實作 `HTTPException`／`status`／`Header` 三個名字的最小 fastapi
+  替身模組，直接呼叫 `auth._verify_token()`（不經過完整的 FastAPI app）逐一手動重現上面測試
+  案例涵蓋的每個情境並斷言結果——HS256 correct／wrong secret、匿名拒絕、`alg=none` 拒絕、
+  ES256／RS256 成功、輪替時恰好一次重抓、錯誤金鑰拒絕、缺 `kid` 拒絕、JWKS URL 推導與覆寫、
+  缺 `SUPABASE_URL` 時 500，全部通過。這只驗證了 `auth.py` 本身的邏輯，FastAPI route 與
+  依賴注入的接線交給 CI 的 `backend.yml` 實際跑 `pytest`。
+- 對應文件更新：`TODO.md`（「JWT 驗證由只接受 HS256...」與「支援 signing key rotation 與 JWKS
+  cache refresh」兩項打勾）、`docs/SECURITY.md`（新增 #31）、`README.md` 與 `.env.example`
+  （新增 `SUPABASE_JWKS_URL` 說明）。
 - 對應文件更新：`TODO.md`（「ReadingStreamService 補齊 pending-write...」打勾並補上機制說明）。
 
 ## 階段三十二：PostgREST／database 例外的一致 API error mapping（2026-09-08）

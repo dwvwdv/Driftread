@@ -232,8 +232,14 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### Auth 與安全
 
-- [ ] JWT 驗證由只接受 HS256 shared secret 改為依 Supabase JWKS 驗證 ES256／RS256 signing key。
-- [ ] 支援 signing key rotation 與 JWKS cache refresh。
+- [x] JWT 驗證由只接受 HS256 shared secret 改為依 Supabase JWKS 驗證 ES256／RS256 signing key。
+      （`auth._verify_token` 依 token header 的 `alg` 分流：`HS256` 仍用 `SUPABASE_JWT_SECRET`
+      （尚未輪替 signing key 的專案），`ES256`／`RS256` 改用 `jwt.PyJWKClient` 向 JWKS 端點取
+      `kid` 對應公鑰驗證，兩條路徑各自固定死驗證方式與金鑰來源，不互相借用，見
+      `docs/SECURITY.md` #31）
+- [x] 支援 signing key rotation 與 JWKS cache refresh。
+      （交給 `PyJWKClient` 自己的機制：`cache_keys=True` 快取 JWKS 文件 300 秒，快取裡找不到
+      的 `kid` 觸發一次無條件重新抓取，剛輪替的新 signing key 立刻可驗證，不必等 TTL 過期）
 - [x] 匿名 `/api/discover/import` 改為要求登入，或先寫入候選審核佇列，不直接寫入全域 catalog。
       （改為要求登入：`user: AuthUser = Depends(get_current_user)`，未帶合法 token 在任何抓取／
       DB 寫入前回 401；`POST /discover` 仍公開，只回傳候選清單不寫入。前端 `Discover.importFeed()`
