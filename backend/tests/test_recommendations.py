@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ import jwt
 import pytest
 
 from rate_limit import DEFAULT_MAX_REQUESTS
-from routers.recommendations import _score_candidates
+from routers.recommendations import Signals, _reason, _score_candidates
 
 os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-please-change")
 
@@ -77,27 +78,99 @@ def _feed_row(feed_id=None, category=None, tags=None, language=None):
     }
 
 
+def _feed_ids(body: list[dict]) -> list[str]:
+    return [row["feed"]["id"] for row in body]
+
+
+def _empty_authenticated_tables(mock_db, subscriptions=None, preferences=None, feedback=None, bookmarks=None):
+    """Stubs `db.table(...)` for every table `_load_signals` queries for a
+    signed-in caller (user_feeds, user_preferences, user_feed_feedback,
+    user_bookmarks), each defaulting to "no rows" so a test only has to
+    override the one table it actually cares about."""
+    tables = {
+        "user_feeds": _chain(MagicMock(data=subscriptions or [])),
+        "user_preferences": _chain(MagicMock(data=preferences or [])),
+        "user_feed_feedback": _chain(MagicMock(data=feedback or [])),
+        "user_bookmarks": _chain(MagicMock(data=bookmarks or [])),
+    }
+    mock_db.table.side_effect = lambda name: tables[name]
+    return tables
+
+
 class TestScoreCandidates:
     def test_category_match_scores_three(self):
+        signals = Signals()
+        signals.add_subscribed({"category": "tech", "tags": [], "language": None})
         rows = [_feed_row(category="art"), _feed_row(category="tech")]
-        scored = _score_candidates(rows, {"tech"}, set(), set())
+        scored = _score_candidates(rows, signals)
         assert scored[0]["category"] == "tech"
 
     def test_tag_matches_stack(self):
+        signals = Signals()
+        signals.add_subscribed({"category": None, "tags": ["a", "b"], "language": None})
         rows = [_feed_row(tags=[]), _feed_row(tags=["a"]), _feed_row(tags=["a", "b"])]
-        scored = _score_candidates(rows, set(), {"a", "b"}, set())
+        scored = _score_candidates(rows, signals)
         assert [len(r["tags"]) for r in scored] == [2, 1, 0]
 
     def test_language_match_scores_one(self):
+        signals = Signals()
+        signals.add_subscribed({"category": None, "tags": [], "language": "en"})
         rows = [_feed_row(language="fr"), _feed_row(language="en")]
-        scored = _score_candidates(rows, set(), set(), {"en"})
+        scored = _score_candidates(rows, signals)
         assert scored[0]["language"] == "en"
 
     def test_combined_signals_outrank_a_single_signal(self):
+        signals = Signals()
+        signals.add_subscribed({"category": "tech", "tags": ["a"], "language": "en"})
         weak = _feed_row(category="tech")
         strong = _feed_row(category="tech", tags=["a"], language="en")
-        scored = _score_candidates([weak, strong], {"tech"}, {"a"}, {"en"})
+        scored = _score_candidates([weak, strong], signals)
         assert scored[0] is strong
+
+    def test_disliked_signal_scores_negative(self):
+        signals = Signals()
+        signals.add_disliked({"category": "spam", "tags": [], "language": None})
+        rows = [_feed_row(category="spam"), _feed_row(category=None)]
+        scored = _score_candidates(rows, signals)
+        # the untouched-by-any-signal row (score 0) outranks the disliked
+        # match (negative score)
+        assert scored[0]["category"] is None
+
+    def test_positive_categories_excludes_negative_only_entries(self):
+        """_fetch_candidate_pool must never treat a dislike-only category as
+        something worth fetching *more* of."""
+        signals = Signals()
+        signals.add_disliked({"category": "spam", "tags": [], "language": None})
+        signals.add_subscribed({"category": "news", "tags": [], "language": None})
+        assert signals.positive_categories == {"news"}
+
+
+class TestReason:
+    def test_subscribed_category_match(self):
+        signals = Signals()
+        signals.add_subscribed({"category": "Python", "tags": [], "language": None})
+        row = _feed_row(category="Python")
+        assert _reason(row, signals) == "因為你訂閱了 Python 類別的來源"
+
+    def test_no_match_has_no_reason(self):
+        signals = Signals()
+        signals.add_subscribed({"category": "Python", "tags": [], "language": None})
+        row = _feed_row(category="Design")
+        assert _reason(row, signals) is None
+
+    def test_subscribed_beats_liked_when_both_match(self):
+        signals = Signals()
+        signals.add_subscribed({"category": "AI", "tags": [], "language": None})
+        signals.add_liked({"category": "AI", "tags": [], "language": None})
+        row = _feed_row(category="AI")
+        assert _reason(row, signals) == "因為你訂閱了 AI 類別的來源"
+
+    def test_disliked_or_skipped_never_produces_a_reason(self):
+        signals = Signals()
+        signals.add_disliked({"category": "spam", "tags": ["ads"], "language": None})
+        signals.add_skipped({"category": "spam", "tags": ["ads"], "language": None})
+        row = _feed_row(category="spam", tags=["ads"])
+        assert _reason(row, signals) is None
 
 
 def test_anonymous_no_signals_fetches_a_single_unfiltered_pool(client):
@@ -171,7 +244,7 @@ def test_category_signal_splits_into_three_pools(client):
     resp = c.get("/api/recommendations", params={"liked": [liked_id]})
 
     assert resp.status_code == 200
-    ids = [row["id"] for row in resp.json()]
+    ids = _feed_ids(resp.json())
     assert matching_feed["id"] in ids
     assert other_category_feed["id"] in ids
     assert uncategorized_feed["id"] in ids
@@ -224,7 +297,7 @@ def test_exploration_slots_survive_scoring_on_a_populated_catalog(client):
     assert resp.status_code == 200
     body = resp.json()
     assert len(body) == limit
-    assert exploratory_match["id"] in [row["id"] for row in body]
+    assert exploratory_match["id"] in _feed_ids(body)
 
 
 def test_exploratory_subpool_can_use_the_full_budget_when_the_other_is_empty(client):
@@ -304,7 +377,7 @@ def test_uncategorized_candidates_are_not_starved_when_other_category_fills_the_
     )
 
     assert resp.status_code == 200
-    result_ids = {row["id"] for row in resp.json()}
+    result_ids = set(_feed_ids(resp.json()))
     uncategorized_ids = {row["id"] for row in uncategorized_matches}
     assert result_ids & uncategorized_ids
 
@@ -336,7 +409,7 @@ def test_final_order_reflects_score_not_quota_origin(client):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body[0]["id"] == strong_exploratory["id"]
+    assert body[0]["feed"]["id"] == strong_exploratory["id"]
 
 
 def test_authenticated_user_excludes_their_subscriptions(client):
@@ -344,23 +417,15 @@ def test_authenticated_user_excludes_their_subscriptions(client):
     subscribed_id = str(uuid4())
     candidate = _feed_row(category="tech")
 
-    def _table(name):
-        if name == "user_feeds":
-            return _chain(
-                MagicMock(
-                    data=[
-                        {
-                            "feed_id": subscribed_id,
-                            "feeds": {"category": "tech", "tags": ["ai"], "language": "en"},
-                        }
-                    ]
-                )
-            )
-        if name == "user_preferences":
-            return _chain(MagicMock(data=[]))
-        raise AssertionError(f"unexpected table {name}")
-
-    mock_db.table.side_effect = _table
+    _empty_authenticated_tables(
+        mock_db,
+        subscriptions=[
+            {
+                "feed_id": subscribed_id,
+                "feeds": {"category": "tech", "tags": ["ai"], "language": "en"},
+            }
+        ],
+    )
 
     def _rpc(name, params):
         assert subscribed_id in params["p_excluded_ids"]
@@ -374,7 +439,213 @@ def test_authenticated_user_excludes_their_subscriptions(client):
     )
 
     assert resp.status_code == 200
-    assert all(row["id"] != subscribed_id for row in resp.json())
+    assert all(row["feed"]["id"] != subscribed_id for row in resp.json())
+
+
+def test_authenticated_response_includes_subscribed_reason(client):
+    c, mock_db = client
+    candidate = _feed_row(category="tech")
+
+    _empty_authenticated_tables(
+        mock_db,
+        subscriptions=[
+            {
+                "feed_id": str(uuid4()),
+                "feeds": {"category": "tech", "tags": [], "language": None},
+            }
+        ],
+    )
+    mock_db.rpc.side_effect = _sampling_rpc({"in_categories": [candidate], "not_in_categories": [], "uncategorized": []})
+
+    resp = c.get(
+        "/api/recommendations",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body[0]["feed"]["id"] == candidate["id"]
+    assert body[0]["reason"] == "因為你訂閱了 tech 類別的來源"
+
+
+def test_persisted_liked_feedback_excludes_and_boosts(client):
+    """A feed the caller already 喜歡'd server-side (TODO.md 推薦回饋持久化)
+    must not resurface, and its category should pull similar feeds up —
+    without the caller having to resend it as a `liked` query param on every
+    request."""
+    c, mock_db = client
+    liked_feed_id = str(uuid4())
+    candidate = _feed_row(category="tech")
+
+    _empty_authenticated_tables(
+        mock_db,
+        feedback=[
+            {
+                "feed_id": liked_feed_id,
+                "feedback_type": "liked",
+                "created_at": "2026-01-01T00:00:00Z",
+                "feeds": {"category": "tech", "tags": [], "language": None},
+            }
+        ],
+    )
+
+    def _rpc(name, params):
+        assert liked_feed_id in params["p_excluded_ids"]
+        return _rpc_chain(MagicMock(data=[candidate]))
+
+    mock_db.rpc.side_effect = _rpc
+
+    resp = c.get(
+        "/api/recommendations",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert liked_feed_id not in _feed_ids(body)
+    assert body[0]["reason"] == "因為你喜歡過 tech 類別的來源"
+
+
+def test_persisted_disliked_feedback_excludes_and_pushes_matches_down(client):
+    c, mock_db = client
+    disliked_feed_id = str(uuid4())
+    matching_candidate = _feed_row(category="spam")
+    neutral_candidate = _feed_row(category=None)
+
+    _empty_authenticated_tables(
+        mock_db,
+        feedback=[
+            {
+                "feed_id": disliked_feed_id,
+                "feedback_type": "disliked",
+                "created_at": "2026-01-01T00:00:00Z",
+                "feeds": {"category": "spam", "tags": [], "language": None},
+            }
+        ],
+    )
+    mock_db.rpc.side_effect = _sampling_rpc({"unfiltered": [matching_candidate, neutral_candidate]})
+
+    resp = c.get(
+        "/api/recommendations",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert disliked_feed_id not in _feed_ids(body)
+    # neutral (score 0) outranks the disliked-category match (negative score)
+    assert body[0]["feed"]["id"] == neutral_candidate["id"]
+    assert all(row["reason"] is None for row in body)
+
+
+def test_recent_skip_excludes_and_downweights(client):
+    c, mock_db = client
+    skipped_feed_id = str(uuid4())
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+    _empty_authenticated_tables(
+        mock_db,
+        feedback=[
+            {
+                "feed_id": skipped_feed_id,
+                "feedback_type": "skipped",
+                "created_at": recent,
+                "feeds": {"category": "news", "tags": [], "language": None},
+            }
+        ],
+    )
+
+    def _rpc(name, params):
+        assert skipped_feed_id in params["p_excluded_ids"]
+        return _rpc_chain(MagicMock(data=[]))
+
+    mock_db.rpc.side_effect = _rpc
+
+    resp = c.get(
+        "/api/recommendations",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+
+
+def test_expired_skip_does_not_exclude_or_downweight(client):
+    """TODO.md 推薦回饋持久化 is explicit that a skip is a short-term signal
+    ("只做短期降權，不等同明確不喜歡") — past the decay window the feed must be
+    eligible to resurface exactly as if it had never been skipped."""
+    c, mock_db = client
+    skipped_feed_id = str(uuid4())
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    candidate = _feed_row(feed_id=skipped_feed_id, category="news")
+
+    _empty_authenticated_tables(
+        mock_db,
+        feedback=[
+            {
+                "feed_id": skipped_feed_id,
+                "feedback_type": "skipped",
+                "created_at": old,
+                "feeds": {"category": "news", "tags": [], "language": None},
+            }
+        ],
+    )
+
+    def _rpc(name, params):
+        assert skipped_feed_id not in params["p_excluded_ids"]
+        return _rpc_chain(MagicMock(data=[candidate]))
+
+    mock_db.rpc.side_effect = _rpc
+
+    resp = c.get(
+        "/api/recommendations",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    assert skipped_feed_id in _feed_ids(resp.json())
+
+
+def test_bookmarked_source_is_a_moderate_positive_signal_deduped_per_feed(client):
+    """TODO.md 推薦回饋持久化: "收藏／稍後讀文章所屬來源為中度正向" — weaker than
+    an explicit 喜歡, and a feed with many bookmarked articles must not count
+    more than once (that would let bookmark volume alone out-weight a real
+    like)."""
+    c, mock_db = client
+    bookmarked_feed_id = str(uuid4())
+    liked_feed_id = str(uuid4())
+    same_category_candidate = _feed_row(category="tech")
+
+    tables = _empty_authenticated_tables(
+        mock_db,
+        feedback=[
+            {
+                "feed_id": liked_feed_id,
+                "feedback_type": "liked",
+                "created_at": "2026-01-01T00:00:00Z",
+                "feeds": {"category": "tech", "tags": [], "language": None},
+            }
+        ],
+        bookmarks=[
+            {"articles": {"feed_id": bookmarked_feed_id}},
+            {"articles": {"feed_id": bookmarked_feed_id}},
+        ],
+    )
+    tables["feeds"] = _chain(
+        MagicMock(data=[{"category": "tech", "tags": [], "language": None}])
+    )
+    mock_db.table.side_effect = lambda name: tables[name]
+    mock_db.rpc.side_effect = _sampling_rpc({"in_categories": [same_category_candidate], "not_in_categories": [], "uncategorized": []})
+
+    resp = c.get(
+        "/api/recommendations",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    # the "feeds" lookup for the bookmarked feed's category/tags is called
+    # once per distinct feed id, not once per bookmark row
+    feeds_in_call = tables["feeds"].in_.call_args[0][1]
+    assert feeds_in_call.count(bookmarked_feed_id) == 1
 
 
 @pytest.mark.parametrize("limit", [0, 51])
@@ -384,7 +655,24 @@ def test_limit_out_of_bounds_is_rejected(client, limit):
     assert resp.status_code == 422
 
 
-@pytest.mark.parametrize("param", ["liked", "disliked"])
+def test_anonymous_skipped_query_param_excludes_without_scoring(client):
+    """`skipped` (anonymous-side-only signal, mirroring `disliked`'s existing
+    treatment) keeps a feed out of the next deck but — unlike a persisted
+    skip's short-term negative weight for a signed-in caller — never affects
+    scoring here: anonymous callers have no server-side timestamp for
+    `_load_signals` to decay by, so `skipped` stays a plain exclusion."""
+    c, mock_db = client
+    skipped_id = str(uuid4())
+    mock_db.rpc.side_effect = _sampling_rpc({"unfiltered": []})
+
+    resp = c.get("/api/recommendations", params={"skipped": [skipped_id]})
+
+    assert resp.status_code == 200
+    name, params = mock_db.rpc.call_args[0]
+    assert skipped_id in params["p_excluded_ids"]
+
+
+@pytest.mark.parametrize("param", ["liked", "disliked", "skipped"])
 def test_malformed_id_in_liked_or_disliked_is_rejected(client, param):
     """`feeds.id` is a UUID column (migration 001); before this fix `liked`/
     `disliked` were plain `list[str]`, so a non-UUID value sailed through

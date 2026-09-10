@@ -10,7 +10,7 @@ import { Router, RouterLink } from '@angular/router';
 import { RecommendationService } from '../../services/recommendation';
 import { SubscriptionService } from '../../services/subscription';
 import { AuthService } from '../../services/auth';
-import { Feed } from '../../models';
+import { RecommendedFeed } from '../../models';
 import { apiMessage, isRateLimited, retryAfterSeconds } from '../../shared/http-errors';
 import { ObIcon } from '../../ui/icon/icon';
 import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
@@ -51,7 +51,7 @@ export class Recommendations implements OnInit, OnDestroy {
   /** The server's own cap, so one fetch lasts as long as possible. */
   private static readonly DECK_SIZE = 50;
 
-  feeds = signal<Feed[]>([]);
+  feeds = signal<RecommendedFeed[]>([]);
   loading = signal(true);
   error = signal('');
   currentIndex = signal(0);
@@ -59,7 +59,7 @@ export class Recommendations implements OnInit, OnDestroy {
 
   private timer: ReturnType<typeof setInterval> | null = null;
 
-  get current(): Feed | null {
+  get current(): RecommendedFeed | null {
     const list = this.feeds();
     const index = this.currentIndex();
     return index < list.length ? (list[index] ?? null) : null;
@@ -103,13 +103,13 @@ export class Recommendations implements OnInit, OnDestroy {
     });
   }
 
-  like(feed: Feed): void {
-    this.rec.like(feed.id);
+  like(item: RecommendedFeed): void {
+    this.rec.like(item.feed.id);
     this.next();
   }
 
-  skip(feed: Feed): void {
-    this.rec.dislike(feed.id);
+  skip(item: RecommendedFeed): void {
+    this.rec.skip(item.feed.id);
     this.next();
   }
 
@@ -123,22 +123,25 @@ export class Recommendations implements OnInit, OnDestroy {
 
   /**
    * A third, distinct action from 喜歡/跳過: subscribing is a stronger signal
-   * than liking (docs/FEATURES.md's recommendation logic already excludes a
-   * signed-in reader's subscribed feeds from future decks independently of
-   * `liked`/`disliked`). Also records it as liked — there is no separate
-   * persisted "subscribed" signal yet (that is TODO.md's later 推薦回饋持久化
-   * batch), and folding it in here means it still contributes its
-   * category/tags/language to this session's scoring the same way 喜歡 does.
+   * than liking — `_load_signals` (backend/routers/recommendations.py) weighs
+   * a subscription at its own, stronger tier independently of persisted
+   * liked/disliked/skipped feedback. There is no separate "subscribed"
+   * feedback_type (`user_feed_feedback`'s CHECK constraint only allows
+   * liked/disliked/skipped), so this also records the feed as liked — that
+   * way a subscribe still contributes its category/tags/language to scoring
+   * even before the subscription itself is read back on some future call.
    *
    * Recording "liked" and advancing the deck both wait for the subscribe
    * request to actually succeed, rather than firing immediately the way
-   * like()/skip() do (those are local-only and cannot fail). `liked` is
-   * stored in localStorage and excludes the feed from every future deck
-   * (RecommendationService.getRecommendations) — doing that on an
-   * optimistic call that then fails would strand an unsubscribed feed
-   * outside all future decks with no way back short of clearing storage.
+   * like()/skip() do (those cannot fail locally — the persist call is
+   * best-effort and never blocks the UI). `liked` excludes the feed from
+   * every future deck (RecommendationService.getRecommendations) — doing
+   * that on an optimistic call that then fails would strand an unsubscribed
+   * feed outside all future decks with no way back short of clearing
+   * storage.
    */
-  subscribe(feed: Feed): void {
+  subscribe(item: RecommendedFeed): void {
+    const feed = item.feed;
     if (!this.auth.session()) {
       void this.router.navigate(['/login'], {
         queryParams: { redirect: '/recommendations', subscribeFeed: feed.id },

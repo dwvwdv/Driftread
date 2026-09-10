@@ -11,7 +11,7 @@
 |------|------|------|----------|
 | 信息源瀏覽 | ✅ | 分頁、分類 / 語言 / tag 組合篩選（可從卡片上的 tag 直接點擊篩選）、關鍵字搜尋 | `routers/feeds.py`、`components/feed-list` |
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶完整文章列表（cursor 分頁「載入更多」，登入後每篇可直接切換已讀／收藏）；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/feed-detail`、`components/article-reader` |
-| 猜你喜歡 | ✅ | 以訂閱與偏好推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
+| 猜你喜歡 | ✅ | 以訂閱、偏好與已登入者的持久化回饋（喜歡／不喜歡／跳過、收藏來源）推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），卡片附「推薦理由」，另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證，依 token `alg` 分流 HS256 shared secret 或 JWKS（ES256／RS256，見 `docs/SECURITY.md` #31）。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
 | 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
 | **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/015_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
@@ -26,17 +26,26 @@
 
 ## 2. 推薦邏輯（猜你喜歡）
 
-`GET /api/recommendations` 的評分方式（`_score_candidates`）：
+`GET /api/recommendations` 的評分方式（`Signals` / `_score`）分五個來源，依 TODO.md
+推薦回饋持久化訂下的強弱排序給不同權重：
 
-| 訊號 | 加權 |
-|------|------|
-| category 命中 | +3 |
-| 每個命中的 tag | +2 |
-| language 命中 | +1 |
+| 訊號來源 | category | tag | language |
+|----------|----------|-----|----------|
+| 訂閱、`user_preferences`（強正向） | +3 | +2 | +1 |
+| 喜歡（`user_feed_feedback` liked，或 query 帶的 `liked`）（正向） | +2 | +1 | +1 |
+| 收藏／稍後讀文章所屬來源（中度正向，同一來源不論收藏幾篇只算一次） | +1 | +0.5 | — |
+| 不喜歡（`user_feed_feedback` disliked，明確負向） | −3 | −2 | — |
+| 跳過（`user_feed_feedback` skipped，僅 14 天內，短期負向） | −1 | −1 | — |
 
-訊號來源：已登入者取其訂閱的 feed（category / tags / language）與 `user_preferences`；
-未登入者只吃 query 帶的 `liked`。已訂閱與 `liked` / `disliked` 內的 feed 會被排除。
-`liked` / `disliked` 各上限 50 筆，`limit` 為 1–50（預設 10）。
+訊號來源：已登入者的訂閱 feed（category / tags / language）、`user_preferences`、
+`user_feed_feedback`（喜歡／不喜歡／跳過）與收藏文章所屬來源，一次查齊；未登入者只吃 query
+帶的 `liked` / `disliked` / `skipped`（`skipped` 只用來排除，不影響評分——匿名呼叫端沒有時間戳
+可供伺服器端判斷「短期」）。已訂閱、喜歡過與明確不喜歡的 feed 一律排除；跳過只在 14 天內排除，
+過期後恢復正常參與推薦（不是永久排除，符合 TODO.md「短期降權，不等同明確不喜歡」）。
+`liked` / `disliked` / `skipped` 各上限 50 筆，`limit` 為 1–50（預設 10）。
+
+回應每筆附一個簡短的推薦理由（`reason`，可能是 `null`），依訂閱／喜歡／收藏的優先順序，解釋這筆
+候選命中了哪個 category 或哪些 tag——不喜歡／跳過只影響排序，不會產生理由。
 
 候選池的抽樣透過 DB function `sample_feed_candidates()`（migration 007）在資料庫端隨機抽樣，
 而非應用層 `.limit()` 後才 shuffle —— PostgREST 的 query builder 沒有 random order，單純
@@ -271,6 +280,9 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/me/bookmarks` | 收藏 / 稍後讀（依 `bookmark_type`） |
 | POST | `/me/bookmarks` | 加入收藏（204） |
 | DELETE | `/me/bookmarks/{article_id}` | 移除收藏（204） |
+| GET | `/me/feed-feedback` | 猜你喜歡的持久化回饋清單（`feed_id`／`feedback_type`／`created_at`） |
+| PUT | `/me/feed-feedback/{feed_id}` | 設定對該 feed 目前的立場（`liked`／`disliked`／`skipped`，同 feed 只留最新一筆，204） |
+| DELETE | `/me/feed-feedback/{feed_id}` | 清除對該 feed 的回饋（204） |
 | GET | `/me/preferences` | 取得偏好 |
 | PUT | `/me/preferences` | 更新偏好（`preferred_categories` / `preferred_languages` 各上限 50 筆） |
 | POST | `/me/import/opml` | 匯入 OPML（檔案上限 5 MiB、單檔最多處理 200 個 outline） |
@@ -384,6 +396,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `user_article_reads` | 002 | 已讀回報。一列的存在即代表「已讀」，`DELETE` 即「標為未讀」——沒有另外的已讀/未讀狀態欄位或新表。`GET /me/stream` 的 `is_read`／`GET /me/reads` 都直接查這張表 |
 | `user_bookmarks` | 002 | 收藏 / 稍後讀（`bookmark_type` 區分） |
 | `user_preferences` | 002 | `preferred_categories` / `preferred_languages` |
+| `user_feed_feedback` | 019 | 猜你喜歡的持久化回饋。`PRIMARY KEY (user_id, feed_id)`——一個使用者對一個 feed 只留最新立場（`feedback_type`：`liked` / `disliked` / `skipped`），不是逐筆事件記錄 |
 | `discovery_targets` | 006 | 待探測佇列。`url` UNIQUE（不是 host —— 一個站可以有多個 feed），`host` 另建索引供去重；`status` / `attempts` / `next_probe_at` / `referring_feed_count` |
 | `discovery_target_referrers` | 006 | `(target_id, feed_id)` 主鍵的分帳表，讓「幾個**不同**的既有源連到這裡」精確且重複收割時冪等 |
 | `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制；`approved_category` / `approved_tags` 讓核准決定在寫 `feeds` 失敗時不會遺失 |
@@ -428,8 +441,9 @@ function 服務公開端點，未登入呼叫時兩個 LEFT JOIN（`user_article
 固定 `bookmark_type = 'favorite'`）的條件都不成立，`is_read`／`is_bookmarked` 自然是 false。同
 `SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。
 
-RLS：四張 `user_*` 表為 permanent-user owner-only policy（002；同時檢查 `auth.uid()` 與
-JWT `is_anonymous = false`）；`feeds` / `articles` 開 RLS 並給 public read policy（004）。
+RLS：五張 `user_*` 表為 permanent-user owner-only policy（002 的四張＋019 的
+`user_feed_feedback`；同時檢查 `auth.uid()` 與 JWT `is_anonymous = false`）；
+`feeds` / `articles` 開 RLS 並給 public read policy（004）。
 **四張 `discovery_*` 表開 RLS 但刻意不建任何 policy（006）** —— 連 SELECT 都沒有，所以 anon 與
 authenticated 看不到任何列也寫不進去，只有 service_role 能繞過。這與 004 對公開 catalog 開 public
 read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key 洩漏不該能列舉待探測佇列。
@@ -444,6 +458,7 @@ read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key
 `user_bookmarks(user_id, bookmark_type)`、
 `user_bookmarks(user_id, bookmark_type, created_at DESC)`（013，供 `GET /me/bookmarks` 的
 `ORDER BY created_at DESC` 免額外排序）、
+`user_feed_feedback(user_id)`（019，供 `GET /me/feed-feedback` 與推薦端的 `_load_signals`）、
 `discovery_targets(referring_feed_count DESC, next_probe_at) WHERE status='pending'`（partial，供探測佇列）、
 `discovery_targets(host)`、`discovery_targets(status)`、
 `discovery_candidates(referring_feed_count DESC, discovered_at DESC) WHERE status='pending'`（partial，供審核佇列）、

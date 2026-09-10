@@ -125,6 +125,24 @@ export interface DiscoverResponse {
 
 export type BookmarkType = 'favorite' | 'read_later';
 
+/** One row of GET /recommendations — a Feed plus a short explanation of why
+ * it was picked (TODO.md 推薦回饋持久化 "顯示推薦理由"), null when nothing
+ * about the caller's signals drove the pick. */
+export interface RecommendedFeed {
+  feed: Feed;
+  reason: string | null;
+}
+
+export type FeedFeedbackType = 'liked' | 'disliked' | 'skipped';
+
+/** One row of GET /me/feed-feedback — persisted 猜你喜歡 feedback, so it
+ * survives across devices instead of living only in localStorage. */
+export interface FeedFeedback {
+  feed_id: string;
+  feedback_type: FeedFeedbackType;
+  created_at: string;
+}
+
 export interface UserPreferences {
   preferred_categories: string[];
   preferred_languages: string[];

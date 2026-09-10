@@ -77,10 +77,15 @@ class ImportFeedsRequest(BaseModel):
     feeds: list[FeedCreate]
 
 
-class RecommendationRequest(BaseModel):
-    liked_feed_ids: list[str] = []
-    disliked_feed_ids: list[str] = []
-    limit: int = 10
+class RecommendedFeed(BaseModel):
+    """One row of GET /recommendations — a Feed plus a short, human-readable
+    reason for why it was picked (TODO.md 推薦回饋持久化 "顯示推薦理由"), e.g.
+    "因為你訂閱了 Python、資安". `None` when nothing about the caller's signals
+    actually drove the pick — the anonymous, no-signal "unfiltered" sampling
+    path, or a filler row pulled in only to top up `limit`."""
+
+    feed: Feed
+    reason: str | None = None
 
 
 class PaginatedFeeds(BaseModel):
@@ -173,6 +178,16 @@ class Bookmark(BaseModel):
     article_id: UUID
     bookmark_type: str
     created_at: datetime
+
+
+class FeedFeedback(BaseModel):
+    feed_id: UUID
+    feedback_type: Literal["liked", "disliked", "skipped"]
+    created_at: datetime
+
+
+class FeedFeedbackCreate(BaseModel):
+    feedback_type: Literal["liked", "disliked", "skipped"]
 
 
 class UserPreferences(BaseModel):

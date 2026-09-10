@@ -6,7 +6,7 @@ import { RecommendationService } from '../../services/recommendation';
 import { SubscriptionService } from '../../services/subscription';
 import { AuthService } from '../../services/auth';
 import { ToastService } from '../../ui/toast/toast';
-import { Feed } from '../../models';
+import { Feed, RecommendedFeed } from '../../models';
 
 const feed: Feed = {
   id: 'feed-1',
@@ -24,12 +24,23 @@ const feed: Feed = {
   updated_at: '2026-01-01T00:00:00Z',
 };
 
+const item: RecommendedFeed = { feed, reason: null };
+
 describe('Recommendations subscribe action', () => {
   // Signed in by default; a test that needs signed-out sets this to null
   // *before* calling setup() — setup() itself must not touch it, or it would
   // clobber that override right back to signed-in.
   let session: { user: { id: string } } | null = { user: { id: 'user-1' } };
-  let rec: { liked: () => string[]; disliked: () => string[]; likeCalls: string[]; like: (id: string) => void; dislike: (id: string) => void; getRecommendations: () => ReturnType<RecommendationService['getRecommendations']> };
+  let rec: {
+    liked: () => string[];
+    disliked: () => string[];
+    skipped: () => string[];
+    likeCalls: string[];
+    like: (id: string) => void;
+    dislike: (id: string) => void;
+    skip: (id: string) => void;
+    getRecommendations: () => ReturnType<RecommendationService['getRecommendations']>;
+  };
   let subs: {
     subscribeCalls: string[];
     isSubscribed: (id: string) => boolean;
@@ -46,10 +57,12 @@ describe('Recommendations subscribe action', () => {
     rec = {
       liked: () => [],
       disliked: () => [],
+      skipped: () => [],
       likeCalls: [],
       like: (id) => rec.likeCalls.push(id),
       dislike: () => {},
-      getRecommendations: () => of([feed]),
+      skip: () => {},
+      getRecommendations: () => of([item]),
     };
     subs = {
       subscribeCalls: [],
@@ -93,7 +106,7 @@ describe('Recommendations subscribe action', () => {
     session = null;
     const page = setup();
 
-    page.subscribe(feed);
+    page.subscribe(item);
 
     expect(navCalls).toEqual([
       [['/login'], { queryParams: { redirect: '/recommendations', subscribeFeed: 'feed-1' } }],
@@ -105,7 +118,7 @@ describe('Recommendations subscribe action', () => {
   it('subscribes a signed-in reader, also recording it as liked, and advances the deck', () => {
     const page = setup();
 
-    page.subscribe(feed);
+    page.subscribe(item);
 
     expect(subs.subscribeCalls).toEqual(['feed-1']);
     expect(rec.likeCalls).toEqual(['feed-1']);
@@ -122,7 +135,7 @@ describe('Recommendations subscribe action', () => {
       onError?.(new Error('boom'));
     };
 
-    page.subscribe(feed);
+    page.subscribe(item);
 
     expect(subs.subscribeCalls).toEqual(['feed-1']);
     expect(rec.likeCalls).toEqual([]);

@@ -6,6 +6,8 @@ import {
   ArticleSummary,
   BookmarkType,
   Feed,
+  FeedFeedback,
+  FeedFeedbackType,
   MarkAllReadRequest,
   MarkAllReadResult,
   OpmlImportResult,
@@ -90,6 +92,20 @@ export class MeService {
   removeBookmark(articleId: string, bookmarkType: BookmarkType): Observable<void> {
     const params = new HttpParams().set('bookmark_type', bookmarkType);
     return this.http.delete<void>(`${this.base}/me/bookmarks/${articleId}`, { params });
+  }
+
+  listFeedFeedback(): Observable<FeedFeedback[]> {
+    return this.http.get<FeedFeedback[]>(`${this.base}/me/feed-feedback`);
+  }
+
+  setFeedFeedback(feedId: string, feedbackType: FeedFeedbackType): Observable<void> {
+    return this.http.put<void>(`${this.base}/me/feed-feedback/${feedId}`, {
+      feedback_type: feedbackType,
+    });
+  }
+
+  clearFeedFeedback(feedId: string): Observable<void> {
+    return this.http.delete<void>(`${this.base}/me/feed-feedback/${feedId}`);
   }
 
   getPreferences(): Observable<UserPreferences> {
