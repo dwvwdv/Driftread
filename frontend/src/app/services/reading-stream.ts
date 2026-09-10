@@ -242,16 +242,15 @@ export class ReadingStreamService {
     this.me.getUnreadCounts().subscribe({
       next: (summary) => {
         if (this.loadedFor !== requestedFor) return;
-        // A newer loadCounts() (higher-ticketed) already landed and applied
-        // its own baseline — this response is stale relative to it, not
-        // relative to any local write, so it's simply moot. Loading only
-        // clears once the most recently *issued* call settles, so a stale
-        // response landing late doesn't flip it off while a newer one is
-        // still outstanding.
-        if (asOf < this._countsBaselineAsOf) {
-          if (asOf === this._countsLatestIssuedAsOf) this._countsLoading.set(false);
-          return;
-        }
+        // Only the most recently *issued* loadCounts() may ever affect
+        // state — a strictly older one is superseded outright, whatever it
+        // contains, and must not apply even if the newer one has since
+        // *failed*: comparing against the last *accepted* baseline instead
+        // would let this stale response slip through in exactly that case
+        // (a failed newer request never advances the baseline), silently
+        // overwriting the badge with pre-write totals right after the
+        // caller was told the refresh failed.
+        if (asOf < this._countsLatestIssuedAsOf) return;
         this._countsBaselineTotal = summary.total_unread;
         this._countsBaselineFeeds = summary.feeds;
         this._countsBaselineAsOf = asOf;
@@ -267,7 +266,7 @@ export class ReadingStreamService {
         }
         this.recomputeCounts();
         this._countsLoaded.set(true);
-        if (asOf === this._countsLatestIssuedAsOf) this._countsLoading.set(false);
+        this._countsLoading.set(false);
       },
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor) return;
@@ -361,7 +360,26 @@ export class ReadingStreamService {
    * Deltas for a feed absent from the baseline (shouldn't happen in
    * practice — a delta always originates from an article already in
    * `_feedCounts`) are simply dropped, same as the old code's `.map()`
-   * silently no-oping on an unmatched `feed_id`. */
+   * silently no-oping on an unmatched `feed_id`.
+   *
+   * A still-*pending* article's delta being unconditionally included (never
+   * judged against a baseline's ticket) is a deliberate choice, not an
+   * oversight: the write's own optimistic-apply ticket only says when the
+   * *client* guessed, never when the server actually processed it, so
+   * comparing it to a baseline's `asOf` can't be made sound in either
+   * direction. Excluding it below some baseline ticket reintroduces the bug
+   * this class's ticketing was built to fix (a write that hasn't actually
+   * landed yet gets silently dropped the moment *any* later baseline is
+   * accepted, undercounting reads until an unrelated refresh happens to fix
+   * it). Always including it instead trades that for the mirror case — a
+   * GET that happens to reflect this exact write already, landing while
+   * it's still `_pending` client-side, briefly double-counts it — which is
+   * narrower in practice (a write's own response is very rarely slower
+   * than a second request issued after it) and self-corrects the same way,
+   * on the next full GET. Resolving both directions at once would need the
+   * API to expose something the two operations could be soundly ordered by
+   * (e.g. a per-row version/`updated_at`), which isn't part of the current
+   * contract — see TODO.md. */
   private recomputeCounts(): void {
     const perFeed = new Map(this._countsBaselineFeeds.map((f) => [f.feed_id, { ...f }]));
     let total = this._countsBaselineTotal;

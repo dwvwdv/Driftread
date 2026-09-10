@@ -672,6 +672,35 @@ describe('ReadingStreamService', () => {
     expect(svc.countsLoading()).toBe(false);
   });
 
+  it('loadCounts() discards a stale success even when the newer request that superseded it failed', () => {
+    const svc = setup();
+    const first = new Subject<UnreadSummary>();
+    const second = new Subject<UnreadSummary>();
+    let call = 0;
+    me.getUnreadCounts = () => (++call === 1 ? first : second);
+
+    svc.loadCounts(); // e.g. some earlier, still in-flight refresh
+    let errored = false;
+    // e.g. markAllReadInScope's post-write refresh, issued after the above
+    svc.loadCounts(() => (errored = true));
+
+    // The newer request — the one that should be authoritative — fails
+    // first. It never advances the baseline.
+    second.error(new Error('boom'));
+    expect(errored).toBe(true);
+    expect(svc.countsLoading()).toBe(false);
+
+    // The older, now-superseded request resolves afterwards with a stale
+    // (pre-write) snapshot. It must not be accepted just because no newer
+    // *baseline* happens to exist yet — it was superseded at issuance,
+    // regardless of how the request that superseded it turned out.
+    first.next({ total_unread: 99, feeds: [] });
+    first.complete();
+
+    expect(svc.totalUnread()).toBe(0);
+    expect(svc.countsLoaded()).toBe(false);
+  });
+
   it('load() keeps the optimistic read state for an article with its own write still pending', () => {
     const svc = setup();
     TestBed.flushEffects();
