@@ -418,18 +418,36 @@ export class ReadingStreamService {
   }
 
   /** Starts tracking a new write's (still-unsettled) contribution to the
-   * unread counts. Returns the entry so the caller can later transition it
-   * via `confirmCountDelta` (write succeeded) or `removeCountDelta` (write
-   * failed — undoing the optimistic guess outright, rather than netting a
-   * reverse delta against it, keeps this symmetric with every other entry
-   * always representing one real write attempt). */
-  private commitCountDelta(
+   * unread counts, without recomputing the displayed totals — for a caller
+   * about to push several of these at once (`markAllReadInView`'s targets)
+   * and recompute exactly once afterward, since `recomputeCounts()` is
+   * O(outstanding entries) and calling it once per push would make
+   * preparing an n-article batch O(n²) before a single HTTP request is even
+   * issued. `commitCountDelta()` is the single-write convenience that also
+   * recomputes immediately. */
+  private pushCountDelta(
     articleId: string,
     feedId: string,
     amount: number,
   ): (typeof this._countDeltas)[number] {
     const entry = { articleId, feedId, amount, pending: true, confirmedAt: 0 };
     this._countDeltas.push(entry);
+    return entry;
+  }
+
+  /** Starts tracking a new write's (still-unsettled) contribution to the
+   * unread counts and recomputes immediately. Returns the entry so the
+   * caller can later transition it via `confirmCountDelta` (write
+   * succeeded) or `removeCountDelta`/`removeCountDeltas` (write failed —
+   * undoing the optimistic guess outright, rather than netting a reverse
+   * delta against it, keeps this symmetric with every other entry always
+   * representing one real write attempt). */
+  private commitCountDelta(
+    articleId: string,
+    feedId: string,
+    amount: number,
+  ): (typeof this._countDeltas)[number] {
+    const entry = this.pushCountDelta(articleId, feedId, amount);
     this.recomputeCounts();
     return entry;
   }
@@ -447,11 +465,19 @@ export class ReadingStreamService {
     entry.confirmedAt = ticket;
   }
 
-  /** Discards a delta entry outright — the write it represented failed, so
-   * there is nothing to keep tracking. */
+  /** Discards a delta entry outright and recomputes — the write it
+   * represented failed, so there is nothing to keep tracking. */
   private removeCountDelta(entry: (typeof this._countDeltas)[number]): void {
-    const idx = this._countDeltas.indexOf(entry);
-    if (idx !== -1) this._countDeltas.splice(idx, 1);
+    this.removeCountDeltas([entry]);
+  }
+
+  /** Batch counterpart of `removeCountDelta` — discards several entries and
+   * recomputes exactly once, for the same O(n²)-avoidance reason as
+   * `pushCountDelta`. */
+  private removeCountDeltas(entries: (typeof this._countDeltas)[number][]): void {
+    if (!entries.length) return;
+    const toRemove = new Set(entries);
+    this._countDeltas = this._countDeltas.filter((d) => !toRemove.has(d));
     this.recomputeCounts();
   }
 
@@ -537,7 +563,13 @@ export class ReadingStreamService {
     this._items.update((items) =>
       items.map((a) => (targetIds.has(a.id) ? { ...a, is_read: true, read_at: now } : a)),
     );
-    const deltas = new Map(targets.map((a) => [a.id, this.commitCountDelta(a.id, a.feed_id, -1)]));
+    // `pushCountDelta()` + one `recomputeCounts()` after the loop, rather
+    // than `commitCountDelta()` per target — the latter would make this
+    // O(n²) in the number of targets (recomputeCounts() is O(outstanding
+    // entries), and it would run once per target added) before any HTTP
+    // request is even issued.
+    const deltas = new Map(targets.map((a) => [a.id, this.pushCountDelta(a.id, a.feed_id, -1)]));
+    this.recomputeCounts();
 
     // Batches aren't atomic as a set — one can commit while a later one
     // fails — so each batch's outcome is tracked independently instead of
@@ -578,12 +610,10 @@ export class ReadingStreamService {
         this._items.update((items) =>
           items.map((a) => (failedIds.has(a.id) ? { ...a, is_read: false, read_at: null } : a)),
         );
-        for (const o of failed) {
-          for (const a of o.batch) {
-            const delta = deltas.get(a.id);
-            if (delta) this.removeCountDelta(delta);
-          }
-        }
+        const toRemove = failed
+          .flatMap((o) => o.batch.map((a) => deltas.get(a.id)))
+          .filter((d): d is (typeof this._countDeltas)[number] => d !== undefined);
+        this.removeCountDeltas(toRemove);
         onError?.(failed[0].err);
       }
       if (marked > 0 || !failed.length) onSuccess?.(marked);
