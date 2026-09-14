@@ -50,13 +50,30 @@ $$;
 -- text — just replace each tag with a space (not drop it outright, so
 -- "...sentence.</p><p>Next" doesn't glue into one word) before it reaches
 -- to_tsvector/ts_headline.
+--
+-- A naive `<[^>]*>` stops at the *first* `>`, including one that's just
+-- data inside a quoted attribute value (`<a title="2 > 1" href="...">`) —
+-- that leaves everything from the quoted `>` to the tag's real closing `>`
+-- (here, ` 1" href="...">`) behind as literal indexed/headlined text, so a
+-- search can still hit an invisible `href` or attribute value. The
+-- alternation below mirrors frontend/src/app/shared/html.ts's quote-aware
+-- ATTRS/TAG_RE (same problem, same fix, translated to SQL's regex flavor):
+-- match an HTML comment whole, or a tag whose attributes are matched
+-- quote-aware (a `"..."`/`'...'` run is one unit regardless of `>` inside
+-- it), falling back to the naive form only for a tag with an unbalanced
+-- quote the quote-aware alternative can't otherwise match.
 CREATE OR REPLACE FUNCTION driftread.strip_html_for_search(p_html text)
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog
 AS $$
-  SELECT regexp_replace(coalesce(p_html, ''), '<[^>]*>', ' ', 'g')
+  SELECT regexp_replace(
+    coalesce(p_html, ''),
+    '<!--.*?-->|</?[a-zA-Z](?:[^>"'']|"[^"]*"|''[^'']*'')*>|</?[a-zA-Z][^>]*>',
+    ' ',
+    'g'
+  )
 $$;
 
 ALTER TABLE driftread.articles

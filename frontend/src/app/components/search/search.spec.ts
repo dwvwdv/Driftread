@@ -1,7 +1,9 @@
 import { TestBed } from '@angular/core/testing';
+import { signal } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { Subject, of } from 'rxjs';
 import { Search } from './search';
+import { AuthService } from '../../services/auth';
 import { FeedService } from '../../services/feed';
 import { SearchService } from '../../services/search';
 import { ToastService } from '../../ui/toast/toast';
@@ -53,12 +55,18 @@ describe('Search', () => {
   let feedCalls: { q: string; language: string | null | undefined; cursor: string | null | undefined }[];
   let articleResponses: Subject<PaginatedArticleSearchResults>[];
   let feedResponses: Subject<PaginatedFeedSearchResults>[];
+  let session: ReturnType<typeof signal<{ user: { id: string } } | null>>;
+  // Re-detects changes on the same fixture, which is how a component-owned
+  // effect (created via `effect()` in Search's constructor) actually flushes
+  // in tests — same reasoning as my-feeds.spec.ts's own `detect`.
+  let detect: () => void;
 
   function setup() {
     articleCalls = [];
     feedCalls = [];
     articleResponses = [];
     feedResponses = [];
+    session = signal<{ user: { id: string } } | null>(null);
 
     const search = {
       searchArticles: (q: string, language?: string | null, cursor?: string | null) => {
@@ -80,6 +88,7 @@ describe('Search', () => {
       imports: [Search],
       providers: [
         provideRouter([]),
+        { provide: AuthService, useValue: { session } },
         { provide: SearchService, useValue: search },
         { provide: FeedService, useValue: { getLanguages: () => of(['en', 'zh']) } },
         {
@@ -90,7 +99,8 @@ describe('Search', () => {
     });
 
     const fixture = TestBed.createComponent(Search);
-    fixture.detectChanges();
+    detect = () => fixture.detectChanges();
+    detect();
     return fixture.componentInstance;
   }
 
@@ -185,5 +195,52 @@ describe('Search', () => {
 
     expect(p.articleLoading()).toBe(false);
     expect(p.articleError()).toBeTruthy();
+  });
+
+  it('reloads article results once a persisted session resolves after an anonymous search', () => {
+    const p = setup();
+    p.query = 'rust';
+    p.submit();
+    expect(articleCalls.length).toBe(1);
+    articleResponses[0].next(resultPage([articleResult(1, { is_read: false })]));
+    expect(p.articleItems()[0].is_read).toBe(false);
+
+    session.set({ user: { id: 'user-1' } });
+    detect();
+
+    expect(articleCalls.length).toBe(2);
+    articleResponses[1].next(resultPage([articleResult(1, { is_read: true })]));
+    expect(p.articleItems()[0].is_read).toBe(true);
+  });
+
+  it('does not reload when there is no active query yet', () => {
+    // A session resolving before any search is submitted must not fire a
+    // request — hasQuery is false, so the effect's own guard should no-op.
+    setup();
+    session.set({ user: { id: 'user-1' } });
+    detect();
+
+    expect(articleCalls.length).toBe(0);
+  });
+
+  it('invalidates (but does not immediately reload) the feed tab on identity change, reloading on switch back', () => {
+    const p = setup();
+    p.query = 'rust';
+    p.submit();
+    articleResponses[0].next(resultPage([]));
+
+    p.onTab(1);
+    feedResponses[0].next(resultPage([feedResult(1)]));
+    expect(feedCalls.length).toBe(1);
+
+    session.set({ user: { id: 'user-1' } });
+    detect();
+    // Identity change while the feed tab is active must not fire an article
+    // request (feed results don't carry per-user state).
+    expect(articleCalls.length).toBe(1);
+
+    p.onTab(0);
+    // Switching back to the (now identity-invalidated) article tab reloads.
+    expect(articleCalls.length).toBe(2);
   });
 });

@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，三輪，1 個 P1，7 個 P2，均證實為真）**：
+- **PR review 修正（Codex，四輪，1 個 P1，9 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1537,10 +1537,36 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
      `services/discovery_candidates.py` 還有其他 `feeds.select("*")` 既有用法，這次
      review 沒有指出（後台操作端點，不是高流量的公開路徑）——範圍留給之後真的需要時再
      處理，不在這個 PR 裡順手清掉。
+  9. **P2**（第四輪 review）：第二輪加的 `strip_html_for_search()`（`<[^>]*>` → 空白）
+     在屬性值裡出現字面 `>` 時會提早停在那個 `>`，不是標籤真正的收尾——例如
+     `<a title="2 > 1" href="https://example.com">text</a>`，會把
+     ` 1" href="https://example.com">` 這段原封不動留在索引／headline 文字裡，搜尋還是
+     能命中看不見的屬性值或連結網址，等於沒真正解掉第二輪那個發現。修法：正規表示式改用
+     跟 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE` 同一套 quote-aware 邏輯
+     （翻譯成 Postgres 的 regex 語法）——標籤的屬性部分改成
+     `(?:[^>"']|"[^"]*"|'[^']*')*`：不是屬性值的字元逐一比對，遇到雙引號／單引號包起來的
+     一整段（不論裡面有沒有 `>`）當成一個單位跳過，只有真的沒有配對引號的異常標籤才退回
+     原本天真的 `[^>]*`。
+  10. **P2**（第四輪 review）：`components/search/search.ts` 從未對
+      `AuthService.session()` 做任何反應——`AuthService` 是非同步還原已登入 session
+      的（同 `feed-detail.ts`／`reading-stream.ts`／`bookmarks.ts` 已經處理過的同一類
+      問題），如果讀者在 session 還原完成前就送出搜尋，那次請求會是匿名的，
+      `is_read`／`is_bookmarked` 全部回傳 false；`searchKey` 只看 query／language，不含
+      使用者身分，session 還原後重新送出同一個查詢會被當成「已經載入過」直接跳過，讀者
+      會一直卡在匿名結果上。修法：跟其餘元件同一套模式——建構子裡加一個
+      `effect()` 追蹤 `auth.session()?.user?.id`，身分改變時清掉 `articleLoadedForKey`
+      這個快取鍵；若當下就在文章分頁且有進行中的查詢就立刻重新載入，若在來源分頁則只
+      invalidate，等切回文章分頁時 `loadActiveTab()` 既有的快取鍵比對自然會重新載入
+      （來源搜尋本來就不帶使用者狀態，不需要在身分改變當下就重打）。
   - **測試**：`test_utils.py` 新增四種非有限值（`nan`／`inf`／`-inf`／`Infinity`）的
     拒絕案例；`test_articles.py`／`test_feeds.py` 各新增案例斷言對應端點的
-    `.select(...)` 參數是明確欄位清單、不是 `"*"`。P2-5（HTML 去除）、P2-7（排除已封存
-    來源）與 P1（截斷）都是這個 sandbox 無法連上真正 Postgres 執行的 SQL 邏輯，同本節
-    前段記錄的既有限制，靠人工覆核；rate limit dependency 不影響既有測試——
-    `conftest.py` 的 `_reset_rate_limits` 每個測試前都會清空命中紀錄，且每個測試案例
-    只送一到兩次請求。
+    `.select(...)` 參數是明確欄位清單、不是 `"*"`；`components/search/search.spec.ts`
+    新增三個案例（session 還原後重新載入文章結果、尚未送出查詢時 session 還原不觸發任何
+    請求、身分改變當下人在來源分頁不立即重打但切回文章分頁會重打），做法同
+    `feed-detail.spec.ts`／`my-feeds.spec.ts` 既有對 session 訊號的測法（`session.set(...)`
+    後在同一個 fixture 上再呼叫一次 `detectChanges()` 讓元件自己的 `effect()` 真正跑一次
+    ——`TestBed.flushEffects()` 是給注入來源為 `TestBed.inject()` 的 effect，不是給
+    component fixture 的）。P2-9（quote-aware 標籤比對）與 P1（截斷）都是這個 sandbox
+    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制，靠人工覆核；
+    rate limit dependency 不影響既有測試——`conftest.py` 的 `_reset_rate_limits` 每個
+    測試前都會清空命中紀錄，且每個測試案例只送一到兩次請求。

@@ -466,7 +466,9 @@ fallback），各自搭一個 GIN index。送進 `to_tsvector` 的文字先經�
 `articles.content` 另外還會先過 `strip_html_for_search()`——這個欄位刻意保留原始 HTML
 （供 reader 頁 `[innerHTML]` 呈現），不像 `title`／`summary`／`author` 已經是
 `rss_parser.py::_plain_text()` 產生的純文字，原封不動索引會讓 tag 名稱、屬性、class、
-連結網址都變成可搜尋詞彙（PR #59 review，P2）。並定義兩個 DB function：
+連結網址都變成可搜尋詞彙（PR #59 review，P2）。標籤比對是 quote-aware 的——同
+`frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE`，屬性值裡的字面 `>`（例如
+`title="2 > 1"`）不會被誤判成標籤收尾（PR #59 review，第四輪 P2）。並定義兩個 DB function：
 
 - `search_articles(p_query, p_user_id, p_language, p_cursor_rank, p_cursor_sort_at, p_cursor_id, p_limit)`——
   供 `GET /search/articles`。`websearch_to_tsquery` 比對 `search_vector`，`ts_rank_cd` 算相關度，
