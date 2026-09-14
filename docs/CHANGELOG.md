@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，六輪，1 個 P1，13 個 P2，均證實為真）**：
+- **PR review 修正（Codex，七輪，1 個 P1，14 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1607,3 +1607,13 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   - **測試**：這一項是 SQL 正規表示式本身的方言差異，這個 sandbox 無法連上真正
     Postgres 執行驗證，同本節前段記錄的既有限制，靠人工覆核（對照 PostgreSQL 官方文件
     的 constraint escape／character-entry escape 對照表逐字核對）。
+  15. **P2**（第七輪 review）：`components/search/search.ts` 的 `searchKey` 用一個位元組
+      分隔 `activeQuery`／`language` 兩段組成快取鍵，原意是想用一個「查詢文字與語言代碼都
+      不會出現」的分隔字元，但寫進原始碼時該位元組是直接以字面 NUL byte（`\x00`）存在
+      檔案裡，不是文字跳脫序列——結果 `git diff --numstat` 之類的工具把整個檔案判定成
+      binary，正常的逐行 diff／merge 都失效。修法：改成 TypeScript 範本字面值裡的合法
+      跳脫序列 `\u0000`（反斜線＋u0000 六個字元），執行期仍會被直譯成同一個 NUL
+      字元、行為完全不變，但原始碼檔案本身變回純文字。
+  - **測試**：純位元組層級的原始碼修正，行為不變（同一個 NUL 分隔字元，只是換成合法的
+    文字跳脫序列表示），既有 `search.spec.ts` 的快取鍵相關案例（分頁切換快取、language
+    變更重打）不需要跟著改。
