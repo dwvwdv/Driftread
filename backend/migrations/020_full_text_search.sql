@@ -144,6 +144,17 @@ AS $$
   ) stripped
 $$;
 
+-- strip_html_for_search() runs several regexp_replace passes over its
+-- input; `content` has no field-level length cap (up to ~5 MiB, see the
+-- bounded_search_text() note above), so calling it on the raw column would
+-- make the *stripping itself* an unbounded-cost regex scan, not just the
+-- final to_tsvector/ts_headline input. bounded_search_text() runs first
+-- here — a cheap O(1) left() truncation — so the regex passes only ever
+-- see at most 100,000 raw characters, regardless of how large the source
+-- actually is (PR #59 review, P2). Truncating the raw HTML can in principle
+-- cut a tag in half at the boundary, leaving a harmless unmatched
+-- fragment of tag syntax in the indexed text — an acceptable edge case
+-- for a search-index preprocessing step, not reader-facing text.
 ALTER TABLE driftread.articles
   ADD COLUMN IF NOT EXISTS search_vector tsvector
   GENERATED ALWAYS AS (
@@ -151,7 +162,8 @@ ALTER TABLE driftread.articles
       'simple',
       driftread.bounded_search_text(
         coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' ||
-        coalesce(author, '') || ' ' || driftread.strip_html_for_search(content)
+        coalesce(author, '') || ' ' ||
+        driftread.strip_html_for_search(driftread.bounded_search_text(content))
       )
     )
   ) STORED;
@@ -161,14 +173,16 @@ ALTER TABLE driftread.articles
 -- element's decoded text content, unlike `_plain_text()` — a publisher
 -- that escapes markup in `<description>` ends up with real `<...>` HTML
 -- after XML unescaping. Same treatment as articles.content, for the same
--- reason (PR #59 review, P2).
+-- reason (PR #59 review, P2) — including bounding before stripping, same
+-- reason as above.
 ALTER TABLE driftread.feeds
   ADD COLUMN IF NOT EXISTS search_vector tsvector
   GENERATED ALWAYS AS (
     to_tsvector(
       'simple',
       driftread.bounded_search_text(
-        coalesce(title, '') || ' ' || driftread.strip_html_for_search(description)
+        coalesce(title, '') || ' ' ||
+        driftread.strip_html_for_search(driftread.bounded_search_text(description))
       )
     )
   ) STORED;
@@ -267,6 +281,23 @@ AS $$
       )
     ORDER BY rank DESC, COALESCE(published_at, fetched_at) DESC, id DESC
     LIMIT LEAST(GREATEST(p_limit, 1), 100)
+  ),
+  -- strip_html_for_search() is several regexp_replace passes, and `content`
+  -- has no field-level length cap (up to ~5 MiB) — bounding it first (cheap
+  -- O(1) truncation) keeps that regex work bounded regardless of source
+  -- size, same reasoning as the generated column above. Computed here, in
+  -- its own CTE layer built directly `FROM paged`, rather than inline in
+  -- the final SELECT's CASE below: the WHEN and its THEN both need this
+  -- same value, and evaluating it twice per row would double the (still
+  -- bounded, but non-trivial) regex cost across up to 100 rows for no
+  -- reason. It must not move into `ranked` or `paged` themselves — both
+  -- run over every *matching* row before the LIMIT above narrows that down,
+  -- and the entire point of this three/four-layer split is that only the
+  -- page actually returned to the caller pays for the expensive per-row
+  -- text processing (PR #59 review, P2).
+  enriched AS (
+    SELECT *, driftread.strip_html_for_search(driftread.bounded_search_text(content)) AS stripped_content
+    FROM paged
   )
   SELECT
     id, feed_id, feed_title, title, url, summary,
@@ -286,19 +317,15 @@ AS $$
       CASE
         WHEN to_tsvector('simple', driftread.bounded_search_text(summary)) @@ tsq
           THEN driftread.bounded_search_text(summary)
-        WHEN to_tsvector(
-          'simple', driftread.bounded_search_text(driftread.strip_html_for_search(content))
-        ) @@ tsq
-          THEN driftread.bounded_search_text(driftread.strip_html_for_search(content))
-        ELSE driftread.bounded_search_text(
-          coalesce(nullif(summary, ''), driftread.strip_html_for_search(content), '')
-        )
+        WHEN to_tsvector('simple', stripped_content) @@ tsq
+          THEN stripped_content
+        ELSE driftread.bounded_search_text(coalesce(nullif(summary, ''), stripped_content, ''))
       END,
       tsq,
       'MaxFragments=1,MaxWords=35,MinWords=15,ShortWord=3,HighlightAll=false'
     ) AS snippet,
     author, published_at, fetched_at, is_read, is_bookmarked, rank
-  FROM paged
+  FROM enriched
 $$;
 
 -- Feed 搜尋：名稱／描述，與文章搜尋分開呈現（TODO.md 明列的要求），回傳命中摘要片段與
@@ -359,12 +386,14 @@ AS $$
   SELECT
     id, title, url, description,
     -- Only one candidate body field here (unlike search_articles), so no
-    -- field-matched-vs-headlined mismatch to resolve — same HTML-stripping
-    -- and size bound as the generated column (description isn't guaranteed
-    -- plain text either, see above), for the same reasons.
+    -- field-matched-vs-headlined mismatch to resolve, and only one row-level
+    -- call site (so no "compute once, reuse" concern either) — same
+    -- HTML-stripping and bound-before-stripping-not-after as the generated
+    -- column (description isn't guaranteed plain text either, see above),
+    -- for the same reasons.
     ts_headline(
       'simple',
-      driftread.bounded_search_text(driftread.strip_html_for_search(description)),
+      driftread.strip_html_for_search(driftread.bounded_search_text(description)),
       tsq,
       'MaxFragments=1,MaxWords=35,MinWords=15,ShortWord=3,HighlightAll=false'
     ) AS snippet,

@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，八輪，1 個 P1，17 個 P2，均證實為真）**：
+- **PR review 修正（Codex，九輪，1 個 P1，18 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1658,3 +1658,29 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
     `rss_parser.py::_BLOCK_TAGS` 逐一比對、quote-aware pattern 沿用第四輪已驗證過的
     escaping 方式、entity 解碼順序手動追蹤三個範例：`&amp;lt;`、`&lt;script&gt;`
     示範文字、一般 `&amp;`／`&nbsp;`）。
+  18. **P2**（第九輪 review）：`strip_html_for_search()` 內部好幾道
+      `regexp_replace`，但 `articles.content` 沒有欄位層級長度上限（理論上可接近
+      抓取階段整個 feed 下載量的 5 MiB 上限）——`bounded_search_text()` 原本是等
+      `strip_html_for_search()` 跑完、串接完 title／summary／author 之後才對「最終
+      串接結果」做長度限制，這代表 regex 本身是對著未經界限的原始 HTML 掃描，掃描
+      成本沒有上限。`search_articles` 的命中摘要片段那段 CASE 更是把
+      `strip_html_for_search(content)` 對同一篇文章重複呼叫兩次（WHEN 判斷命中一次、
+      THEN 分支再算一次），而這個端點單次查詢最多回傳 100 篇文章——等於單次公開搜尋
+      請求最壞情況要對未界限的原始內文跑到 200 次多階段 regex 掃描，是可避免的
+      DB CPU／延遲尖峰。修法：`bounded_search_text()` 改成在 `strip_html_for_search()`
+      **之前**先跑（截斷是 O(1) 的 `left()`，先做完全不影響後面 regex 的正確性——
+      stripping 的每一種取代都只會讓字串變短或不變，先界限原始輸入，出來的結果保證
+      一樣有界限，不需要再包一層）；`search_articles` 額外把去 HTML 這道計算搬進
+      `paged` 之後新增的第四層 CTE `enriched`（`SELECT *, strip_html_for_search(...)
+      AS stripped_content FROM paged`），同一列只算一次、WHEN／THEN 兩處共用同一個
+      欄位——刻意不放進 `ranked` 或 `paged` 本身，這兩層是在 LIMIT 篩選**之前**跑過
+      所有命中的列，把貴的逐列文字處理放在那裡，就是這整個三（現在四）層 CTE 設計
+      一開始想避免的事：只有真的會回傳給呼叫端的那一頁才該付這個成本。`search_feeds`
+      的 `description` 只有單一候選欄位、單一呼叫點，沒有「重複算兩次」的問題，但
+      一樣改成「先界限再處理」而不是「先處理再界限」。
+  - **測試**：SQL 查詢結構調整，這個 sandbox 無法連上真正 Postgres 執行驗證，同本節
+    前段記錄的既有限制，靠人工核對：CTE 執行順序（`enriched` 直接 `FROM paged`，
+    `paged` 自己的 `ORDER BY ... LIMIT` 保證只有已經篩選過的那一頁會流進
+    `enriched`）、`bounded_search_text` 與 `strip_html_for_search` 呼叫順序在六個
+    呼叫點（articles／feeds 的 generated column、`search_articles` 的 WHEN／THEN／
+    ELSE 三處、`search_feeds` 的 ts_headline）全部一致改成「先界限再去 HTML」。

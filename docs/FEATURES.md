@@ -487,7 +487,10 @@ quote-aware 的——同 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE
   實際命中查詢的那一個取（各自檢查 `to_tsvector(...) @@ tsq`），不是不論命中位置固定取 summary
   ——否則命中只落在 content 時，摘要片段會顯示一段完全沒有標記到關鍵字的 summary（PR #59
   review，P2）。排除已封存來源的文章，同 `search_feeds`（PR #59 review，P2——封存承諾操作者
-  「不再出現在前台」）。
+  「不再出現在前台」）。`content` 去 HTML 的計算（`strip_html_for_search`）多一層 CTE
+  （`paged` 之後、最外層 SELECT 之前）只算一次、WHEN／THEN 共用，且先界限原始長度再處理，
+  不是處理完才界限——`content` 沒有欄位層級長度上限，先界限能讓這段 regex 處理的成本不隨
+  來源大小而無上限成長（PR #59 review，第九輪 P2）。
 - `search_feeds(p_query, p_language, p_cursor_rank, p_cursor_created_at, p_cursor_id, p_limit)`——
   供 `GET /search/feeds`，比對 `feeds.search_vector`（名稱／描述），排除已封存來源，其餘同上。
 
