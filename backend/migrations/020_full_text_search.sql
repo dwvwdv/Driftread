@@ -80,10 +80,19 @@ LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog
 AS $$
+  -- `\b` in a PostgreSQL ARE is the *backspace* character-entry escape, not
+  -- a Perl-style word-boundary constraint — that was a silent no-op bug in
+  -- an earlier version of this pattern (a literal backspace essentially
+  -- never appears after "script"/"style" in real input, so the whole
+  -- alternative never matched and this regexp_replace did nothing). The
+  -- constraint escape for a word boundary in Postgres's own regex flavor is
+  -- `\y` (`\m`/`\M` for word-start/word-end specifically), used here so
+  -- `<script>`/`<script ...>` match but a longer tag name like `<scriptx>`
+  -- does not.
   SELECT regexp_replace(
     regexp_replace(
       coalesce(p_html, ''),
-      '<(script|style)\b(?:[^>"'']|"[^"]*"|''[^'']*'')*>.*?</\1\s*>',
+      '<(script|style)\y(?:[^>"'']|"[^"]*"|''[^'']*'')*>.*?</\1\s*>',
       ' ',
       'gi'
     ),

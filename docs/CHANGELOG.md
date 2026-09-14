@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，五輪，1 個 P1，12 個 P2，均證實為真）**：
+- **PR review 修正（Codex，六輪，1 個 P1，13 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1594,3 +1594,16 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
     檔案既有風格沒有另外補 DOM 測試；rate limit dependency 不影響既有測試——
     `conftest.py` 的 `_reset_rate_limits` 每個測試前都會清空命中紀錄，且每個測試案例
     只送一到兩次請求。
+  14. **P2**（第六輪 review）：第五輪加的 `<(script|style)\b...` 這個 pattern 裡的
+      `\b`，在 PostgreSQL 的 ARE（Advanced Regular Expression）語法裡是「backspace」
+      這個字元跳脫（同 `\a`／`\f`／`\n`／`\r`／`\t` 那組 character-entry escape），**不是**
+      Perl／PCRE 那種 word-boundary constraint——這是這兩種 regex 方言一個真實存在、
+      容易誤踩的差異。結果是這個 pattern 幾乎永遠不會命中（因為真實輸入裡 "script" 或
+      "style" 後面幾乎不會剛好接一個字面 backspace 字元），第五輪那個「先整個砍掉
+      script／style 元素」的修法因此完全是 no-op，退回成只砍標籤、留下內容的舊行為，
+      沒有真的解掉問題。修法：換成 Postgres 自己 regex 方言裡真正的 word-boundary
+      constraint escape `\y`（對應 word-start／word-end 分別是 `\m`／`\M`），讓
+      `<script>`／`<script ...>` 命中，但 `<scriptx>` 這種更長的標籤名稱不會被誤砍。
+  - **測試**：這一項是 SQL 正規表示式本身的方言差異，這個 sandbox 無法連上真正
+    Postgres 執行驗證，同本節前段記錄的既有限制，靠人工覆核（對照 PostgreSQL 官方文件
+    的 constraint escape／character-entry escape 對照表逐字核對）。
