@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+import math
 from datetime import datetime
 from uuid import UUID
 
@@ -45,11 +46,21 @@ def decode_rank_cursor(cursor: str) -> tuple[float, str, str]:
     """Inverse of encode_rank_cursor. Raises ValueError on anything that
     doesn't decode to a well-formed `<float>|<isoformat datetime>|<uuid>`
     triple — callers turn that into a 400 rather than letting a malformed
-    cursor reach the database as a filter value."""
+    cursor reach the database as a filter value.
+
+    `float()` happily parses 'nan'/'inf'/'-inf', which encode_rank_cursor
+    itself never produces (`ts_rank_cd` returns a normal Postgres `real`) —
+    but a hand-crafted cursor could still spell one, and forwarding a
+    non-finite value as the RPC's `real` parameter is exactly the kind of
+    malformed input this cursor is supposed to turn into a clean 400 before
+    it ever reaches the database.
+    """
     try:
         raw = base64.urlsafe_b64decode(cursor.encode()).decode()
         rank_raw, marker_raw, id_raw = raw.split("|", 2)
         rank = float(rank_raw)
+        if not math.isfinite(rank):
+            raise ValueError("Invalid cursor")
         datetime.fromisoformat(marker_raw)
         UUID(id_raw)
     except (ValueError, UnicodeDecodeError) as exc:

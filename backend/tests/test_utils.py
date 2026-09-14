@@ -128,3 +128,19 @@ def test_rank_decode_rejects_a_non_uuid_id_part():
 
     with pytest.raises(ValueError):
         decode_rank_cursor(cursor)
+
+
+@pytest.mark.parametrize("rank_raw", ["nan", "inf", "-inf", "Infinity"])
+def test_rank_decode_rejects_non_finite_ranks(rank_raw):
+    # encode_rank_cursor never produces these (ts_rank_cd returns an
+    # ordinary Postgres `real`), but float() parses them without raising —
+    # a hand-crafted cursor spelling one must still 400, not forward NaN/Inf
+    # to the database as the RPC's `real` parameter.
+    import base64
+
+    cursor = base64.urlsafe_b64encode(
+        f"{rank_raw}|2026-08-14T10:00:00+00:00|11111111-1111-1111-1111-111111111111".encode()
+    ).decode()
+
+    with pytest.raises(ValueError):
+        decode_rank_cursor(cursor)

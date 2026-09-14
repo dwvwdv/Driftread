@@ -18,20 +18,44 @@
 -- 單參數版本依賴 session 的 search_path，是 STABLE），符合 generated column 的要求。
 -- 用 generated column 而不是 migration 015／016 那種 trigger 寫法，是因為這裡不需要
 -- 跨資料表查 feed 語言（config 固定），Postgres 自己維護欄位值更簡單、也不會漏更新。
+--
+-- to_tsvector／ts_headline 對輸入文字有實際大小限制（Postgres 文件：序列化後的
+-- tsvector 不能超過約 1 MiB，超過會丟出 "string is too long for tsvector"）。
+-- `articles.content` 沒有任何欄位層級的長度上限——只有抓取階段整個 feed 下載量的
+-- 5 MiB 上限（見 rss_parser.py），單篇文章的內文理論上可以逼近甚至超過這個 tsvector
+-- 限制。一旦真的發生，這個 GENERATED 欄位的計算會直接失敗：新文章寫入失敗，或者
+-- （更糟）這個 migration 替既有資料回填這個欄位時整個 migration 失敗、擋住後端啟動。
+-- `bounded_search_text()` 把送進 to_tsvector／ts_headline 的文字統一截到 100,000
+-- 字元——就算整段都是最極端的 4-byte UTF-8 字元也只有 400 KB，遠低於 1 MiB 上限，
+-- 而且沒有任何真實搜尋情境需要比這更後面的內文才能命中。
+CREATE OR REPLACE FUNCTION driftread.bounded_search_text(p_text text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog
+AS $$
+  SELECT left(coalesce(p_text, ''), 100000)
+$$;
+
 ALTER TABLE driftread.articles
   ADD COLUMN IF NOT EXISTS search_vector tsvector
   GENERATED ALWAYS AS (
     to_tsvector(
       'simple',
-      coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' ||
-      coalesce(author, '') || ' ' || coalesce(content, '')
+      driftread.bounded_search_text(
+        coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' ||
+        coalesce(author, '') || ' ' || coalesce(content, '')
+      )
     )
   ) STORED;
 
 ALTER TABLE driftread.feeds
   ADD COLUMN IF NOT EXISTS search_vector tsvector
   GENERATED ALWAYS AS (
-    to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, ''))
+    to_tsvector(
+      'simple',
+      driftread.bounded_search_text(coalesce(title, '') || ' ' || coalesce(description, ''))
+    )
   ) STORED;
 
 CREATE INDEX IF NOT EXISTS articles_search_vector_idx
@@ -41,8 +65,9 @@ CREATE INDEX IF NOT EXISTS feeds_search_vector_idx
   ON driftread.feeds USING GIN (search_vector);
 
 -- 文章搜尋：標題／摘要／作者／全文，回傳來源（feed_title）、命中摘要片段
--- （ts_headline，優先從 summary 取，沒有摘要才退回 content）、日期，以及呼叫者已登入時
--- 的已讀／收藏狀態——與 list_feed_articles（migration 016）同一套 LEFT JOIN 做法。
+-- （ts_headline，從 summary／content 兩者中實際命中查詢的那一個取，見最外層 SELECT 的
+-- CASE 說明）、日期，以及呼叫者已登入時的已讀／收藏狀態——與 list_feed_articles
+-- （migration 016）同一套 LEFT JOIN 做法。
 -- p_language 可選，narrowing 到單一語言的 feed（沿用 GET /feeds?language= 同樣的欄位），
 -- 不影響 tsvector／tsquery 的 config（兩者永遠是 'simple'，見上）。
 --
@@ -123,8 +148,27 @@ AS $$
   )
   SELECT
     id, feed_id, feed_title, title, url, summary,
+    -- The match that made this row show up at all could be in the title,
+    -- author, summary or content — search_vector is one combined vector
+    -- over all four. Headlining a fixed "summary, else content" source
+    -- regardless of where the hit actually landed can show a snippet with
+    -- no highlighted term at all (e.g. a non-empty summary when the query
+    -- only matched the content). Check each candidate body field's own
+    -- (bounded, same as the generated column) tsvector against the same
+    -- tsquery and headline whichever one actually matched; when neither
+    -- does (the hit was in title/author only), fall back to the old
+    -- default — ts_headline on non-matching text is not an error, it just
+    -- renders as an unhighlighted leading excerpt.
     ts_headline(
-      'simple', coalesce(nullif(summary, ''), content, ''), tsq,
+      'simple',
+      CASE
+        WHEN to_tsvector('simple', driftread.bounded_search_text(summary)) @@ tsq
+          THEN driftread.bounded_search_text(summary)
+        WHEN to_tsvector('simple', driftread.bounded_search_text(content)) @@ tsq
+          THEN driftread.bounded_search_text(content)
+        ELSE driftread.bounded_search_text(coalesce(nullif(summary, ''), content, ''))
+      END,
+      tsq,
       'MaxFragments=1,MaxWords=35,MinWords=15,ShortWord=3,HighlightAll=false'
     ) AS snippet,
     author, published_at, fetched_at, is_read, is_bookmarked, rank
@@ -188,8 +232,12 @@ AS $$
   )
   SELECT
     id, title, url, description,
+    -- Only one candidate body field here (unlike search_articles), so no
+    -- field-matched-vs-headlined mismatch to resolve — just the same size
+    -- bound as the generated column, for the same "string is too long for
+    -- tsvector"/ts_headline-on-unbounded-text reason.
     ts_headline(
-      'simple', coalesce(description, ''), tsq,
+      'simple', driftread.bounded_search_text(description), tsq,
       'MaxFragments=1,MaxWords=35,MinWords=15,ShortWord=3,HighlightAll=false'
     ) AS snippet,
     website_url, language, category, tags, article_count, created_at, rank

@@ -1471,3 +1471,40 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
+- **PR review 修正（Codex，1 個 P1，3 個 P2，均證實為真）**：
+  1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
+     5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
+     會讓 `search_vector` 這個 generated column 的計算直接丟出
+     `string is too long for tsvector`，新文章寫入失敗，或者這個 migration 替既有資料
+     回填該欄位時整個 migration 失敗、擋住後端啟動。修法：新增
+     `driftread.bounded_search_text(text)`（`IMMUTABLE` SQL function，`left(text, 100000)`），
+     所有送進 `to_tsvector`／`ts_headline` 的文字都先經過它——100,000 字元就算全是
+     4-byte UTF-8 字元也只有 400 KB，遠低於 1 MiB 上限，且沒有真實搜尋情境需要比這更
+     後面的內文才能命中。
+  2. **P2**：`search_articles` 的命中摘要片段原本不論比對命中的位置在哪，一律固定取
+     `summary`（沒有摘要才退回 `content`）餵給 `ts_headline`——當一篇文章有非空
+     `summary` 但查詢其實只命中 `content` 時，回傳的片段會是一段完全沒有標記到關鍵字的
+     `summary` 開頭，與端點承諾的「命中摘要片段」不符。修法：分別檢查
+     `summary`／`content` 各自的（同樣經過 `bounded_search_text` 界限的）tsvector
+     是否命中查詢，取真正命中的那一個餵給 `ts_headline`；兩者都沒命中（純粹命中
+     title／author）才退回原本的預設值——`ts_headline` 對沒有命中的文字不會報錯，只是
+     顯示一段沒有標記的開頭摘錄。
+  3. **P2**：`GET /search/articles`／`GET /search/feeds` 兩個公開端點原本沒有掛任何
+     rate limit——與 `GET /recommendations`（同樣是公開、每次呼叫都有真實 DB 排序工作）
+     先前的既有洞一樣：呼叫端可以不斷送出熱門關鍵字查詢，讓資料庫對每次查詢的所有命中
+     排序、再對分頁後的結果算 `ts_headline`，造成可避免的 CPU 耗用。修法：兩個端點各自
+     掛 `Depends(rate_limit("search_articles"))`／`Depends(rate_limit("search_feeds"))`，
+     沿用 `/discover`／`/discover/import`／`/recommendations` 同一套「每個 client IP
+     每端點 20 requests / 60 秒」預設值與獨立配額（bucket 用不同 `name`，互不影響）。
+  4. **P2**：`decode_rank_cursor` 用 Python `float()` 解析 cursor 裡的 rank 部分，但
+     `float()` 也會無錯誤地解析 `'nan'`／`'inf'`／`'-inf'` 這類字串——一個刻意構造、
+     base64 格式正確但帶有非有限值的 cursor 會通過解碼，把 NaN／Inf 當成 RPC 的
+     `real` 參數送進資料庫，依 JSON 序列化／PostgREST 處理方式不同，結果可能是跳出
+     `ValueError` 判斷路徑回傳非預期的 500、或是產生不合理的分頁結果，而不是文件承諾的
+     400。修法：解碼後多一道 `math.isfinite(rank)` 檢查，非有限值一律視同格式錯誤的
+     cursor。
+  - **測試**：`test_utils.py` 新增四種非有限值（`nan`／`inf`／`-inf`／`Infinity`）的
+    拒絕案例，其餘三項是 SQL／路由層修正，覆蓋在既有的 `test_search.py`（rate limit
+    dependency 不影響既有測試——`conftest.py` 的 `_reset_rate_limits` 每個測試前都會清空
+    命中紀錄，且每個測試案例只送一到兩次請求）與人工覆核（P1／P2-2 都是這個 sandbox
+    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制）。

@@ -11,6 +11,7 @@ from models import (
     PaginatedArticleSearchResults,
     PaginatedFeedSearchResults,
 )
+from rate_limit import rate_limit
 from utils import decode_rank_cursor, encode_rank_cursor
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -18,7 +19,17 @@ router = APIRouter(prefix="/search", tags=["search"])
 _MAX_QUERY_LEN = 200
 
 
-@router.get("/articles", response_model=PaginatedArticleSearchResults)
+# Both routes below are public and, per query, rank *and* headline every
+# matching row (search_articles/search_feeds, migration 020) — real DB work
+# a caller fully controls the volume of, the same shape of exposure
+# GET /recommendations was missing rate limiting for before it got the same
+# rate_limit(...) dependency. Bucketed separately per route so the two
+# quotas don't share a budget.
+@router.get(
+    "/articles",
+    response_model=PaginatedArticleSearchResults,
+    dependencies=[Depends(rate_limit("search_articles"))],
+)
 async def search_articles(
     q: str = Query(..., min_length=1, max_length=_MAX_QUERY_LEN),
     language: str | None = None,
@@ -64,7 +75,11 @@ async def search_articles(
     return PaginatedArticleSearchResults(items=items, next_cursor=next_cursor)
 
 
-@router.get("/feeds", response_model=PaginatedFeedSearchResults)
+@router.get(
+    "/feeds",
+    response_model=PaginatedFeedSearchResults,
+    dependencies=[Depends(rate_limit("search_feeds"))],
+)
 async def search_feeds(
     q: str = Query(..., min_length=1, max_length=_MAX_QUERY_LEN),
     language: str | None = None,

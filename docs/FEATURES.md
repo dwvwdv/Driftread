@@ -255,15 +255,17 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/recommendations` | 猜你喜歡（帶 token 時個人化）。**有 rate limit**：每個 client IP 20 requests / 60 秒，獨立配額，超過回 `429` 並帶 `Retry-After`（migration 007 起每次呼叫最多對 `feeds` 做三次資料庫端隨機抽樣，比原本單純的 `.limit()` 貴得多，因此補上；抽樣本身自 migration 018 起是索引範圍掃描，不再是全表排序，見上方第 2 節）|
 | GET | `/health` | 健康檢查（compose healthcheck 使用） |
 
-### Search（公開）
+### Search（公開，有 rate limit）
 
 全文搜尋，見第 5 節 `search_vector`（PostgreSQL tsvector + GIN index，`simple` config，
 取代 `%keyword%` 全表掃描）。文章搜尋與 Feed 搜尋是兩個獨立端點，回傳形狀也不同——不是
-單一「搜尋全部」端點。
+單一「搜尋全部」端點。兩者各自獨立配額：**每個 client IP 每端點 20 requests / 60 秒**，
+超過回 `429` 並帶 `Retry-After`（同 `/recommendations`——每次呼叫都是排序＋對分頁結果算
+`ts_headline` 的真實 DB 工作，不能無限制對外開放）。
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
-| GET | `/search/articles` | 搜尋文章標題／摘要／作者／全文。`q`（必填，1–200 字）、`language` 可選、cursor 分頁（`cursor`／`limit`，上限 100，依相關度 `rank` 排序，同分再依日期／id 決勝）。帶有效 token 時每筆帶呼叫者自己的 `is_read`／`is_bookmarked`；每筆附命中摘要片段（`ts_headline`） |
+| GET | `/search/articles` | 搜尋文章標題／摘要／作者／全文。`q`（必填，1–200 字）、`language` 可選、cursor 分頁（`cursor`／`limit`，上限 100，依相關度 `rank` 排序，同分再依日期／id 決勝）。帶有效 token 時每筆帶呼叫者自己的 `is_read`／`is_bookmarked`；每筆附命中摘要片段（`ts_headline`，從 summary／content 中實際命中查詢的那個取） |
 | GET | `/search/feeds` | 搜尋 Feed 名稱／描述，排除已封存來源。參數形狀同上 |
 
 ### Discover（公開，有 rate limit）
@@ -458,17 +460,25 @@ Migration 020（全文搜尋）為 `articles`／`feeds` 各加一個 `search_vec
 `GENERATED ALWAYS AS ... STORED` tsvector 欄位（固定用 `simple` config，不對任何語言做
 stemming——理由見該 migration 開頭註解：查詢與建索引必須用同一個 config 才能命中，而
 Driftread 的搜尋橫跨多語言文件，加上部分語言本來就沒有內建斷詞字典，統一 `simple` 是可預測的
-fallback），各自搭一個 GIN index，並定義兩個 DB function：
+fallback），各自搭一個 GIN index。送進 `to_tsvector` 的文字先經過 `bounded_search_text()`
+截到 100,000 字元——`articles.content` 沒有欄位層級的長度上限，Postgres 的 tsvector 本身有
+約 1 MiB 的序列化大小限制，不截斷理論上會讓超大文章寫入時直接報錯（PR #59 review，P1）。
+並定義兩個 DB function：
 
 - `search_articles(p_query, p_user_id, p_language, p_cursor_rank, p_cursor_sort_at, p_cursor_id, p_limit)`——
   供 `GET /search/articles`。`websearch_to_tsquery` 比對 `search_vector`，`ts_rank_cd` 算相關度，
   排序鍵 `(rank, COALESCE(published_at, fetched_at), id)` 三欄 keyset 分頁（相關度同分時退回既有
   的日期／id 決勝規則）。`ts_headline` 只對已經分頁過的那一頁（≤100 列）呼叫，不是對每一筆命中都算，
-  避免熱門關鍵字讓一次查詢跑成千上萬次 headline 運算。
+  避免熱門關鍵字讓一次查詢跑成千上萬次 headline 運算；命中摘要片段從 summary／content 兩者中
+  實際命中查詢的那一個取（各自檢查 `to_tsvector(...) @@ tsq`），不是不論命中位置固定取 summary
+  ——否則命中只落在 content 時，摘要片段會顯示一段完全沒有標記到關鍵字的 summary（PR #59
+  review，P2）。
 - `search_feeds(p_query, p_language, p_cursor_rank, p_cursor_created_at, p_cursor_id, p_limit)`——
   供 `GET /search/feeds`，比對 `feeds.search_vector`（名稱／描述），排除已封存來源，其餘同上。
 
-同 `SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。
+同 `SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。`GET /search/articles`／
+`GET /search/feeds` 各自掛 `rate_limit(...)`（同 `/recommendations` 的理由：每次呼叫都是
+排序＋分頁結果算 headline 的真實 DB 工作），見第 3 節。
 
 RLS：五張 `user_*` 表為 permanent-user owner-only policy（002 的四張＋019 的
 `user_feed_feedback`；同時檢查 `auth.uid()` 與 JWT `is_anonymous = false`）；
