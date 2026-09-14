@@ -28,6 +28,35 @@ def decode_keyset_cursor(cursor: str) -> tuple[str, str]:
     return marker_raw, id_raw
 
 
+def encode_rank_cursor(rank: float, marker: datetime, row_id: UUID | str) -> str:
+    """Opaque cursor for a (rank, timestamp, id) keyset-paginated search result
+    list — same shape as encode_keyset_cursor, with a leading relevance rank
+    so rows that tie on rank still fall back to the existing (marker, id)
+    tie-break. `repr(rank)` round-trips exactly for a Python float parsed
+    back out of a Postgres `real`, since `real` -> Python `float` is a lossless
+    upcast and `repr` on a `float` is already the shortest string that
+    reparses to the same value.
+    """
+    raw = f"{rank!r}|{marker.isoformat()}|{row_id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def decode_rank_cursor(cursor: str) -> tuple[float, str, str]:
+    """Inverse of encode_rank_cursor. Raises ValueError on anything that
+    doesn't decode to a well-formed `<float>|<isoformat datetime>|<uuid>`
+    triple — callers turn that into a 400 rather than letting a malformed
+    cursor reach the database as a filter value."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+        rank_raw, marker_raw, id_raw = raw.split("|", 2)
+        rank = float(rank_raw)
+        datetime.fromisoformat(marker_raw)
+        UUID(id_raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("Invalid cursor") from exc
+    return rank, marker_raw, id_raw
+
+
 def escape_postgrest_literal(value: str) -> str:
     """Escape a value for safe embedding in a PostgREST filter expression
     (e.g. the string passed to `.or_()`).

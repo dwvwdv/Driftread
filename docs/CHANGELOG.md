@@ -1415,3 +1415,59 @@ recommendations.py` 也完全不知道使用者過去的回饋，只能靠呼叫
      一個請求在飛，沒有兩個結果可以互相蓋過。
   - **測試**：`recommendation.spec.ts` 新增已登入時不附加 query param、以及同一 feed 連續
     操作會取消前一個請求兩個案例。
+
+## 階段三十四：全文搜尋——文章與 Feed 分開搜尋，PostgreSQL tsvector + GIN index（2026-09-14）
+
+TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?search=` 的
+`ilike '%keyword%'`（無 index、大表整表掃描），而且完全沒有文章層級的搜尋——`articles`
+表從未被搜尋觸及。
+
+- **`backend/migrations/020_full_text_search.sql`（新）**：`articles`／`feeds` 各加一個
+  `search_vector`（`GENERATED ALWAYS AS to_tsvector('simple', ...) STORED`）＋GIN index。
+  語言設定刻意統一用 `simple`、不做逐語言 stemming：tsvector 的 lexeme 依建立時的
+  regconfig 決定，查詢端 tsquery 必須用同一個 regconfig 才能命中，而 Driftread 的搜尋橫跨
+  多個 feed／多種語言混在同一次結果裡，沒有單一查詢能同時對「每篇文件各自用不同 regconfig
+  建的 tsvector」都選對 config；加上目前有語言偵測的 zh／ja／ko／th／vi 等，Postgres 內建
+  本來就沒有對應斷詞字典。統一 `simple` 讓建索引與查詢兩端永遠一致，是「無法可靠斷詞時提供
+  可預測 fallback」的落地方式，真正逐語言 stemming 留待之後有需要再做。新增
+  `search_articles()`／`search_feeds()` 兩個 DB function：`websearch_to_tsquery` 比對
+  `search_vector`，`ts_rank_cd` 排相關度，`(rank, sort_at/created_at, id)` 三欄 keyset
+  分頁（同分退回既有日期／id 決勝規則）。三層 CTE 而非單層：`ranked` 只算 rank（GIN index
+  篩過的列才算），`paged` 做 cursor 篩選＋排序＋LIMIT，最外層才對已經分頁過的那一頁（≤100
+  列）呼叫 `ts_headline`——`ts_headline` 要重新掃過整段文字找命中片段，比 `ts_rank_cd` 貴
+  得多，一個熱門關鍵字命中幾千篇文章時不該對每一篇都算一次。`SECURITY INVOKER`、EXECUTE
+  只授權 `service_role`，同 `list_reading_stream`／`list_feed_articles` 的既有鎖法。
+- **`backend/routers/search.py`（新）**：`GET /search/articles`、`GET /search/feeds`，
+  分開端點、分開回應形狀（TODO.md 明列「Feed 名稱／描述搜尋與文章搜尋分開呈現」）。
+  `q` 必填（1–200 字）、`language` 可選、cursor 分頁（`limit` 上限 100，同
+  `GET /feeds/{feed_id}/articles` 的 400-on-malformed-cursor 慣例）。文章搜尋是公開端點，
+  帶有效 token 時每筆回傳呼叫者自己的 `is_read`／`is_bookmarked`（同
+  `list_feed_articles`）。
+- **`backend/utils.py`**：新增 `encode_rank_cursor`／`decode_rank_cursor`——三欄
+  `(rank, marker, id)` 版的 keyset cursor，`rank` 用 `repr()` 而非 `str()` 編碼以保證
+  Postgres `real`（float4）經 JSON 往返成 Python `float64` 再送回時精確相等，cursor
+  的 rank 比對才不會因為浮點數表示誤差錯過或重複結果。
+- **前端**：`components/search`（新，`/search`）——文章／來源兩個分頁，各自獨立的
+  cursor 分頁狀態與載入更多；`(query, language)` 相同時切換分頁或重新整理不重打 API。
+  命中摘要片段固定走既有 `stripHtml()` 呈現成純文字（不特別高亮 `ts_headline` 加的
+  `<b>` 標籤）——避免把 RSS 內容裡本來就可能存在的標籤與 `ts_headline` 自己加的標籤
+  混在一起走 `[innerHTML]`，同現有 `stripHtml` 的既有防線一致。`services/search.ts`
+  對應兩個端點。公開導覽列（含手機版抽屜選單）加上「搜尋」連結。
+- **測試**：`backend/tests/test_search.py`（新，兩個端點的空/帶使用者、language 篩選、
+  cursor 編碼/解碼、分頁下一頁存在與否）；`test_utils.py` 補 rank cursor 的編解碼、浮點
+  數精確往返、格式錯誤拒絕案例。`frontend/src/app/services/search.spec.ts`（新，
+  HttpTestingController 驗證查詢參數）；`components/search/search.spec.ts`（新，提交／
+  分頁切換快取／language 變更重打／載入更多／stale response 被新搜尋蓋過／錯誤狀態）。
+- 對應文件更新：`TODO.md`（「全文搜尋」四項全數打勾並記錄與規格的刻意偏離：language-aware
+  config 統一走 `simple` 而非逐語言 stemming；建議開發批次第 7 項更新為全文搜尋已完成，
+  資料夾管理仍未開始）、`docs/FEATURES.md`（第 1 節功能總覽、第 3 節新增 Search 端點、
+  第 4 節新增 `/search` 路由、第 5 節新增 `search_vector` 欄位／`search_articles`／
+  `search_feeds`／GIN index）。
+- **本 sandbox 的已知限制**：與先前多輪修法相同，`pip`／`npm` 的 PyPI／npm registry
+  index 皆被 network egress allowlist 擋下，無法在本機安裝依賴跑真正的
+  `pytest`／`ng test`。已用 `python3 -m py_compile` 驗證所有新增／改動 backend 檔案的
+  語法，`flake8` 驗證新增程式碼無 lint 問題（既有 `models.py` 一個 `Any` 未使用的既有
+  問題與本次改動無關，未動它）；frontend 新增檔案已對照既有元件（`feed-detail.ts`、
+  `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
+  慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
+  `frontend.yml` 執行。

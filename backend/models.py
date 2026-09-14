@@ -110,6 +110,48 @@ class PaginatedFeedArticles(BaseModel):
     next_cursor: str | None = None
 
 
+class ArticleSearchResult(ArticleSummary):
+    """One row of GET /search/articles — an ArticleSummary plus which feed it
+    came from, a highlighted match snippet, this caller's read/bookmark state
+    (false for both when anonymous) and its relevance rank, as returned by
+    the `search_articles` DB function (migration 020)."""
+    feed_title: str
+    snippet: str | None = None
+    fetched_at: datetime
+    is_read: bool = False
+    is_bookmarked: bool = False
+    rank: float
+
+
+class PaginatedArticleSearchResults(BaseModel):
+    items: list[ArticleSearchResult]
+    next_cursor: str | None = None
+
+
+class FeedSearchResult(BaseModel):
+    """One row of GET /search/feeds — matched on name/description, kept
+    separate from article search results (TODO.md 全文搜尋 "Feed 名稱／描述搜尋與
+    文章搜尋分開呈現"), as returned by the `search_feeds` DB function
+    (migration 020)."""
+    id: UUID
+    title: str
+    url: str
+    description: str | None = None
+    snippet: str | None = None
+    website_url: str | None = None
+    language: str | None = None
+    category: str | None = None
+    tags: list[str] = []
+    article_count: int = 0
+    created_at: datetime
+    rank: float
+
+
+class PaginatedFeedSearchResults(BaseModel):
+    items: list[FeedSearchResult]
+    next_cursor: str | None = None
+
+
 class ReadReceipt(BaseModel):
     article_id: UUID
     read_at: datetime
