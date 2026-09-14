@@ -475,7 +475,8 @@ fallback），各自搭一個 GIN index。送進 `to_tsvector` 的文字先經�
   避免熱門關鍵字讓一次查詢跑成千上萬次 headline 運算；命中摘要片段從 summary／content 兩者中
   實際命中查詢的那一個取（各自檢查 `to_tsvector(...) @@ tsq`），不是不論命中位置固定取 summary
   ——否則命中只落在 content 時，摘要片段會顯示一段完全沒有標記到關鍵字的 summary（PR #59
-  review，P2）。
+  review，P2）。排除已封存來源的文章，同 `search_feeds`（PR #59 review，P2——封存承諾操作者
+  「不再出現在前台」）。
 - `search_feeds(p_query, p_language, p_cursor_rank, p_cursor_created_at, p_cursor_id, p_limit)`——
   供 `GET /search/feeds`，比對 `feeds.search_vector`（名稱／描述），排除已封存來源，其餘同上。
 

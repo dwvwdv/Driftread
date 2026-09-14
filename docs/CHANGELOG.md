@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，兩輪，1 個 P1，5 個 P2，均證實為真）**：
+- **PR review 修正（Codex，三輪，1 個 P1，7 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1521,13 +1521,26 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
      generated tsvector 從 PostgREST 撈回並序列化，即使 `Article` 回應 model 從未使用它
      ——每次讀一篇文章都白白多傳一份幾乎跟全文一樣大的資料。修法：改成明確欄位清單
      `id,feed_id,title,url,summary,content,author,published_at,fetched_at`，不含
-     `search_vector`。（同樣的 `feeds.select("*")` 萬用字元查詢在 `routers/feeds.py`／
-     `routers/admin.py`／`services/discovery_candidates.py` 還有多處既有用法，但
-     feeds 的 `search_vector` 只由 title＋description 組成，體積遠小於文章內文，這次
-     review 也沒有指出——刻意不在這個 PR 裡順手清掉，範圍留給之後真的需要時再處理。）
+     `search_vector`。
+  7. **P2**（第三輪 review）：`search_articles` 的 JOIN 只用 `f.id = a.feed_id` 取
+     `feed_title`，從未檢查 `f.archived_at`——已封存來源的文章仍然完全可以透過這個新的
+     公開搜尋端點被搜到／列出，與封存流程本身給操作者的承諾（`admin-feeds.ts` 封存
+     確認對話框：「封存後這個來源不再出現在前台」）矛盾，也跟 `search_feeds` 早已排除
+     已封存來源的既有行為不一致。修法：`ranked` CTE 的 `WHERE` 加上
+     `f.archived_at IS NULL`，同 `search_feeds`／`GET /feeds` 既有行為。
+  8. **P2**（第三輪 review）：`routers/feeds.py` 的 `list_feeds`（`GET /feeds`，一次最多
+     100 筆）與 `get_feed`（`GET /feeds/{id}`）都用 `.select("*")`，migration 020 替
+     `feeds` 加上 `search_vector` 後，這個最多索引 100,000 字元 description 的 generated
+     tsvector 也會被撈回——`Feed` 回應 model 從未用到它，分頁列表的浪費隨頁面大小疊加。
+     修法：改成同一份明確欄位清單 `_FEED_COLUMNS`（`Feed` model 的全部欄位，不含
+     `search_vector`），兩處呼叫共用。`routers/admin.py`／
+     `services/discovery_candidates.py` 還有其他 `feeds.select("*")` 既有用法，這次
+     review 沒有指出（後台操作端點，不是高流量的公開路徑）——範圍留給之後真的需要時再
+     處理，不在這個 PR 裡順手清掉。
   - **測試**：`test_utils.py` 新增四種非有限值（`nan`／`inf`／`-inf`／`Infinity`）的
-    拒絕案例；`test_articles.py` 新增一個案例斷言 `GET /articles/{id}` 的 `.select(...)`
-    參數是明確欄位清單、不是 `"*"`。P2-5（HTML 去除）與 P1（截斷）都是這個 sandbox
-    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制，靠人工覆核；
-    rate limit dependency 不影響既有測試——`conftest.py` 的 `_reset_rate_limits` 每個
-    測試前都會清空命中紀錄，且每個測試案例只送一到兩次請求。
+    拒絕案例；`test_articles.py`／`test_feeds.py` 各新增案例斷言對應端點的
+    `.select(...)` 參數是明確欄位清單、不是 `"*"`。P2-5（HTML 去除）、P2-7（排除已封存
+    來源）與 P1（截斷）都是這個 sandbox 無法連上真正 Postgres 執行的 SQL 邏輯，同本節
+    前段記錄的既有限制，靠人工覆核；rate limit dependency 不影響既有測試——
+    `conftest.py` 的 `_reset_rate_limits` 每個測試前都會清空命中紀錄，且每個測試案例
+    只送一到兩次請求。

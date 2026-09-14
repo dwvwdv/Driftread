@@ -91,7 +91,8 @@ CREATE INDEX IF NOT EXISTS feeds_search_vector_idx
 -- CASE 說明）、日期，以及呼叫者已登入時的已讀／收藏狀態——與 list_feed_articles
 -- （migration 016）同一套 LEFT JOIN 做法。
 -- p_language 可選，narrowing 到單一語言的 feed（沿用 GET /feeds?language= 同樣的欄位），
--- 不影響 tsvector／tsquery 的 config（兩者永遠是 'simple'，見上）。
+-- 不影響 tsvector／tsquery 的 config（兩者永遠是 'simple'，見上）。排除已封存來源的文章
+-- （同 search_feeds、GET /feeds 既有行為——封存承諾操作者「不再出現在前台」）。
 --
 -- 排序／分頁鍵是 (rank, sort_at, id) 三欄，不是既有 keyset 分頁的 (sort_at, id) 兩欄：
 -- 相關度是主要排序依據，但同一次查詢常有多篇文章拿到相同 rank（例如都只命中一次
@@ -152,6 +153,12 @@ AS $$
     LEFT JOIN driftread.user_bookmarks b
       ON b.article_id = a.id AND b.user_id = p_user_id AND b.bookmark_type = 'favorite'
     WHERE a.search_vector @@ query.tsq
+      -- Archiving a feed promises the operator it "no longer appears on the
+      -- frontend" (admin-feeds.ts's confirm dialog) — search_feeds already
+      -- excludes archived feeds for the same reason; without this, an
+      -- archived source's articles stayed fully searchable/discoverable
+      -- through this new public endpoint.
+      AND f.archived_at IS NULL
       AND (p_language IS NULL OR f.language = p_language)
   ),
   paged AS (
