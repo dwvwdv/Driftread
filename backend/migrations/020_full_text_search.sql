@@ -44,24 +44,23 @@ $$;
 -- to_tsvector makes tag names, attributes, class names and URLs inside
 -- markup into searchable lexemes: a query for "href" or some CSS class
 -- name would match articles whose rendered text never contains that word,
--- and repeated boilerplate markup skews `ts_rank_cd`. This does not try to
--- match `_plain_text()`'s fidelity (block-tag-aware spacing, entity
--- decoding) — it is only search-index preprocessing, not reader-facing
--- text — just replace each tag with a space (not drop it outright, so
--- "...sentence.</p><p>Next" doesn't glue into one word) before it reaches
--- to_tsvector/ts_headline.
+-- and repeated boilerplate markup skews `ts_rank_cd`. This mirrors
+-- `_plain_text()`'s own approach (block-tag-aware spacing, a handful of
+-- safe entity decodes) rather than a single blind strip, for the same
+-- reasons that function documents; it is only search-index preprocessing,
+-- not reader-facing text, so it doesn't chase full fidelity.
 --
 -- A naive `<[^>]*>` stops at the *first* `>`, including one that's just
 -- data inside a quoted attribute value (`<a title="2 > 1" href="...">`) —
 -- that leaves everything from the quoted `>` to the tag's real closing `>`
 -- (here, ` 1" href="...">`) behind as literal indexed/headlined text, so a
--- search can still hit an invisible `href` or attribute value. The
--- alternation below mirrors frontend/src/app/shared/html.ts's quote-aware
--- ATTRS/TAG_RE (same problem, same fix, translated to SQL's regex flavor):
--- match an HTML comment whole, or a tag whose attributes are matched
--- quote-aware (a `"..."`/`'...'` run is one unit regardless of `>` inside
--- it), falling back to the naive form only for a tag with an unbalanced
--- quote the quote-aware alternative can't otherwise match.
+-- search can still hit an invisible `href` or attribute value. Every
+-- tag-matching alternation below mirrors frontend/src/app/shared/html.ts's
+-- quote-aware ATTRS/TAG_RE (same problem, same fix, translated to SQL's
+-- regex flavor): match an HTML comment whole, or a tag whose attributes are
+-- matched quote-aware (a `"..."`/`'...'` run is one unit regardless of `>`
+-- inside it), falling back to the naive form only for a tag with an
+-- unbalanced quote the quote-aware alternative can't otherwise match.
 --
 -- A tag-only replacement leaves a <script>/<style> element's *body* behind
 -- as if it were ordinary visible text — JS identifiers, CSS selectors and
@@ -70,36 +69,79 @@ $$;
 -- special-cases this (`_DROP_WHOLE_RE`, matched before its generic tag
 -- strip) for the same reason; the first regexp_replace below mirrors it —
 -- drop the whole element, tags and content together, case-insensitively,
--- before the second pass strips whatever ordinary tags remain. (Postgres's
+-- before later passes touch whatever ordinary tags remain. (Postgres's
 -- default, non-newline-sensitive matching already makes `.` match a
 -- newline, so `.*?` alone spans a multi-line `<script>` body without a
--- separate "dotall" flag.)
+-- separate "dotall" flag.) `\b` in a PostgreSQL ARE is the *backspace*
+-- character-entry escape, not a Perl-style word-boundary constraint — using
+-- it here silently no-opped an earlier version of this pattern entirely
+-- (a literal backspace essentially never appears after "script"/"style" in
+-- real input). The constraint escape for a word boundary in Postgres's own
+-- regex flavor is `\y` (`\m`/`\M` for word-start/word-end specifically),
+-- used throughout below so e.g. `<script>` matches but `<scriptx>` doesn't.
+--
+-- Collapsing *every* tag to a space (rather than removing it outright)
+-- breaks inline markup that sits mid-word: `micro<em>soft</em>` renders as
+-- "microsoft" but would index as two separate lexemes "micro"/"soft",
+-- which a search for the word the reader actually sees would never match
+-- — the same problem is worse for CJK text, where inline emphasis on a
+-- few characters mid-sentence has no natural word-boundary space at all
+-- ("这里记录<em>开源</em>专案" reads as one run of text, not two words).
+-- rss_parser.py's `_plain_text()`/frontend's `stripHtml()` both already
+-- draw this distinction (`_BLOCK_TAGS`/`BLOCK_TAGS`, mirrored exactly
+-- below): block-level tags (paragraphs, list items, table cells, headings,
+-- `<br>`, ...) genuinely are a break between runs of text and become a
+-- space; everything else (inline formatting, links, spans, and any
+-- leftover/unrecognized tag or comment) is removed with no separator.
 CREATE OR REPLACE FUNCTION driftread.strip_html_for_search(p_html text)
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog
 AS $$
-  -- `\b` in a PostgreSQL ARE is the *backspace* character-entry escape, not
-  -- a Perl-style word-boundary constraint — that was a silent no-op bug in
-  -- an earlier version of this pattern (a literal backspace essentially
-  -- never appears after "script"/"style" in real input, so the whole
-  -- alternative never matched and this regexp_replace did nothing). The
-  -- constraint escape for a word boundary in Postgres's own regex flavor is
-  -- `\y` (`\m`/`\M` for word-start/word-end specifically), used here so
-  -- `<script>`/`<script ...>` match but a longer tag name like `<scriptx>`
-  -- does not.
-  SELECT regexp_replace(
+  SELECT
+    -- Predefined XML entities plus the extremely common &nbsp; — decoded
+    -- last, after all markup is already gone, so text that legitimately
+    -- shows an escaped tag as an example ("&lt;script&gt;...") isn't
+    -- decoded back into real markup and caught by an earlier pass. &amp;
+    -- is decoded last of these four so a doubly-escaped "&amp;lt;" (the
+    -- literal text "&lt;") stops at "&lt;" rather than cascading to "<".
+    -- This deliberately does NOT attempt the full HTML named-entity table
+    -- (thousands of entries, e.g. &eacute;) — hand-rolling that in SQL is
+    -- exactly what this project's own frontend/src/app/shared/html.ts
+    -- decodeEntities() already explains not to do ("every review pass
+    -- found another way it diverged from Python's html.unescape()"); a
+    -- complete fix belongs in Python at ingestion time, same as
+    -- backend/backfill.py, not as an ever-growing regex table here.
     regexp_replace(
-      coalesce(p_html, ''),
-      '<(script|style)\y(?:[^>"'']|"[^"]*"|''[^'']*'')*>.*?</\1\s*>',
-      ' ',
-      'gi'
-    ),
-    '<!--.*?-->|</?[a-zA-Z](?:[^>"'']|"[^"]*"|''[^'']*'')*>|</?[a-zA-Z][^>]*>',
-    ' ',
-    'g'
-  )
+      regexp_replace(
+        regexp_replace(
+          regexp_replace(tags_stripped, '&nbsp;', ' ', 'g'),
+          '&lt;', '<', 'g'
+        ),
+        '&gt;', '>', 'g'
+      ),
+      '&amp;', '&', 'g'
+    )
+  FROM (
+    SELECT
+      regexp_replace(
+        regexp_replace(
+          regexp_replace(
+            coalesce(p_html, ''),
+            '<(script|style)\y(?:[^>"'']|"[^"]*"|''[^'']*'')*>.*?</\1\s*>',
+            ' ',
+            'gi'
+          ),
+          '</?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\y(?:[^>"'']|"[^"]*"|''[^'']*'')*>',
+          ' ',
+          'gi'
+        ),
+        '<!--.*?-->|</?[a-zA-Z](?:[^>"'']|"[^"]*"|''[^'']*'')*>|</?[a-zA-Z][^>]*>',
+        '',
+        'gi'
+      ) AS tags_stripped
+  ) stripped
 $$;
 
 ALTER TABLE driftread.articles

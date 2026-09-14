@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，七輪，1 個 P1，14 個 P2，均證實為真）**：
+- **PR review 修正（Codex，八輪，1 個 P1，17 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1617,3 +1617,44 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   - **測試**：純位元組層級的原始碼修正，行為不變（同一個 NUL 分隔字元，只是換成合法的
     文字跳脫序列表示），既有 `search.spec.ts` 的快取鍵相關案例（分頁切換快取、language
     變更重打）不需要跟著改。
+  16. **P2**（第八輪 review）：`services/articles.py::upsert_articles()`（排程刷新每個
+      feed 都會呼叫，每批最多 200 篇）原本用預設的 `returning="representation"`，
+      migration 020 替 `articles` 加上 `search_vector` 後，這個回應會連同每篇文章可能
+      數十到數百 KB 的 generated tsvector 一起序列化回傳，但呼叫端只用
+      `len(result.data)` 算筆數，完全沒用到內容本身。修法：改成
+      `returning="minimal"`（`Prefer: return=minimal`，完全不回傳列內容），筆數改用
+      `len(chunk)` 直接算——同一批次內的 `(feed_id, url)` 已在呼叫前用 dict 去重過，
+      upsert 在沒有 `ignore_duplicates` 的情況下一定是每筆要嘛新增要嘛更新，不會有
+      「送出去但沒被回應提到」的列，所以 `len(chunk)` 跟原本 `len(result.data)`
+      在數學上恆等，不是近似值。
+  17. **P2**（第八輪 review）：`strip_html_for_search()` 只拆標籤，不處理標籤拆完後
+      留在文字裡的 HTML entity（`&eacute;`／`&nbsp;` 之類）——escaped markup 常見這種
+      情況：發佈者把自己的 HTML 原文用 `&amp;` 跳脫過一次才塞進 XML，XML parser 只解一次
+      `&amp;`，裡面本來就是 entity 的部分（例如 `&eacute;`）解完後還是原封不動的文字。
+      結果搜尋「Café」這個可見字命中不了索引裡的「Caf&eacute;」，「eacute」這個
+      entity 名稱本身反而變成一個看不見卻能被搜到的詞。另外，把每個標籤都換成空白也會
+      拆散行內標記中間的詞——`micro<em>soft</em>` 畫面上是一個字「microsoft」，索引
+      卻變成兩個獨立詞「micro」「soft」，讀者搜畫面上看到的字反而找不到；CJK 文字中間
+      被行內標籤（例如 `<a>`、`<em>`）包住幾個字時問題更明顯，因為中文本來就沒有空白
+      斷詞，硬插一個空白會把一段連續文字切成兩截。修法：`strip_html_for_search()`
+      改成區分「區塊標籤」（`p`／`li`／`div`／`h1`-`h6`／`br` 等，同
+      `rss_parser.py::_BLOCK_TAGS`／`frontend/src/app/shared/html.ts::BLOCK_TAGS`
+      原封不動照抄）換成空白，其餘所有標籤（含行內標記與註解）直接移除、不留分隔——
+      跟這個專案既有的 `_plain_text()`／`stripHtml()` 同一套判斷依據；並在標籤全部
+      拆完之後（避免把「示範用的逃脫標籤文字」不小心解回真標籤又被上一步吃掉）多一道
+      只處理 XML 預定義的 `&amp;`／`&lt;`／`&gt;` 加上極常見的 `&nbsp;` 這四種明確、
+      無歧義的 entity 解碼（`&amp;` 放最後解，避免雙重跳脫的 `&amp;lt;` 被連環解成
+      `<`）。刻意不嘗試完整的 HTML 具名 entity 對照表（上千筆，`&eacute;` 這種）——
+      在 SQL 裡手刻這個正是這個專案自己的 `frontend/src/app/shared/html.ts`
+      的 `decodeEntities()` 已經寫下教訓、明確不要做的事（「每次 review 都會冒出另一種
+      跟 Python `html.unescape()` 不一致的地方」）；真正完整的修法該放在 Python、在
+      抓取階段做，同 `backend/backfill.py` 呼叫真的解析器的作法，不是在這裡養一張
+      越補越大的 regex 表。
+  - **測試**：第 16 項是 `services/articles.py`，`tests/test_articles_service.py`
+    的 `_FakeTable.upsert` 補上 `returning` 參數並斷言等於 `"minimal"`，既有案例的
+    行為不變（fake 本來 `result.data` 存的就是傳入的 chunk 本身，跟改用 `len(chunk)`
+    在數學上等價）。第 17 項是 SQL 正規表示式，這個 sandbox 無法連上真正 Postgres
+    執行驗證，同本節前段記錄的既有限制，靠人工逐字元核對（block-tag 清單對照
+    `rss_parser.py::_BLOCK_TAGS` 逐一比對、quote-aware pattern 沿用第四輪已驗證過的
+    escaping 方式、entity 解碼順序手動追蹤三個範例：`&amp;lt;`、`&lt;script&gt;`
+    示範文字、一般 `&amp;`／`&nbsp;`）。

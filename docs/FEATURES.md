@@ -471,7 +471,13 @@ tag 名稱、屬性、class、連結網址變成可搜尋詞彙（PR #59 review�
 quote-aware 的——同 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE`，屬性值裡的
 字面 `>`（例如 `title="2 > 1"`）不會被誤判成標籤收尾；`<script>`／`<style>` 元素連內容
 一併整個砍掉（同 `rss_parser.py` 的 `_DROP_WHOLE_RE`），不是只拆標籤留下 JS／CSS 內容
-（PR #59 review，第四、五輪 P2）。並定義兩個 DB function：
+（PR #59 review，第四、五輪 P2）。標籤處理區分區塊／行內——區塊標籤（`p`／`li`／`div`／
+`h1`-`h6`／`br` 等，照抄 `rss_parser.py::_BLOCK_TAGS`）換成空白，其餘標籤（含行內標記
+如 `em`／`a`／`span`）直接移除不留分隔，避免把 `micro<em>soft</em>` 這類行內標記中間的
+詞拆成兩個索引詞，CJK 文字被行內標籤包住時尤其明顯；標籤拆完後再解 XML 預定義的
+`&amp;`／`&lt;`／`&gt;` 與 `&nbsp;` 四種無歧義 entity（刻意不做完整具名 entity 表，
+理由同 `frontend/src/app/shared/html.ts::decodeEntities()` 的既有教訓，見該處註解）
+（PR #59 review，第八輪 P2）。並定義兩個 DB function：
 
 - `search_articles(p_query, p_user_id, p_language, p_cursor_rank, p_cursor_sort_at, p_cursor_id, p_limit)`——
   供 `GET /search/articles`。`websearch_to_tsquery` 比對 `search_vector`，`ts_rank_cd` 算相關度，
