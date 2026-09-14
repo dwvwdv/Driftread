@@ -47,9 +47,7 @@
                 @if (row.article.author) {
                   ・ {{ row.article.author }}
                 }
-                @if (row.article.published_at) {
-                  ・ {{ row.article.published_at | date: 'yyyy-MM-dd' }}
-                }
+                ・ {{ (row.article.published_at ?? row.article.fetched_at) | date: 'yyyy-MM-dd' }}
               </span>
               @if (row.preview) {
                 <span class="summary">{{ row.preview }}</span>

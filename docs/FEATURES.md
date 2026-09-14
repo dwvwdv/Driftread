@@ -463,12 +463,15 @@ Driftread 的搜尋橫跨多語言文件，加上部分語言本來就沒有內�
 fallback），各自搭一個 GIN index。送進 `to_tsvector` 的文字先經過 `bounded_search_text()`
 截到 100,000 字元——`articles.content` 沒有欄位層級的長度上限，Postgres 的 tsvector 本身有
 約 1 MiB 的序列化大小限制，不截斷理論上會讓超大文章寫入時直接報錯（PR #59 review，P1）。
-`articles.content` 另外還會先過 `strip_html_for_search()`——這個欄位刻意保留原始 HTML
-（供 reader 頁 `[innerHTML]` 呈現），不像 `title`／`summary`／`author` 已經是
-`rss_parser.py::_plain_text()` 產生的純文字，原封不動索引會讓 tag 名稱、屬性、class、
-連結網址都變成可搜尋詞彙（PR #59 review，P2）。標籤比對是 quote-aware 的——同
-`frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE`，屬性值裡的字面 `>`（例如
-`title="2 > 1"`）不會被誤判成標籤收尾（PR #59 review，第四輪 P2）。並定義兩個 DB function：
+`articles.content`（原始 HTML，供 reader 頁 `[innerHTML]` 呈現，不像 `title`／`summary`／
+`author` 已經是 `rss_parser.py::_plain_text()` 產生的純文字）與 `feeds.description`
+（`rss_parser.py::_text()` 只回傳解碼後的文字，不保證是純文字——發佈者若跳脫 HTML，
+XML unescape 後一樣是真標記）都先過 `strip_html_for_search()` 才進 `to_tsvector`，避免
+tag 名稱、屬性、class、連結網址變成可搜尋詞彙（PR #59 review，P2）。標籤比對是
+quote-aware 的——同 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE`，屬性值裡的
+字面 `>`（例如 `title="2 > 1"`）不會被誤判成標籤收尾；`<script>`／`<style>` 元素連內容
+一併整個砍掉（同 `rss_parser.py` 的 `_DROP_WHOLE_RE`），不是只拆標籤留下 JS／CSS 內容
+（PR #59 review，第四、五輪 P2）。並定義兩個 DB function：
 
 - `search_articles(p_query, p_user_id, p_language, p_cursor_rank, p_cursor_sort_at, p_cursor_id, p_limit)`——
   供 `GET /search/articles`。`websearch_to_tsquery` 比對 `search_vector`，`ts_rank_cd` 算相關度，

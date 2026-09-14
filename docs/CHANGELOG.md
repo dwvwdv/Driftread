@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，四輪，1 個 P1，9 個 P2，均證實為真）**：
+- **PR review 修正（Codex，五輪，1 個 P1，12 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1558,6 +1558,28 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
       這個快取鍵；若當下就在文章分頁且有進行中的查詢就立刻重新載入，若在來源分頁則只
       invalidate，等切回文章分頁時 `loadActiveTab()` 既有的快取鍵比對自然會重新載入
       （來源搜尋本來就不帶使用者狀態，不需要在身分改變當下就重打）。
+  11. **P2**（第五輪 review）：`strip_html_for_search()` 加了 quote-aware 標籤比對後，
+      仍然只移除標籤本身，`<script>`／`<style>` 元素的「內容」（JS 程式碼、CSS
+      selector／屬性值）沒有被當成標籤，原封不動變成一般可見文字留在索引裡——即使前端
+      畫面上完全不會顯示這些內容。`rss_parser.py::_plain_text()` 早就用 `_DROP_WHOLE_RE`
+      處理過同一個問題（先整個元素含內容砍掉，再處理一般標籤）。修法：
+      `strip_html_for_search()` 改成兩段 `regexp_replace`——先用跟 `_DROP_WHOLE_RE` 對應
+      的 pattern（quote-aware 屬性、大小寫不分、`\1` 反向參照比對收尾標籤）整個砍掉
+      `<script>`／`<style>` 元素（標籤＋內容），再套用既有的一般標籤比對。
+  12. **P2**（第五輪 review）：`feeds.description` 也不保證是純文字——
+      `rss_parser.py::_text()`（channel 層級 description 用的就是它）只是回傳元素解碼後的
+      文字內容，不像 `_plain_text()` 會處理成純文字；發佈者若在 `<description>` 裡跳脫
+      HTML，XML unescape 之後就是貨真價實的 `<...>` 標記，這個 generated column 卻原封
+      不動索引——搜尋 `href`／`class` 或某個網址一樣能命中一個描述根本沒顯示這些字的
+      feed。修法：`feeds.search_vector` 的 generated column 與 `search_feeds` 的
+      `ts_headline` 呼叫，`description` 都先過 `strip_html_for_search()`，跟
+      `articles.content` 同一套處理與理由。
+  13. **P2**（第五輪 review）：`components/search/search.html` 只在 `published_at` 存在時
+      才顯示日期，但 model 上 `published_at` 是 nullable、`fetched_at` 永遠非空（元件自己
+      的測試 fixture 也是這樣寫的），沒解析出發佈日期的文章因此完全不顯示日期，也跟後端
+      `COALESCE(published_at, fetched_at)` 的排序邏輯不一致——結果少了「顯示日期」這個
+      端點本來就承諾的欄位。修法：改成 `(row.article.published_at ?? row.article.fetched_at)`，
+      一律顯示，退回抓取時間。
   - **測試**：`test_utils.py` 新增四種非有限值（`nan`／`inf`／`-inf`／`Infinity`）的
     拒絕案例；`test_articles.py`／`test_feeds.py` 各新增案例斷言對應端點的
     `.select(...)` 參數是明確欄位清單、不是 `"*"`；`components/search/search.spec.ts`
@@ -1566,7 +1588,9 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
     `feed-detail.spec.ts`／`my-feeds.spec.ts` 既有對 session 訊號的測法（`session.set(...)`
     後在同一個 fixture 上再呼叫一次 `detectChanges()` 讓元件自己的 `effect()` 真正跑一次
     ——`TestBed.flushEffects()` 是給注入來源為 `TestBed.inject()` 的 effect，不是給
-    component fixture 的）。P2-9（quote-aware 標籤比對）與 P1（截斷）都是這個 sandbox
-    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制，靠人工覆核；
-    rate limit dependency 不影響既有測試——`conftest.py` 的 `_reset_rate_limits` 每個
-    測試前都會清空命中紀錄，且每個測試案例只送一到兩次請求。
+    component fixture 的）。P2-9／11／12（SQL 正規表示式）與 P1（截斷）都是這個 sandbox
+    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制，靠人工覆核；P2-13
+    是純樣板改動，既有 spec 沒有對 DOM 渲染斷言的慣例（都是狀態／行為層級），跟隨這個
+    檔案既有風格沒有另外補 DOM 測試；rate limit dependency 不影響既有測試——
+    `conftest.py` 的 `_reset_rate_limits` 每個測試前都會清空命中紀錄，且每個測試案例
+    只送一到兩次請求。

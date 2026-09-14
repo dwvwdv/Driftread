@@ -62,6 +62,18 @@ $$;
 -- quote-aware (a `"..."`/`'...'` run is one unit regardless of `>` inside
 -- it), falling back to the naive form only for a tag with an unbalanced
 -- quote the quote-aware alternative can't otherwise match.
+--
+-- A tag-only replacement leaves a <script>/<style> element's *body* behind
+-- as if it were ordinary visible text — JS identifiers, CSS selectors and
+-- property values would become searchable even though nothing on the
+-- rendered page shows them. rss_parser.py's own `_plain_text()` already
+-- special-cases this (`_DROP_WHOLE_RE`, matched before its generic tag
+-- strip) for the same reason; the first regexp_replace below mirrors it —
+-- drop the whole element, tags and content together, case-insensitively,
+-- before the second pass strips whatever ordinary tags remain. (Postgres's
+-- default, non-newline-sensitive matching already makes `.` match a
+-- newline, so `.*?` alone spans a multi-line `<script>` body without a
+-- separate "dotall" flag.)
 CREATE OR REPLACE FUNCTION driftread.strip_html_for_search(p_html text)
 RETURNS text
 LANGUAGE sql
@@ -69,7 +81,12 @@ IMMUTABLE
 SET search_path = pg_catalog
 AS $$
   SELECT regexp_replace(
-    coalesce(p_html, ''),
+    regexp_replace(
+      coalesce(p_html, ''),
+      '<(script|style)\b(?:[^>"'']|"[^"]*"|''[^'']*'')*>.*?</\1\s*>',
+      ' ',
+      'gi'
+    ),
     '<!--.*?-->|</?[a-zA-Z](?:[^>"'']|"[^"]*"|''[^'']*'')*>|</?[a-zA-Z][^>]*>',
     ' ',
     'g'
@@ -88,12 +105,20 @@ ALTER TABLE driftread.articles
     )
   ) STORED;
 
+-- `feeds.description` isn't guaranteed plain text either: rss_parser.py's
+-- `_text()` (used for the channel-level description) just returns the
+-- element's decoded text content, unlike `_plain_text()` — a publisher
+-- that escapes markup in `<description>` ends up with real `<...>` HTML
+-- after XML unescaping. Same treatment as articles.content, for the same
+-- reason (PR #59 review, P2).
 ALTER TABLE driftread.feeds
   ADD COLUMN IF NOT EXISTS search_vector tsvector
   GENERATED ALWAYS AS (
     to_tsvector(
       'simple',
-      driftread.bounded_search_text(coalesce(title, '') || ' ' || coalesce(description, ''))
+      driftread.bounded_search_text(
+        coalesce(title, '') || ' ' || driftread.strip_html_for_search(description)
+      )
     )
   ) STORED;
 
@@ -283,11 +308,13 @@ AS $$
   SELECT
     id, title, url, description,
     -- Only one candidate body field here (unlike search_articles), so no
-    -- field-matched-vs-headlined mismatch to resolve — just the same size
-    -- bound as the generated column, for the same "string is too long for
-    -- tsvector"/ts_headline-on-unbounded-text reason.
+    -- field-matched-vs-headlined mismatch to resolve — same HTML-stripping
+    -- and size bound as the generated column (description isn't guaranteed
+    -- plain text either, see above), for the same reasons.
     ts_headline(
-      'simple', driftread.bounded_search_text(description), tsq,
+      'simple',
+      driftread.bounded_search_text(driftread.strip_html_for_search(description)),
+      tsq,
       'MaxFragments=1,MaxWords=35,MinWords=15,ShortWord=3,HighlightAll=false'
     ) AS snippet,
     website_url, language, category, tags, article_count, created_at, rank
