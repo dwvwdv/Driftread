@@ -37,6 +37,28 @@ AS $$
   SELECT left(coalesce(p_text, ''), 100000)
 $$;
 
+-- `articles.content` deliberately keeps the raw HTML (rss_parser.py's
+-- `_inner_html`) for the reader page's `[innerHTML]` rendering — unlike
+-- `title`/`summary`/`author`, which are already the plain-text output of
+-- `rss_parser.py::_plain_text()`. Feeding that raw HTML straight into
+-- to_tsvector makes tag names, attributes, class names and URLs inside
+-- markup into searchable lexemes: a query for "href" or some CSS class
+-- name would match articles whose rendered text never contains that word,
+-- and repeated boilerplate markup skews `ts_rank_cd`. This does not try to
+-- match `_plain_text()`'s fidelity (block-tag-aware spacing, entity
+-- decoding) — it is only search-index preprocessing, not reader-facing
+-- text — just replace each tag with a space (not drop it outright, so
+-- "...sentence.</p><p>Next" doesn't glue into one word) before it reaches
+-- to_tsvector/ts_headline.
+CREATE OR REPLACE FUNCTION driftread.strip_html_for_search(p_html text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog
+AS $$
+  SELECT regexp_replace(coalesce(p_html, ''), '<[^>]*>', ' ', 'g')
+$$;
+
 ALTER TABLE driftread.articles
   ADD COLUMN IF NOT EXISTS search_vector tsvector
   GENERATED ALWAYS AS (
@@ -44,7 +66,7 @@ ALTER TABLE driftread.articles
       'simple',
       driftread.bounded_search_text(
         coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' ||
-        coalesce(author, '') || ' ' || coalesce(content, '')
+        coalesce(author, '') || ' ' || driftread.strip_html_for_search(content)
       )
     )
   ) STORED;
@@ -164,9 +186,13 @@ AS $$
       CASE
         WHEN to_tsvector('simple', driftread.bounded_search_text(summary)) @@ tsq
           THEN driftread.bounded_search_text(summary)
-        WHEN to_tsvector('simple', driftread.bounded_search_text(content)) @@ tsq
-          THEN driftread.bounded_search_text(content)
-        ELSE driftread.bounded_search_text(coalesce(nullif(summary, ''), content, ''))
+        WHEN to_tsvector(
+          'simple', driftread.bounded_search_text(driftread.strip_html_for_search(content))
+        ) @@ tsq
+          THEN driftread.bounded_search_text(driftread.strip_html_for_search(content))
+        ELSE driftread.bounded_search_text(
+          coalesce(nullif(summary, ''), driftread.strip_html_for_search(content), '')
+        )
       END,
       tsq,
       'MaxFragments=1,MaxWords=35,MinWords=15,ShortWord=3,HighlightAll=false'

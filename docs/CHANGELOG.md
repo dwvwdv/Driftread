@@ -1471,7 +1471,7 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
   `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
   慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
   `frontend.yml` 執行。
-- **PR review 修正（Codex，1 個 P1，3 個 P2，均證實為真）**：
+- **PR review 修正（Codex，兩輪，1 個 P1，5 個 P2，均證實為真）**：
   1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
      5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
      會讓 `search_vector` 這個 generated column 的計算直接丟出
@@ -1503,8 +1503,31 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
      `ValueError` 判斷路徑回傳非預期的 500、或是產生不合理的分頁結果，而不是文件承諾的
      400。修法：解碼後多一道 `math.isfinite(rank)` 檢查，非有限值一律視同格式錯誤的
      cursor。
+  5. **P2**（第二輪 review）：`articles.content` 刻意保留原始 HTML（供 reader 頁
+     `[innerHTML]` 呈現用），`title`／`summary`／`author` 則已經是
+     `rss_parser.py::_plain_text()` 產生的純文字——`search_vector` 這個 generated column
+     卻把 `content` 原封不動串進 `to_tsvector`，讓 tag 名稱、屬性、class、連結網址這些
+     呈現用的標記語法本身變成可搜尋詞彙：搜尋 `href` 或某個 CSS class 名稱會命中完全不
+     相關的文章，重複出現的樣板標記也會稀釋 `ts_rank_cd` 的相關度排序。修法：新增
+     `driftread.strip_html_for_search(text)`（`IMMUTABLE` SQL function，
+     `regexp_replace(text, '<[^>]*>', ' ', 'g')`——每個標籤換成空白而不是直接砍掉，避免
+     `"...句尾</p><p>下一句"` 少了空白黏成一個詞），`search_vector` 的 generated column
+     與 `search_articles` 命中摘要片段的 `content` 分支都先過這道處理，不追求跟
+     `_plain_text()` 完全一致的還原精確度——這裡只是搜尋索引前處理，不是要呈現給讀者看的
+     文字。
+  6. **P2**（第二輪 review）：`routers/articles.py::get_article`（`GET /articles/{id}`）
+     原本用 `.select("*")` 查單篇文章，migration 020 替 `articles` 加上
+     `search_vector` 後，這個萬用字元查詢會連帶把這個對長文章可能有數十到數百 KB 的
+     generated tsvector 從 PostgREST 撈回並序列化，即使 `Article` 回應 model 從未使用它
+     ——每次讀一篇文章都白白多傳一份幾乎跟全文一樣大的資料。修法：改成明確欄位清單
+     `id,feed_id,title,url,summary,content,author,published_at,fetched_at`，不含
+     `search_vector`。（同樣的 `feeds.select("*")` 萬用字元查詢在 `routers/feeds.py`／
+     `routers/admin.py`／`services/discovery_candidates.py` 還有多處既有用法，但
+     feeds 的 `search_vector` 只由 title＋description 組成，體積遠小於文章內文，這次
+     review 也沒有指出——刻意不在這個 PR 裡順手清掉，範圍留給之後真的需要時再處理。）
   - **測試**：`test_utils.py` 新增四種非有限值（`nan`／`inf`／`-inf`／`Infinity`）的
-    拒絕案例，其餘三項是 SQL／路由層修正，覆蓋在既有的 `test_search.py`（rate limit
-    dependency 不影響既有測試——`conftest.py` 的 `_reset_rate_limits` 每個測試前都會清空
-    命中紀錄，且每個測試案例只送一到兩次請求）與人工覆核（P1／P2-2 都是這個 sandbox
-    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制）。
+    拒絕案例；`test_articles.py` 新增一個案例斷言 `GET /articles/{id}` 的 `.select(...)`
+    參數是明確欄位清單、不是 `"*"`。P2-5（HTML 去除）與 P1（截斷）都是這個 sandbox
+    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制，靠人工覆核；
+    rate limit dependency 不影響既有測試——`conftest.py` 的 `_reset_rate_limits` 每個
+    測試前都會清空命中紀錄，且每個測試案例只送一到兩次請求。
