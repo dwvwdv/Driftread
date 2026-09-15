@@ -1416,6 +1416,306 @@ recommendations.py` 也完全不知道使用者過去的回饋，只能靠呼叫
   - **測試**：`recommendation.spec.ts` 新增已登入時不附加 query param、以及同一 feed 連續
     操作會取消前一個請求兩個案例。
 
+## 階段三十四：全文搜尋——文章與 Feed 分開搜尋，PostgreSQL tsvector + GIN index（2026-09-14）
+
+TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?search=` 的
+`ilike '%keyword%'`（無 index、大表整表掃描），而且完全沒有文章層級的搜尋——`articles`
+表從未被搜尋觸及。
+
+- **`backend/migrations/020_full_text_search.sql`（新）**：`articles`／`feeds` 各加一個
+  `search_vector`（`GENERATED ALWAYS AS to_tsvector('simple', ...) STORED`）＋GIN index。
+  語言設定刻意統一用 `simple`、不做逐語言 stemming：tsvector 的 lexeme 依建立時的
+  regconfig 決定，查詢端 tsquery 必須用同一個 regconfig 才能命中，而 Driftread 的搜尋橫跨
+  多個 feed／多種語言混在同一次結果裡，沒有單一查詢能同時對「每篇文件各自用不同 regconfig
+  建的 tsvector」都選對 config；加上目前有語言偵測的 zh／ja／ko／th／vi 等，Postgres 內建
+  本來就沒有對應斷詞字典。統一 `simple` 讓建索引與查詢兩端永遠一致，是「無法可靠斷詞時提供
+  可預測 fallback」的落地方式，真正逐語言 stemming 留待之後有需要再做。新增
+  `search_articles()`／`search_feeds()` 兩個 DB function：`websearch_to_tsquery` 比對
+  `search_vector`，`ts_rank_cd` 排相關度，`(rank, sort_at/created_at, id)` 三欄 keyset
+  分頁（同分退回既有日期／id 決勝規則）。三層 CTE 而非單層：`ranked` 只算 rank（GIN index
+  篩過的列才算），`paged` 做 cursor 篩選＋排序＋LIMIT，最外層才對已經分頁過的那一頁（≤100
+  列）呼叫 `ts_headline`——`ts_headline` 要重新掃過整段文字找命中片段，比 `ts_rank_cd` 貴
+  得多，一個熱門關鍵字命中幾千篇文章時不該對每一篇都算一次。`SECURITY INVOKER`、EXECUTE
+  只授權 `service_role`，同 `list_reading_stream`／`list_feed_articles` 的既有鎖法。
+- **`backend/routers/search.py`（新）**：`GET /search/articles`、`GET /search/feeds`，
+  分開端點、分開回應形狀（TODO.md 明列「Feed 名稱／描述搜尋與文章搜尋分開呈現」）。
+  `q` 必填（1–200 字）、`language` 可選、cursor 分頁（`limit` 上限 100，同
+  `GET /feeds/{feed_id}/articles` 的 400-on-malformed-cursor 慣例）。文章搜尋是公開端點，
+  帶有效 token 時每筆回傳呼叫者自己的 `is_read`／`is_bookmarked`（同
+  `list_feed_articles`）。
+- **`backend/utils.py`**：新增 `encode_rank_cursor`／`decode_rank_cursor`——三欄
+  `(rank, marker, id)` 版的 keyset cursor，`rank` 用 `repr()` 而非 `str()` 編碼以保證
+  Postgres `real`（float4）經 JSON 往返成 Python `float64` 再送回時精確相等，cursor
+  的 rank 比對才不會因為浮點數表示誤差錯過或重複結果。
+- **前端**：`components/search`（新，`/search`）——文章／來源兩個分頁，各自獨立的
+  cursor 分頁狀態與載入更多；`(query, language)` 相同時切換分頁或重新整理不重打 API。
+  命中摘要片段固定走既有 `stripHtml()` 呈現成純文字（不特別高亮 `ts_headline` 加的
+  `<b>` 標籤）——避免把 RSS 內容裡本來就可能存在的標籤與 `ts_headline` 自己加的標籤
+  混在一起走 `[innerHTML]`，同現有 `stripHtml` 的既有防線一致。`services/search.ts`
+  對應兩個端點。公開導覽列（含手機版抽屜選單）加上「搜尋」連結。
+- **測試**：`backend/tests/test_search.py`（新，兩個端點的空/帶使用者、language 篩選、
+  cursor 編碼/解碼、分頁下一頁存在與否）；`test_utils.py` 補 rank cursor 的編解碼、浮點
+  數精確往返、格式錯誤拒絕案例。`frontend/src/app/services/search.spec.ts`（新，
+  HttpTestingController 驗證查詢參數）；`components/search/search.spec.ts`（新，提交／
+  分頁切換快取／language 變更重打／載入更多／stale response 被新搜尋蓋過／錯誤狀態）。
+- 對應文件更新：`TODO.md`（「全文搜尋」四項全數打勾並記錄與規格的刻意偏離：language-aware
+  config 統一走 `simple` 而非逐語言 stemming；建議開發批次第 7 項更新為全文搜尋已完成，
+  資料夾管理仍未開始）、`docs/FEATURES.md`（第 1 節功能總覽、第 3 節新增 Search 端點、
+  第 4 節新增 `/search` 路由、第 5 節新增 `search_vector` 欄位／`search_articles`／
+  `search_feeds`／GIN index）。
+- **本 sandbox 的已知限制**：與先前多輪修法相同，`pip`／`npm` 的 PyPI／npm registry
+  index 皆被 network egress allowlist 擋下，無法在本機安裝依賴跑真正的
+  `pytest`／`ng test`。已用 `python3 -m py_compile` 驗證所有新增／改動 backend 檔案的
+  語法，`flake8` 驗證新增程式碼無 lint 問題（既有 `models.py` 一個 `Any` 未使用的既有
+  問題與本次改動無關，未動它）；frontend 新增檔案已對照既有元件（`feed-detail.ts`、
+  `bookmarks.spec.ts`、`feed-list.html` 的 `ngModel`／`ngSubmit` 慣例）逐行核對語法與
+  慣例一致性，實際 `npm test`／production build 交給 CI 的 `backend.yml`／
+  `frontend.yml` 執行。
+- **PR review 修正（Codex，九輪，1 個 P1，18 個 P2，均證實為真）**：
+  1. **P1**：`articles.content` 沒有欄位層級長度上限（只有抓取階段整個 feed 下載量的
+     5 MiB 上限），而 Postgres 的 tsvector 序列化後有約 1 MiB 的大小限制——單篇超大文章
+     會讓 `search_vector` 這個 generated column 的計算直接丟出
+     `string is too long for tsvector`，新文章寫入失敗，或者這個 migration 替既有資料
+     回填該欄位時整個 migration 失敗、擋住後端啟動。修法：新增
+     `driftread.bounded_search_text(text)`（`IMMUTABLE` SQL function，`left(text, 100000)`），
+     所有送進 `to_tsvector`／`ts_headline` 的文字都先經過它——100,000 字元就算全是
+     4-byte UTF-8 字元也只有 400 KB，遠低於 1 MiB 上限，且沒有真實搜尋情境需要比這更
+     後面的內文才能命中。
+  2. **P2**：`search_articles` 的命中摘要片段原本不論比對命中的位置在哪，一律固定取
+     `summary`（沒有摘要才退回 `content`）餵給 `ts_headline`——當一篇文章有非空
+     `summary` 但查詢其實只命中 `content` 時，回傳的片段會是一段完全沒有標記到關鍵字的
+     `summary` 開頭，與端點承諾的「命中摘要片段」不符。修法：分別檢查
+     `summary`／`content` 各自的（同樣經過 `bounded_search_text` 界限的）tsvector
+     是否命中查詢，取真正命中的那一個餵給 `ts_headline`；兩者都沒命中（純粹命中
+     title／author）才退回原本的預設值——`ts_headline` 對沒有命中的文字不會報錯，只是
+     顯示一段沒有標記的開頭摘錄。
+  3. **P2**：`GET /search/articles`／`GET /search/feeds` 兩個公開端點原本沒有掛任何
+     rate limit——與 `GET /recommendations`（同樣是公開、每次呼叫都有真實 DB 排序工作）
+     先前的既有洞一樣：呼叫端可以不斷送出熱門關鍵字查詢，讓資料庫對每次查詢的所有命中
+     排序、再對分頁後的結果算 `ts_headline`，造成可避免的 CPU 耗用。修法：兩個端點各自
+     掛 `Depends(rate_limit("search_articles"))`／`Depends(rate_limit("search_feeds"))`，
+     沿用 `/discover`／`/discover/import`／`/recommendations` 同一套「每個 client IP
+     每端點 20 requests / 60 秒」預設值與獨立配額（bucket 用不同 `name`，互不影響）。
+  4. **P2**：`decode_rank_cursor` 用 Python `float()` 解析 cursor 裡的 rank 部分，但
+     `float()` 也會無錯誤地解析 `'nan'`／`'inf'`／`'-inf'` 這類字串——一個刻意構造、
+     base64 格式正確但帶有非有限值的 cursor 會通過解碼，把 NaN／Inf 當成 RPC 的
+     `real` 參數送進資料庫，依 JSON 序列化／PostgREST 處理方式不同，結果可能是跳出
+     `ValueError` 判斷路徑回傳非預期的 500、或是產生不合理的分頁結果，而不是文件承諾的
+     400。修法：解碼後多一道 `math.isfinite(rank)` 檢查，非有限值一律視同格式錯誤的
+     cursor。
+  5. **P2**（第二輪 review）：`articles.content` 刻意保留原始 HTML（供 reader 頁
+     `[innerHTML]` 呈現用），`title`／`summary`／`author` 則已經是
+     `rss_parser.py::_plain_text()` 產生的純文字——`search_vector` 這個 generated column
+     卻把 `content` 原封不動串進 `to_tsvector`，讓 tag 名稱、屬性、class、連結網址這些
+     呈現用的標記語法本身變成可搜尋詞彙：搜尋 `href` 或某個 CSS class 名稱會命中完全不
+     相關的文章，重複出現的樣板標記也會稀釋 `ts_rank_cd` 的相關度排序。修法：新增
+     `driftread.strip_html_for_search(text)`（`IMMUTABLE` SQL function，
+     `regexp_replace(text, '<[^>]*>', ' ', 'g')`——每個標籤換成空白而不是直接砍掉，避免
+     `"...句尾</p><p>下一句"` 少了空白黏成一個詞），`search_vector` 的 generated column
+     與 `search_articles` 命中摘要片段的 `content` 分支都先過這道處理，不追求跟
+     `_plain_text()` 完全一致的還原精確度——這裡只是搜尋索引前處理，不是要呈現給讀者看的
+     文字。
+  6. **P2**（第二輪 review）：`routers/articles.py::get_article`（`GET /articles/{id}`）
+     原本用 `.select("*")` 查單篇文章，migration 020 替 `articles` 加上
+     `search_vector` 後，這個萬用字元查詢會連帶把這個對長文章可能有數十到數百 KB 的
+     generated tsvector 從 PostgREST 撈回並序列化，即使 `Article` 回應 model 從未使用它
+     ——每次讀一篇文章都白白多傳一份幾乎跟全文一樣大的資料。修法：改成明確欄位清單
+     `id,feed_id,title,url,summary,content,author,published_at,fetched_at`，不含
+     `search_vector`。
+  7. **P2**（第三輪 review）：`search_articles` 的 JOIN 只用 `f.id = a.feed_id` 取
+     `feed_title`，從未檢查 `f.archived_at`——已封存來源的文章仍然完全可以透過這個新的
+     公開搜尋端點被搜到／列出，與封存流程本身給操作者的承諾（`admin-feeds.ts` 封存
+     確認對話框：「封存後這個來源不再出現在前台」）矛盾，也跟 `search_feeds` 早已排除
+     已封存來源的既有行為不一致。修法：`ranked` CTE 的 `WHERE` 加上
+     `f.archived_at IS NULL`，同 `search_feeds`／`GET /feeds` 既有行為。
+  8. **P2**（第三輪 review）：`routers/feeds.py` 的 `list_feeds`（`GET /feeds`，一次最多
+     100 筆）與 `get_feed`（`GET /feeds/{id}`）都用 `.select("*")`，migration 020 替
+     `feeds` 加上 `search_vector` 後，這個最多索引 100,000 字元 description 的 generated
+     tsvector 也會被撈回——`Feed` 回應 model 從未用到它，分頁列表的浪費隨頁面大小疊加。
+     修法：改成同一份明確欄位清單 `_FEED_COLUMNS`（`Feed` model 的全部欄位，不含
+     `search_vector`），兩處呼叫共用。`routers/admin.py`／
+     `services/discovery_candidates.py` 還有其他 `feeds.select("*")` 既有用法，這次
+     review 沒有指出（後台操作端點，不是高流量的公開路徑）——範圍留給之後真的需要時再
+     處理，不在這個 PR 裡順手清掉。
+  9. **P2**（第四輪 review）：第二輪加的 `strip_html_for_search()`（`<[^>]*>` → 空白）
+     在屬性值裡出現字面 `>` 時會提早停在那個 `>`，不是標籤真正的收尾——例如
+     `<a title="2 > 1" href="https://example.com">text</a>`，會把
+     ` 1" href="https://example.com">` 這段原封不動留在索引／headline 文字裡，搜尋還是
+     能命中看不見的屬性值或連結網址，等於沒真正解掉第二輪那個發現。修法：正規表示式改用
+     跟 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE` 同一套 quote-aware 邏輯
+     （翻譯成 Postgres 的 regex 語法）——標籤的屬性部分改成
+     `(?:[^>"']|"[^"]*"|'[^']*')*`：不是屬性值的字元逐一比對，遇到雙引號／單引號包起來的
+     一整段（不論裡面有沒有 `>`）當成一個單位跳過，只有真的沒有配對引號的異常標籤才退回
+     原本天真的 `[^>]*`。
+  10. **P2**（第四輪 review）：`components/search/search.ts` 從未對
+      `AuthService.session()` 做任何反應——`AuthService` 是非同步還原已登入 session
+      的（同 `feed-detail.ts`／`reading-stream.ts`／`bookmarks.ts` 已經處理過的同一類
+      問題），如果讀者在 session 還原完成前就送出搜尋，那次請求會是匿名的，
+      `is_read`／`is_bookmarked` 全部回傳 false；`searchKey` 只看 query／language，不含
+      使用者身分，session 還原後重新送出同一個查詢會被當成「已經載入過」直接跳過，讀者
+      會一直卡在匿名結果上。修法：跟其餘元件同一套模式——建構子裡加一個
+      `effect()` 追蹤 `auth.session()?.user?.id`，身分改變時清掉 `articleLoadedForKey`
+      這個快取鍵；若當下就在文章分頁且有進行中的查詢就立刻重新載入，若在來源分頁則只
+      invalidate，等切回文章分頁時 `loadActiveTab()` 既有的快取鍵比對自然會重新載入
+      （來源搜尋本來就不帶使用者狀態，不需要在身分改變當下就重打）。
+  11. **P2**（第五輪 review）：`strip_html_for_search()` 加了 quote-aware 標籤比對後，
+      仍然只移除標籤本身，`<script>`／`<style>` 元素的「內容」（JS 程式碼、CSS
+      selector／屬性值）沒有被當成標籤，原封不動變成一般可見文字留在索引裡——即使前端
+      畫面上完全不會顯示這些內容。`rss_parser.py::_plain_text()` 早就用 `_DROP_WHOLE_RE`
+      處理過同一個問題（先整個元素含內容砍掉，再處理一般標籤）。修法：
+      `strip_html_for_search()` 改成兩段 `regexp_replace`——先用跟 `_DROP_WHOLE_RE` 對應
+      的 pattern（quote-aware 屬性、大小寫不分、`\1` 反向參照比對收尾標籤）整個砍掉
+      `<script>`／`<style>` 元素（標籤＋內容），再套用既有的一般標籤比對。
+  12. **P2**（第五輪 review）：`feeds.description` 也不保證是純文字——
+      `rss_parser.py::_text()`（channel 層級 description 用的就是它）只是回傳元素解碼後的
+      文字內容，不像 `_plain_text()` 會處理成純文字；發佈者若在 `<description>` 裡跳脫
+      HTML，XML unescape 之後就是貨真價實的 `<...>` 標記，這個 generated column 卻原封
+      不動索引——搜尋 `href`／`class` 或某個網址一樣能命中一個描述根本沒顯示這些字的
+      feed。修法：`feeds.search_vector` 的 generated column 與 `search_feeds` 的
+      `ts_headline` 呼叫，`description` 都先過 `strip_html_for_search()`，跟
+      `articles.content` 同一套處理與理由。
+  13. **P2**（第五輪 review）：`components/search/search.html` 只在 `published_at` 存在時
+      才顯示日期，但 model 上 `published_at` 是 nullable、`fetched_at` 永遠非空（元件自己
+      的測試 fixture 也是這樣寫的），沒解析出發佈日期的文章因此完全不顯示日期，也跟後端
+      `COALESCE(published_at, fetched_at)` 的排序邏輯不一致——結果少了「顯示日期」這個
+      端點本來就承諾的欄位。修法：改成 `(row.article.published_at ?? row.article.fetched_at)`，
+      一律顯示，退回抓取時間。
+  - **測試**：`test_utils.py` 新增四種非有限值（`nan`／`inf`／`-inf`／`Infinity`）的
+    拒絕案例；`test_articles.py`／`test_feeds.py` 各新增案例斷言對應端點的
+    `.select(...)` 參數是明確欄位清單、不是 `"*"`；`components/search/search.spec.ts`
+    新增三個案例（session 還原後重新載入文章結果、尚未送出查詢時 session 還原不觸發任何
+    請求、身分改變當下人在來源分頁不立即重打但切回文章分頁會重打），做法同
+    `feed-detail.spec.ts`／`my-feeds.spec.ts` 既有對 session 訊號的測法（`session.set(...)`
+    後在同一個 fixture 上再呼叫一次 `detectChanges()` 讓元件自己的 `effect()` 真正跑一次
+    ——`TestBed.flushEffects()` 是給注入來源為 `TestBed.inject()` 的 effect，不是給
+    component fixture 的）。P2-9／11／12（SQL 正規表示式）與 P1（截斷）都是這個 sandbox
+    無法連上真正 Postgres 執行的 SQL 邏輯，同本節前段記錄的既有限制，靠人工覆核；P2-13
+    是純樣板改動，既有 spec 沒有對 DOM 渲染斷言的慣例（都是狀態／行為層級），跟隨這個
+    檔案既有風格沒有另外補 DOM 測試；rate limit dependency 不影響既有測試——
+    `conftest.py` 的 `_reset_rate_limits` 每個測試前都會清空命中紀錄，且每個測試案例
+    只送一到兩次請求。
+  14. **P2**（第六輪 review）：第五輪加的 `<(script|style)\b...` 這個 pattern 裡的
+      `\b`，在 PostgreSQL 的 ARE（Advanced Regular Expression）語法裡是「backspace」
+      這個字元跳脫（同 `\a`／`\f`／`\n`／`\r`／`\t` 那組 character-entry escape），**不是**
+      Perl／PCRE 那種 word-boundary constraint——這是這兩種 regex 方言一個真實存在、
+      容易誤踩的差異。結果是這個 pattern 幾乎永遠不會命中（因為真實輸入裡 "script" 或
+      "style" 後面幾乎不會剛好接一個字面 backspace 字元），第五輪那個「先整個砍掉
+      script／style 元素」的修法因此完全是 no-op，退回成只砍標籤、留下內容的舊行為，
+      沒有真的解掉問題。修法：換成 Postgres 自己 regex 方言裡真正的 word-boundary
+      constraint escape `\y`（對應 word-start／word-end 分別是 `\m`／`\M`），讓
+      `<script>`／`<script ...>` 命中，但 `<scriptx>` 這種更長的標籤名稱不會被誤砍。
+  - **測試**：這一項是 SQL 正規表示式本身的方言差異，這個 sandbox 無法連上真正
+    Postgres 執行驗證，同本節前段記錄的既有限制，靠人工覆核（對照 PostgreSQL 官方文件
+    的 constraint escape／character-entry escape 對照表逐字核對）。
+  15. **P2**（第七輪 review）：`components/search/search.ts` 的 `searchKey` 用一個位元組
+      分隔 `activeQuery`／`language` 兩段組成快取鍵，原意是想用一個「查詢文字與語言代碼都
+      不會出現」的分隔字元，但寫進原始碼時該位元組是直接以字面 NUL byte（`\x00`）存在
+      檔案裡，不是文字跳脫序列——結果 `git diff --numstat` 之類的工具把整個檔案判定成
+      binary，正常的逐行 diff／merge 都失效。修法：改成 TypeScript 範本字面值裡的合法
+      跳脫序列 `\u0000`（反斜線＋u0000 六個字元），執行期仍會被直譯成同一個 NUL
+      字元、行為完全不變，但原始碼檔案本身變回純文字。
+  - **測試**：純位元組層級的原始碼修正，行為不變（同一個 NUL 分隔字元，只是換成合法的
+    文字跳脫序列表示），既有 `search.spec.ts` 的快取鍵相關案例（分頁切換快取、language
+    變更重打）不需要跟著改。
+  16. **P2**（第八輪 review）：`services/articles.py::upsert_articles()`（排程刷新每個
+      feed 都會呼叫，每批最多 200 篇）原本用預設的 `returning="representation"`，
+      migration 020 替 `articles` 加上 `search_vector` 後，這個回應會連同每篇文章可能
+      數十到數百 KB 的 generated tsvector 一起序列化回傳，但呼叫端只用
+      `len(result.data)` 算筆數，完全沒用到內容本身。修法：改成
+      `returning="minimal"`（`Prefer: return=minimal`，完全不回傳列內容），筆數改用
+      `len(chunk)` 直接算——同一批次內的 `(feed_id, url)` 已在呼叫前用 dict 去重過，
+      upsert 在沒有 `ignore_duplicates` 的情況下一定是每筆要嘛新增要嘛更新，不會有
+      「送出去但沒被回應提到」的列，所以 `len(chunk)` 跟原本 `len(result.data)`
+      在數學上恆等，不是近似值。
+  17. **P2**（第八輪 review）：`strip_html_for_search()` 只拆標籤，不處理標籤拆完後
+      留在文字裡的 HTML entity（`&eacute;`／`&nbsp;` 之類）——escaped markup 常見這種
+      情況：發佈者把自己的 HTML 原文用 `&amp;` 跳脫過一次才塞進 XML，XML parser 只解一次
+      `&amp;`，裡面本來就是 entity 的部分（例如 `&eacute;`）解完後還是原封不動的文字。
+      結果搜尋「Café」這個可見字命中不了索引裡的「Caf&eacute;」，「eacute」這個
+      entity 名稱本身反而變成一個看不見卻能被搜到的詞。另外，把每個標籤都換成空白也會
+      拆散行內標記中間的詞——`micro<em>soft</em>` 畫面上是一個字「microsoft」，索引
+      卻變成兩個獨立詞「micro」「soft」，讀者搜畫面上看到的字反而找不到；CJK 文字中間
+      被行內標籤（例如 `<a>`、`<em>`）包住幾個字時問題更明顯，因為中文本來就沒有空白
+      斷詞，硬插一個空白會把一段連續文字切成兩截。修法：`strip_html_for_search()`
+      改成區分「區塊標籤」（`p`／`li`／`div`／`h1`-`h6`／`br` 等，同
+      `rss_parser.py::_BLOCK_TAGS`／`frontend/src/app/shared/html.ts::BLOCK_TAGS`
+      原封不動照抄）換成空白，其餘所有標籤（含行內標記與註解）直接移除、不留分隔——
+      跟這個專案既有的 `_plain_text()`／`stripHtml()` 同一套判斷依據；並在標籤全部
+      拆完之後（避免把「示範用的逃脫標籤文字」不小心解回真標籤又被上一步吃掉）多一道
+      只處理 XML 預定義的 `&amp;`／`&lt;`／`&gt;` 加上極常見的 `&nbsp;` 這四種明確、
+      無歧義的 entity 解碼（`&amp;` 放最後解，避免雙重跳脫的 `&amp;lt;` 被連環解成
+      `<`）。刻意不嘗試完整的 HTML 具名 entity 對照表（上千筆，`&eacute;` 這種）——
+      在 SQL 裡手刻這個正是這個專案自己的 `frontend/src/app/shared/html.ts`
+      的 `decodeEntities()` 已經寫下教訓、明確不要做的事（「每次 review 都會冒出另一種
+      跟 Python `html.unescape()` 不一致的地方」）；真正完整的修法該放在 Python、在
+      抓取階段做，同 `backend/backfill.py` 呼叫真的解析器的作法，不是在這裡養一張
+      越補越大的 regex 表。
+  - **測試**：第 16 項是 `services/articles.py`，`tests/test_articles_service.py`
+    的 `_FakeTable.upsert` 補上 `returning` 參數並斷言等於 `"minimal"`，既有案例的
+    行為不變（fake 本來 `result.data` 存的就是傳入的 chunk 本身，跟改用 `len(chunk)`
+    在數學上等價）。第 17 項是 SQL 正規表示式，這個 sandbox 無法連上真正 Postgres
+    執行驗證，同本節前段記錄的既有限制，靠人工逐字元核對（block-tag 清單對照
+    `rss_parser.py::_BLOCK_TAGS` 逐一比對、quote-aware pattern 沿用第四輪已驗證過的
+    escaping 方式、entity 解碼順序手動追蹤三個範例：`&amp;lt;`、`&lt;script&gt;`
+    示範文字、一般 `&amp;`／`&nbsp;`）。
+  18. **P2**（第九輪 review）：`strip_html_for_search()` 內部好幾道
+      `regexp_replace`，但 `articles.content` 沒有欄位層級長度上限（理論上可接近
+      抓取階段整個 feed 下載量的 5 MiB 上限）——`bounded_search_text()` 原本是等
+      `strip_html_for_search()` 跑完、串接完 title／summary／author 之後才對「最終
+      串接結果」做長度限制，這代表 regex 本身是對著未經界限的原始 HTML 掃描，掃描
+      成本沒有上限。`search_articles` 的命中摘要片段那段 CASE 更是把
+      `strip_html_for_search(content)` 對同一篇文章重複呼叫兩次（WHEN 判斷命中一次、
+      THEN 分支再算一次），而這個端點單次查詢最多回傳 100 篇文章——等於單次公開搜尋
+      請求最壞情況要對未界限的原始內文跑到 200 次多階段 regex 掃描，是可避免的
+      DB CPU／延遲尖峰。修法：`bounded_search_text()` 改成在 `strip_html_for_search()`
+      **之前**先跑（截斷是 O(1) 的 `left()`，先做完全不影響後面 regex 的正確性——
+      stripping 的每一種取代都只會讓字串變短或不變，先界限原始輸入，出來的結果保證
+      一樣有界限，不需要再包一層）；`search_articles` 額外把去 HTML 這道計算搬進
+      `paged` 之後新增的第四層 CTE `enriched`（`SELECT *, strip_html_for_search(...)
+      AS stripped_content FROM paged`），同一列只算一次、WHEN／THEN 兩處共用同一個
+      欄位——刻意不放進 `ranked` 或 `paged` 本身，這兩層是在 LIMIT 篩選**之前**跑過
+      所有命中的列，把貴的逐列文字處理放在那裡，就是這整個三（現在四）層 CTE 設計
+      一開始想避免的事：只有真的會回傳給呼叫端的那一頁才該付這個成本。`search_feeds`
+      的 `description` 只有單一候選欄位、單一呼叫點，沒有「重複算兩次」的問題，但
+      一樣改成「先界限再處理」而不是「先處理再界限」。
+  - **測試**：SQL 查詢結構調整，這個 sandbox 無法連上真正 Postgres 執行驗證，同本節
+    前段記錄的既有限制，靠人工核對：CTE 執行順序（`enriched` 直接 `FROM paged`，
+    `paged` 自己的 `ORDER BY ... LIMIT` 保證只有已經篩選過的那一頁會流進
+    `enriched`）、`bounded_search_text` 與 `strip_html_for_search` 呼叫順序在六個
+    呼叫點（articles／feeds 的 generated column、`search_articles` 的 WHEN／THEN／
+    ELSE 三處、`search_feeds` 的 ts_headline）全部一致改成「先界限再去 HTML」。
+  19. **P2**（第十輪 review）：第十八項把 `bounded_search_text()` 搬到
+      `strip_html_for_search()` 之前執行後，帶出一個新的邊界案例——當一篇文章原始
+      `content` 超過 100,000 字元、且截斷點剛好落在一個 `<script>`／`<style>` 元素
+      中間時，截斷會把該元素的收尾標籤（`</script>`／`</style>`）一併切掉。第五、六輪
+      加的「整個元素連內容砍掉」那道 `regexp_replace` 要求比對到 `</\1\s*>` 收尾標籤
+      才會命中，收尾標籤被截斷後這道 pattern 就不會命中這個（截斷後）未閉合的元素，
+      後面一般標籤那道 pass 只會砍掉殘留的開頭 `<script ...>` 標籤本身，把 JS／CSS
+      內容原封不動當成一般可見文字留在索引裡——跟第五、六輪想解的問題（script／style
+      內容不該被索引）本質相同，只是換了個從「截斷」帶出來的新誘因。修法：
+      `<(script|style)...>.*?</\1\s*>` 的收尾比對改成
+      `<(script|style)...>.*?(?:</\1\s*>|$)`——用 alternation 多接受「字串結尾」當成
+      收尾點之一，`.*?` 是 lazy quantifier，仍然優先比對到真正的收尾標籤，只有真的
+      遇不到收尾標籤（截斷造成）才會一路吃到字串結尾，把截斷後的殘缺元素整個砍掉而不是
+      留下沒加保護的內容。
+  20. **P2**（第十輪 review）：`services/feed_refresh.py::refresh_one()` 三處
+      `db.table("feeds").update(...)` 呼叫（抓取失敗、304 not modified、成功更新這三條
+      路徑）都沒有使用回應內容，但都沿用 postgrest-py `update()` 預設的
+      `returning="representation"`——migration 020 替 `feeds` 加上 `search_vector`
+      後，排程刷新（預設每批 50 個 feed）每次更新都會連同該 feed 可能高達數十 KB 的
+      generated tsvector 一起序列化回傳，同第十六項 `services/articles.py::upsert_articles()`
+      已經解掉的同一類浪費，只是這次是 feed 更新而非 article upsert，那次的修法沒有覆蓋
+      到這裡。修法：三處都加上 `returning="minimal"`，行為與回傳值皆不變（呼叫端本來就
+      只依賴 side effect，不讀取任何回應內容）。
+  - **測試**：第 19 項是 SQL 正規表示式，這個 sandbox 無法連上真正 Postgres 執行驗證，
+    同本節前段記錄的既有限制，靠人工核對 lazy quantifier 搭配 alternation 的比對順序
+    （逐字元手動追蹤一個刻意截斷在 `<script>` 中間的範例字串）。第 20 項是
+    `backend/tests/test_feed_refresh.py` 的 `_FakeTable`／`_FeedsProxy.update()`
+    fake 補上 `returning` 參數（原本只接受單一 payload 位置參數，呼叫端傳
+    `returning="minimal"` 關鍵字參數會直接拋 `TypeError`），三個既有 `update()` 呼叫點
+    的既有測試案例（`db.feed_updates` 斷言）不需要跟著改——fake 記錄的仍然是同一個
+    `payload`，`returning` 只是額外接受、不影響任何既有斷言。
+
 ## 階段三十四：偏好設定與推薦回饋的前端整合測試，並修掉訂閱回應晚到多吃一張卡的 race（2026-09-15）
 
 TODO.md「Frontend 與 CI」最後一個未完成的測試項目：訂閱 CTA 與我的閱讀流早就補過，偏好設定

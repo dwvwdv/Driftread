@@ -62,6 +62,11 @@ export const routes: Routes = [
         loadComponent: () => import('./components/discover/discover').then((m) => m.Discover),
       },
       {
+        path: 'search',
+        title: '搜尋 — 漂流閱讀 Driftread',
+        loadComponent: () => import('./components/search/search').then((m) => m.Search),
+      },
+      {
         path: 'login',
         title: '登入 — 漂流閱讀 Driftread',
         loadComponent: () => import('./components/login/login').then((m) => m.Login),

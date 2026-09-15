@@ -21,6 +21,7 @@ from routers import (
     me,
     opml,
     recommendations,
+    search,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -195,6 +196,7 @@ app.include_router(admin_discovery.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
 app.include_router(opml.router, prefix="/api")
 app.include_router(discover.router, prefix="/api")
+app.include_router(search.router, prefix="/api")
 
 
 @app.get("/api/health")

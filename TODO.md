@@ -230,11 +230,25 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ### 全文搜尋
 
-- [ ] 使用 PostgreSQL Full Text Search 搜尋文章標題、摘要、作者與全文。
-- [ ] Feed 名稱／描述搜尋與文章搜尋分開呈現。
-- [ ] 建立適當的 `tsvector`／GIN index，避免 `%keyword%` 全表掃描。
-- [ ] 支援 language-aware configuration；無法可靠斷詞時提供可預測的 fallback。
-- [ ] 結果顯示命中摘要、來源、日期、已讀與收藏狀態。
+- [x] 使用 PostgreSQL Full Text Search 搜尋文章標題、摘要、作者與全文。
+      （`GET /search/articles` ← `search_articles()`，migration 020）
+- [x] Feed 名稱／描述搜尋與文章搜尋分開呈現。
+      （獨立端點 `GET /search/feeds` ← `search_feeds()`，獨立回應形狀；前端 `/search`
+      頁面是「文章」／「來源」兩個分頁，各自獨立分頁狀態與快取鍵，不是共用一個「搜尋全部」
+      結果列表）
+- [x] 建立適當的 `tsvector`／GIN index，避免 `%keyword%` 全表掃描。
+      （`articles.search_vector`／`feeds.search_vector`，`GENERATED ALWAYS AS ... STORED`
+      + `USING GIN` index；取代的是既有 `GET /feeds?search=` 那個 `ilike '%keyword%'`——
+      該參數本身保留未動，新端點是另一條路徑）
+- [x] 支援 language-aware configuration；無法可靠斷詞時提供可預測的 fallback。
+      （刻意統一用 `simple` config，不分語言 stemming——查詢端與索引端的 tsvector config
+      必須一致才能命中，而 Driftread 的搜尋橫跨多語言文件，加上 zh／ja／ko 等本來就沒有
+      內建 Postgres 斷詞字典；`simple` 是「行為在所有語言下一致且可預測」的落地方式，
+      理由見 migration 020 開頭註解。逐語言 stemming 留到之後有需要再做，不在本批次）
+- [x] 結果顯示命中摘要、來源、日期、已讀與收藏狀態。
+      （`ts_headline` 命中摘要片段——只對已分頁過的那一頁呼叫，不是對每筆命中都算；
+      文章搜尋帶 `feed_title`／`published_at`／`fetched_at`／`is_read`／`is_bookmarked`，
+      未登入則後兩者皆為 false，同 `list_feed_articles` 既有模式）
 
 ### 資料夾與來源控制
 
@@ -370,7 +384,8 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       （標籤／語言篩選與偏好設定 UI 已完成，見上方「標籤、語言與偏好設定」；匯入後自動分類尚未開始）
 6. [x] 回饋持久化、可解釋推薦權重與推薦理由。
 7. [~] Feed 完整文章分頁、全文搜尋與資料夾管理。
-      （Feed 完整文章分頁已完成，見上方「Feed 完整文章列表」；全文搜尋與資料夾管理尚未開始）
+      （Feed 完整文章分頁與全文搜尋已完成，見上方「Feed 完整文章列表」／「全文搜尋」；
+      資料夾管理尚未開始）
 8. [ ] 查詢效能、migration lock、JWT/JWKS、extension auth 與 CI hardening。
 
 ## 完成定義

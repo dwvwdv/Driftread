@@ -24,11 +24,16 @@ class _FakeTable:
     def __init__(self):
         self.calls: list[list[dict]] = []
 
-    def upsert(self, rows, on_conflict=None):
+    def upsert(self, rows, on_conflict=None, returning=None):
         # Must target articles_feed_id_url_key (migration 005) — the old
         # global-unique "url" constraint no longer exists, so an upsert naming
         # it would fail against a migrated database.
         assert on_conflict == "feed_id,url"
+        # "minimal" — migration 020's generated articles.search_vector makes
+        # the default "representation" return needlessly expensive for a
+        # batch this size (PR #59 review, P2); the row count is computed
+        # from `len(chunk)` instead, not the response body.
+        assert returning == "minimal"
         self.calls.append(rows)
         return self
 
