@@ -1684,3 +1684,34 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
     `enriched`）、`bounded_search_text` 與 `strip_html_for_search` 呼叫順序在六個
     呼叫點（articles／feeds 的 generated column、`search_articles` 的 WHEN／THEN／
     ELSE 三處、`search_feeds` 的 ts_headline）全部一致改成「先界限再去 HTML」。
+  19. **P2**（第十輪 review）：第十八項把 `bounded_search_text()` 搬到
+      `strip_html_for_search()` 之前執行後，帶出一個新的邊界案例——當一篇文章原始
+      `content` 超過 100,000 字元、且截斷點剛好落在一個 `<script>`／`<style>` 元素
+      中間時，截斷會把該元素的收尾標籤（`</script>`／`</style>`）一併切掉。第五、六輪
+      加的「整個元素連內容砍掉」那道 `regexp_replace` 要求比對到 `</\1\s*>` 收尾標籤
+      才會命中，收尾標籤被截斷後這道 pattern 就不會命中這個（截斷後）未閉合的元素，
+      後面一般標籤那道 pass 只會砍掉殘留的開頭 `<script ...>` 標籤本身，把 JS／CSS
+      內容原封不動當成一般可見文字留在索引裡——跟第五、六輪想解的問題（script／style
+      內容不該被索引）本質相同，只是換了個從「截斷」帶出來的新誘因。修法：
+      `<(script|style)...>.*?</\1\s*>` 的收尾比對改成
+      `<(script|style)...>.*?(?:</\1\s*>|$)`——用 alternation 多接受「字串結尾」當成
+      收尾點之一，`.*?` 是 lazy quantifier，仍然優先比對到真正的收尾標籤，只有真的
+      遇不到收尾標籤（截斷造成）才會一路吃到字串結尾，把截斷後的殘缺元素整個砍掉而不是
+      留下沒加保護的內容。
+  20. **P2**（第十輪 review）：`services/feed_refresh.py::refresh_one()` 三處
+      `db.table("feeds").update(...)` 呼叫（抓取失敗、304 not modified、成功更新這三條
+      路徑）都沒有使用回應內容，但都沿用 postgrest-py `update()` 預設的
+      `returning="representation"`——migration 020 替 `feeds` 加上 `search_vector`
+      後，排程刷新（預設每批 50 個 feed）每次更新都會連同該 feed 可能高達數十 KB 的
+      generated tsvector 一起序列化回傳，同第十六項 `services/articles.py::upsert_articles()`
+      已經解掉的同一類浪費，只是這次是 feed 更新而非 article upsert，那次的修法沒有覆蓋
+      到這裡。修法：三處都加上 `returning="minimal"`，行為與回傳值皆不變（呼叫端本來就
+      只依賴 side effect，不讀取任何回應內容）。
+  - **測試**：第 19 項是 SQL 正規表示式，這個 sandbox 無法連上真正 Postgres 執行驗證，
+    同本節前段記錄的既有限制，靠人工核對 lazy quantifier 搭配 alternation 的比對順序
+    （逐字元手動追蹤一個刻意截斷在 `<script>` 中間的範例字串）。第 20 項是
+    `backend/tests/test_feed_refresh.py` 的 `_FakeTable`／`_FeedsProxy.update()`
+    fake 補上 `returning` 參數（原本只接受單一 payload 位置參數，呼叫端傳
+    `returning="minimal"` 關鍵字參數會直接拋 `TypeError`），三個既有 `update()` 呼叫點
+    的既有測試案例（`db.feed_updates` 斷言）不需要跟著改——fake 記錄的仍然是同一個
+    `payload`，`returning` 只是額外接受、不影響任何既有斷言。

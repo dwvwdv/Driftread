@@ -72,7 +72,17 @@ $$;
 -- before later passes touch whatever ordinary tags remain. (Postgres's
 -- default, non-newline-sensitive matching already makes `.` match a
 -- newline, so `.*?` alone spans a multi-line `<script>` body without a
--- separate "dotall" flag.) `\b` in a PostgreSQL ARE is the *backspace*
+-- separate "dotall" flag.) Unlike `_DROP_WHOLE_RE` (which runs on
+-- `rss_parser.py`'s unbounded parse-time text), this runs on text already
+-- cut to bounded_search_text()'s 100,000-character limit — a `<script>`
+-- or `<style>` element straddling that cut point loses its closing tag,
+-- so requiring a literal `</script>`/`</style>` here would leave the
+-- (truncated) element unmatched: the later generic tag pass would then
+-- strip only the opening `<script ...>` tag and index the JS/CSS body as
+-- if it were ordinary text. `(?:</\1\s*>|$)` also accepts end-of-string as
+-- a closing point, so a truncated element is dropped in full rather than
+-- leaking its body (PR #59 review, P2). `\b` in a PostgreSQL ARE is the
+-- *backspace*
 -- character-entry escape, not a Perl-style word-boundary constraint — using
 -- it here silently no-opped an earlier version of this pattern entirely
 -- (a literal backspace essentially never appears after "script"/"style" in
@@ -129,7 +139,7 @@ AS $$
         regexp_replace(
           regexp_replace(
             coalesce(p_html, ''),
-            '<(script|style)\y(?:[^>"'']|"[^"]*"|''[^'']*'')*>.*?</\1\s*>',
+            '<(script|style)\y(?:[^>"'']|"[^"]*"|''[^'']*'')*>.*?(?:</\1\s*>|$)',
             ' ',
             'gi'
           ),

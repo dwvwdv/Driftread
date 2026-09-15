@@ -140,7 +140,12 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         archived = failures >= AUTO_ARCHIVE_FAILURE_THRESHOLD
         if archived:
             update["archived_at"] = now.isoformat()
-        db.table("feeds").update(update).eq("id", feed_id).execute()
+        # returning="minimal" — this update's response is never read below, and
+        # migration 020's feeds.search_vector is a generated tsvector indexing
+        # up to 100,000 characters of description; without it, PostgREST's
+        # default representation=return serializes and ships that back on
+        # every refreshed feed for no reason (PR #59 review, P2).
+        db.table("feeds").update(update, returning="minimal").eq("id", feed_id).execute()
         return RefreshResult(
             feed_id=feed_id, status="failed", error=str(e)[:500], archived=archived
         )
@@ -156,7 +161,7 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
             "etag": fetched.etag,
             "last_modified": fetched.last_modified,
             **_schedule(interval, now),
-        }).eq("id", feed_id).execute()
+        }, returning="minimal").eq("id", feed_id).execute()
         return RefreshResult(feed_id=feed_id, status="not_modified")
 
     assert fetched.parsed is not None
@@ -183,7 +188,8 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
     }
     if language:
         update["language"] = language
-    db.table("feeds").update(update).eq("id", feed_id).execute()
+    # returning="minimal" — same reason as the two update() calls above.
+    db.table("feeds").update(update, returning="minimal").eq("id", feed_id).execute()
 
     return RefreshResult(
         feed_id=feed_id,

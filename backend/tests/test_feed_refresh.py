@@ -40,7 +40,7 @@ class _FakeQuery:
     lte = lambda self, *a: self._record("lte", *a)  # noqa: E731
     order = lambda self, *a, **k: self._record("order", *a)  # noqa: E731
     limit = lambda self, *a: self._record("limit", *a)  # noqa: E731
-    update = lambda self, *a: self._record("update", *a)  # noqa: E731
+    update = lambda self, *a, **k: self._record("update", *a, *sorted(k.items()))  # noqa: E731
     upsert = lambda self, *a, **k: self._record("upsert", *a)  # noqa: E731
 
     def execute(self):
@@ -85,7 +85,7 @@ class _FeedsProxy(_FakeQuery):
         super().__init__(db.feeds, db.feeds.ops)
         self._db = db
 
-    def update(self, payload):
+    def update(self, payload, returning=None):
         self._db.feed_updates.append(payload)
         return self._record("update", payload)
 

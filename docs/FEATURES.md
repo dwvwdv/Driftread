@@ -471,7 +471,11 @@ tag 名稱、屬性、class、連結網址變成可搜尋詞彙（PR #59 review�
 quote-aware 的——同 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE`，屬性值裡的
 字面 `>`（例如 `title="2 > 1"`）不會被誤判成標籤收尾；`<script>`／`<style>` 元素連內容
 一併整個砍掉（同 `rss_parser.py` 的 `_DROP_WHOLE_RE`），不是只拆標籤留下 JS／CSS 內容
-（PR #59 review，第四、五輪 P2）。標籤處理區分區塊／行內——區塊標籤（`p`／`li`／`div`／
+（PR #59 review，第四、五輪 P2）。收尾比對額外接受「字串結尾」當成收尾點之一
+（`(?:</\1\s*>|$)`），因為送進來的內容已經先被 `bounded_search_text()` 截到 100,000
+字元，截斷點可能剛好落在 script／style 元素中間、把收尾標籤切掉，只認字面收尾標籤會讓
+這種（截斷造成的）未閉合元素被一般標籤 pass 誤判成普通內容，內容原封不動留在索引裡
+（PR #59 review，第十輪 P2）。標籤處理區分區塊／行內——區塊標籤（`p`／`li`／`div`／
 `h1`-`h6`／`br` 等，照抄 `rss_parser.py::_BLOCK_TAGS`）換成空白，其餘標籤（含行內標記
 如 `em`／`a`／`span`）直接移除不留分隔，避免把 `micro<em>soft</em>` 這類行內標記中間的
 詞拆成兩個索引詞，CJK 文字被行內標籤包住時尤其明顯；標籤拆完後再解 XML 預定義的
@@ -497,6 +501,12 @@ quote-aware 的——同 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE
 同 `SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。`GET /search/articles`／
 `GET /search/feeds` 各自掛 `rate_limit(...)`（同 `/recommendations` 的理由：每次呼叫都是
 排序＋分頁結果算 headline 的真實 DB 工作），見第 3 節。
+
+`services/feed_refresh.py::refresh_one()` 的三處 `feeds.update(...)`（抓取失敗／304 not
+modified／成功更新）都只依賴 side effect、不讀取回應內容，改用
+`returning="minimal"`——同 `services/articles.py::upsert_articles()` 已經解過的同一類
+問題，`feeds.search_vector`（generated tsvector）否則會在排程刷新每個 feed 時都被
+PostgREST 序列化回傳一次（PR #59 review，第十輪 P2）。
 
 RLS：五張 `user_*` 表為 permanent-user owner-only policy（002 的四張＋019 的
 `user_feed_feedback`；同時檢查 `auth.uid()` 與 JWT `is_anonymous = false`）；
