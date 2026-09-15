@@ -335,4 +335,25 @@ describe('Recommendations feedback actions', () => {
     expect(rec.calls).toEqual([['skip', 'feed-1']]);
     expect(page.currentIndex()).toBe(1);
   });
+
+  it('does not advance when loadMore() resurfaces the same feed id in a fresh deck', () => {
+    const page = setup();
+
+    page.subscribe(item); // POST /me/feeds/feed-1 in flight
+    // getRecommendations() returns a brand-new array on every call, here with
+    // feed-1 at the front again (the subscribe hasn't committed yet, so the
+    // server has no reason to exclude it) — same id, unrelated card, from an
+    // unrelated deck fetch. Comparing feed.id alone would wrongly treat it
+    // as "still on the card that was subscribed from".
+    page.loadMore();
+    expect(page.currentIndex()).toBe(0);
+    expect(page.current?.feed.id).toBe('feed-1');
+
+    subs.settle!.success(); // the stale subscribe finally answers
+
+    expect(rec.calls).toEqual([['like', 'feed-1']]);
+    // Still on the fresh deck's first card — it must not be consumed unseen.
+    expect(page.currentIndex()).toBe(0);
+    expect(page.current?.feed.id).toBe('feed-1');
+  });
 });

@@ -1750,6 +1750,13 @@ TODO.md「Frontend 與 CI」最後一個未完成的測試項目：訂閱 CTA �
   一張）。修法最小：成功回呼只在「畫面上仍是當初按下訂閱的那張卡」（`this.current?.feed.id
   === feed.id`）時才 `next()`，`rec.like()` 這個比 skip 更強的正向訊號照樣記錄。對應測試三個：
   跳過之後訂閱成功不再前進、讀者沒動時訂閱成功照常前進、跳過之後訂閱失敗同樣不動牌堆。
+- **PR review 修正（Codex，P2，證實為真）**：上面那個修法只比對 `feed.id`，漏了一種情況——
+  訂閱還在途中時，讀者點了「再推薦一批」（`loadMore()`），新抓回來的牌堆剛好在同一位置又出現
+  同一個 feed（該訂閱還沒 commit，伺服器沒有理由排除它），成功回呼比對 `feed.id` 會誤判成
+  「還在原本那張卡」，把這張其實從未被看過的新卡片也吃掉。修法：改成連牌堆本身的陣列參照一起
+  比對（`this.feeds() === deck`）——`loadMore()` 每次呼叫都會 `set()` 一個全新陣列，即使內容
+  剛好重複，參照必然不同，藉此區分「同一張卡還沒換」與「牌堆已經整批換過，只是恰好重複」。
+  新增一個案例：`loadMore()` 换出的新牌堆第一張恰好也是 feed-1 時，舊的訂閱回應到達不會吃掉它。
 - **本 sandbox 的已知限制**：`registry.npmjs.org` 依舊被 network egress allowlist 擋下（這次
   連 metadata 都是 403，`npm ci` 卡在 `@angular/cli` 的間接依賴 `zod-to-json-schema`），
   `node_modules` 裝不起來，因此本機跑不了 `vitest`、`ng build`，連 `prettier --check` 都跑不
