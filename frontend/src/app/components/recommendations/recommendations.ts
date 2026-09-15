@@ -153,7 +153,14 @@ export class Recommendations implements OnInit, OnDestroy {
       (err) => this.toast.danger(apiMessage(err, '訂閱失敗')),
       () => {
         this.rec.like(feed.id);
-        this.next();
+        // Only advances if the reader is still on the card they subscribed
+        // from. 跳過/喜歡 stay clickable while a subscribe is in flight (only
+        // the 訂閱 button itself is disabled on `isSubscribePending`), so the
+        // deck can already have moved on by the time this lands — advancing
+        // again then would consume whatever card is now on screen without it
+        // ever having been looked at, and `next()` only moves forward, so
+        // that recommendation is gone for this batch.
+        if (this.current?.feed.id === feed.id) this.next();
       },
     );
   }
