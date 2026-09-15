@@ -10,6 +10,18 @@ from utils import escape_postgrest_literal
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
 
+# Explicit column list, not select("*") — migration 020 added feeds.search_vector,
+# a generated tsvector indexing up to 100,000 characters of description. A
+# wildcard select would fetch and serialize it from PostgREST on every feed
+# listing/detail read even though the Feed response model never uses it
+# (PR #59 review, P2) — a real cost here since list_feeds can return up to 100
+# rows per page.
+_FEED_COLUMNS = (
+    "id,title,url,description,website_url,language,category,tags,article_count,"
+    "last_fetched_at,archived_at,created_at,updated_at,fetch_interval_minutes,"
+    "next_fetch_at,etag,last_modified"
+)
+
 
 @router.get("", response_model=PaginatedFeeds)
 async def list_feeds(
@@ -23,7 +35,7 @@ async def list_feeds(
 ) -> PaginatedFeeds:
     offset = (page - 1) * page_size
 
-    query = db.table("feeds").select("*", count="exact").is_("archived_at", "null")
+    query = db.table("feeds").select(_FEED_COLUMNS, count="exact").is_("archived_at", "null")
 
     if category:
         query = query.eq("category", category)
@@ -59,7 +71,7 @@ async def list_languages(db: Client = Depends(get_client)) -> list[str]:
 
 @router.get("/{feed_id}", response_model=FeedWithArticles)
 async def get_feed(feed_id: UUID, db: Client = Depends(get_client)) -> FeedWithArticles:
-    result = db.table("feeds").select("*").eq("id", str(feed_id)).maybe_single().execute()
+    result = db.table("feeds").select(_FEED_COLUMNS).eq("id", str(feed_id)).maybe_single().execute()
     # postgrest-py has shipped versions where maybe_single().execute() returns
     # bare None on 0 rows instead of a response object with data=None; guard
     # both shapes rather than relying on result.data alone.

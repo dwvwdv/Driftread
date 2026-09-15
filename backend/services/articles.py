@@ -49,6 +49,18 @@ def upsert_articles(db: "Client", feed_id: str, articles: list["ParsedArticle"])
         chunk = rows[i : i + CHUNK_SIZE]
         # Must match articles_feed_id_url_key (migration 005). The old
         # on_conflict="url" targets a constraint that no longer exists.
-        result = db.table("articles").upsert(chunk, on_conflict="feed_id,url").execute()
-        inserted += len(result.data)
+        # returning="minimal" (Prefer: return=minimal) skips fetching and
+        # serializing PostgREST's row representation entirely — migration
+        # 020 added articles.search_vector, a generated tsvector that can
+        # run tens to hundreds of KB per long article, and this call
+        # upserts up to CHUNK_SIZE (200) rows per batch on every scheduled
+        # refresh (PR #59 review, P2). The row count no longer comes from
+        # the (now empty) response body: every row in `chunk` has a unique
+        # (feed_id, url) within the batch (deduped above) and upsert
+        # without ignore_duplicates always inserts-or-updates each one, so
+        # the touched-row count is exactly len(chunk).
+        db.table("articles").upsert(
+            chunk, on_conflict="feed_id,url", returning="minimal"
+        ).execute()
+        inserted += len(chunk)
     return inserted

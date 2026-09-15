@@ -23,6 +23,7 @@
 | 後台手動匯入（JSON） | ✅ | `POST /api/admin/feeds`，需 admin key。只寫 metadata，排入到期佇列由排程器抓文章 | `routers/admin.py`、`components/admin` |
 | 開放 API 匯入 | ✅ | `POST /api/admin/feeds/from-url`，供外部腳本 / 擴充使用 | `routers/admin.py` |
 | 瀏覽器擴充 | ✅ | 任何網站一鍵加入 feed（Chromium 系，開發版載入） | `extension/` |
+| 全文搜尋 | ✅ | 文章（標題／摘要／作者／全文）與 Feed（名稱／描述）分開搜尋，PostgreSQL tsvector + GIN index，cursor 分頁依相關度排序，附命中摘要片段 | `routers/search.py`、`migrations/020_full_text_search.sql`、`components/search` |
 
 ## 2. 推薦邏輯（猜你喜歡）
 
@@ -254,6 +255,19 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/recommendations` | 猜你喜歡（帶 token 時個人化）。**有 rate limit**：每個 client IP 20 requests / 60 秒，獨立配額，超過回 `429` 並帶 `Retry-After`（migration 007 起每次呼叫最多對 `feeds` 做三次資料庫端隨機抽樣，比原本單純的 `.limit()` 貴得多，因此補上；抽樣本身自 migration 018 起是索引範圍掃描，不再是全表排序，見上方第 2 節）|
 | GET | `/health` | 健康檢查（compose healthcheck 使用） |
 
+### Search（公開，有 rate limit）
+
+全文搜尋，見第 5 節 `search_vector`（PostgreSQL tsvector + GIN index，`simple` config，
+取代 `%keyword%` 全表掃描）。文章搜尋與 Feed 搜尋是兩個獨立端點，回傳形狀也不同——不是
+單一「搜尋全部」端點。兩者各自獨立配額：**每個 client IP 每端點 20 requests / 60 秒**，
+超過回 `429` 並帶 `Retry-After`（同 `/recommendations`——每次呼叫都是排序＋對分頁結果算
+`ts_headline` 的真實 DB 工作，不能無限制對外開放）。
+
+| Method | 路徑 | 說明 |
+|--------|------|------|
+| GET | `/search/articles` | 搜尋文章標題／摘要／作者／全文。`q`（必填，1–200 字）、`language` 可選、cursor 分頁（`cursor`／`limit`，上限 100，依相關度 `rank` 排序，同分再依日期／id 決勝）。帶有效 token 時每筆帶呼叫者自己的 `is_read`／`is_bookmarked`；每筆附命中摘要片段（`ts_headline`，從 summary／content 中實際命中查詢的那個取） |
+| GET | `/search/feeds` | 搜尋 Feed 名稱／描述，排除已封存來源。參數形狀同上 |
+
 ### Discover（公開，有 rate limit）
 
 | Method | 路徑 | 說明 |
@@ -333,6 +347,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/articles/:id` | `article-reader` |
 | `/recommendations` | `recommendations` |
 | `/discover` | `discover` |
+| `/search` | `search`（文章／來源兩個分頁，各自獨立分頁與篩選）|
 | `/login` | `login` |
 | `/me/stream` | `reading-stream`（主要閱讀入口——聚合所有已訂閱來源的文章時間流，見下）|
 | `/me/feeds` | `my-feeds`（來源管理：訂閱清單、OPML；不再是主要閱讀入口）|
@@ -390,8 +405,8 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
-| `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at` |
-| `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）|
+| `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |
+| `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `user_feeds` | 002 | 訂閱關係 |
 | `user_article_reads` | 002 | 已讀回報。一列的存在即代表「已讀」，`DELETE` 即「標為未讀」——沒有另外的已讀/未讀狀態欄位或新表。`GET /me/stream` 的 `is_read`／`GET /me/reads` 都直接查這張表 |
 | `user_bookmarks` | 002 | 收藏 / 稍後讀（`bookmark_type` 區分） |
@@ -441,6 +456,58 @@ function 服務公開端點，未登入呼叫時兩個 LEFT JOIN（`user_article
 固定 `bookmark_type = 'favorite'`）的條件都不成立，`is_read`／`is_bookmarked` 自然是 false。同
 `SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。
 
+Migration 020（全文搜尋）為 `articles`／`feeds` 各加一個 `search_vector`
+`GENERATED ALWAYS AS ... STORED` tsvector 欄位（固定用 `simple` config，不對任何語言做
+stemming——理由見該 migration 開頭註解：查詢與建索引必須用同一個 config 才能命中，而
+Driftread 的搜尋橫跨多語言文件，加上部分語言本來就沒有內建斷詞字典，統一 `simple` 是可預測的
+fallback），各自搭一個 GIN index。送進 `to_tsvector` 的文字先經過 `bounded_search_text()`
+截到 100,000 字元——`articles.content` 沒有欄位層級的長度上限，Postgres 的 tsvector 本身有
+約 1 MiB 的序列化大小限制，不截斷理論上會讓超大文章寫入時直接報錯（PR #59 review，P1）。
+`articles.content`（原始 HTML，供 reader 頁 `[innerHTML]` 呈現，不像 `title`／`summary`／
+`author` 已經是 `rss_parser.py::_plain_text()` 產生的純文字）與 `feeds.description`
+（`rss_parser.py::_text()` 只回傳解碼後的文字，不保證是純文字——發佈者若跳脫 HTML，
+XML unescape 後一樣是真標記）都先過 `strip_html_for_search()` 才進 `to_tsvector`，避免
+tag 名稱、屬性、class、連結網址變成可搜尋詞彙（PR #59 review，P2）。標籤比對是
+quote-aware 的——同 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE`，屬性值裡的
+字面 `>`（例如 `title="2 > 1"`）不會被誤判成標籤收尾；`<script>`／`<style>` 元素連內容
+一併整個砍掉（同 `rss_parser.py` 的 `_DROP_WHOLE_RE`），不是只拆標籤留下 JS／CSS 內容
+（PR #59 review，第四、五輪 P2）。收尾比對額外接受「字串結尾」當成收尾點之一
+（`(?:</\1\s*>|$)`），因為送進來的內容已經先被 `bounded_search_text()` 截到 100,000
+字元，截斷點可能剛好落在 script／style 元素中間、把收尾標籤切掉，只認字面收尾標籤會讓
+這種（截斷造成的）未閉合元素被一般標籤 pass 誤判成普通內容，內容原封不動留在索引裡
+（PR #59 review，第十輪 P2）。標籤處理區分區塊／行內——區塊標籤（`p`／`li`／`div`／
+`h1`-`h6`／`br` 等，照抄 `rss_parser.py::_BLOCK_TAGS`）換成空白，其餘標籤（含行內標記
+如 `em`／`a`／`span`）直接移除不留分隔，避免把 `micro<em>soft</em>` 這類行內標記中間的
+詞拆成兩個索引詞，CJK 文字被行內標籤包住時尤其明顯；標籤拆完後再解 XML 預定義的
+`&amp;`／`&lt;`／`&gt;` 與 `&nbsp;` 四種無歧義 entity（刻意不做完整具名 entity 表，
+理由同 `frontend/src/app/shared/html.ts::decodeEntities()` 的既有教訓，見該處註解）
+（PR #59 review，第八輪 P2）。並定義兩個 DB function：
+
+- `search_articles(p_query, p_user_id, p_language, p_cursor_rank, p_cursor_sort_at, p_cursor_id, p_limit)`——
+  供 `GET /search/articles`。`websearch_to_tsquery` 比對 `search_vector`，`ts_rank_cd` 算相關度，
+  排序鍵 `(rank, COALESCE(published_at, fetched_at), id)` 三欄 keyset 分頁（相關度同分時退回既有
+  的日期／id 決勝規則）。`ts_headline` 只對已經分頁過的那一頁（≤100 列）呼叫，不是對每一筆命中都算，
+  避免熱門關鍵字讓一次查詢跑成千上萬次 headline 運算；命中摘要片段從 summary／content 兩者中
+  實際命中查詢的那一個取（各自檢查 `to_tsvector(...) @@ tsq`），不是不論命中位置固定取 summary
+  ——否則命中只落在 content 時，摘要片段會顯示一段完全沒有標記到關鍵字的 summary（PR #59
+  review，P2）。排除已封存來源的文章，同 `search_feeds`（PR #59 review，P2——封存承諾操作者
+  「不再出現在前台」）。`content` 去 HTML 的計算（`strip_html_for_search`）多一層 CTE
+  （`paged` 之後、最外層 SELECT 之前）只算一次、WHEN／THEN 共用，且先界限原始長度再處理，
+  不是處理完才界限——`content` 沒有欄位層級長度上限，先界限能讓這段 regex 處理的成本不隨
+  來源大小而無上限成長（PR #59 review，第九輪 P2）。
+- `search_feeds(p_query, p_language, p_cursor_rank, p_cursor_created_at, p_cursor_id, p_limit)`——
+  供 `GET /search/feeds`，比對 `feeds.search_vector`（名稱／描述），排除已封存來源，其餘同上。
+
+同 `SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。`GET /search/articles`／
+`GET /search/feeds` 各自掛 `rate_limit(...)`（同 `/recommendations` 的理由：每次呼叫都是
+排序＋分頁結果算 headline 的真實 DB 工作），見第 3 節。
+
+`services/feed_refresh.py::refresh_one()` 的三處 `feeds.update(...)`（抓取失敗／304 not
+modified／成功更新）都只依賴 side effect、不讀取回應內容，改用
+`returning="minimal"`——同 `services/articles.py::upsert_articles()` 已經解過的同一類
+問題，`feeds.search_vector`（generated tsvector）否則會在排程刷新每個 feed 時都被
+PostgREST 序列化回傳一次（PR #59 review，第十輪 P2）。
+
 RLS：五張 `user_*` 表為 permanent-user owner-only policy（002 的四張＋019 的
 `user_feed_feedback`；同時檢查 `auth.uid()` 與 JWT `is_anonymous = false`）；
 `feeds` / `articles` 開 RLS 並給 public read policy（004）。
@@ -468,7 +535,9 @@ read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key
 分頁）、`articles(feed_id, published_at DESC)`（012）、`articles(feed_id, fetched_at DESC)`（013，
 `list_reading_stream`／`mark_reading_stream_read` 在未解析出 `published_at` 而落到 `fetched_at`
 排序/篩選時使用；`user_feeds` 與 `user_article_reads` 既有的複合主鍵已經覆蓋這兩張表在閱讀流查詢
-中的存取模式，不需要另外的 index）。
+中的存取模式，不需要另外的 index）、`articles(search_vector) USING GIN`、
+`feeds(search_vector) USING GIN`（020，供 `search_articles`／`search_feeds` 取代 `%keyword%`
+全表掃描）。
 
 清理待探測佇列（終態列可安全刪除 —— 候選是 `ON DELETE SET NULL`，審核歷史不受影響）：
 

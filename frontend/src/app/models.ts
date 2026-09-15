@@ -55,6 +55,47 @@ export interface PaginatedFeedArticles {
   next_cursor: string | null;
 }
 
+// ── Full-text search (GET /search/articles, GET /search/feeds) ────────────
+
+/** One row of GET /search/articles — an ArticleSummary plus which feed it
+ * came from, a highlighted match snippet, this caller's read/bookmark state
+ * (false for both when signed out) and its relevance rank. */
+export interface ArticleSearchResult extends ArticleSummary {
+  feed_title: string;
+  snippet: string | null;
+  fetched_at: string;
+  is_read: boolean;
+  is_bookmarked: boolean;
+  rank: number;
+}
+
+export interface PaginatedArticleSearchResults {
+  items: ArticleSearchResult[];
+  next_cursor: string | null;
+}
+
+/** One row of GET /search/feeds — matched on name/description, kept separate
+ * from article search results per that endpoint's own "分開呈現" design. */
+export interface FeedSearchResult {
+  id: string;
+  title: string;
+  url: string;
+  description: string | null;
+  snippet: string | null;
+  website_url: string | null;
+  language: string | null;
+  category: string | null;
+  tags: string[];
+  article_count: number;
+  created_at: string;
+  rank: number;
+}
+
+export interface PaginatedFeedSearchResults {
+  items: FeedSearchResult[];
+  next_cursor: string | null;
+}
+
 export interface ReadReceipt {
   article_id: string;
   read_at: string;

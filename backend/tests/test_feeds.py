@@ -41,6 +41,39 @@ def test_get_feed_not_found_returns_404(client, execute_return):
     chain.maybe_single.assert_called_once()
 
 
+def test_get_feed_does_not_wildcard_select(client):
+    # migration 020 added feeds.search_vector, a generated tsvector indexing
+    # up to 100,000 characters of description. select("*") would fetch and
+    # serialize it from PostgREST on every feed read even though the Feed
+    # response model never uses it (PR #59 review, P2) — pin the explicit
+    # column list instead.
+    c, mock_db = client
+    chain = mock_db.table.return_value.select.return_value.eq.return_value
+    chain.maybe_single.return_value.execute.return_value = MagicMock(data=None)
+
+    c.get(f"/api/feeds/{uuid4()}")
+
+    select_args = mock_db.table.return_value.select.call_args[0]
+    assert select_args[0] != "*"
+    assert "search_vector" not in select_args[0]
+
+
+def test_list_feeds_does_not_wildcard_select(client):
+    # Same reasoning as test_get_feed_does_not_wildcard_select, but for the
+    # paginated listing — up to page_size (100) rows per request, so the
+    # wasted transfer scales with page size.
+    c, mock_db = client
+    chain = mock_db.table.return_value.select.return_value.is_.return_value
+    chain.range.return_value.order.return_value.execute.return_value = MagicMock(data=[], count=0)
+
+    c.get("/api/feeds")
+
+    select_args, select_kwargs = mock_db.table.return_value.select.call_args
+    assert select_args[0] != "*"
+    assert "search_vector" not in select_args[0]
+    assert select_kwargs == {"count": "exact"}
+
+
 def test_list_categories_uses_db_side_dedup(client):
     # The dedup, null-filtering and sort all happen in
     # list_feed_categories() (migration 011) now, not in Python — this

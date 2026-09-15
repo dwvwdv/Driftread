@@ -1,0 +1,252 @@
+import { DatePipe } from '@angular/common';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
+import { AuthService } from '../../services/auth';
+import { FeedService } from '../../services/feed';
+import { SearchService } from '../../services/search';
+import { ArticleSearchResult, FeedSearchResult } from '../../models';
+import { apiMessage } from '../../shared/http-errors';
+import { stripHtml } from '../../shared/html';
+import { ObListRow } from '../../ui/list-row/list-row';
+import { ObLoading, ObError, ObEmpty } from '../../ui/state/state';
+import { ObPageHeader } from '../../ui/page-header/page-header';
+import { ObTabs } from '../../ui/tabs/tabs';
+import { ToastService } from '../../ui/toast/toast';
+
+const PAGE_SIZE = 20;
+
+/**
+ * Full-text search (TODO.md P2 「全文搜尋」): article and feed matches are two
+ * separate tabs backed by two separate endpoints (routers/search.py), each
+ * cursor-paginated the same way the reading stream and feed article list
+ * already are — see loadArticles/loadFeeds below for the same
+ * generation-guarded "a fresh search supersedes anything in flight" pattern
+ * feed-detail.ts uses for its article list.
+ *
+ * Both tabs are public (the backend endpoints don't require sign-in); the
+ * article tab's is_read/is_bookmarked still reflect the caller's own state
+ * when they happen to be signed in, since the auth interceptor attaches a
+ * bearer token to every request regardless.
+ */
+@Component({
+  selector: 'app-search',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    RouterLink,
+    DatePipe,
+    FormsModule,
+    ObListRow,
+    ObLoading,
+    ObError,
+    ObEmpty,
+    ObPageHeader,
+    ObTabs,
+  ],
+  templateUrl: './search.html',
+  styleUrl: './search.scss',
+})
+export class Search {
+  private auth = inject(AuthService);
+  private search = inject(SearchService);
+  private feedService = inject(FeedService);
+  private toast = inject(ToastService);
+
+  protected readonly tabs = ['文章', '來源'] as const;
+  tabIndex = signal(0);
+
+  /** Plain property, not a signal — bound via [(ngModel)], same as
+   * feed-list.ts's own search input. */
+  query = '';
+  private activeQuery = signal('');
+  language = signal<string | null>(null);
+  languages = signal<string[]>([]);
+
+  articleItems = signal<ArticleSearchResult[]>([]);
+  articleRows = computed(() =>
+    this.articleItems().map((article) => ({
+      article,
+      preview: stripHtml(article.snippet ?? article.summary),
+    })),
+  );
+  private articleCursor = signal<string | null>(null);
+  articleLoading = signal(false);
+  articleLoadingMore = signal(false);
+  articleError = signal('');
+  hasMoreArticles = () => this.articleCursor() !== null;
+  private articleGeneration = 0;
+  private articleLoadedForKey: string | null = null;
+
+  /** Identity the currently cached article page was fetched for. `undefined`
+   * means "never loaded" — distinct from `null` (anonymous) so the effect
+   * below still fires on the very first (anonymous) load, same distinction
+   * feed-detail.ts's own `articlesLoadedFor` makes. */
+  private articlesIdentity: string | null | undefined = undefined;
+
+  feedItems = signal<FeedSearchResult[]>([]);
+  feedRows = computed(() =>
+    this.feedItems().map((feed) => ({ feed, preview: stripHtml(feed.snippet ?? feed.description) })),
+  );
+  private feedCursor = signal<string | null>(null);
+  feedLoading = signal(false);
+  feedLoadingMore = signal(false);
+  feedError = signal('');
+  hasMoreFeeds = () => this.feedCursor() !== null;
+  private feedGeneration = 0;
+  private feedLoadedForKey: string | null = null;
+
+  constructor() {
+    // The language filter is a convenience narrowing, not a required part of
+    // the page — leaving it unpopulated on failure still leaves search itself
+    // usable, so this fetch has no error handler of its own.
+    this.feedService.getLanguages().subscribe((langs) => this.languages.set(langs));
+
+    // AuthService restores a persisted session asynchronously — `session()`
+    // starts null even for an already-signed-in reader on a direct visit. A
+    // search submitted before that resolves goes out anonymous and its
+    // is_read/is_bookmarked come back all false; without this, nothing ever
+    // reloads once the real session arrives, and the cache key (query +
+    // language only) treats a resubmit of the same search as a no-op — the
+    // reader is stuck looking at anonymous results indefinitely (same class
+    // of bug feed-detail.ts/reading-stream.ts/bookmarks.ts guard their own
+    // user-scoped loads against). Invalidating the cached key on every
+    // identity change (not just reloading immediately) also covers the
+    // feed-search tab being active when identity changes: switching back to
+    // articles afterward naturally reloads via loadActiveTab()'s own key
+    // check, without needing a second reload path here.
+    effect(() => {
+      const userId = this.auth.session()?.user?.id ?? null;
+      if (this.articlesIdentity === userId) return;
+      this.articlesIdentity = userId;
+      this.articleLoadedForKey = null;
+      if (this.hasQuery && this.tabIndex() === 0) this.loadArticles();
+    });
+  }
+
+  get hasQuery(): boolean {
+    return this.activeQuery().length > 0;
+  }
+
+  get emptyMessage(): string {
+    return this.hasQuery ? '沒有符合的結果。' : '輸入關鍵字開始搜尋。';
+  }
+
+  /** Identifies "the same search" across a tab switch or a page-2 request —
+   * query text plus the language filter, both of which change what the
+   * backend returns. Re-submitting the same query with the same filter while
+   * results are already loaded is a no-op rather than a wasted request. */
+  private get searchKey(): string {
+    return `${this.activeQuery()}\u0000${this.language() ?? ''}`;
+  }
+
+  submit(): void {
+    const q = this.query.trim();
+    if (!q) return;
+    this.activeQuery.set(q);
+    this.loadActiveTab();
+  }
+
+  onTab(index: number): void {
+    this.tabIndex.set(index);
+    if (this.hasQuery) this.loadActiveTab();
+  }
+
+  onLanguage(value: string): void {
+    this.language.set(value || null);
+    if (this.hasQuery) this.loadActiveTab();
+  }
+
+  private loadActiveTab(): void {
+    if (this.tabIndex() === 0) {
+      if (this.articleLoadedForKey !== this.searchKey) this.loadArticles();
+    } else if (this.feedLoadedForKey !== this.searchKey) {
+      this.loadFeeds();
+    }
+  }
+
+  loadArticles(): void {
+    const key = this.searchKey;
+    const q = this.activeQuery();
+    const generation = ++this.articleGeneration;
+    this.articleLoadedForKey = key;
+    this.articleLoading.set(true);
+    this.articleLoadingMore.set(false);
+    this.articleError.set('');
+    this.search.searchArticles(q, this.language(), null, PAGE_SIZE).subscribe({
+      next: (page) => {
+        if (generation !== this.articleGeneration) return;
+        this.articleItems.set(page.items);
+        this.articleCursor.set(page.next_cursor);
+        this.articleLoading.set(false);
+      },
+      error: (err: unknown) => {
+        if (generation !== this.articleGeneration) return;
+        this.articleError.set(apiMessage(err, '搜尋文章失敗'));
+        this.articleLoading.set(false);
+      },
+    });
+  }
+
+  loadMoreArticles(): void {
+    const cursor = this.articleCursor();
+    if (!cursor || this.articleLoadingMore()) return;
+    const generation = this.articleGeneration;
+    this.articleLoadingMore.set(true);
+    this.search.searchArticles(this.activeQuery(), this.language(), cursor, PAGE_SIZE).subscribe({
+      next: (page) => {
+        if (generation !== this.articleGeneration) return;
+        this.articleItems.update((items) => [...items, ...page.items]);
+        this.articleCursor.set(page.next_cursor);
+        this.articleLoadingMore.set(false);
+      },
+      error: (err: unknown) => {
+        if (generation !== this.articleGeneration) return;
+        this.articleLoadingMore.set(false);
+        this.toast.danger(apiMessage(err, '載入更多失敗'));
+      },
+    });
+  }
+
+  loadFeeds(): void {
+    const key = this.searchKey;
+    const q = this.activeQuery();
+    const generation = ++this.feedGeneration;
+    this.feedLoadedForKey = key;
+    this.feedLoading.set(true);
+    this.feedLoadingMore.set(false);
+    this.feedError.set('');
+    this.search.searchFeeds(q, this.language(), null, PAGE_SIZE).subscribe({
+      next: (page) => {
+        if (generation !== this.feedGeneration) return;
+        this.feedItems.set(page.items);
+        this.feedCursor.set(page.next_cursor);
+        this.feedLoading.set(false);
+      },
+      error: (err: unknown) => {
+        if (generation !== this.feedGeneration) return;
+        this.feedError.set(apiMessage(err, '搜尋來源失敗'));
+        this.feedLoading.set(false);
+      },
+    });
+  }
+
+  loadMoreFeeds(): void {
+    const cursor = this.feedCursor();
+    if (!cursor || this.feedLoadingMore()) return;
+    const generation = this.feedGeneration;
+    this.feedLoadingMore.set(true);
+    this.search.searchFeeds(this.activeQuery(), this.language(), cursor, PAGE_SIZE).subscribe({
+      next: (page) => {
+        if (generation !== this.feedGeneration) return;
+        this.feedItems.update((items) => [...items, ...page.items]);
+        this.feedCursor.set(page.next_cursor);
+        this.feedLoadingMore.set(false);
+      },
+      error: (err: unknown) => {
+        if (generation !== this.feedGeneration) return;
+        this.feedLoadingMore.set(false);
+        this.toast.danger(apiMessage(err, '載入更多失敗'));
+      },
+    });
+  }
+}

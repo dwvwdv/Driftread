@@ -53,11 +53,19 @@ async def list_articles(
     return PaginatedFeedArticles(items=items, next_cursor=next_cursor)
 
 
+_ARTICLE_COLUMNS = "id,feed_id,title,url,summary,content,author,published_at,fetched_at"
+
+
 @router.get("/articles/{article_id}", response_model=Article)
 async def get_article(article_id: UUID, db: Client = Depends(get_client)) -> Article:
+    # Explicit column list, not select("*") — migration 020 added
+    # articles.search_vector, a generated tsvector that can run tens to
+    # hundreds of KB for a long article; a wildcard select would fetch and
+    # serialize it from PostgREST on every single article read even though
+    # the Article response model never uses it (PR #59 review, P2).
     result = (
         db.table("articles")
-        .select("*")
+        .select(_ARTICLE_COLUMNS)
         .eq("id", str(article_id))
         .maybe_single()
         .execute()

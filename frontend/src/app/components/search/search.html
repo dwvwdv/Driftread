@@ -1,0 +1,127 @@
+<ob-page-header kicker="SEARCH" heading="搜尋" subtitle="全文搜尋文章標題、摘要、作者與內容，或依名稱／描述搜尋信息源" />
+
+<form class="bar" (ngSubmit)="submit()">
+  <label class="query">
+    <span class="ob-visually-hidden">搜尋關鍵字</span>
+    <input
+      class="ob-input"
+      type="search"
+      name="q"
+      placeholder="輸入關鍵字…"
+      maxlength="200"
+      [(ngModel)]="query"
+    />
+  </label>
+  <label class="lang">
+    <span class="ob-visually-hidden">篩選語言</span>
+    <select class="ob-select" [value]="language() ?? ''" (change)="onLanguage($any($event.target).value)">
+      <option value="">全部語言</option>
+      @for (lang of languages(); track lang) {
+        <option [value]="lang">{{ lang }}</option>
+      }
+    </select>
+  </label>
+  <button type="submit" class="ob-btn ob-btn--primary" [disabled]="!query.trim()">搜尋</button>
+</form>
+
+<ob-tabs [tabs]="tabs" [selected]="tabIndex()" (selectedChange)="onTab($event)">
+  @if (tabIndex() === 0) {
+    @if (articleLoading()) {
+      <ob-loading label="搜尋文章中" />
+    } @else if (articleError()) {
+      <ob-error [message]="articleError()">
+        <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="loadArticles()">重試</button>
+      </ob-error>
+    } @else if (!hasQuery || articleItems().length === 0) {
+      <ob-empty [message]="emptyMessage" />
+    } @else {
+      <div class="list">
+        @for (row of articleRows(); track row.article.id) {
+          <ob-list-row>
+            <a rowTitle [class.is-read]="row.article.is_read" [routerLink]="['/articles', row.article.id]">
+              {{ row.article.title }}
+            </a>
+            <div rowLines>
+              <span>
+                {{ row.article.feed_title }}
+                @if (row.article.author) {
+                  ・ {{ row.article.author }}
+                }
+                ・ {{ (row.article.published_at ?? row.article.fetched_at) | date: 'yyyy-MM-dd' }}
+              </span>
+              @if (row.preview) {
+                <span class="summary">{{ row.preview }}</span>
+              }
+            </div>
+            <div rowMeta>
+              @if (!row.article.is_read) {
+                <span class="ob-chip">未讀</span>
+              }
+              @if (row.article.is_bookmarked) {
+                <span class="ob-chip">已收藏</span>
+              }
+            </div>
+          </ob-list-row>
+        }
+      </div>
+
+      @if (hasMoreArticles()) {
+        <div class="load-more">
+          <button
+            type="button"
+            class="ob-btn ob-btn--subtle"
+            [disabled]="articleLoadingMore()"
+            (click)="loadMoreArticles()"
+          >
+            {{ articleLoadingMore() ? '載入中…' : '載入更多' }}
+          </button>
+        </div>
+      }
+    }
+  } @else {
+    @if (feedLoading()) {
+      <ob-loading label="搜尋來源中" />
+    } @else if (feedError()) {
+      <ob-error [message]="feedError()">
+        <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="loadFeeds()">重試</button>
+      </ob-error>
+    } @else if (!hasQuery || feedItems().length === 0) {
+      <ob-empty [message]="emptyMessage" />
+    } @else {
+      <div class="list">
+        @for (row of feedRows(); track row.feed.id) {
+          <ob-list-row>
+            <a rowTitle [routerLink]="['/feeds', row.feed.id]">{{ row.feed.title }}</a>
+            <div rowLines>
+              <span>
+                @if (row.feed.category) {
+                  {{ row.feed.category }}
+                }
+                @if (row.feed.language) {
+                  ・ {{ row.feed.language }}
+                }
+                ・ {{ row.feed.article_count }} 篇文章
+              </span>
+              @if (row.preview) {
+                <span class="summary">{{ row.preview }}</span>
+              }
+            </div>
+          </ob-list-row>
+        }
+      </div>
+
+      @if (hasMoreFeeds()) {
+        <div class="load-more">
+          <button
+            type="button"
+            class="ob-btn ob-btn--subtle"
+            [disabled]="feedLoadingMore()"
+            (click)="loadMoreFeeds()"
+          >
+            {{ feedLoadingMore() ? '載入中…' : '載入更多' }}
+          </button>
+        </div>
+      }
+    }
+  }
+</ob-tabs>

@@ -24,6 +24,22 @@ def test_get_article_not_found_returns_404(client, execute_return):
     chain.maybe_single.assert_called_once()
 
 
+def test_get_article_does_not_wildcard_select(client):
+    # migration 020 added articles.search_vector, a generated tsvector that
+    # can run tens to hundreds of KB for a long article. select("*") would
+    # fetch and serialize it from PostgREST on every read even though the
+    # Article response model never uses it (PR #59 review, P2) — pin the
+    # explicit column list instead.
+    c, mock_db = client
+    chain = mock_db.table.return_value.select.return_value.eq.return_value
+    chain.maybe_single.return_value.execute.return_value = MagicMock(data=None)
+
+    c.get(f"/api/articles/{uuid4()}")
+
+    select_args = mock_db.table.return_value.select.call_args[0]
+    assert select_args == ("id,feed_id,title,url,summary,content,author,published_at,fetched_at",)
+
+
 def _token() -> str:
     return jwt.encode(
         {
