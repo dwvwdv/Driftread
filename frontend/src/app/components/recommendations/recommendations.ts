@@ -148,12 +148,27 @@ export class Recommendations implements OnInit, OnDestroy {
       });
       return;
     }
+    // Captured by reference, not just the feed id: loadMore() always sets a
+    // brand-new array, even when the freshly fetched deck happens to
+    // resurface a feed with the same id at the same index (the subscribe
+    // below hasn't landed yet, so the server has no reason to exclude it).
+    // Comparing only `feed.id` in the callback would then match the new,
+    // unrelated card and consume it.
+    const deck = this.feeds();
     this.subs.subscribe(
       feed.id,
       (err) => this.toast.danger(apiMessage(err, '訂閱失敗')),
       () => {
         this.rec.like(feed.id);
-        this.next();
+        // Only advances if the reader is still on the same deck and the same
+        // card they subscribed from. 跳過/喜歡 stay clickable while a
+        // subscribe is in flight (only the 訂閱 button itself is disabled on
+        // `isSubscribePending`), so the deck can already have moved on — or
+        // been entirely replaced by loadMore() — by the time this lands.
+        // Advancing then would consume whatever card is now on screen
+        // without it ever having been looked at, and `next()` only moves
+        // forward, so that recommendation is gone for this batch.
+        if (this.feeds() === deck && this.current?.feed.id === feed.id) this.next();
       },
     );
   }

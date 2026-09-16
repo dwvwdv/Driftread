@@ -1715,3 +1715,54 @@ TODO.md P2「全文搜尋」：過去唯一的關鍵字搜尋是 `GET /feeds?sea
     `returning="minimal"` 關鍵字參數會直接拋 `TypeError`），三個既有 `update()` 呼叫點
     的既有測試案例（`db.feed_updates` 斷言）不需要跟著改——fake 記錄的仍然是同一個
     `payload`，`returning` 只是額外接受、不影響任何既有斷言。
+
+## 階段三十四：偏好設定與推薦回饋的前端整合測試，並修掉訂閱回應晚到多吃一張卡的 race（2026-09-15）
+
+TODO.md「Frontend 與 CI」最後一個未完成的測試項目：訂閱 CTA 與我的閱讀流早就補過，偏好設定
+與推薦回饋當時寫「都還沒實作，測試無從補起」，但 PR #44（偏好設定 UI）與 PR #58（推薦回饋
+持久化）之後這句話已經過期——功能都在，只是那條清單沒回頭補測試。
+
+- **`frontend/src/app/components/preferences/preferences.spec.ts`**：在 PR #44 既有的載入／
+  toggle／儲存成功失敗／stale generation 案例之外新增五個案例——(1) 送出的 payload 是 toggle
+  後的選擇而非載入時的（`PUT /me/preferences` 整批覆寫兩個陣列，取消勾選的分類只有在 payload
+  裡真的不見才會消失，先前的測試完全沒有斷言過送出去的內容）；(2) toggle chip 在按下儲存前
+  不送任何請求——chip 純粹是本地意圖，沒有 per-toggle 請求需要 debounce 或 de-dup，唯一的 PUT
+  發生在 `save()`，連點由 `[disabled]="saving()"` 擋住；(3) 儲存失敗不清掉選擇，重試送出同一
+  份 payload（這裡沒有「伺服器端舊值」可以回滾，清掉只會讓使用者重選一次）；(4) 只有
+  `GET /feeds/categories`／`GET /feeds/languages` 失敗時表單仍可用，不進 `error` 狀態——代價
+  只有兩個 toast 與空 chip 清單，與「`GET /me/preferences` 失敗必須整個表單藏起來」的既有
+  設計相對照；(5) 三個讀取全部 settle 前維持 `loading`，避免先閃出一個空選擇的表單，而那個
+  表單的儲存按鈕會把畫面上的空選擇 PUT 出去。`setup()` 改成會記錄每次 `updatePreferences()`
+  的 payload，並可覆寫兩個 catalog observable。
+- **`frontend/src/app/components/recommendations/recommendations.spec.ts`**：新增
+  `Recommendations feedback actions` 區塊。回饋持久化本身（`PUT /me/feed-feedback/{feed_id}`、
+  未登入不送、失敗不回滾本地狀態、同一 feed 只保留一個在途請求）是 `RecommendationService`
+  的責任，`services/recommendation.spec.ts` 已經逐項覆蓋，這裡刻意不重複；補的是元件自己的
+  接線：喜歡／跳過各自回報哪個 feed id、卡片是否立刻前進（回饋是 best-effort，不該等回應）、
+  `已喜歡 N 個` 讀的是 service 的 `liked()` 而不是元件私有計數，以及回饋與在途訂閱之間的互動。
+  `SubscriptionService` 的 mock 改成把成功／失敗回呼留著由測試決定何時觸發，才有辦法測到
+  「訂閱還在途中」這個視窗。
+- **`frontend/src/app/components/recommendations/recommendations.ts`（真實 bug 修正）**：寫上面
+  最後一個案例時發現的 race——`subscribe()` 的成功回呼無條件呼叫 `next()`，但訂閱在途期間只有
+  訂閱 按鈕自己被 `isSubscribePending` 停用，跳過／喜歡 兩顆按鈕仍然可以點。讀者按下 訂閱 後
+  不等回應直接按 跳過，牌堆會先前進一格，訂閱回應到達時再前進一格——`next()` 只進不退，中間
+  那張推薦就這樣沒被看過就從這批消失（`loadMore()` 重抓一批也一樣，回應晚到會吃掉新牌堆的第
+  一張）。修法最小：成功回呼只在「畫面上仍是當初按下訂閱的那張卡」（`this.current?.feed.id
+  === feed.id`）時才 `next()`，`rec.like()` 這個比 skip 更強的正向訊號照樣記錄。對應測試三個：
+  跳過之後訂閱成功不再前進、讀者沒動時訂閱成功照常前進、跳過之後訂閱失敗同樣不動牌堆。
+- **PR review 修正（Codex，P2，證實為真）**：上面那個修法只比對 `feed.id`，漏了一種情況——
+  訂閱還在途中時，讀者點了「再推薦一批」（`loadMore()`），新抓回來的牌堆剛好在同一位置又出現
+  同一個 feed（該訂閱還沒 commit，伺服器沒有理由排除它），成功回呼比對 `feed.id` 會誤判成
+  「還在原本那張卡」，把這張其實從未被看過的新卡片也吃掉。修法：改成連牌堆本身的陣列參照一起
+  比對（`this.feeds() === deck`）——`loadMore()` 每次呼叫都會 `set()` 一個全新陣列，即使內容
+  剛好重複，參照必然不同，藉此區分「同一張卡還沒換」與「牌堆已經整批換過，只是恰好重複」。
+  新增一個案例：`loadMore()` 换出的新牌堆第一張恰好也是 feed-1 時，舊的訂閱回應到達不會吃掉它。
+- **本 sandbox 的已知限制**：`registry.npmjs.org` 依舊被 network egress allowlist 擋下（這次
+  連 metadata 都是 403，`npm ci` 卡在 `@angular/cli` 的間接依賴 `zod-to-json-schema`），
+  `node_modules` 裝不起來，因此本機跑不了 `vitest`、`ng build`，連 `prettier --check` 都跑不
+  起來（`npx prettier` 同樣 403）。已用系統 `tsc 6.0.2`（`--ignoreConfig --noResolve`）確認三
+  個改動檔案沒有語法或型別結構問題（只剩因為 `--noResolve` 而必然出現的 TS2307／TS2304 模組
+  與 global 缺失），並手動照專案 `.prettierrc`（printWidth 100、single quote）對齊格式、確認
+  沒有超寬行。實際 `npm test`／production build 交給 CI 的 `frontend.yml` 驗證。
+- 對應文件更新：`TODO.md`（「為訂閱 CTA、我的閱讀流、偏好設定與推薦回饋補前端整合測試」四項
+  到齊後打勾並改寫過期的括號說明，另記錄上面那個 race 的修正）。

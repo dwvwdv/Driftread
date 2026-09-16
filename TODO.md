@@ -347,12 +347,28 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
       步驟，跑 `@angular/build:unit-test`／Vitest，用 jsdom，不需要瀏覽器）
 - [ ] 將 initial bundle 超過 warning budget 的既有 4.97 kB 消除，或依實際預算重新設定並記錄理由。
 - [ ] 將 Supabase client 與非首屏功能延後載入，評估是否能直接降低 initial bundle。
-- [ ] 為訂閱 CTA、我的閱讀流、偏好設定與推薦回饋補前端整合測試。
-      （訂閱 CTA 這部分已完成：`subscription.spec.ts`、`feed-detail.spec.ts`、
-      `feed-list.spec.ts`、`discover.spec.ts`、`recommendations.spec.ts`、`login.spec.ts`。
-      我的閱讀流這部分批次 4 也補了：`reading-stream.spec.ts`（service）與
-      `components/reading-stream/reading-stream.spec.ts`（元件）。偏好設定 UI、推薦回饋持久化
-      都還沒實作，測試無從補起）
+- [x] 為訂閱 CTA、我的閱讀流、偏好設定與推薦回饋補前端整合測試。
+      （訂閱 CTA：`subscription.spec.ts`、`feed-detail.spec.ts`、`feed-list.spec.ts`、
+      `discover.spec.ts`、`recommendations.spec.ts`、`login.spec.ts`。我的閱讀流（批次 4）：
+      `reading-stream.spec.ts`（service）與 `components/reading-stream/reading-stream.spec.ts`
+      （元件）。偏好設定：`components/preferences/preferences.spec.ts` 在 PR #44 既有的載入／
+      toggle／儲存／stale generation 案例之外，補上「送出的 payload 是 toggle 後的選擇而不是
+      載入時的」（`PUT /me/preferences` 整批覆寫，取消勾選的分類只有在 payload 裡真的不見才
+      生效）、「toggle chip 在按下儲存前不送任何請求」（chip 只是本地意圖，沒有 per-toggle
+      請求需要 de-dup，唯一的 PUT 由 `saving()` 停用按鈕擋連點）、「儲存失敗不清掉選擇，
+      重試送出同一份 payload」（沒有可回滾的對象，清掉等於要使用者重選一次）、「只有分類／
+      語言清單讀取失敗時表單仍可用」（非破壞性，代價只有兩個 toast 與空 chip 清單，不進
+      `error` 狀態）、「三個讀取全部 settle 前維持 loading」。推薦回饋：持久化本身
+      （`PUT /me/feed-feedback/{feed_id}`、未登入不送、失敗不回滾本地狀態、同一 feed 只留一個
+      在途請求）已由 `services/recommendation.spec.ts` 覆蓋，這次補的是元件層的
+      `Recommendations feedback actions`——喜歡／跳過各自回報哪個 feed id、卡片何時前進、
+      回饋與在途訂閱不會互相蓋掉牌堆位置，並順帶修掉下列這個真實 race）
+- [x] 修正訂閱回應晚於 跳過／喜歡 時多吃掉一張推薦卡的 race。
+      （`components/recommendations/recommendations.ts`：`subscribe()` 的成功回呼無條件呼叫
+      `next()`，但訂閱在途期間只有 訂閱 按鈕自己被 `isSubscribePending` 停用，跳過／喜歡 仍可
+      點——讀者先按 跳過 再等訂閱回應時牌堆會前進兩格，而 `next()` 只進不退，中間那張推薦就
+      這樣沒被看過就從這批消失。修法：成功回呼只在「畫面上仍是當初按下訂閱的那張卡」時才
+      `next()`，`rec.like()` 這個較強的正向訊號照樣記錄）
 - [ ] backend 測試中的 DNS／外部網路依賴全部 mock，讓測試在隔離環境可重現。
 
 ## 建議開發批次
