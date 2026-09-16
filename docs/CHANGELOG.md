@@ -1766,3 +1766,42 @@ TODO.md「Frontend 與 CI」最後一個未完成的測試項目：訂閱 CTA �
   沒有超寬行。實際 `npm test`／production build 交給 CI 的 `frontend.yml` 驗證。
 - 對應文件更新：`TODO.md`（「為訂閱 CTA、我的閱讀流、偏好設定與推薦回饋補前端整合測試」四項
   到齊後打勾並改寫過期的括號說明，另記錄上面那個 race 的修正）。
+
+## 階段三十五：支援每個來源的使用者自訂名稱（2026-09-16）
+
+TODO.md P2「資料夾與來源控制」的一項：訂閱清單裡的名稱一律來自 `feeds.title`，來源自己取的
+名字不一定合用，而 `feeds.title` 是所有訂閱者與公開目錄共用的，改寫它會影響其他人。
+
+- **`backend/migrations/021_user_feed_custom_title.sql`**：`driftread.user_feeds` 新增
+  `custom_title TEXT`（nullable，`CHECK` 長度上限 200，同 `discovery_candidates.title` 的
+  既有上限）。NULL 代表「沿用 feed 原本的 title」；空白字串一律在寫入前正規化成 NULL（見下），
+  不讓「沒有自訂名稱」與「自訂名稱是空字串」變成兩種要分別處理的狀態。
+- **`backend/models.py`**：新增 `SubscribedFeed`（`Feed` 加一個 `custom_title` 欄位，只用在
+  `GET /me/feeds`——這是訂閱關係的屬性，不是 feed 本身的，故意不放進 `Feed` 本體污染其他讀取
+  路徑）與 `SubscriptionUpdate`（`custom_title: str | None`，上限 200）。
+- **`backend/routers/me.py`**：`list_subscriptions` 改回傳 `list[SubscribedFeed]`，一併
+  select `user_feeds.custom_title`；新增 `PATCH /me/feeds/{feed_id}`
+  （`update_subscription`）：先查訂閱是否存在（未訂閱回 404，同 `routers/admin.py` 既有的
+  「先查存在再動作」寫法），空白／純空白字串在這裡（不是在 model）正規化成 NULL 再寫入。
+- **前端**：`models.ts` 新增 `SubscribedFeed`；`MeService.listSubscriptions()` 回傳型別改為
+  `SubscribedFeed[]`，新增 `updateSubscription()`。`components/my-feeds`：卡片標題改顯示
+  `custom_title || title`，有自訂名稱時原本的目錄標題以「原名：」小字保留在旁，不會被完全
+  蓋掉；新增「重新命名」原地編輯（`Enter` 送出、`Esc` 取消），儲存時裁剪前後空白、空白值清除
+  自訂名稱，失敗不影響已顯示的清單並跳 toast。
+- **測試**：`backend/tests/test_me.py` 四個案例（`GET /me/feeds` 回傳 `custom_title`、
+  設定會裁剪空白、空白值清除為 NULL、未訂閱回 404 且不呼叫 `update`）；
+  `backend/tests/test_me_isolation.py` 補一個跨使用者隔離案例（同其餘 `/me/*` 端點的既有
+  寫法：兩個使用者各呼叫一次，斷言送進 `update().eq("user_id", ...)` 的值互不相同）；
+  `frontend/src/app/components/my-feeds/my-feeds.spec.ts` 四個案例（成功設定並裁剪、空白值
+  清除、失敗不動清單並跳一次 toast、取消編輯不送請求），既有的 `Feed`／`Feed[]` 測試 fixture
+  與型別註記一併改成 `SubscribedFeed`／`SubscribedFeed[]`，配合 `MeService` 回傳型別的變更。
+- **本 sandbox 的已知限制**（同 PR #58／#59 記錄的既有情況）：`pypi.org`／
+  `registry.npmjs.org` 這次連 metadata 都被 network egress 政策擋下 403，backend 的
+  `pip install`、frontend 的 `npm install` 都裝不起來，本機跑不了 `pytest`／`vitest`／
+  `ng build`。backend 三個改動檔案已用 `python3 -m py_compile` 確認語法正確；frontend 四個
+  改動檔案用系統 `tsc 6.0.2`（`--ignoreConfig --noResolve`）確認沒有語法或結構問題（只剩
+  `--noResolve` 必然出現的模組/global 缺失噪音），並手動核對 `.prettierrc`
+  （printWidth 100、single quote）與既有測試的 mock chain 寫法一致。實際
+  `pytest`／`npm test`／production build 交給 CI 的 `backend.yml`／`frontend.yml` 驗證。
+- 對應文件更新：`TODO.md`（「支援每個來源的使用者自訂名稱」打勾並記錄實作位置）、
+  `docs/FEATURES.md`（功能總覽、`/me/feeds` API 表新增 `PATCH` 列、`user_feeds` 資料表列）。

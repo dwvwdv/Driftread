@@ -108,6 +108,22 @@ def test_unsubscribe_scoped_per_user(client):
     _assert_isolated(mock_db.table.return_value.delete.return_value.eq.call_args_list)
 
 
+def test_update_subscription_scoped_per_user(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data={"feed_id": FEED_ID}
+    )
+    mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[]
+    )
+
+    r1 = c.patch(f"/api/me/feeds/{FEED_ID}", json={"custom_title": "A"}, headers=_auth(USER_A))
+    r2 = c.patch(f"/api/me/feeds/{FEED_ID}", json={"custom_title": "B"}, headers=_auth(USER_B))
+    assert r1.status_code == r2.status_code == 204
+
+    _assert_isolated(mock_db.table.return_value.update.return_value.eq.call_args_list)
+
+
 # --- Read receipts ---------------------------------------------------------
 
 

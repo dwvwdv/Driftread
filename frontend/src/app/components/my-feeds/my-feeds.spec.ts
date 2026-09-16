@@ -1,15 +1,15 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { Subject, of } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { signal } from '@angular/core';
 import { MyFeeds } from './my-feeds';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
 import { SubscriptionService } from '../../services/subscription';
 import { ToastService } from '../../ui/toast/toast';
-import { Feed } from '../../models';
+import { SubscribedFeed } from '../../models';
 
-const feed = (id: string): Feed => ({
+const feed = (id: string): SubscribedFeed => ({
   id,
   title: `Feed ${id}`,
   url: `https://example.com/${id}.xml`,
@@ -23,16 +23,17 @@ const feed = (id: string): Feed => ({
   archived_at: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+  custom_title: null,
 });
 
 describe('MyFeeds stale-response handling', () => {
   let session: ReturnType<typeof signal<{ user: { id: string } } | null>>;
   let subs: {
-    syncCalls: Feed[][];
+    syncCalls: SubscribedFeed[][];
     markUnsubscribedCalls: string[];
     beginFetch: () => number;
     ids: ReturnType<typeof signal<ReadonlySet<string>>>;
-    sync: (feeds: Feed[], asOf?: number) => void;
+    sync: (feeds: SubscribedFeed[], asOf?: number) => void;
     markUnsubscribed: (id: string) => void;
   };
   let toastInfo: string[];
@@ -50,14 +51,23 @@ describe('MyFeeds stale-response handling', () => {
   function setup(options?: {
     listSubscriptions?: () => ReturnType<MeService['listSubscriptions']>;
     unsubscribe?: () => ReturnType<MeService['unsubscribe']>;
+    updateSubscription?: (
+      feedId: string,
+      customTitle: string | null,
+    ) => ReturnType<MeService['updateSubscription']>;
   }) {
     session = signal<{ user: { id: string } } | null>({ user: { id: 'user-1' } });
     const me: {
       listSubscriptions: () => ReturnType<MeService['listSubscriptions']>;
       unsubscribe: () => ReturnType<MeService['unsubscribe']>;
+      updateSubscription: (
+        feedId: string,
+        customTitle: string | null,
+      ) => ReturnType<MeService['updateSubscription']>;
     } = {
       listSubscriptions: options?.listSubscriptions ?? (() => of([])),
       unsubscribe: options?.unsubscribe ?? (() => of(undefined)),
+      updateSubscription: options?.updateSubscription ?? (() => of(undefined)),
     };
     let nextAsOf = 0;
     subs = {
@@ -110,7 +120,7 @@ describe('MyFeeds stale-response handling', () => {
   }
 
   it('drops a listSubscriptions response that arrives after the user has signed out', () => {
-    const pending = new Subject<Feed[]>();
+    const pending = new Subject<SubscribedFeed[]>();
     const page = setup({ listSubscriptions: () => pending }); // initial load is in flight as user-1
 
     session.set(null); // signs out before the response returns
@@ -124,10 +134,10 @@ describe('MyFeeds stale-response handling', () => {
   });
 
   it('drops a listSubscriptions response that arrives after switching accounts, and applies the new account\'s own', () => {
-    const requests: Subject<Feed[]>[] = [];
+    const requests: Subject<SubscribedFeed[]>[] = [];
     const page = setup({
       listSubscriptions: () => {
-        const subject = new Subject<Feed[]>();
+        const subject = new Subject<SubscribedFeed[]>();
         requests.push(subject);
         return subject;
       },
@@ -160,7 +170,7 @@ describe('MyFeeds stale-response handling', () => {
   });
 
   it('drops a listSubscriptions error that arrives after the user has signed out', () => {
-    const pending = new Subject<Feed[]>();
+    const pending = new Subject<SubscribedFeed[]>();
     setup({ listSubscriptions: () => pending });
 
     session.set(null);
@@ -204,10 +214,10 @@ describe('MyFeeds stale-response handling', () => {
   });
 
   it('drops a same-user load() response that arrives after a newer same-user load() already applied', () => {
-    const requests: Subject<Feed[]>[] = [];
+    const requests: Subject<SubscribedFeed[]>[] = [];
     const page = setup({
       listSubscriptions: () => {
-        const subject = new Subject<Feed[]>();
+        const subject = new Subject<SubscribedFeed[]>();
         requests.push(subject);
         return subject;
       },
@@ -267,10 +277,10 @@ describe('MyFeeds stale-response handling', () => {
   });
 
   it('does not fire concurrent reloads while one triggered for a missing id is still in flight', () => {
-    const requests: Subject<Feed[]>[] = [];
+    const requests: Subject<SubscribedFeed[]>[] = [];
     const page = setup({
       listSubscriptions: () => {
-        const subject = new Subject<Feed[]>();
+        const subject = new Subject<SubscribedFeed[]>();
         requests.push(subject);
         return subject;
       },
@@ -296,5 +306,67 @@ describe('MyFeeds stale-response handling', () => {
 
     expect(page.feeds()).toEqual([feed('x'), feed('y')]);
     expect(requests.length).toBe(2); // no extra reload was ever fired
+  });
+
+  it('saves a trimmed custom title and reflects it in the rendered list', () => {
+    const calls: Array<[string, string | null]> = [];
+    const page = setup({
+      listSubscriptions: () => of([feed('a')]),
+      updateSubscription: (feedId, customTitle) => {
+        calls.push([feedId, customTitle]);
+        return of(undefined);
+      },
+    });
+
+    page.startRename(feed('a'));
+    page.renameValue.set('  My nickname  ');
+    page.saveRename(feed('a'));
+
+    expect(calls).toEqual([['a', 'My nickname']]);
+    expect(page.feeds()).toEqual([{ ...feed('a'), custom_title: 'My nickname' }]);
+    expect(page.renamingId()).toBeNull();
+  });
+
+  it('clears the custom title when the rename value is blank', () => {
+    const calls: Array<[string, string | null]> = [];
+    const page = setup({
+      listSubscriptions: () => of([{ ...feed('a'), custom_title: 'Old nickname' }]),
+      updateSubscription: (feedId, customTitle) => {
+        calls.push([feedId, customTitle]);
+        return of(undefined);
+      },
+    });
+
+    page.startRename({ ...feed('a'), custom_title: 'Old nickname' });
+    expect(page.renameValue()).toBe('Old nickname'); // editor seeds from the current value
+
+    page.renameValue.set('   ');
+    page.saveRename({ ...feed('a'), custom_title: 'Old nickname' });
+
+    expect(calls).toEqual([['a', null]]);
+    expect(page.feeds()).toEqual([{ ...feed('a'), custom_title: null }]);
+  });
+
+  it('leaves the list untouched and surfaces a toast when saving a rename fails', () => {
+    const page = setup({
+      listSubscriptions: () => of([feed('a')]),
+      updateSubscription: () => throwError(() => new Error('boom')),
+    });
+
+    page.startRename(feed('a'));
+    page.saveRename(feed('a'));
+
+    expect(page.feeds()).toEqual([feed('a')]);
+    expect(toastDanger.length).toBe(1);
+  });
+
+  it('closes the rename editor without saving on cancel', () => {
+    const page = setup({ listSubscriptions: () => of([feed('a')]) });
+
+    page.startRename(feed('a'));
+    expect(page.renamingId()).toBe('a');
+
+    page.cancelRename();
+    expect(page.renamingId()).toBeNull();
   });
 });

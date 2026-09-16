@@ -13,6 +13,7 @@ import {
   OpmlImportResult,
   PaginatedReads,
   PaginatedStream,
+  SubscribedFeed,
   UnreadSummary,
   UserPreferences,
 } from '../models';
@@ -22,8 +23,8 @@ export class MeService {
   private http = inject(HttpClient);
   private base = environment.apiUrl;
 
-  listSubscriptions(): Observable<Feed[]> {
-    return this.http.get<Feed[]>(`${this.base}/me/feeds`);
+  listSubscriptions(): Observable<SubscribedFeed[]> {
+    return this.http.get<SubscribedFeed[]>(`${this.base}/me/feeds`);
   }
 
   subscribe(feedId: string): Observable<void> {
@@ -32,6 +33,14 @@ export class MeService {
 
   unsubscribe(feedId: string): Observable<void> {
     return this.http.delete<void>(`${this.base}/me/feeds/${feedId}`);
+  }
+
+  /** `customTitle` null/blank clears it — same "no custom title" contract as
+   * the backend's own normalization, see routers/me.py::update_subscription. */
+  updateSubscription(feedId: string, customTitle: string | null): Observable<void> {
+    return this.http.patch<void>(`${this.base}/me/feeds/${feedId}`, {
+      custom_title: customTitle,
+    });
   }
 
   markRead(articleId: string): Observable<void> {

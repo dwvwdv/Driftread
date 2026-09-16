@@ -3,7 +3,7 @@ import { RouterLink } from '@angular/router';
 import { MeService } from '../../services/me';
 import { AuthService } from '../../services/auth';
 import { SubscriptionService } from '../../services/subscription';
-import { Feed, OpmlImportResult } from '../../models';
+import { OpmlImportResult, SubscribedFeed } from '../../models';
 import { apiMessage } from '../../shared/http-errors';
 import { ObCallout } from '../../ui/callout/callout';
 import { ObIcon } from '../../ui/icon/icon';
@@ -25,12 +25,17 @@ export class MyFeeds {
   private subs = inject(SubscriptionService);
   private toast = inject(ToastService);
 
-  feeds = signal<Feed[]>([]);
+  feeds = signal<SubscribedFeed[]>([]);
   loading = signal(false);
   importResult = signal<OpmlImportResult | null>(null);
   showFailures = signal(false);
   exporting = signal(false);
   importing = signal(false);
+
+  /** Feed id whose custom-title editor is currently open, one at a time. */
+  renamingId = signal<string | null>(null);
+  renameValue = signal('');
+  renaming = signal(false);
 
   /** User id the subscriptions have already been loaded for. */
   private loadedFor: string | null = null;
@@ -149,7 +154,7 @@ export class MyFeeds {
     });
   }
 
-  unsubscribe(feed: Feed): void {
+  unsubscribe(feed: SubscribedFeed): void {
     // Captured so a response arriving after a sign-out/account switch can't
     // remove this feed from whoever is signed in *now*'s list, or tell the
     // shared cache it was unsubscribed for them — same class of bug as
@@ -164,10 +169,43 @@ export class MyFeeds {
         // rather than their own copy, in sync without a redundant DELETE of
         // their own.
         this.subs.markUnsubscribed(feed.id);
+        if (this.renamingId() === feed.id) this.renamingId.set(null);
       },
       error: (e: unknown) => {
         if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.toast.danger(apiMessage(e, '取消訂閱失敗'));
+      },
+    });
+  }
+
+  startRename(feed: SubscribedFeed): void {
+    this.renamingId.set(feed.id);
+    this.renameValue.set(feed.custom_title ?? '');
+  }
+
+  cancelRename(): void {
+    this.renamingId.set(null);
+  }
+
+  /** Blank clears the custom title, same normalization as the backend
+   * applies — see MeService.updateSubscription. */
+  saveRename(feed: SubscribedFeed): void {
+    const requestedFor = this.auth.session()?.user?.id ?? null;
+    const value = this.renameValue().trim() || null;
+    this.renaming.set(true);
+    this.me.updateSubscription(feed.id, value).subscribe({
+      next: () => {
+        this.renaming.set(false);
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
+        this.feeds.update((list) =>
+          list.map((f) => (f.id === feed.id ? { ...f, custom_title: value } : f)),
+        );
+        this.renamingId.set(null);
+      },
+      error: (e: unknown) => {
+        this.renaming.set(false);
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
+        this.toast.danger(apiMessage(e, '設定顯示名稱失敗'));
       },
     });
   }
