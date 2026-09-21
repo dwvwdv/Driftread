@@ -1811,3 +1811,39 @@ TODO.md P2「資料夾與來源控制」的一項：訂閱清單裡的名稱一�
   只有畫面上的按鈕被 `[disabled]` 擋住，輸入框的 `Enter`／`startRename` 本身沒有守門，同一次
   編輯可能被重複送出，較晚回來的回應可能把較新的編輯器狀態蓋掉。兩處都加上守門（`renaming()`
   guard、使用者 id 變動時清空編輯狀態），並在 `my-feeds.spec.ts` 補上對應案例。
+
+## 階段三十六：支援來源靜音／暫停（2026-09-21）
+
+TODO.md P2「資料夾與來源控制」的另一項：目前要讓一個訂閱的來源不再出現在「我的閱讀」，唯一
+的辦法是整個取消訂閱，之後想找回來還得重新訂閱一次，會丟失既有的已讀狀態關聯（訂閱關係本身
+被刪掉重建）。靜音讓讀者可以「先不看這個來源」而不必付出這個代價。
+
+- **`backend/migrations/022_user_feed_mute.sql`**：`driftread.user_feeds` 新增
+  `muted_at TIMESTAMPTZ`（nullable）。NULL 代表未靜音；非 NULL 記錄靜音當下的時間戳，同
+  `feeds.archived_at`（migration 002）既有的「用時間戳而不是純布林」慣例，時間戳本身是免費
+  多出來的資訊，比布林多記錄「何時」。`list_reading_stream`／`reading_stream_unread_counts`
+  （皆 `CREATE OR REPLACE`，簽章不變、既有 grant 不必重下）加上 `uf.muted_at IS NULL`：已靜音
+  的訂閱從「我的閱讀」的文章時間流、總未讀數與來源篩選清單中整個消失。`mark_reading_stream_read`
+  刻意不改——靜音是可逆的，不該讓「這篇文章在靜音期間新增」變成「解除靜音後被追溯標記已讀」；
+  `GET /me/feeds` 與取消訂閱都直接查 `user_feeds`，不受這兩個 function 的改動影響，靜音的來源
+  仍照常列在「我的訂閱」。
+- **`backend/models.py`**：`SubscribedFeed` 新增 `muted_at: datetime | None`；`SubscriptionUpdate`
+  新增 `muted: bool | None`，與既有的 `custom_title` 各自獨立、預設都是 `None`。
+- **`backend/routers/me.py`**：`list_subscriptions` 一併 select `muted_at`；`update_subscription`
+  改用 `body.model_fields_set` 判斷請求 body 真的帶了哪個欄位，只更動那些欄位——避免「只想切換
+  靜音」的請求因為 `custom_title` 預設是 `None` 而把已設定的自訂名稱誤清空，反之亦然；body 兩個
+  欄位都沒帶則整個不呼叫 `update`。
+- **前端**：`models.ts` 的 `SubscribedFeed` 新增 `muted_at`；`MeService.setMuted()` 獨立成自己的
+  請求，刻意不跟 `updateSubscription` 共用一次 PATCH body，避免靜音時意外帶上記憶體裡當下的
+  `custom_title` 值重新送一次。`components/my-feeds`：卡片顯示「已靜音」標籤與
+  靜音／取消靜音按鈕，用 `mutingIds`（每個 feed id 各自的在途狀態）擋同一張卡片的重複點擊；
+  未擋跨卡片操作，因為靜音沒有像重新命名編輯器那樣「同時只能開一個」的共用 UI 狀態需要保護。
+- **測試**：`backend/tests/test_me.py` 新增 5 案例（`GET /me/feeds` 回傳 `muted_at`、靜音、
+  取消靜音、只設定 `custom_title` 不動靜音狀態、空 body 整個不呼叫 `update`）；靜音的跨使用者
+  隔離由既有的 `test_update_subscription_scoped_per_user` 涵蓋（走的是同一段
+  `update().eq(user_id).eq(feed_id)` call path，與更新哪個欄位無關，另開一個案例不會增加涵蓋
+  範圍）。`frontend/src/app/components/my-feeds/my-feeds.spec.ts` 新增 4 案例（靜音、取消靜音、
+  同一張卡片在途時忽略第二次點擊、失敗不動狀態並跳一次 toast），既有 fixture 補上 `muted_at`。
+- 對應文件更新：`TODO.md`（「支援來源靜音／暫停」打勾並記錄實作位置）、`docs/FEATURES.md`
+  （功能總覽、`/me/feeds` API 表、`user_feeds` 資料表列、`list_reading_stream`／
+  `reading_stream_unread_counts` 說明）。

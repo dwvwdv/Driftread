@@ -43,6 +43,15 @@ export class MeService {
     });
   }
 
+  /** Sent as its own request, deliberately never combined with
+   * updateSubscription's custom_title body: the backend only applies fields
+   * that are actually present in the PATCH body, so toggling mute must not
+   * risk resending (and thus re-asserting) whatever custom_title happens to
+   * be in memory here at the same time. */
+  setMuted(feedId: string, muted: boolean): Observable<void> {
+    return this.http.patch<void>(`${this.base}/me/feeds/${feedId}`, { muted });
+  }
+
   markRead(articleId: string): Observable<void> {
     return this.http.post<void>(`${this.base}/me/articles/${articleId}/read`, {});
   }

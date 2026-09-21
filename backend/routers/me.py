@@ -39,12 +39,14 @@ async def list_subscriptions(
 ) -> list[SubscribedFeed]:
     rows = (
         db.table("user_feeds")
-        .select("feed_id, custom_title, feeds(*)")
+        .select("feed_id, custom_title, muted_at, feeds(*)")
         .eq("user_id", user.id)
         .execute()
     )
     return [
-        SubscribedFeed(**row["feeds"], custom_title=row.get("custom_title"))
+        SubscribedFeed(
+            **row["feeds"], custom_title=row.get("custom_title"), muted_at=row.get("muted_at")
+        )
         for row in rows.data
         if row.get("feeds")
     ]
@@ -83,9 +85,13 @@ async def update_subscription(
     user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
 ) -> None:
-    """Sets/clears the caller's own display name for one of their subscriptions
-    (TODO.md「支援每個來源的使用者自訂名稱」). A blank/whitespace-only title is
-    normalized to NULL here rather than in the model, matching the migration's
+    """Sets/clears the caller's own display name and/or mute state for one of
+    their subscriptions (TODO.md「支援每個來源的使用者自訂名稱」「支援來源靜音／
+    暫停」). Each field is applied only when the request body actually
+    included it (`model_fields_set`) — both default to None, so a request
+    that only means to toggle one must not silently reset the other back to
+    "no custom title" / "unmuted" just because it wasn't repeated. A blank/
+    whitespace-only title is normalized to NULL, matching the migration's
     "empty string behaves the same as no custom title" contract."""
     existing = (
         db.table("user_feeds")
@@ -98,10 +104,19 @@ async def update_subscription(
     if not existing or not existing.data:
         raise HTTPException(status_code=404, detail="Not subscribed to this feed")
 
-    custom_title = body.custom_title.strip() if body.custom_title else None
-    db.table("user_feeds").update(
-        {"custom_title": custom_title or None}, returning="minimal"
-    ).eq("user_id", user.id).eq("feed_id", str(feed_id)).execute()
+    updates: dict[str, str | None] = {}
+    if "custom_title" in body.model_fields_set:
+        custom_title = body.custom_title.strip() if body.custom_title else None
+        updates["custom_title"] = custom_title or None
+    if "muted" in body.model_fields_set:
+        updates["muted_at"] = datetime.now(timezone.utc).isoformat() if body.muted else None
+
+    if not updates:
+        return
+
+    db.table("user_feeds").update(updates, returning="minimal").eq(
+        "user_id", user.id
+    ).eq("feed_id", str(feed_id)).execute()
 
 
 # --- Read receipts -----------------------------------------------------------

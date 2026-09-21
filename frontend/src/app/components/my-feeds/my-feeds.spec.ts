@@ -24,6 +24,7 @@ const feed = (id: string): SubscribedFeed => ({
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   custom_title: null,
+  muted_at: null,
 });
 
 describe('MyFeeds stale-response handling', () => {
@@ -55,6 +56,7 @@ describe('MyFeeds stale-response handling', () => {
       feedId: string,
       customTitle: string | null,
     ) => ReturnType<MeService['updateSubscription']>;
+    setMuted?: (feedId: string, muted: boolean) => ReturnType<MeService['setMuted']>;
   }) {
     session = signal<{ user: { id: string } } | null>({ user: { id: 'user-1' } });
     const me: {
@@ -64,10 +66,12 @@ describe('MyFeeds stale-response handling', () => {
         feedId: string,
         customTitle: string | null,
       ) => ReturnType<MeService['updateSubscription']>;
+      setMuted: (feedId: string, muted: boolean) => ReturnType<MeService['setMuted']>;
     } = {
       listSubscriptions: options?.listSubscriptions ?? (() => of([])),
       unsubscribe: options?.unsubscribe ?? (() => of(undefined)),
       updateSubscription: options?.updateSubscription ?? (() => of(undefined)),
+      setMuted: options?.setMuted ?? (() => of(undefined)),
     };
     let nextAsOf = 0;
     subs = {
@@ -415,5 +419,73 @@ describe('MyFeeds stale-response handling', () => {
 
     expect(page.renamingId()).toBeNull();
     expect(page.renameValue()).toBe('');
+  });
+
+  it('mutes an active feed and reflects it in the list', () => {
+    const calls: Array<[string, boolean]> = [];
+    const page = setup({
+      listSubscriptions: () => of([feed('a')]),
+      setMuted: (feedId, muted) => {
+        calls.push([feedId, muted]);
+        return of(undefined);
+      },
+    });
+
+    page.toggleMute(feed('a'));
+
+    expect(calls).toEqual([['a', true]]);
+    expect(page.feeds()[0].muted_at).not.toBeNull();
+    expect(page.mutingIds().has('a')).toBe(false);
+  });
+
+  it('unmutes an already-muted feed', () => {
+    const calls: Array<[string, boolean]> = [];
+    const mutedFeed = { ...feed('a'), muted_at: '2026-02-01T00:00:00Z' };
+    const page = setup({
+      listSubscriptions: () => of([mutedFeed]),
+      setMuted: (feedId, muted) => {
+        calls.push([feedId, muted]);
+        return of(undefined);
+      },
+    });
+
+    page.toggleMute(mutedFeed);
+
+    expect(calls).toEqual([['a', false]]);
+    expect(page.feeds()[0].muted_at).toBeNull();
+  });
+
+  it('ignores a second mute click on the same feed while the first is in flight', () => {
+    const calls: Array<[string, boolean]> = [];
+    const pending = new Subject<void>();
+    const page = setup({
+      listSubscriptions: () => of([feed('a')]),
+      setMuted: (feedId, muted) => {
+        calls.push([feedId, muted]);
+        return pending.asObservable();
+      },
+    });
+
+    page.toggleMute(feed('a'));
+    page.toggleMute(feed('a'));
+    expect(calls.length).toBe(1);
+    expect(page.mutingIds().has('a')).toBe(true);
+
+    pending.next(undefined);
+    pending.complete();
+    expect(page.mutingIds().has('a')).toBe(false);
+  });
+
+  it('leaves the mute state untouched and surfaces a toast when the request fails', () => {
+    const page = setup({
+      listSubscriptions: () => of([feed('a')]),
+      setMuted: () => throwError(() => new Error('boom')),
+    });
+
+    page.toggleMute(feed('a'));
+
+    expect(page.feeds()).toEqual([feed('a')]);
+    expect(page.mutingIds().has('a')).toBe(false);
+    expect(toastDanger.length).toBe(1);
   });
 });

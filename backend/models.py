@@ -32,10 +32,19 @@ class SubscribedFeed(Feed):
     # Per-(user, feed) display name (migration 021), not part of the feed
     # itself — GET /me/feeds is the only place this is attached to a Feed.
     custom_title: str | None = None
+    # Per-(user, feed) mute state (migration 022): NULL/None means active,
+    # a timestamp means the caller muted it, same non-boolean-timestamp
+    # convention as Feed.archived_at.
+    muted_at: datetime | None = None
 
 
 class SubscriptionUpdate(BaseModel):
+    # Both fields are independently optional and only applied when actually
+    # present in the request body (see update_subscription's use of
+    # model_fields_set) — a request that only means to toggle mute must not
+    # also clear custom_title just because this field defaults to None.
     custom_title: str | None = Field(default=None, max_length=200)
+    muted: bool | None = None
 
 
 class FeedCreate(BaseModel):
