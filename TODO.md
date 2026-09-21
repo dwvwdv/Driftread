@@ -254,7 +254,13 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 - [ ] 使用者可建立、重新命名、排序與刪除資料夾。
 - [ ] Feed 可加入多個資料夾，或明確限制為單一資料夾並在資料模型中固定。
-- [ ] 支援來源靜音／暫停，不必取消訂閱。
+- [x] 支援來源靜音／暫停，不必取消訂閱。
+      （migration 022：`user_feeds.muted_at`，同 `custom_title` 一樣是 per-(user, feed)
+      屬性。`PATCH /me/feeds/{feed_id}` 的 `muted` 欄位與 `custom_title` 互相獨立，只有
+      request body 實際帶到的欄位才會被更動。靜音後仍列在「我的訂閱」（可隨時取消靜音），
+      但 `list_reading_stream`／`reading_stream_unread_counts` 排除已靜音的訂閱，不出現在
+      「我的閱讀」的文章時間流、未讀數或來源篩選清單裡；`mark_reading_stream_read` 刻意不排除
+      ——靜音是可逆的，不該讓靜音期間累積的未讀在解除靜音後被追溯性地當作「已讀」跳過）
 - [x] 支援每個來源的使用者自訂名稱。
       （migration 021：`user_feeds.custom_title`，per-(user, feed) 屬性，不寫回
       `feeds.title`——那是所有訂閱者共用的目錄名稱。`GET /me/feeds` 回傳新增的

@@ -37,6 +37,12 @@ export class MyFeeds {
   renameValue = signal('');
   renaming = signal(false);
 
+  /** Feed ids with a mute/unmute PATCH currently in flight — unlike renaming
+   * (one editor open at a time), muting has no shared UI state to protect,
+   * so each card's own button only needs to guard against a second click on
+   * itself, not against every other card's button. */
+  mutingIds = signal<ReadonlySet<string>>(new Set());
+
   /** User id the subscriptions have already been loaded for. */
   private loadedFor: string | null = null;
 
@@ -221,6 +227,42 @@ export class MyFeeds {
         this.renaming.set(false);
         if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
         this.toast.danger(apiMessage(e, '設定顯示名稱失敗'));
+      },
+    });
+  }
+
+  toggleMute(feed: SubscribedFeed): void {
+    if (this.mutingIds().has(feed.id)) return;
+    const requestedFor = this.auth.session()?.user?.id ?? null;
+    const nextMuted = !feed.muted_at;
+    this.mutingIds.update((ids) => new Set(ids).add(feed.id));
+    this.me.setMuted(feed.id, nextMuted).subscribe({
+      next: () => {
+        // Cleared unconditionally, same reasoning as load()'s
+        // reloadingForMissingId: this flight is over regardless of which
+        // user it resolves for.
+        this.mutingIds.update((ids) => {
+          const next = new Set(ids);
+          next.delete(feed.id);
+          return next;
+        });
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
+        this.feeds.update((list) =>
+          list.map((f) =>
+            f.id === feed.id
+              ? { ...f, muted_at: nextMuted ? new Date().toISOString() : null }
+              : f,
+          ),
+        );
+      },
+      error: (e: unknown) => {
+        this.mutingIds.update((ids) => {
+          const next = new Set(ids);
+          next.delete(feed.id);
+          return next;
+        });
+        if (!requestedFor || (this.auth.session()?.user?.id ?? null) !== requestedFor) return;
+        this.toast.danger(apiMessage(e, nextMuted ? '靜音失敗' : '取消靜音失敗'));
       },
     });
   }

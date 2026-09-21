@@ -39,6 +39,10 @@ export interface FeedWithArticles extends Feed {
  * back to Feed.title, which every subscriber and the public catalog share. */
 export interface SubscribedFeed extends Feed {
   custom_title: string | null;
+  /** Non-null when this caller muted the subscription (TODO.md「支援來源靜音／
+   * 暫停」) — excluded from 我的閱讀's stream and unread counts, but still
+   * listed and manageable here. Set via PATCH /me/feeds/{feed_id}. */
+  muted_at: string | null;
 }
 
 export interface PaginatedFeeds {

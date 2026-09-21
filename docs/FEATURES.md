@@ -13,7 +13,7 @@
 | 文章預覽與全文閱讀 | ✅ | feed 詳情帶完整文章列表（cursor 分頁「載入更多」，登入後每篇可直接切換已讀／收藏）；閱讀頁顯示快取的全文（`content` 走 `[innerHTML]` 由 DomSanitizer 過濾，`summary` 是純文字預覽）| `routers/articles.py`、`rss_parser.py`、`components/feed-detail`、`components/article-reader` |
 | 猜你喜歡 | ✅ | 以訂閱、偏好與已登入者的持久化回饋（喜歡／不喜歡／跳過、收藏來源）推出未訂閱的 feed，以「喜歡 / 跳過」按鈕表態（無滑動手勢），卡片附「推薦理由」，另有「再推薦一批」 | `routers/recommendations.py`、`components/recommendations` |
 | 用戶系統 | ✅ | Supabase Auth（email / password）；JWT 由後端驗證，依 token `alg` 分流 HS256 shared secret 或 JWKS（ES256／RS256，見 `docs/SECURITY.md` #31）。前端 Supabase 設定由 `frontend` 容器啟動時 render 進 `env.js`（runtime config），官方 GHCR image 帶對的環境變數即可用，見第 4 節 | `auth.py`、`services/auth.ts`、`services/runtime-config.ts` |
-| 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱。「我的訂閱」每筆訂閱可設定自訂顯示名稱（`custom_title`），只影響該使用者自己看到的名稱，不改動 feed 目錄本身的標題 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
+| 訂閱 / 已讀 / 收藏 / 稍後讀 | ✅ | 均為 per-user，資料表開 RLS owner policy。訂閱狀態由前端 `SubscriptionService` 統一管理（單一快取，樂觀更新 + 失敗回滾），feed 詳情、目錄卡片與 Discover 已收錄結果都可直接訂閱；未登入操作會先導向登入頁，登入後回到原頁面並完成訂閱。「我的訂閱」每筆訂閱可設定自訂顯示名稱（`custom_title`），只影響該使用者自己看到的名稱，不改動 feed 目錄本身的標題；每筆訂閱也可靜音／暫停（`muted_at`），靜音後仍在「我的訂閱」列表中（可隨時取消靜音），但不再出現在「我的閱讀」的文章時間流與未讀數裡，不必真的取消訂閱 | `routers/me.py`、`services/subscription.ts`、`components/my-feeds`、`components/feed-detail`、`components/feed-list`、`components/discover`、`components/bookmarks` |
 | **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/015_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
 | **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
@@ -282,10 +282,10 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
-| GET | `/me/feeds` | 我的訂閱，每筆帶呼叫者自己的 `custom_title`（見下方「訂閱／已讀／收藏／稍後讀」） |
+| GET | `/me/feeds` | 我的訂閱，每筆帶呼叫者自己的 `custom_title`／`muted_at`（見下方「訂閱／已讀／收藏／稍後讀」） |
 | POST | `/me/feeds/{feed_id}` | 訂閱（204） |
 | DELETE | `/me/feeds/{feed_id}` | 取消訂閱（204） |
-| PATCH | `/me/feeds/{feed_id}` | 設定／清除該訂閱的自訂顯示名稱（`custom_title`，204）。空白字串正規化成清除；未訂閱該 feed 回 404 |
+| PATCH | `/me/feeds/{feed_id}` | 設定／清除自訂顯示名稱（`custom_title`）與／或靜音狀態（`muted`，204）。兩個欄位互相獨立，只有請求 body 實際帶到的欄位才會被更動；空白字串正規化成清除；未訂閱該 feed 回 404 |
 | POST | `/me/articles/{article_id}/read` | 標記已讀（204） |
 | DELETE | `/me/articles/{article_id}/read` | 標記未讀（204） |
 | GET | `/me/reads` | 已讀的 article id 列表，cursor pagination |
@@ -408,7 +408,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 |----|----------------|------|
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）＋`search_vector`（020，generated tsvector，供全文搜尋） |
-| `user_feeds` | 002 + 021 | 訂閱關係＋`custom_title`（021，該使用者對這個訂閱的自訂顯示名稱，NULL 代表沿用 feed 原本的 title；只在這段 (user, feed) 關係內生效，不寫回 `feeds.title`） |
+| `user_feeds` | 002 + 021 + 022 | 訂閱關係＋`custom_title`（021，該使用者對這個訂閱的自訂顯示名稱，NULL 代表沿用 feed 原本的 title；只在這段 (user, feed) 關係內生效，不寫回 `feeds.title`）＋`muted_at`（022，靜音時間戳，NULL 代表未靜音；`list_reading_stream`／`reading_stream_unread_counts` 排除已靜音的訂閱，`GET /me/feeds` 與取消訂閱不受影響） |
 | `user_article_reads` | 002 | 已讀回報。一列的存在即代表「已讀」，`DELETE` 即「標為未讀」——沒有另外的已讀/未讀狀態欄位或新表。`GET /me/stream` 的 `is_read`／`GET /me/reads` 都直接查這張表 |
 | `user_bookmarks` | 002 | 收藏 / 稍後讀（`bookmark_type` 區分） |
 | `user_preferences` | 002 | `preferred_categories` / `preferred_languages` |
@@ -436,9 +436,11 @@ DB function，供 `routers/me.py` 的 `/me/stream*`、`/me/reads/mark-all` 呼�
   跨 `user_feeds` 聚合每個已訂閱來源的 `articles`，LEFT JOIN `user_article_reads` 帶出 `is_read`／
   `read_at`，keyset （非 offset）分頁。排序鍵是 `COALESCE(published_at, fetched_at) DESC, id DESC`：
   未解析出 `published_at` 的文章改用 `fetched_at` 排序，避免落在 Postgres `DESC` 預設的
-  `NULLS FIRST` 而使未定期文章卡在最前面、也讓 cursor 比較不必特別處理 NULL。
+  `NULLS FIRST` 而使未定期文章卡在最前面、也讓 cursor 比較不必特別處理 NULL。022 加上
+  `uf.muted_at IS NULL`：已靜音的訂閱不出現在這條時間流。
 - `reading_stream_unread_counts(p_user_id)`——每個已訂閱來源的未讀數（含 0），LEFT JOIN 而非
-  anti-join，所以「已讀完」的來源仍會出現、只是計數是 0；`GET /me/stream/unread-counts` 加總即為
+  anti-join，所以「已讀完」的來源仍會出現、只是計數是 0；已靜音的來源則整列排除（022，同
+  `list_reading_stream`），不會以 0 未讀出現在來源篩選清單裡；`GET /me/stream/unread-counts` 加總即為
   總未讀數。
 - `mark_reading_stream_read(p_user_id, p_feed_id, p_before)`——伺服器端一次性 `INSERT ... SELECT ...
   ON CONFLICT DO NOTHING`，供「明確範圍全部標已讀」用（單一來源／指定時間之前／兩者皆空即整個

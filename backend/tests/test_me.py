@@ -113,6 +113,114 @@ def test_update_subscription_404_when_not_subscribed(client):
     mock_db.table.return_value.update.assert_not_called()
 
 
+def test_list_subscriptions_includes_muted_at(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[
+            {
+                "feed_id": "11111111-1111-1111-1111-111111111111",
+                "custom_title": None,
+                "muted_at": "2026-02-01T00:00:00Z",
+                "feeds": {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "title": "Original Title",
+                    "url": "https://example.com/feed.xml",
+                    "tags": [],
+                    "article_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                },
+            }
+        ]
+    )
+
+    resp = c.get("/api/me/feeds", headers={"Authorization": f"Bearer {_token()}"})
+
+    assert resp.status_code == 200
+    assert resp.json()[0]["muted_at"] == "2026-02-01T00:00:00Z"
+
+
+def test_update_subscription_mutes_a_feed(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data={"feed_id": "11111111-1111-1111-1111-111111111111"}
+    )
+    mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[]
+    )
+
+    resp = c.patch(
+        "/api/me/feeds/11111111-1111-1111-1111-111111111111",
+        json={"muted": True},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 204
+    update_args = mock_db.table.return_value.update.call_args[0][0]
+    # Only the field the request actually sent is touched.
+    assert "custom_title" not in update_args
+    assert update_args["muted_at"] is not None
+
+
+def test_update_subscription_unmutes_a_feed(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data={"feed_id": "11111111-1111-1111-1111-111111111111"}
+    )
+    mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[]
+    )
+
+    resp = c.patch(
+        "/api/me/feeds/11111111-1111-1111-1111-111111111111",
+        json={"muted": False},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 204
+    update_args = mock_db.table.return_value.update.call_args[0][0]
+    assert update_args["muted_at"] is None
+
+
+def test_update_subscription_setting_title_does_not_touch_mute_state(client):
+    """A request that only means to rename must not implicitly unmute —
+    `muted` defaulting to None in the model must not be mistaken for an
+    explicit "unmute" instruction."""
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data={"feed_id": "11111111-1111-1111-1111-111111111111"}
+    )
+    mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[]
+    )
+
+    resp = c.patch(
+        "/api/me/feeds/11111111-1111-1111-1111-111111111111",
+        json={"custom_title": "Renamed"},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 204
+    update_args = mock_db.table.return_value.update.call_args[0][0]
+    assert update_args == {"custom_title": "Renamed"}
+
+
+def test_update_subscription_empty_body_is_a_no_op(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data={"feed_id": "11111111-1111-1111-1111-111111111111"}
+    )
+
+    resp = c.patch(
+        "/api/me/feeds/11111111-1111-1111-1111-111111111111",
+        json={},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 204
+    mock_db.table.return_value.update.assert_not_called()
+
+
 def test_list_bookmarks_omits_article_content(client):
     """Bookmark rows only need summary fields for the list view; returning the
     full cached article HTML in `content` would bloat every fetch for data the
