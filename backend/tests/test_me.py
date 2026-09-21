@@ -22,6 +22,97 @@ def _token() -> str:
     )
 
 
+# --- subscriptions -----------------------------------------------------------
+
+
+def test_list_subscriptions_includes_custom_title(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[
+            {
+                "feed_id": "11111111-1111-1111-1111-111111111111",
+                "custom_title": "My nickname for this feed",
+                "feeds": {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "title": "Original Title",
+                    "url": "https://example.com/feed.xml",
+                    "tags": [],
+                    "article_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                },
+            }
+        ]
+    )
+
+    resp = c.get("/api/me/feeds", headers={"Authorization": f"Bearer {_token()}"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["title"] == "Original Title"
+    assert body[0]["custom_title"] == "My nickname for this feed"
+
+
+def test_update_subscription_sets_custom_title(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data={"feed_id": "11111111-1111-1111-1111-111111111111"}
+    )
+    mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[]
+    )
+
+    resp = c.patch(
+        "/api/me/feeds/11111111-1111-1111-1111-111111111111",
+        json={"custom_title": "  My nickname  "},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 204
+    update_args = mock_db.table.return_value.update.call_args[0][0]
+    # Leading/trailing whitespace is trimmed before it's persisted.
+    assert update_args["custom_title"] == "My nickname"
+
+
+def test_update_subscription_blank_title_normalizes_to_null(client):
+    """A whitespace-only title clears the custom name rather than persisting
+    an empty string — "no custom title" should only have one representation."""
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data={"feed_id": "11111111-1111-1111-1111-111111111111"}
+    )
+    mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[]
+    )
+
+    resp = c.patch(
+        "/api/me/feeds/11111111-1111-1111-1111-111111111111",
+        json={"custom_title": "   "},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 204
+    update_args = mock_db.table.return_value.update.call_args[0][0]
+    assert update_args["custom_title"] is None
+
+
+def test_update_subscription_404_when_not_subscribed(client):
+    c, mock_db = client
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(
+        data=None
+    )
+
+    resp = c.patch(
+        "/api/me/feeds/11111111-1111-1111-1111-111111111111",
+        json={"custom_title": "My nickname"},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 404
+    mock_db.table.return_value.update.assert_not_called()
+
+
 def test_list_bookmarks_omits_article_content(client):
     """Bookmark rows only need summary fields for the list view; returning the
     full cached article HTML in `content` would bloat every fetch for data the

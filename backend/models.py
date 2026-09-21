@@ -28,6 +28,16 @@ class Feed(BaseModel):
     last_modified: str | None = None
 
 
+class SubscribedFeed(Feed):
+    # Per-(user, feed) display name (migration 021), not part of the feed
+    # itself — GET /me/feeds is the only place this is attached to a Feed.
+    custom_title: str | None = None
+
+
+class SubscriptionUpdate(BaseModel):
+    custom_title: str | None = Field(default=None, max_length=200)
+
+
 class FeedCreate(BaseModel):
     title: str
     url: str

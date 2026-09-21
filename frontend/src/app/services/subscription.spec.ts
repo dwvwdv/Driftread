@@ -4,9 +4,9 @@ import { Observable, Subject, of, throwError } from 'rxjs';
 import { SubscriptionService } from './subscription';
 import { AuthService } from './auth';
 import { MeService } from './me';
-import { Feed } from '../models';
+import { SubscribedFeed } from '../models';
 
-const feed = (id: string): Feed => ({
+const feed = (id: string): SubscribedFeed => ({
   id,
   title: `Feed ${id}`,
   url: `https://example.com/${id}.xml`,
@@ -20,6 +20,7 @@ const feed = (id: string): Feed => ({
   archived_at: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+  custom_title: null,
 });
 
 describe('SubscriptionService', () => {
@@ -162,7 +163,7 @@ describe('SubscriptionService', () => {
 
     // A subscribe fired in the same tick as a reload (e.g. right after login)
     // whose server snapshot has not caught up with it yet.
-    const staleList = new Subject<Feed[]>();
+    const staleList = new Subject<SubscribedFeed[]>();
     me.listSubscriptions = () => {
       me.listCalls++;
       return staleList;
@@ -205,7 +206,7 @@ describe('SubscriptionService', () => {
 
   it('drops a load() response that arrives after the user has signed out', () => {
     const svc = setup();
-    const pending = new Subject<Feed[]>();
+    const pending = new Subject<SubscribedFeed[]>();
     me.listSubscriptions = () => {
       me.listCalls++;
       return pending;
@@ -225,7 +226,7 @@ describe('SubscriptionService', () => {
 
   it('attributes a load() response to whichever account is current when it arrives', () => {
     const svc = setup();
-    const pending = new Subject<Feed[]>();
+    const pending = new Subject<SubscribedFeed[]>();
     me.listSubscriptions = () => {
       me.listCalls++;
       return pending;
@@ -418,7 +419,7 @@ describe('SubscriptionService', () => {
         // A fresh cold Observable per subscription, like HttpClient's really
         // is: retry() resubscribes to *this*, so each attempt must re-run
         // the subscriber body — a fixed throwError/of instance wouldn't.
-        return new Observable<Feed[]>((subscriber) => {
+        return new Observable<SubscribedFeed[]>((subscriber) => {
           attempt++;
           if (attempt < 3) {
             subscriber.error(new Error('network blip'));

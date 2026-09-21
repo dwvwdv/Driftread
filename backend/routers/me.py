@@ -10,7 +10,6 @@ from models import (
     ArticleSummary,
     Bookmark,
     BookmarkCreate,
-    Feed,
     FeedFeedback,
     FeedFeedbackCreate,
     FeedUnreadCount,
@@ -20,6 +19,8 @@ from models import (
     PaginatedStream,
     ReadReceipt,
     StreamArticle,
+    SubscribedFeed,
+    SubscriptionUpdate,
     UnreadSummary,
     UserPreferences,
     UserPreferencesUpdate,
@@ -31,18 +32,22 @@ router = APIRouter(prefix="/me", tags=["me"])
 
 # --- Subscriptions -----------------------------------------------------------
 
-@router.get("/feeds", response_model=list[Feed])
+@router.get("/feeds", response_model=list[SubscribedFeed])
 async def list_subscriptions(
     user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
-) -> list[Feed]:
+) -> list[SubscribedFeed]:
     rows = (
         db.table("user_feeds")
-        .select("feed_id, feeds(*)")
+        .select("feed_id, custom_title, feeds(*)")
         .eq("user_id", user.id)
         .execute()
     )
-    return [Feed(**row["feeds"]) for row in rows.data if row.get("feeds")]
+    return [
+        SubscribedFeed(**row["feeds"], custom_title=row.get("custom_title"))
+        for row in rows.data
+        if row.get("feeds")
+    ]
 
 
 @router.post("/feeds/{feed_id}", status_code=204)
@@ -69,6 +74,34 @@ async def unsubscribe(
     db.table("user_feeds").delete().eq("user_id", user.id).eq(
         "feed_id", str(feed_id)
     ).execute()
+
+
+@router.patch("/feeds/{feed_id}", status_code=204)
+async def update_subscription(
+    feed_id: UUID,
+    body: SubscriptionUpdate,
+    user: AuthUser = Depends(get_current_user),
+    db: Client = Depends(get_client),
+) -> None:
+    """Sets/clears the caller's own display name for one of their subscriptions
+    (TODO.md「支援每個來源的使用者自訂名稱」). A blank/whitespace-only title is
+    normalized to NULL here rather than in the model, matching the migration's
+    "empty string behaves the same as no custom title" contract."""
+    existing = (
+        db.table("user_feeds")
+        .select("feed_id")
+        .eq("user_id", user.id)
+        .eq("feed_id", str(feed_id))
+        .maybe_single()
+        .execute()
+    )
+    if not existing or not existing.data:
+        raise HTTPException(status_code=404, detail="Not subscribed to this feed")
+
+    custom_title = body.custom_title.strip() if body.custom_title else None
+    db.table("user_feeds").update(
+        {"custom_title": custom_title or None}, returning="minimal"
+    ).eq("user_id", user.id).eq("feed_id", str(feed_id)).execute()
 
 
 # --- Read receipts -----------------------------------------------------------

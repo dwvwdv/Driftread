@@ -33,6 +33,14 @@ export interface FeedWithArticles extends Feed {
   articles: ArticleSummary[];
 }
 
+/** One row of GET /me/feeds — a Feed plus this caller's own display name for
+ * it (TODO.md「支援每個來源的使用者自訂名稱」), null when none is set. Set via
+ * PATCH /me/feeds/{feed_id}; scoped to this (user, feed) pair, not written
+ * back to Feed.title, which every subscriber and the public catalog share. */
+export interface SubscribedFeed extends Feed {
+  custom_title: string | null;
+}
+
 export interface PaginatedFeeds {
   items: Feed[];
   total: number;
