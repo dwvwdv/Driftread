@@ -75,6 +75,12 @@ export class MyFeeds {
         return;
       }
       if (this.loadedFor === userId) return;
+      // Drops any rename editor left open by whoever was signed in before:
+      // otherwise its unsaved custom_title survives the switch, and if the
+      // new user's list includes the same feed id, saveRename would submit
+      // the previous user's text under the new user's subscription.
+      this.renamingId.set(null);
+      this.renameValue.set('');
       this.loadedFor = userId;
       this.load();
     });
@@ -179,6 +185,11 @@ export class MyFeeds {
   }
 
   startRename(feed: SubscribedFeed): void {
+    // Guards against opening a second editor (or re-seeding this one) while
+    // a save for the currently open editor is still in flight — the save's
+    // own response handler keys off renamingId/renameValue at completion
+    // time, so switching them mid-flight would apply the wrong feed/value.
+    if (this.renaming()) return;
     this.renamingId.set(feed.id);
     this.renameValue.set(feed.custom_title ?? '');
   }
@@ -190,6 +201,10 @@ export class MyFeeds {
   /** Blank clears the custom title, same normalization as the backend
    * applies — see MeService.updateSubscription. */
   saveRename(feed: SubscribedFeed): void {
+    // The [disabled] bindings on the save/cancel buttons don't reach the
+    // input's own (keydown.enter) handler, which is how this got called
+    // twice for one edit in the first place.
+    if (this.renaming()) return;
     const requestedFor = this.auth.session()?.user?.id ?? null;
     const value = this.renameValue().trim() || null;
     this.renaming.set(true);

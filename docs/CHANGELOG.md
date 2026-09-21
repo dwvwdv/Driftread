@@ -1805,3 +1805,9 @@ TODO.md P2「資料夾與來源控制」的一項：訂閱清單裡的名稱一�
   `pytest`／`npm test`／production build 交給 CI 的 `backend.yml`／`frontend.yml` 驗證。
 - 對應文件更新：`TODO.md`（「支援每個來源的使用者自訂名稱」打勾並記錄實作位置）、
   `docs/FEATURES.md`（功能總覽、`/me/feeds` API 表新增 `PATCH` 列、`user_feeds` 資料表列）。
+- **PR review 後修正**（合併前）：自動 review 指出兩個 edge case——(1) 切換登入使用者時，
+  重新命名編輯器的 `renamingId`／`renameValue` 沒有跟著重置，若元件維持掛載且兩人剛好訂閱
+  同一個 feed，會讓後一位使用者的卡片一開就帶著前一位使用者尚未送出的自訂名稱；(2) 儲存中
+  只有畫面上的按鈕被 `[disabled]` 擋住，輸入框的 `Enter`／`startRename` 本身沒有守門，同一次
+  編輯可能被重複送出，較晚回來的回應可能把較新的編輯器狀態蓋掉。兩處都加上守門（`renaming()`
+  guard、使用者 id 變動時清空編輯狀態），並在 `my-feeds.spec.ts` 補上對應案例。

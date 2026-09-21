@@ -369,4 +369,51 @@ describe('MyFeeds stale-response handling', () => {
     page.cancelRename();
     expect(page.renamingId()).toBeNull();
   });
+
+  it('ignores a second save while the first is still in flight', () => {
+    const calls: Array<[string, string | null]> = [];
+    const pending = new Subject<void>();
+    const page = setup({
+      listSubscriptions: () => of([feed('a')]),
+      updateSubscription: (feedId, customTitle) => {
+        calls.push([feedId, customTitle]);
+        return pending.asObservable();
+      },
+    });
+
+    page.startRename(feed('a'));
+    page.renameValue.set('First');
+    page.saveRename(feed('a')); // starts the request; renaming() is now true
+
+    // A second Enter/click before the first resolves — e.g. the double-fire
+    // this guard exists for — must not fire another PATCH.
+    page.renameValue.set('Second');
+    page.saveRename(feed('a'));
+    // Nor should it be possible to jump to editing a different feed's title
+    // while this save is still pending.
+    page.startRename(feed('b'));
+
+    expect(calls).toEqual([['a', 'First']]);
+    expect(page.renamingId()).toBe('a');
+
+    pending.next(undefined);
+    pending.complete();
+
+    expect(page.feeds()).toEqual([{ ...feed('a'), custom_title: 'First' }]);
+    expect(page.renamingId()).toBeNull();
+  });
+
+  it('drops a leftover rename editor when the signed-in user changes', () => {
+    const page = setup({ listSubscriptions: () => of([feed('a')]) });
+
+    page.startRename(feed('a'));
+    page.renameValue.set('Unsaved for user-1');
+    expect(page.renamingId()).toBe('a');
+
+    session.set({ user: { id: 'user-2' } });
+    detect();
+
+    expect(page.renamingId()).toBeNull();
+    expect(page.renameValue()).toBe('');
+  });
 });
