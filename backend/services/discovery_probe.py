@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
@@ -38,8 +39,6 @@ from services import robots
 from services.crawl_policy import make_gate
 from services.discovery_candidates import record_candidates
 from services.discovery_config import (
-    chinese_seed_hosts,
-    chinese_seed_quota,
     host_delay_seconds,
     probe_batch_size,
     probe_concurrency,
@@ -53,7 +52,8 @@ from services.feed_discovery import (
     user_agent,
     validate_fetch_url,
 )
-from services.link_harvest import is_denied_host
+from services.link_harvest import is_denied_host, normalize_host
+from services.settings import load_discovery_profiles
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -78,40 +78,89 @@ class ProbeResult:
     exhausted: bool = False
 
 
-def select_due_targets(db: "Client", limit: int) -> list[dict]:
-    """Due pending targets, with bounded priority for explicit Chinese seeds.
+def _profile_hosts(profile) -> tuple[str, ...]:
+    """Only plain normalized DNS hostnames ever reach PostgREST set filters."""
+    hosts = set()
+    for url in profile.seed_urls:
+        host = normalize_host(url)
+        if host and re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", host):
+            hosts.add(host)
+    return tuple(sorted(hosts))
 
-    Matches discovery_targets_due_idx from migration 006. Ordering by
-    referring_feed_count before next_probe_at spends the remaining probe budget
-    on hosts vouched for by distinct feeds. Reserved seeds never exceed half of
-    the batch and never fabricate evidence; a one-slot batch uses normal order.
+
+def _normal_order(row: dict) -> tuple:
+    return (-(row.get("referring_feed_count") or 0), row.get("next_probe_at") or "", str(row["id"]))
+
+
+def select_due_targets(db: "Client", limit: int) -> list[dict]:
+    """Reserve at most half a batch across configurable discovery profiles.
+
+    Profile language/category describe desired sources; they never substitute
+    for a feed's detected facts. Reservation applies only to due pending seeds
+    at explicitly configured exact hosts. Other targets retain evidence order.
     """
     if limit <= 0:
         return []
     now = datetime.now(timezone.utc).isoformat()
-    quota = min(chinese_seed_quota(), limit // 2)
-    hosts = chinese_seed_hosts()
-    seeds = []
-    if quota and hosts:
-        seeds = list((db.table("discovery_targets").select("*")
-                      .eq("status", "pending").lte("next_probe_at", now)
-                      .eq("source", "seed").in_("host", list(hosts))
-                      .order("next_probe_at").order("host").order("url")
-                      .limit(quota).execute()).data or [])
-    result = (
-        db.table("discovery_targets")
-        .select("*")
-        .eq("status", "pending")
-        .lte("next_probe_at", now)
-        .order("referring_feed_count", desc=True)
-        .order("next_probe_at")
-        .limit(limit)
-        .execute()
-    )
-    seed_ids = {str(row["id"]) for row in seeds}
-    normal = [row for row in list(result.data or [])
-              if str(row["id"]) not in seed_ids]
-    return seeds + normal[:limit - len(seeds)]
+    profiles = load_discovery_profiles(db)
+    enabled_hosts: set[str] = set()
+    disabled_hosts: set[str] = set()
+    for profile in profiles:
+        hosts = _profile_hosts(profile)
+        (enabled_hosts if profile.enabled else disabled_hosts).update(hosts)
+    exclusive_disabled = sorted(disabled_hosts - enabled_hosts)
+    reserved_limit = limit // 2
+    queues = []
+    for profile in profiles:
+        hosts = _profile_hosts(profile)
+        quota = min(profile.quota, reserved_limit)
+        if not profile.enabled or not hosts or not quota:
+            continue
+        rows = list((db.table("discovery_targets").select("*")
+                     .eq("status", "pending").lte("next_probe_at", now)
+                     .eq("source", "seed").in_("host", list(hosts))
+                     .order("next_probe_at").order("host").order("url")
+                     .limit(quota + reserved_limit).execute()).data or [])
+        if rows:
+            queues.append((str(profile.id), rows, quota))
+    # Oldest head first, then one slot per profile per round. Small batch budgets
+    # progress through profiles as their oldest pending seeds are completed.
+    queues.sort(key=lambda item: (item[1][0].get("next_probe_at") or "", item[0]))
+    reserved: list[dict] = []
+    reserved_ids: set[str] = set()
+    while queues and len(reserved) < reserved_limit:
+        next_round = []
+        for profile_id, rows, quota in queues:
+            while rows and str(rows[0]["id"]) in reserved_ids:
+                rows.pop(0)
+            if rows and len(reserved) < reserved_limit:
+                row = rows.pop(0)
+                reserved.append(row)
+                reserved_ids.add(str(row["id"]))
+                quota -= 1
+            if rows and quota:
+                next_round.append((profile_id, rows, quota))
+        queues = next_round
+
+    def normal_query(*, source: str | None = None):
+        query = (db.table("discovery_targets").select("*")
+                 .eq("status", "pending").lte("next_probe_at", now))
+        if source == "seed":
+            query = query.eq("source", "seed").not_.in_("host", exclusive_disabled)
+        elif source == "organic":
+            query = query.neq("source", "seed")
+        if reserved_ids:
+            # IDs originate from this UUID-typed table, never user filter text.
+            query = query.not_.in_("id", sorted(reserved_ids))
+        return list(query.order("referring_feed_count", desc=True)
+                    .order("next_probe_at").limit(limit - len(reserved)).execute().data or [])
+
+    if exclusive_disabled:
+        normal = normal_query(source="organic") + normal_query(source="seed")
+        normal.sort(key=_normal_order)
+    else:
+        normal = normal_query()
+    return reserved + normal[:limit - len(reserved)]
 
 
 def next_probe_delay_hours(attempts: int) -> int:
@@ -253,7 +302,7 @@ async def probe_due(
     limit = limit or probe_batch_size()
     max_concurrency = max_concurrency or probe_concurrency()
 
-    targets = select_due_targets(db, limit)
+    targets = await asyncio.to_thread(select_due_targets, db, limit)
     if not targets:
         return []
 

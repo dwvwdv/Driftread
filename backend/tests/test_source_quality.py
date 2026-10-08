@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 from services.discovery_candidates import auto_promote_due, promote_candidate, record_candidates
-from services.discovery_config import chinese_seed_hosts, chinese_seed_quota
 from services.discovery_probe import select_due_targets
 from services.source_identity import feed_url_aliases, is_comment_feed
 from tests.discovery_fakes import FakeDB
@@ -76,33 +75,35 @@ def _target(id, host="ordinary.org", source="article_link", count=10, **extra):
             "status": "pending", "next_probe_at": "2020-01-01T00:00:00+00:00", **extra}
 
 
-def test_chinese_seeds_get_bounded_slots_without_faking_referrers(monkeypatch):
-    monkeypatch.setenv("FEED_DISCOVERY_CHINESE_SEED_HOSTS", "pansci.asia")
-    monkeypatch.setenv("FEED_DISCOVERY_CHINESE_SEED_QUOTA", "99")
+def _settings(enabled=True, quota=99):
+    return [{"key": "discovery.profiles", "version": 1,
+             "value": {"profiles": [{"id": "science", "name": "Science", "language": "zh",
+                                     "category": "science", "enabled": enabled, "quota": quota,
+                                     "seed_urls": ["https://pansci.asia/"]}]}}]
+
+
+def test_chinese_seeds_get_bounded_slots_without_faking_referrers():
     normal = [_target(f"normal{i}") for i in range(5)]
     seeds = [_target(f"seed{i}", "pansci.asia", "seed", 0) for i in range(5)]
-    db = FakeDB(discovery_targets=normal + seeds)
+    db = FakeDB(discovery_targets=normal + seeds, app_settings=_settings())
     result = select_due_targets(db, 4)
     assert [row["id"] for row in result] == ["seed0", "seed1", "normal0", "normal1"]
     assert all(row["referring_feed_count"] == 0 for row in result[:2])
     assert not db.updates
 
 
-def test_priority_never_revives_terminal_or_future_seeds(monkeypatch):
-    monkeypatch.setenv("FEED_DISCOVERY_CHINESE_SEED_HOSTS", "pansci.asia")
+def test_priority_never_revives_terminal_or_future_seeds():
     db = FakeDB(discovery_targets=[
         _target("normal"),
         _target("rejected", "pansci.asia", "seed", 0, status="rejected"),
         _target("future", "pansci.asia", "seed", 0,
                 next_probe_at="2099-01-01T00:00:00+00:00"),
-    ])
+    ], app_settings=_settings())
     assert [row["id"] for row in select_due_targets(db, 4)] == ["normal"]
 
 
-def test_config_can_disable_priority_and_rejects_filter_syntax(monkeypatch):
-    monkeypatch.setenv("FEED_DISCOVERY_CHINESE_SEED_QUOTA", "0")
-    assert chinese_seed_quota() == 0
-    monkeypatch.setenv("FEED_DISCOVERY_CHINESE_SEED_HOSTS", "INSIDE.com.tw,bad(host),https://a.org")
-    assert chinese_seed_hosts() == ("inside.com.tw",)
-    monkeypatch.setenv("FEED_DISCOVERY_CHINESE_SEED_HOSTS", "")
-    assert chinese_seed_hosts() == ()
+def test_profile_quota_zero_keeps_normal_probe_order():
+    db = FakeDB(discovery_targets=[_target("normal"),
+                                   _target("seed", "pansci.asia", "seed", 0)],
+                app_settings=_settings(quota=0))
+    assert [row["id"] for row in select_due_targets(db, 1)] == ["normal"]

@@ -17,6 +17,7 @@ from routers import (
     admin_discovery,
     admin_operations,
     admin_retention,
+    admin_settings,
     articles,
     discover,
     feeds,
@@ -197,6 +198,7 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(admin_discovery.router, prefix="/api")
 app.include_router(admin_operations.router, prefix="/api")
 app.include_router(admin_retention.router, prefix="/api")
+app.include_router(admin_settings.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
 app.include_router(opml.router, prefix="/api")
 app.include_router(discover.router, prefix="/api")

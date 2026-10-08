@@ -34,7 +34,7 @@ frontier 預算在同一個共享索引內扣除。現有 Compose 使用單一 w
 
 兩個端點皆使用 `X-API-Key`；檔案不會在啟動時自動匯入。來源匯入以 URL upsert，相同 URL 會更新提供的中繼資料，不另建 feed。
 
-`FEED_DISCOVERY_CHINESE_SEED_QUOTA=4` 在每輪探測中保留最多 4 個「已到期、pending、來源為 seed、host 在設定清單內」的名額，上限是該輪預算的一半，其餘名額維持原排序；設 0 可停用保留。`FEED_DISCOVERY_CHINESE_SEED_HOSTS` 可調整 host 清單。這是中文種子優先權，不是文章語言強制過濾或分類流量配額。各類內容均衡仍應依管理介面的 category／language 與實際文章供給調整種子。
+探測方向現由後台「全域設定」管理，支援多組語言、分類、網站與名額。原先兩個中文 seed 環境變數已移除；共用設定表、版本處理與名額規則見 [GLOBAL_SETTINGS.md](GLOBAL_SETTINGS.md)。
 
 候選會排除明確的留言 RSS，並合併慣用 `/feed`、`/rss`、`/atom` 尾端斜線別名；不會把同一 host 的所有 feed 合成一個。hold／reject 也會約束別名，保留審核決策。
 

@@ -37,6 +37,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 逐 PR 變更紀錄（#1–#24）與架構演進 |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | 安全加固紀錄（#14–#24）與改動時的注意事項 |
 | [`docs/CRAWLER_OPERATIONS.md`](docs/CRAWLER_OPERATIONS.md) | 增量抽取、中文種子、資料量監控與正文保存操作 |
+| [`docs/GLOBAL_SETTINGS.md`](docs/GLOBAL_SETTINGS.md) | 共用設定表、語言／分類探測方向與版本管理 |
 | [`extension/README.md`](extension/README.md) | 瀏覽器擴充安裝與設定 |
 | [`CLAUDE.md`](CLAUDE.md) | 專案上下文與開發規則 |
 

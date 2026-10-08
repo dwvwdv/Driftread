@@ -47,6 +47,7 @@ export class AdminLayout {
     { path: 'candidates', label: '候選審核', icon: 'check' },
     { path: 'feeds', label: '信息源管理', icon: 'archive' },
     { path: 'frontier', label: '探測與目錄', icon: 'search' },
+    { path: 'settings', label: '全域設定', icon: 'search' },
     { path: 'import', label: '匯入', icon: 'upload' },
   ];
 

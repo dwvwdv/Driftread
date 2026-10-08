@@ -335,6 +335,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
 | POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
 | GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20 |
+| GET | `/admin/settings` | 共用全域設定與版本，目前包含語言／分類探測方向 |
+| PUT | `/admin/settings/{key}` | 型別驗證與版本比對的設定儲存，衝突回 409 |
 | GET | `/admin/retention/stats` | 文章分類計數、表／索引／資料庫 bytes 快照 |
 | POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
 | GET | `/admin/discovery/stats` | 各狀態的計數 |

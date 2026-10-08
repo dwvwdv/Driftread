@@ -384,3 +384,29 @@ export interface ArticleStorageStats {
   total_bytes: number;
   database_bytes: number;
 }
+
+
+export interface DiscoveryProfile {
+  id: string;
+  name: string;
+  language: string;
+  category: string | null;
+  enabled: boolean;
+  quota: number;
+  seed_urls: string[];
+}
+
+export interface DiscoveryProfilesValue {
+  profiles: DiscoveryProfile[];
+}
+
+export interface GlobalSetting<T = unknown> {
+  key: string;
+  value: T;
+  version: number;
+  updated_at: string | null;
+}
+
+export interface GlobalSettingsResponse {
+  settings: GlobalSetting[];
+}

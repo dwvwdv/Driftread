@@ -49,8 +49,6 @@ OPTIONAL_DISCOVERY_DEFAULTS = {
     "FEED_DISCOVERY_RESPECT_ROBOTS": "true",
     "FEED_DISCOVERY_MAX_FRONTIER_SIZE": "50000",
     "FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS": "0",
-    "FEED_DISCOVERY_CHINESE_SEED_QUOTA": "4",
-    "FEED_DISCOVERY_CHINESE_SEED_HOSTS": "technews.tw,inside.com.tw,pansci.asia,twreporter.org,openbook.org.tw,e-info.org.tw,storystudio.tw,managertoday.com.tw,icook.tw",
 }
 
 # Read by backend/worker.py. Optional, with a code-level default.
