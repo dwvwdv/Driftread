@@ -894,6 +894,7 @@ Review 修復：匯入保留累計文章數、空待抽取佇列跳過 HostIndex
   檔頭原本的「尚未合併：#63／#64」已隨 PR #65 合併，改列為階段三十七並移到依時間排序的位置。
 - **新增 `scripts/check_docs.py` 與 `.github/workflows/docs.yml`**：`CLAUDE.md` 只能是 `@AGENTS.md`、`AGENTS.md` 不超過 30 KiB
   （Codex 預設只讀前 32 KiB）、所有 Markdown 的相對連結都存在、`AGENTS.md` 以反引號提到的路徑都存在。
+  workflow 不設路徑篩選（Codex review：只改名或刪除被引用的程式檔、沒動到 `.md` 的 PR 也會讓連結失效），每次 PR／push 都跑。
 - README 的文件表、CI 表（補上 `supabase/**` 觸發、`npm test`、docs workflow、sha tag）與開發規則改為指向 `AGENTS.md`；
   `SECURITY.md`、`RUNBOOK.md` 引用 `CLAUDE.md` 的地方改指 `AGENTS.md` 的「環境變數維護」。
 

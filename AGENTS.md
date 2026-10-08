@@ -118,7 +118,7 @@ python3 scripts/check_docs.py
 |----------|----------|------|
 | `.github/workflows/backend.yml` | `backend/**`、`supabase/**` | pytest（含 PostgreSQL 17 service）→ `driftread-api` image |
 | `.github/workflows/frontend.yml` | `frontend/**` | `npm test` + `npm run build` → `driftread-frontend` image |
-| `.github/workflows/docs.yml` | `**/*.md`、`scripts/check_docs.py` | `scripts/check_docs.py` |
+| `.github/workflows/docs.yml` | 每次 PR／push（不設路徑篩選，改名或刪檔也可能讓文件連結失效） | `scripts/check_docs.py` |
 
 必要的 GitHub Secrets 只有自動提供的 `GITHUB_TOKEN`（推送 image 至 GHCR）。
 

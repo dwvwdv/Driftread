@@ -212,7 +212,7 @@ npm start                                      # http://localhost:4200
 |----------|----------|------|
 | `.github/workflows/backend.yml` | `backend/**`、`supabase/**` | pytest（含 PostgreSQL service）→ build & push `ghcr.io/dwvwdv/driftread-api` |
 | `.github/workflows/frontend.yml` | `frontend/**` | `npm ci` + `npm test` + `npm run build` → build & push `ghcr.io/dwvwdv/driftread-frontend` |
-| `.github/workflows/docs.yml` | `**/*.md`、`scripts/check_docs.py` | 文件一致性檢查（`scripts/check_docs.py`） |
+| `.github/workflows/docs.yml` | 每次 PR／push | 文件一致性檢查（`scripts/check_docs.py`） |
 
 Pull request 會跑測試 / build，但不推 image；推送時每個 image 同時打 `:latest` 與 `:sha-<commit>` 兩個 tag。
 

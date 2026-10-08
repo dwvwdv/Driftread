@@ -1,18 +1,12 @@
 name: Docs
 
+# 不設 paths 篩選：只改名或刪除被文件引用的程式檔、未動到任何 .md 的 PR，
+# 同樣可能讓文件裡的連結或路徑失效。檢查只需幾秒，每次都跑。
 on:
   push:
     branches: [main, master]
-    paths:
-      - '**/*.md'
-      - 'scripts/check_docs.py'
-      - '.github/workflows/docs.yml'
   pull_request:
     branches: [main, master]
-    paths:
-      - '**/*.md'
-      - 'scripts/check_docs.py'
-      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 jobs:
