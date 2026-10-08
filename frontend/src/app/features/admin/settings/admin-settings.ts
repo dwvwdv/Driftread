@@ -194,8 +194,7 @@ export class AdminSettings implements OnInit {
       this.toast.warning('請先將表單變更加入清單，或取消編輯');
       return;
     }
-    if (!this.dirty() || this.saving() || this.loading() || this.loadFailed() || this.conflict())
-      return;
+    if (this.saving() || this.loading() || this.loadFailed() || this.conflict()) return;
     this.saving.set(true);
     this.admin
       .saveGlobalSetting(PROFILE_KEY, { profiles: this.profiles() }, this.version)

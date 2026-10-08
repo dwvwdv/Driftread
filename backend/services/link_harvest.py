@@ -617,13 +617,13 @@ async def harvest_one(
     blogroll_fetched = False
     error: str | None = None
     pending = PendingHarvest()
+    blogroll_new_hosts = 0
+    remaining_blogroll_hosts = 0
 
     def _absorb(pairs: list[tuple[str, str]]) -> None:
-        nonlocal anchors_seen
+        nonlocal anchors_seen, blogroll_new_hosts
         for host, absolute in pairs:
             anchors_seen += 1
-            if len(host_urls) >= max_hosts:
-                return
             if host in self_hosts or host in index.feed_hosts:
                 continue
             if is_denied_host(host):
@@ -635,6 +635,10 @@ async def harvest_one(
             # host but addressed by the link's own origin — see origin_of().
             origin = origin_of(absolute)
             if origin:
+                if host not in index.target_hosts:
+                    if blogroll_new_hosts >= remaining_blogroll_hosts:
+                        continue
+                    blogroll_new_hosts += 1
                 host_urls[host] = origin
 
     try:
@@ -644,8 +648,19 @@ async def harvest_one(
         articles_scanned = pending.scanned
         anchors_seen = pending.anchors
         created, referrers = pending.created, pending.referrers
+        # The per-feed-cycle admission budget covers both article and homepage
+        # discoveries. Referrers for existing targets do not consume new slots.
+        remaining_blogroll_hosts = max(0, max_hosts - pending.created)
 
         if blogroll_enabled() and feed.get("website_url"):
+            claimed = await asyncio.to_thread(
+                lambda: db.rpc("claim_blogroll_attempt", {
+                    "p_feed_id": feed_id, "p_interval_hours": harvest_interval_hours(),
+                }).execute().data
+            )
+        else:
+            claimed = False
+        if claimed:
             try:
                 html = await _fetch_blogroll(feed["website_url"], allow_url)
                 blogroll_fetched = True

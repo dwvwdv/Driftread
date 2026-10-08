@@ -1,7 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
-import { DiscoveryProfile, DiscoveryProfilesValue } from '../../../models';
+import { Subject, of, throwError } from 'rxjs';
+import { DiscoveryProfile, DiscoveryProfilesValue, GlobalSetting } from '../../../models';
 import { AdminService } from '../../../services/admin';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
@@ -70,6 +70,75 @@ function setup(overrides: Record<string, unknown> = {}) {
 }
 
 describe('AdminSettings', () => {
+  it('allows explicitly applying unchanged defaults without writes during page load', () => {
+    const { fixture, component, writes } = setup();
+    expect(component.dirty()).toBe(false);
+    expect(writes).toHaveLength(0);
+    const button = fixture.nativeElement.querySelector('.save-bar button') as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toContain('套用目前設定');
+    button.click();
+    expect(writes).toEqual([
+      { key: 'discovery.profiles', value: { profiles: [profile] }, version: 3 },
+    ]);
+    expect(component.dirty()).toBe(false);
+  });
+
+  it('blocks duplicate pending saves and uses the returned version for the next explicit apply', () => {
+    const responses: Subject<GlobalSetting<DiscoveryProfilesValue>>[] = [];
+    const versions: number[] = [];
+    const { component, fixture } = setup({
+      saveGlobalSetting: (_key: string, _value: DiscoveryProfilesValue, version: number) => {
+        versions.push(version);
+        const response = new Subject<GlobalSetting<DiscoveryProfilesValue>>();
+        responses.push(response);
+        return response;
+      },
+    });
+    component.saveSettings();
+    component.saveSettings();
+    fixture.detectChanges();
+    expect(versions).toEqual([3]);
+    expect(
+      (fixture.nativeElement.querySelector('.save-bar button') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    responses[0].next({
+      key: 'discovery.profiles',
+      value: { profiles: [profile] },
+      version: 4,
+      updated_at: null,
+    });
+    responses[0].complete();
+    component.saveSettings();
+    expect(versions).toEqual([3, 4]);
+    responses[1].next({
+      key: 'discovery.profiles',
+      value: { profiles: [profile] },
+      version: 5,
+      updated_at: null,
+    });
+    expect(component.saving()).toBe(false);
+  });
+
+  it('blocks applying unchanged settings again after a version conflict', () => {
+    let attempts = 0;
+    const { component, fixture } = setup({
+      saveGlobalSetting: () => {
+        attempts++;
+        return throwError(() => new HttpErrorResponse({ status: 409 }));
+      },
+    });
+    component.saveSettings();
+    component.saveSettings();
+    fixture.detectChanges();
+    expect(attempts).toBe(1);
+    expect(component.profiles()).toEqual([profile]);
+    expect(component.conflict()).toBe(true);
+    expect(
+      (fixture.nativeElement.querySelector('.save-bar button') as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
   it('edits a profile and saves the complete setting with its loaded version', () => {
     const { component, writes } = setup();
     component.edit(component.profiles()[0]);

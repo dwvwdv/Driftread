@@ -1,7 +1,7 @@
 <ob-page-header kicker="SETTINGS" heading="全域設定" subtitle="管理整個服務共用的設定" />
 <h2 class="section-heading">探測方向</h2>
 <p class="hint">
-  以起始網站引導探索指定語言與類別，讓新來源更均衡；語言與類別作為方向設定，仍需審核來源內容。清單變更須按「儲存全域設定」才會生效。
+  以起始網站引導探索指定語言與類別，讓新來源更均衡；語言與類別作為方向設定，仍需審核來源內容。清單變更須按「儲存全域設定」才會生效。首次使用可直接按「套用目前設定」，將啟用方向的起始網站加入待探測佇列。
 </p>
 @if (conflict()) {
   <p class="conflict" role="alert">
@@ -12,10 +12,10 @@
   <button
     type="button"
     class="ob-btn ob-btn--primary ob-btn--sm"
-    [disabled]="!dirty() || saving() || loading() || loadFailed() || conflict()"
+    [disabled]="saving() || loading() || loadFailed() || conflict()"
     (click)="saveSettings()"
   >
-    {{ saving() ? '儲存中…' : '儲存全域設定' }}
+    {{ saving() ? '儲存中…' : dirty() ? '儲存全域設定' : '套用目前設定' }}
   </button>
   <span class="hint">{{ dirty() ? '有尚未儲存的變更' : '目前沒有待儲存的變更' }}</span>
 </div>

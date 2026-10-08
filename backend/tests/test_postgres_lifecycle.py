@@ -227,3 +227,51 @@ def test_private_rpc_and_owner_rls(pg_database):
         with pytest.raises(psycopg2.errors.InsufficientPrivilege):
             with caller.cursor() as cur:
                 cur.execute("INSERT INTO driftread.user_bookmarks VALUES(%s,%s,'read_later',now())", (owner, article))
+
+
+def test_blogroll_attempt_gate_interval_and_service_only_permissions(pg_database):
+    feed_id = str(uuid4())
+    with connection(pg_database) as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO driftread.feeds(id,title,url) VALUES(%s,'blogroll gate',%s)",
+                        (feed_id, f"https://blogroll-{feed_id}.invalid/rss"))
+        conn.commit()
+    with connection(pg_database, "service_role") as conn:
+        assert scalar(conn, "SELECT driftread.claim_blogroll_attempt(%s,24)", (feed_id,)) is True
+        conn.commit()  # Attempt survives a subsequent failed fetch/crashed worker.
+        assert scalar(conn, "SELECT last_blogroll_attempt_at IS NOT NULL FROM driftread.feeds WHERE id=%s",
+                      (feed_id,)) is True
+        assert scalar(conn, "SELECT driftread.claim_blogroll_attempt(%s,24)", (feed_id,)) is False
+        with conn.cursor() as cur:
+            cur.execute("UPDATE driftread.feeds SET last_blogroll_attempt_at=now()-interval '23 hours' WHERE id=%s",
+                        (feed_id,))
+        assert scalar(conn, "SELECT driftread.claim_blogroll_attempt(%s,24)", (feed_id,)) is False
+        with conn.cursor() as cur:
+            cur.execute("UPDATE driftread.feeds SET last_blogroll_attempt_at=now()-interval '25 hours' WHERE id=%s",
+                        (feed_id,))
+        assert scalar(conn, "SELECT driftread.claim_blogroll_attempt(%s,24)", (feed_id,)) is True
+        conn.commit()
+    for role in ("anon", "authenticated"):
+        with connection(pg_database, role) as conn:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                scalar(conn, "SELECT driftread.claim_blogroll_attempt(%s,24)", (feed_id,))
+
+
+def test_blogroll_attempt_gate_only_one_connection_claims(pg_database):
+    from threading import Barrier
+    feed_id = str(uuid4())
+    with connection(pg_database) as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO driftread.feeds(id,title,url) VALUES(%s,'concurrent blogroll gate',%s)",
+                        (feed_id, f"https://blogroll-{feed_id}.invalid/rss"))
+        conn.commit()
+    ready = Barrier(2)
+    def claim():
+        with connection(pg_database, "service_role") as conn:
+            ready.wait(timeout=3)
+            claimed = scalar(conn, "SELECT driftread.claim_blogroll_attempt(%s,24)", (feed_id,))
+            conn.commit()
+            return claimed
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: claim(), range(2)))
+    assert sorted(outcomes) == [False, True]

@@ -107,7 +107,7 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 | 來源 | 網路請求 | 開關 |
 |------|----------|------|
 | 既有 feed 的文章外連（讀 `articles.content`）| **零**（refresh worker 早就抓好快取了）| 隨主開關 |
-| 既有 feed 的網站首頁（blogroll / 友情連結）| 每個 feed 一次 | `FEED_DISCOVERY_BLOGROLL_ENABLED`（預設關）|
+| 既有 feed 的網站首頁（blogroll / 友情連結）| 每個 feed 每個收割間隔最多嘗試一次，失敗亦計入 | `FEED_DISCOVERY_BLOGROLL_ENABLED`（預設關）|
 | `discovery_sources` 的目錄頁 | 每個來源一次 | `FEED_DISCOVERY_DIRECTORY_ENABLED`（預設關）|
 
 文章外連挖掘是免費的，也是這個迴圈會自我複利的原因：源越多 → 文章越多 → 外連越多
@@ -584,8 +584,8 @@ DELETE FROM discovery_targets
 | 發現週期間隔 | 900 秒（`FEED_DISCOVERY_TICK_SECONDS`）| `discovery_config.py::tick_seconds()` |
 | 單輪收割 feed 數 | 10（`..._HARVEST_BATCH_SIZE`）| `discovery_config.py` |
 | 每個 feed 掃描文章數 | 20（`..._HARVEST_ARTICLES`）| `discovery_config.py` |
-| 同一 feed 再收割間隔 | 168 小時（`..._HARVEST_INTERVAL_HOURS`）| `discovery_config.py` |
-| 單一 feed 每輪貢獻網域上限 | 200（`..._HARVEST_MAX_LINKS_PER_FEED`）| `discovery_config.py` |
+| 同一 feed 再收割間隔 | 168 小時（`..._HARVEST_INTERVAL_HOURS`）；文章 backlog 可於下個 tick 補抽取，首頁嘗試另行限頻 | `discovery_config.py` |
+| 單一 feed 每輪貢獻新網域上限 | 200（`..._HARVEST_MAX_LINKS_PER_FEED`），文章與首頁共用；已存在目標的 referrer 不占新增名額 | `discovery_config.py` |
 | 單篇文件解析的 anchor 上限 | 500 | `services/link_harvest.py::MAX_ANCHORS_PER_DOC` |
 | 單篇文章實際解析的 HTML | 512 KiB | `services/link_harvest.py::MAX_HARVEST_HTML_BYTES` |
 | blogroll / 目錄階段 | **各自預設關**（`..._BLOGROLL_ENABLED` / `..._DIRECTORY_ENABLED`）| `discovery_config.py` |

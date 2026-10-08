@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -26,6 +26,21 @@ from tests.discovery_fakes import FakeDB as BaseFakeDB, FakeResult
 
 class FakeDB(BaseFakeDB):
     def rpc(self, name, params):
+        if name == "claim_blogroll_attempt":
+            self.ops.append(("feeds", "claim_blogroll_attempt", (params,)))
+            class Claim:
+                def execute(inner):
+                    now = datetime.now(timezone.utc)
+                    for row in self.rows("feeds"):
+                        if row["id"] != params["p_feed_id"]:
+                            continue
+                        last = row.get("last_blogroll_attempt_at")
+                        if last and datetime.fromisoformat(last) > now - timedelta(hours=params["p_interval_hours"]):
+                            return FakeResult(False)
+                        row["last_blogroll_attempt_at"] = now.isoformat()
+                        return FakeResult(True)
+                    return FakeResult(False)
+            return Claim()
         if name == "initialize_article_source_hash":
             self.ops.append(("articles", "initialize_article_source_hash", (params,)))
             class Initialize:
@@ -883,3 +898,94 @@ def test_prefetched_pending_rows_do_not_repeat_the_queue_rpc():
         )
     assert result.scanned == 1
     assert article["discovery_extracted_at"]
+
+
+@pytest.mark.asyncio
+async def test_article_and_blogroll_share_new_host_budget_but_keep_known_referrers(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_BLOGROLL_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_HARVEST_MAX_LINKS_PER_FEED", "2")
+    db = _db_with_articles(
+        '<a href="https://article-one.example.org">one</a>'
+        '<a href="https://article-two.example.org">two</a>',
+        targets=[{"id": "known-target", "host": "known.example.org", "status": "pending",
+                  "url": "https://known.example.org/"}],
+    )
+    html = ('<a href="https://extra-one.example.org">extra</a>'
+            '<a href="https://known.example.org">known</a>'
+            '<a href="https://extra-two.example.org">extra</a>')
+    with patch("services.link_harvest._fetch_blogroll", return_value=html):
+        result = await harvest_one(db, db.rows("feeds")[0], build_host_index(db))
+    assert result.targets_created == 2
+    assert {row["host"] for row in db.rows("discovery_targets")} == {
+        "article-one.example.org", "article-two.example.org", "known.example.org"}
+    assert {row["target_id"] for row in db.rows("discovery_target_referrers")} == {
+        row["id"] for row in db.rows("discovery_targets")}
+
+
+@pytest.mark.asyncio
+async def test_blogroll_uses_only_article_budget_remainder(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_BLOGROLL_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_HARVEST_MAX_LINKS_PER_FEED", "3")
+    db = _db_with_articles('<a href="https://article.example.org">article</a>')
+    html = ''.join(f'<a href="https://blogroll{i}.example.org">x</a>' for i in range(5))
+    with patch("services.link_harvest._fetch_blogroll", return_value=html):
+        result = await harvest_one(db, db.rows("feeds")[0], HostIndex(frozenset(), {}))
+    assert result.targets_created == 3
+    assert len(db.rows("discovery_targets")) == 3
+
+
+@pytest.mark.asyncio
+async def test_backlog_ticks_do_not_refetch_homepage(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_BLOGROLL_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_HARVEST_ARTICLES", "1")
+    db = _db_with_articles("<p>one</p>", "<p>two</p>", "<p>three</p>")
+    feed = db.rows("feeds")[0]
+    index = HostIndex(frozenset(), {})
+    with patch("services.link_harvest._fetch_blogroll", return_value="<p>homepage</p>") as fetch:
+        for _ in range(3):
+            result = await harvest_one(db, feed, index)
+            assert result.error is None
+    assert fetch.await_count == 1
+    assert feed["last_blogroll_attempt_at"]
+    assert all(row.get("discovery_extracted_at") for row in db.rows("articles"))
+
+
+@pytest.mark.asyncio
+async def test_failed_homepage_attempt_is_persisted_before_network_and_throttled(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_BLOGROLL_ENABLED", "true")
+    db = _db_with_articles("<p>no links</p>")
+    feed = db.rows("feeds")[0]
+    async def fail_fetch(*args):
+        assert feed["last_blogroll_attempt_at"]
+        raise httpx.ConnectError("homepage offline")
+    with patch("services.link_harvest._fetch_blogroll", side_effect=fail_fetch) as fetch:
+        first = await harvest_one(db, feed, HostIndex(frozenset(), {}))
+        second = await harvest_one(db, feed, HostIndex(frozenset(), {}))
+    assert first.error is None and second.error is None
+    assert not first.blogroll_fetched and not second.blogroll_fetched
+    assert fetch.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_blogroll_cadence_uses_harvest_interval_independent_of_backlog(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_BLOGROLL_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_HARVEST_INTERVAL_HOURS", "24")
+    db = _db_with_articles("<p>no links</p>")
+    feed = db.rows("feeds")[0]
+    feed["last_blogroll_attempt_at"] = (datetime.now(timezone.utc) - timedelta(hours=23)).isoformat()
+    with patch("services.link_harvest._fetch_blogroll", return_value="") as fetch:
+        assert not (await harvest_one(db, feed, EMPTY_INDEX)).blogroll_fetched
+        fetch.assert_not_awaited()
+        feed["last_blogroll_attempt_at"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        assert (await harvest_one(db, feed, EMPTY_INDEX)).blogroll_fetched
+        assert fetch.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_blogroll_does_not_claim_or_write_attempt_timestamp(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_BLOGROLL_ENABLED", "false")
+    db = _db_with_articles("<p>no links</p>")
+    with patch("services.link_harvest._fetch_blogroll", side_effect=AssertionError("network")):
+        await harvest_one(db, db.rows("feeds")[0], EMPTY_INDEX)
+    assert not db.rows("feeds")[0].get("last_blogroll_attempt_at")
+    assert "claim_blogroll_attempt" not in db.op_names("feeds")

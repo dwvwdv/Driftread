@@ -1,6 +1,31 @@
 -- Isolated database only, after global settings migration. Rolls back fixtures.
 BEGIN;
 DO $$
+DECLARE initial_value jsonb; initial_seeds jsonb; saved jsonb;
+BEGIN
+ SELECT value INTO initial_value FROM driftread.app_settings WHERE key='discovery.profiles';
+ SELECT jsonb_agg(jsonb_build_object('url', seed_url, 'host',
+        regexp_replace(split_part(seed_url, '/', 3), '^www\.', '')))
+ INTO initial_seeds
+ FROM jsonb_array_elements(initial_value->'profiles') AS profile,
+      jsonb_array_elements_text(profile->'seed_urls') AS seed_url
+ WHERE (profile->>'enabled')::boolean;
+ saved := driftread.save_app_setting('discovery.profiles', initial_value, 1, initial_seeds);
+ IF (saved->>'version')::bigint <> 2 OR saved->'value' <> initial_value THEN
+  RAISE EXCEPTION 'explicit default apply did not preserve settings';
+ END IF;
+ IF (SELECT count(*) FROM driftread.discovery_targets WHERE source='seed' AND status='pending') <> 9 THEN
+  RAISE EXCEPTION 'unchanged defaults did not enqueue all nine seeds';
+ END IF;
+ saved := driftread.save_app_setting('discovery.profiles', initial_value, 2, initial_seeds);
+ IF (saved->>'version')::bigint <> 3 OR (SELECT count(*) FROM driftread.discovery_targets) <> 9 THEN
+  RAISE EXCEPTION 'reapplying defaults duplicated seeds or lost the version check';
+ END IF;
+END $$;
+ROLLBACK;
+
+BEGIN;
+DO $$
 DECLARE result jsonb; original_version bigint;
 BEGIN
  SELECT version INTO original_version FROM driftread.app_settings WHERE key='discovery.profiles';

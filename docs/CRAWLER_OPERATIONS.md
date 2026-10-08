@@ -4,7 +4,7 @@
 
 ## 部署順序
 
-本版新增 `backend/migrations/20261008031540_crawler_lifecycle.sql`。由現有 migration runner 在 API 啟動時套用，worker 必須等 API healthy。升級前先備份資料庫，停止舊 worker，再更新 API 與 worker；不要混跑舊版文章寫入程式。新的寫入 RPC 是必要依賴，缺少 migration 時不會退回不安全的普通 upsert。
+本版新增 `backend/migrations/20261008031540_crawler_lifecycle.sql`、`20261008034852_global_settings.sql` 與 `20261008120957_blogroll_attempt_gate.sql`。由現有 migration runner 在 API 啟動時套用，worker 必須等 API healthy。升級前先備份資料庫，停止舊 worker，再更新 API 與 worker；不要混跑舊版文章寫入程式。新的寫入 RPC 是必要依賴，缺少 migration 時不會退回不安全的普通 upsert。
 
 ```bash
 docker compose stop worker api
@@ -24,6 +24,8 @@ docker compose up -d worker frontend
 單篇解析仍有 **512 KiB UTF-8 與 500 個 anchor** 上限。超限文件可保存已看到的線索，但不宣告完整抽取，也不允許縮減正文；延後 24 小時重試，讓其他文章繼續前進。這些文件需要後續更完整的分段抽取，並非已完成覆蓋。
 
 frontier 預算在同一個共享索引內扣除。現有 Compose 使用單一 worker；多個並行 worker 或手動觸發使用不同索引時，總容量仍是軟上限。
+
+單次 feed 採集的文章與首頁共用新增 host 名額，既有目標的 referrer 不占新增名額。文章 backlog 可以在下一個 tick 繼續處理；首頁另以 `last_blogroll_attempt_at` 與原有 `FEED_DISCOVERY_HARVEST_INTERVAL_HOURS` 限頻。資料庫原子認領在發出網路請求前記錄嘗試，失敗亦等待完整間隔，並避免並行採集重複抓首頁。首頁採集仍預設關閉。
 
 ## 中文內容
 

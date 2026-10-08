@@ -29,6 +29,6 @@
 
 ## 升級
 
-`20261008034852_global_settings.sql` 建立表與初始設定，不在 migration 中自動入列種子。第一次儲存後才新增缺少的啟用網站。既有啟用 discovery 的部署仍受主開關約束，設定不會覆蓋 `FEED_DISCOVERY_ENABLED`。
+`20261008034852_global_settings.sql` 建立表與初始設定，不在 migration 中自動入列種子。第一次使用時可直接按「套用目前設定」，不必先修改預設方向，即可新增缺少的啟用網站；讀取頁面不會自行寫入。重複套用沿用版本檢查，保留既有目標狀態。既有啟用 discovery 的部署仍受主開關約束，設定不會覆蓋 `FEED_DISCOVERY_ENABLED`。
 
 原先的 `FEED_DISCOVERY_CHINESE_SEED_QUOTA` 與 `FEED_DISCOVERY_CHINESE_SEED_HOSTS` 已移除；若有自訂清單，升級前記錄並在後台建立相應探測方向。其他部署環境變數維持既有管理方式。API migration 必須先完成，worker 才能啟動。
