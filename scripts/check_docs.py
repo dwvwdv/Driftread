@@ -4,7 +4,7 @@
 規則的來由見 AGENTS.md 的「文件維護」：
 - CLAUDE.md 只能是 `@AGENTS.md`（AGENTS.md 是唯一的規範來源）
 - AGENTS.md 不得超過 30 KiB（Codex 預設只讀前 32 KiB）
-- 所有 Markdown 文件的相對連結與圖片都必須指向存在的檔案或目錄
+- 所有 Markdown 文件的相對連結與圖片（含內嵌 HTML 的 href／src）都必須指向 repo 內存在的檔案或目錄
 - AGENTS.md 以反引號提到的路徑都必須存在
 
 Markdown 一律交給 CommonMark 解析器（markdown-it-py）處理，不自己用 regex 判斷：
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -36,6 +37,7 @@ PATH_ROOTS = [
 ]
 PATH_SUFFIXES = (".py", ".ts", ".scss", ".html", ".sql", ".md", ".json", ".yml", ".yaml", ".toml", ".js", ".sh")
 SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
+DOTFILE_RE = re.compile(r"^\.[\w-]+\.[\w.-]+$")
 
 MD = MarkdownIt("commonmark").enable("table")
 
@@ -58,6 +60,27 @@ def inline_tokens(path: Path) -> list[Token]:
     return tokens
 
 
+def block_tokens(path: Path) -> list[Token]:
+    return MD.parse(path.read_text(encoding="utf-8"))
+
+
+class _HtmlTargets(HTMLParser):
+    """收集內嵌 HTML（`<a href>`、`<img src>` 等）裡的連結目標。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.targets: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.targets += [value for name, value in attrs if name in ("href", "src") and value]
+
+
+def html_targets(html: str) -> list[str]:
+    parser = _HtmlTargets()
+    parser.feed(html)
+    return parser.targets
+
+
 def check_claude_md() -> list[str]:
     content = (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip()
     if content != "@AGENTS.md":
@@ -72,19 +95,34 @@ def check_agents_size() -> list[str]:
     return []
 
 
-def check_links(path: Path) -> list[str]:
-    errors = []
+def link_targets(path: Path) -> list[str]:
+    targets = []
+    for block in block_tokens(path):
+        if block.type == "html_block":
+            targets += html_targets(block.content)
     for token in inline_tokens(path):
         if token.type == "link_open":
-            target = str(token.attrGet("href") or "")
+            targets.append(str(token.attrGet("href") or ""))
         elif token.type == "image":
-            target = str(token.attrGet("src") or "")
-        else:
-            continue
+            targets.append(str(token.attrGet("src") or ""))
+        elif token.type == "html_inline":
+            targets += html_targets(token.content)
+    return targets
+
+
+def check_links(path: Path) -> list[str]:
+    errors = []
+    for target in link_targets(path):
         if not target or target.startswith("#") or SCHEME_RE.match(target):
             continue
         file_part = unquote(target.split("#", 1)[0].split("?", 1)[0])
-        if file_part and not (path.parent / file_part).exists():
+        if not file_part:
+            continue
+        resolved = (path.parent / file_part).resolve()
+        # GitHub 上逸出 repo 的連結一定是壞的，即使 runner 上剛好有那個父目錄
+        if not resolved.is_relative_to(ROOT):
+            errors.append(f"{path.relative_to(ROOT)}: 連結逸出 repository {file_part}")
+        elif not resolved.exists():
             errors.append(f"{path.relative_to(ROOT)}: 連結指向不存在的路徑 {file_part}")
     return errors
 
@@ -94,7 +132,8 @@ def looks_like_path(text: str) -> bool:
         return False
     if text.startswith(("-", "/", "http", "@", "~")):
         return False
-    return "/" in text or text.endswith(PATH_SUFFIXES)
+    # `.env.example` 這類帶副檔名的 dotfile 也算；單純的 `.env`（gitignore、不在 repo 裡）不算
+    return "/" in text or text.endswith(PATH_SUFFIXES) or bool(DOTFILE_RE.match(text))
 
 
 def check_code_paths(path: Path) -> list[str]:
