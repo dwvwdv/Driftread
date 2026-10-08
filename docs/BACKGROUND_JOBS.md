@@ -14,7 +14,7 @@ claim 在交易內序列化該 kind 的容量判斷，再以 `FOR UPDATE SKIP LO
 
 這是 **at-least-once** 工作交付。完成業務寫入後、ack 提交前程序中止，會再次執行該 cycle。lease fencing 保護佇列狀態，不會撤銷已提交的業務寫入，也不會終止 `asyncio.to_thread` 中已開始的同步函式。文章身份／相同來源版本的冪等性仍由文章寫入 RPC 負責；手動管理端點仍直接執行既有動作，不宣稱與背景 cycle 共用排他鎖。
 
-每次 worker polling 及 API watchdog 以 bounded reconciliation 回收過期租約；每次最多 100 筆。退回 queued 並持久化退避，達到 max attempts 則 dead。dead 保留供管理者檢查；重複排程仍建立下一輪，不會永久停止採集。poll 最多每五秒一次，不改變實際 cycle tick。停用的 kind 不再 claim；其既有 queued 工作保留，重新啟用時接續。
+每次 worker polling 及 API watchdog 以 bounded reconciliation 回收過期租約；每次最多 100 筆。退回 queued 並持久化退避，達到 max attempts 則 dead。dead 保留供管理者檢查；重複排程仍建立下一輪，不會永久停止採集。poll 最多每五秒一次，不改變實際 cycle tick。停用的 kind 不再 claim；其既有 queued 工作保留，重新啟用時接續。重啟後明確提供的新 tick／timeout 會更新 active singleton 設定；已排定的 available_at 保留，下一輪使用新間隔。未提供的 recurrence／priority／timeout 不覆寫既有設定。
 
 ## 停機與部署
 

@@ -42,15 +42,20 @@ GRANT ALL ON driftread.background_jobs,driftread.background_job_kinds TO service
 CREATE OR REPLACE FUNCTION driftread.enqueue_background_job(
     p_kind text, p_payload jsonb DEFAULT '{}', p_singleton_key text DEFAULT NULL,
     p_available_at timestamptz DEFAULT now(), p_max_attempts integer DEFAULT 3,
-    p_repeat_seconds integer DEFAULT 0, p_priority integer DEFAULT 0,
-    p_timeout_seconds integer DEFAULT 1800
+    p_repeat_seconds integer DEFAULT NULL, p_priority integer DEFAULT NULL,
+    p_timeout_seconds integer DEFAULT NULL
 ) RETURNS uuid LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,driftread AS $$
 DECLARE v_id uuid;
 BEGIN
     INSERT INTO driftread.background_jobs(kind,payload,singleton_key,available_at,max_attempts,repeat_seconds,priority,timeout_seconds)
-    VALUES(p_kind,p_payload,p_singleton_key,p_available_at,p_max_attempts,p_repeat_seconds,p_priority,p_timeout_seconds)
+    VALUES(p_kind,p_payload,p_singleton_key,p_available_at,p_max_attempts,
+        coalesce(p_repeat_seconds,0),coalesce(p_priority,0),coalesce(p_timeout_seconds,1800))
     ON CONFLICT(kind,singleton_key) WHERE status IN ('queued','running')
-    DO UPDATE SET singleton_key=excluded.singleton_key RETURNING id INTO v_id;
+    DO UPDATE SET
+        repeat_seconds=coalesce(p_repeat_seconds,background_jobs.repeat_seconds),
+        priority=coalesce(p_priority,background_jobs.priority),
+        timeout_seconds=coalesce(p_timeout_seconds,background_jobs.timeout_seconds)
+    RETURNING id INTO v_id;
     RETURN v_id;
 END $$;
 

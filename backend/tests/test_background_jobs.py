@@ -224,3 +224,15 @@ def test_watchdog_allows_initial_heartbeat_grace_for_a_new_run(pg_database):
             cur.execute("UPDATE driftread.worker_runs SET started_at=now()-interval '91 seconds' WHERE id=%s",(run,))
         assert scalar(conn,'SELECT driftread.watchdog_worker_operations()')['interrupted']==1
         conn.commit()
+
+
+def test_restarted_scheduler_updates_future_interval_without_losing_singleton(pg_database):
+    with connection(pg_database,'service_role') as conn:
+        job=scalar(conn,"SELECT driftread.enqueue_background_job('refresh','{}','scheduler',now()+interval '1 hour',3,300,10,900)")
+        same=scalar(conn,"SELECT driftread.enqueue_background_job('refresh','{}','scheduler',now(),3,600,NULL,1800)")
+        assert same==job
+        assert scalar(conn,'SELECT repeat_seconds=600 AND priority=10 AND timeout_seconds=1800 AND available_at>now() FROM driftread.background_jobs WHERE id=%s',(job,))
+        # Generic dedup without new scheduling preferences does not erase them.
+        scalar(conn,"SELECT driftread.enqueue_background_job('refresh','{}','scheduler')")
+        assert scalar(conn,'SELECT repeat_seconds FROM driftread.background_jobs WHERE id=%s',(job,))==600
+        conn.commit()
