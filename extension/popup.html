@@ -18,11 +18,17 @@
   </style>
 </head>
 <body>
+  <h1>我的離線閱讀</h1>
+  <button id="sync">同步</button> <a href="options.html" target="_blank">帳號連線</a>
+  <p id="status" role="status"></p>
+  <div id="reading"></div>
   <h1>偵測到的 RSS</h1>
   <div id="list"></div>
   <div id="config-hint" class="config-hint" style="display:none;">
-    請先在<a href="#" id="open-options">擴充選項</a>設定 Driftread API URL 與金鑰。
+    請先在<a href="#" id="open-options">擴充選項</a>設定 Driftread API URL 與帳號。
   </div>
+  <script src="offline.js"></script>
+  <script src="offline-client.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -18,12 +18,15 @@
     <input id="apiUrl" placeholder="https://your-driftread-host.example.com/api" />
     <div class="hint">後端 API 路徑，包含 /api。</div>
   </label>
-  <label>Admin API Key
-    <input id="apiKey" type="password" placeholder="與後端的 ADMIN_API_KEY 一致" />
-    <div class="hint">用於匯入 feed 到資料庫。</div>
+  <label>帳號 Access Token
+    <input id="accessToken" type="password" autocomplete="off" placeholder="登入帳號的 Bearer token" />
+    <div class="hint">只存在目前瀏覽器工作階段；過期後需重新連線。</div>
   </label>
-  <button id="save">儲存</button>
+  <button id="save">連線</button>
+  <button id="disconnect">中斷連線並清除離線資料</button>
   <div id="saved" class="saved" style="display:none;">已儲存。</div>
+  <script src="offline.js"></script>
+  <script src="offline-client.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

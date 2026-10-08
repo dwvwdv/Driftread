@@ -12,6 +12,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from backfill import run_backfills
 from errors import map_postgrest_error
 from migrate import run_migrations
+from services.mcp_server import AuthenticatedMCP, reset_transport
 from routers import (
     admin,
     admin_discovery,
@@ -19,12 +20,14 @@ from routers import (
     admin_retention,
     admin_settings,
     articles,
+    consumption,
     discover,
     feeds,
     me,
     opml,
     recommendations,
     search,
+    sync,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -130,7 +133,8 @@ async def lifespan(app: FastAPI):
     # After the schema is in place, and separately: these need the parser's own
     # html.unescape()-backed logic, which is not expressible as SQL.
     run_backfills()
-    yield
+    async with reset_transport().run():
+        yield
 
 
 app = FastAPI(
@@ -200,6 +204,9 @@ app.include_router(admin_operations.router, prefix="/api")
 app.include_router(admin_retention.router, prefix="/api")
 app.include_router(admin_settings.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
+app.include_router(consumption.router, prefix="/api")
+app.include_router(sync.router, prefix="/api")
+app.mount("/api/mcp", AuthenticatedMCP())
 app.include_router(opml.router, prefix="/api")
 app.include_router(discover.router, prefix="/api")
 app.include_router(search.router, prefix="/api")

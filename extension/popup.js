@@ -4,24 +4,11 @@ async function getActiveTab() {
 }
 
 async function loadConfig() {
-  const cfg = await chrome.storage.sync.get(['apiUrl', 'apiKey']);
-  return { apiUrl: cfg.apiUrl || '', apiKey: cfg.apiKey || '' };
+  const cfg = await connection();
+  return { apiUrl: cfg.apiUrl || '', apiKey: cfg.accessToken || '' };
 }
-
-async function importFeed(feedUrl, cfg) {
-  const res = await fetch(`${cfg.apiUrl.replace(/\/$/, '')}/admin/feeds/from-url`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': cfg.apiKey,
-    },
-    body: JSON.stringify({ feed_url: feedUrl }),
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`${res.status}: ${t}`);
-  }
-  return res.json();
+async function importFeed(feedUrl) {
+  return personalRequest('/discover/import', { method: 'POST', body: JSON.stringify({ feed_url: feedUrl }) });
 }
 
 function render(feeds, cfgOk) {
@@ -70,11 +57,55 @@ function render(feeds, cfgOk) {
     chrome.runtime.openOptionsPage();
   });
   const tab = await getActiveTab();
-  chrome.tabs.sendMessage(tab.id, { type: 'driftread:detect' }, (resp) => {
-    if (chrome.runtime.lastError || !resp) {
-      render([], cfgOk);
-      return;
-    }
-    render(resp.feeds, cfgOk);
-  });
+  try {
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    chrome.tabs.sendMessage(tab.id, { type: 'driftread:detect' }, resp => render(resp?.feeds || [], cfgOk));
+  } catch { render([], cfgOk); }
 })();
+
+async function renderReading(state) {
+  const target = document.getElementById('reading'); target.replaceChildren();
+  const cfg = await connection();
+  if (!DriftreadOffline.usable(state, cfg.account)) {
+    if (state && state.account !== cfg.account) await chrome.storage.local.remove('readingCache');
+    document.getElementById('status').textContent = '請連線並同步閱讀（離線保存最多 24 小時）'; return;
+  }
+  for (const article of state.items) {
+    const card = document.createElement('div'); card.className = 'feed';
+    const title = document.createElement('a'); title.textContent = article.title;
+    if (/^https?:\/\//.test(article.url)) { title.href = article.url; title.target = '_blank'; title.rel = 'noopener'; }
+    const summary = document.createElement('p'); summary.textContent = article.summary || '';
+    card.append(title, summary);
+    for (const [kind, label] of [['read','已讀'],['favorite','收藏'],['read_later','稍後讀']]) {
+      const button = document.createElement('button');
+      const pending = state.pending.find(p => p.articleId === article.id && p.kind === kind);
+      const enabled = pending ? pending.enabled : kind === 'read' ? article.is_read : article.bookmark_types.includes(kind);
+      button.textContent = (enabled ? '取消' : '標記') + label;
+      button.disabled = syncing;
+      button.onclick = async () => {
+        state = DriftreadOffline.queue(state, article.id, kind, !enabled);
+        await chrome.storage.local.set({ readingCache: state });
+        await renderReading(state);
+        document.getElementById('status').textContent = '變更已保存，連線後按同步送出';
+      };
+      card.appendChild(button);
+    }
+    target.appendChild(card);
+  }
+}
+let syncing = false;
+document.getElementById('sync').onclick = async () => {
+  syncing = true;
+  for (const button of document.querySelectorAll('#reading button')) button.disabled = true;
+  const button = document.getElementById('sync'); button.disabled = true;
+  try { await renderReading(await syncReading()); document.getElementById('status').textContent = '已同步最近 100 篇'; }
+  catch (error) { document.getElementById('status').textContent = error.message; }
+  finally { syncing = false; button.disabled = false; await renderReading((await chrome.storage.local.get('readingCache')).readingCache); }
+};
+chrome.storage.local.get('readingCache').then(result => renderReading(result.readingCache));
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'session' && (changes.account || changes.accessToken)) {
+    document.getElementById('reading').replaceChildren();
+    chrome.storage.local.get('readingCache').then(result => renderReading(result.readingCache));
+  }
+});
