@@ -110,7 +110,10 @@ async def discover_and_import(
     ).execute()
 
     now = datetime.now(timezone.utc).isoformat()
-    await asyncio.to_thread(upsert_articles, db, str(feed.id), parsed.articles)
+    await asyncio.to_thread(
+        upsert_articles, db, str(feed.id), parsed.articles,
+        origin="discover_import", backfill=True, backfill_reason="discover_import",
+    )
     # Ingestion reports changed rows, which is zero for an unchanged reimport.
     # The catalog count must reflect every stored article, including old items
     # no longer present in the RSS document.

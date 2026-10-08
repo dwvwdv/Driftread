@@ -168,7 +168,11 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
     before = count_articles(db, feed_id)
     # Batch ingestion includes synchronous PostgREST calls and HTML parsing.
     # Keep worker heartbeat and other async refreshes responsive during it.
-    upserted = await asyncio.to_thread(upsert_articles, db, feed_id, fetched.parsed.articles)
+    upserted = await asyncio.to_thread(
+        upsert_articles, db, feed_id, fetched.parsed.articles,
+        backfill=not feed.get("last_fetched_at"),
+        backfill_reason="initial_fetch" if not feed.get("last_fetched_at") else None,
+    )
     total = count_articles(db, feed_id)
     new_articles = max(0, total - before)
     interval = next_interval(current_interval, "new" if new_articles else "unchanged")

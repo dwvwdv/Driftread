@@ -77,6 +77,12 @@ class Article(BaseModel):
     published_at: datetime | None = None
     fetched_at: datetime
     content_compacted_at: datetime | None = None
+    fulltext_allowed: bool = True
+    discovered_at: datetime | None = None
+    timeline_at: datetime | None = None
+    backfill: bool = False
+    backfill_reason: str | None = None
+    current_revision_id: UUID | None = None
 
 
 class ArticleSummary(BaseModel):
@@ -87,6 +93,11 @@ class ArticleSummary(BaseModel):
     summary: str | None = None
     author: str | None = None
     published_at: datetime | None = None
+    discovered_at: datetime | None = None
+    timeline_at: datetime | None = None
+    backfill: bool = False
+    backfill_reason: str | None = None
+    current_revision_id: UUID | None = None
 
 
 class FeedWithArticles(Feed):
@@ -197,6 +208,11 @@ class StreamArticle(BaseModel):
     fetched_at: datetime
     is_read: bool
     read_at: datetime | None = None
+    discovered_at: datetime | None = None
+    timeline_at: datetime | None = None
+    backfill: bool = False
+    backfill_reason: str | None = None
+    current_revision_id: UUID | None = None
 
 
 class PaginatedStream(BaseModel):

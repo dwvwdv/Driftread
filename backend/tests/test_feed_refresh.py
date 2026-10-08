@@ -467,3 +467,19 @@ def test_summarize_counts_by_status():
         "archived": 1,
         "new_articles": 3,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('previous_fetch', [None, '2026-10-08T00:00:00+00:00'])
+async def test_first_successful_fetch_carries_historical_context(previous_fetch):
+    db = _FakeDB(articles_counts=[0, 1])
+    feed = _feed_row(last_fetched_at=previous_fetch)
+    with (
+        patch('services.feed_refresh.validate_fetch_url', side_effect=lambda u: u),
+        patch('services.feed_refresh.fetch_and_parse_conditional',
+              return_value=ConditionalFetch(not_modified=False, parsed=_parsed(1))),
+        patch('services.feed_refresh.upsert_articles', return_value=1) as ingest,
+    ):
+        await refresh_one(db, feed)
+    assert ingest.call_args.kwargs['backfill'] is (previous_fetch is None)
+    assert ingest.call_args.kwargs['backfill_reason'] == ('initial_fetch' if previous_fetch is None else None)

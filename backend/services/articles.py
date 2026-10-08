@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from services.discovery_config import discovery_enabled
 from services.link_harvest import (
@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 200
 
 
-def upsert_articles(db: "Client", feed_id: str, articles: list["ParsedArticle"]) -> int:
+def upsert_articles(
+    db: "Client", feed_id: str, articles: list["ParsedArticle"], *,
+    origin: Literal["rss", "discover_import", "historical_import"] = "rss",
+    backfill: bool = False, backfill_reason: str | None = None,
+) -> int:
     """Store unique feed URLs atomically, returning rows actually changed.
 
     Parse links from incoming HTML before storage. Discovery failures never
@@ -28,12 +32,19 @@ def upsert_articles(db: "Client", feed_id: str, articles: list["ParsedArticle"])
     The ingestion RPC skips identical rows and preserves compacted bodies when
     the source hash is unchanged. Deploy its migration before this code.
     """
+    if origin not in {"rss", "discover_import", "historical_import"}:
+        raise ValueError("invalid article discovery origin")
+    if backfill_reason is not None and (not backfill or len(backfill_reason) > 100):
+        raise ValueError("backfill_reason requires historical ingestion and at most 100 characters")
     rows_by_url: dict[str, dict] = {}
     for article in articles:
         if not article.url:
             continue
         rows_by_url[article.url] = {
             "feed_id": feed_id,
+            "origin": origin,
+            "backfill": backfill,
+            "backfill_reason": backfill_reason,
             "title": article.title,
             "url": article.url,
             "summary": article.summary,
