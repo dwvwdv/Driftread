@@ -24,6 +24,7 @@ from markdown_it.token import Token
 
 ROOT = Path(__file__).resolve().parent.parent
 AGENTS_MAX_BYTES = 30 * 1024
+MARKDOWN_SUFFIXES = {".md", ".markdown"}
 SKIP_DIRS = {".git", "node_modules", ".angular", "dist", ".venv", "venv", "__pycache__"}
 
 # 反引號裡的相對路徑會依序對這些根目錄解析（文件習慣省略 backend/、docs/ 或 frontend/src/app/ 前綴）
@@ -44,7 +45,9 @@ MD = MarkdownIt("commonmark").enable("table")
 
 def markdown_files() -> list[Path]:
     files = []
-    for path in ROOT.rglob("*.md"):
+    for path in ROOT.rglob("*"):
+        if path.suffix.lower() not in MARKDOWN_SUFFIXES or not path.is_file():
+            continue
         if SKIP_DIRS.intersection(path.relative_to(ROOT).parts):
             continue
         files.append(path)
@@ -113,7 +116,8 @@ def link_targets(path: Path) -> list[str]:
 def check_links(path: Path) -> list[str]:
     errors = []
     for target in link_targets(path):
-        if not target or target.startswith("#") or SCHEME_RE.match(target):
+        # 外部網址（含 `//host/...` 這種協定相對網址）與頁內錨點不檢查
+        if not target or target.startswith(("#", "//")) or SCHEME_RE.match(target):
             continue
         file_part = unquote(target.split("#", 1)[0].split("?", 1)[0])
         if not file_part:
@@ -141,9 +145,11 @@ def check_code_paths(path: Path) -> list[str]:
     for token in inline_tokens(path):
         if token.type != "code_inline":
             continue
-        text = token.content.split("::", 1)[0].rstrip("/")
+        text = token.content.split("::", 1)[0]
+        # 先判斷再去掉尾斜線：`docs/` 這種單層目錄靠尾斜線才認得出是路徑
         if not looks_like_path(text):
             continue
+        text = text.rstrip("/")
         if not any((root / text).exists() for root in PATH_ROOTS):
             errors.append(f"{path.relative_to(ROOT)}: 提到的路徑不存在 `{text}`")
     return errors

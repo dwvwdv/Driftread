@@ -1353,7 +1353,7 @@ Review 修復：匯入保留累計文章數、空待抽取佇列跳過 HostIndex
   workflow 不設路徑篩選（Codex review：只改名或刪除被引用的程式檔、沒動到 `.md` 的 PR 也會讓連結失效），每次 PR／push 都跑。
   Markdown 交給 CommonMark 解析器 `markdown-it-py`（版本釘在 `scripts/requirements-docs.txt`）而非手寫 regex：Codex review 連續指出圖片、帶標題、
   reference-style 連結與波浪號／縮排／縮排式程式碼區塊的漏判，根因是自己解析 Markdown，改用解析器一次涵蓋；程式碼區塊與行內程式碼裡的示範語法不檢查。
-  另外檢查內嵌 HTML 的 `href`／`src`、拒絕逸出 repository 的相對路徑（`../../` 在 runner 上存在、在 GitHub 上是壞連結）、`.env.example` 這類 dotfile 也列入路徑檢查（Codex review）。
+  另外檢查內嵌 HTML 的 `href`／`src`、拒絕逸出 repository 的相對路徑（`../../` 在 runner 上存在、在 GitHub 上是壞連結）、`.env.example` 這類 dotfile 也列入路徑檢查；`.markdown` 與大寫副檔名也掃描、略過 `//host` 協定相對網址、`docs/` 這類帶尾斜線的單層目錄也檢查（Codex review）。
 - README 的文件表、CI 表（補上 `supabase/**` 觸發、`npm test`、docs workflow、sha tag）與開發規則改為指向 `AGENTS.md`；
   `SECURITY.md`、`RUNBOOK.md` 引用 `CLAUDE.md` 的地方改指 `AGENTS.md` 的「環境變數維護」。
 
