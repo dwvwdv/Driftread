@@ -249,9 +249,19 @@ class StreamArticle(BaseModel):
     current_revision_id: UUID | None = None
 
 
+    why: str | None = None
+    heat: float | None = None
+    participant_count: int | None = None
+    group_key: str | None = None
+
+
 class PaginatedStream(BaseModel):
     items: list[StreamArticle]
     next_cursor: str | None = None
+    snapshot_at: datetime | None = None
+    complete: bool | None = None
+    behind_participant_count: int | None = None
+    candidate_limit: int | None = None
 
 
 class FeedUnreadCount(BaseModel):

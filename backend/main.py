@@ -23,6 +23,8 @@ from routers import (
     consumption,
     discover,
     feeds,
+    events,
+    personal_heat,
     me,
     opml,
     recommendations,
@@ -196,6 +198,8 @@ async def handle_postgrest_api_error(request: Request, exc: APIError) -> JSONRes
 
 
 app.include_router(feeds.router, prefix="/api")
+app.include_router(events.router, prefix="/api")
+app.include_router(personal_heat.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
