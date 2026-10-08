@@ -28,9 +28,27 @@ PATH_ROOTS = [
 ]
 PATH_SUFFIXES = (".py", ".ts", ".scss", ".html", ".sql", ".md", ".json", ".yml", ".yaml", ".toml", ".js", ".sh")
 
-LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)\)")
+# 連結與圖片都檢查：`[說明](a.md)`、`![圖](img.png)`、`[說明](a.md "標題")`、`[說明](<a b.md>)`
+LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*(<[^>\n]+>|[^)\s]+)(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)")
 CODE_RE = re.compile(r"`([^`\n]+)`")
-FENCE_RE = re.compile(r"^```.*?^```", re.S | re.M)
+# CommonMark 的程式碼圍欄：最多三個空格縮排、``` 或 ~~~（至少三個），以同字元且不短於開頭的圍欄結束
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def strip_code_fences(text: str) -> str:
+    """把圍欄內的範例拿掉，避免示範語法被當成真正的連結或路徑。"""
+    kept, fence = [], None
+    for line in text.split("\n"):
+        match = FENCE_OPEN_RE.match(line)
+        if fence is None:
+            if match:
+                fence = match.group(1)
+                continue
+            kept.append(line)
+        elif match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence) \
+                and not line.strip()[len(match.group(1)):].strip():
+            fence = None
+    return "\n".join(kept)
 
 
 def markdown_files() -> list[Path]:
@@ -58,10 +76,12 @@ def check_agents_size() -> list[str]:
 
 def check_links(path: Path) -> list[str]:
     errors = []
-    text = FENCE_RE.sub("", path.read_text(encoding="utf-8"))
+    # 行內程式碼裡的 `[說明](a.md)` 是示範語法，不是連結
+    text = CODE_RE.sub("", strip_code_fences(path.read_text(encoding="utf-8")))
     for target in LINK_RE.findall(text):
-        if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith("#"):
+        if re.match(r"^[a-z][a-z0-9+.-]*:", target.lstrip("<"), re.I) or target.startswith("#"):
             continue
+        target = target.strip("<>")
         file_part = target.split("#", 1)[0]
         if not file_part:
             continue
@@ -80,7 +100,7 @@ def looks_like_path(token: str) -> bool:
 
 def check_code_paths(path: Path) -> list[str]:
     errors = []
-    text = FENCE_RE.sub("", path.read_text(encoding="utf-8"))
+    text = strip_code_fences(path.read_text(encoding="utf-8"))
     for token in CODE_RE.findall(text):
         token = token.split("::", 1)[0].rstrip("/")
         if not looks_like_path(token):
