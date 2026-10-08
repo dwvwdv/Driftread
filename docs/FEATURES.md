@@ -92,6 +92,8 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 
 ## 2c. 主動發現管道
 
+增量版本抽取、中文種子優先名額、worker 狀態與正文縮減的現行行為及操作方式，見 [CRAWLER_OPERATIONS.md](CRAWLER_OPERATIONS.md)。文章以內容 hash 追蹤抽取，失敗保留待處理工作；正文縮減預設關閉，保留文章身份與使用者關聯。
+
 > ⚠ **預設關閉。** 這是唯一一個會主動對「沒人要求過的第三方網站」發出請求的迴圈，
 > 啟用前請先讀 [SECURITY.md 的自主發現章節](SECURITY.md)，特別是 DNS rebinding 那一節。
 > `FEED_DISCOVERY_ENABLED=false` 時 worker 不跑這個迴圈，且 `POST /api/admin/discovery/run`
@@ -332,6 +334,9 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | PATCH | `/admin/discovery/sources/{id}` | 調整 `enabled` / `interval_hours` |
 | POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
 | POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
+| GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20 |
+| GET | `/admin/retention/stats` | 文章分類計數、表／索引／資料庫 bytes 快照 |
+| POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
 | GET | `/admin/discovery/stats` | 各狀態的計數 |
 
 ## 4. 前端路由

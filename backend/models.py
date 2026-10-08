@@ -76,6 +76,7 @@ class Article(BaseModel):
     author: str | None = None
     published_at: datetime | None = None
     fetched_at: datetime
+    content_compacted_at: datetime | None = None
 
 
 class ArticleSummary(BaseModel):

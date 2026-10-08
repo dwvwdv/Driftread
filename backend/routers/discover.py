@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -109,7 +110,7 @@ async def discover_and_import(
     ).execute()
 
     now = datetime.now(timezone.utc).isoformat()
-    inserted = upsert_articles(db, str(feed.id), parsed.articles)
+    inserted = await asyncio.to_thread(upsert_articles, db, str(feed.id), parsed.articles)
     db.table("feeds").update(
         {"last_fetched_at": now, "article_count": inserted}
     ).eq("id", str(feed.id)).execute()

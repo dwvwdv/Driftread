@@ -93,7 +93,8 @@ def test_next_probe_delay_is_capped(monkeypatch):
 
 # ── due queue ────────────────────────────────────────────────────────────────
 
-def test_select_due_targets_matches_the_partial_index():
+def test_select_due_targets_matches_the_partial_index(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_CHINESE_SEED_QUOTA", "0")
     db = _db()
     select_due_targets(db, 20)
     assert db.op_names("discovery_targets") == [

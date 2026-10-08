@@ -7,7 +7,7 @@ means more candidate hosts, which (once approved) means more feeds.
 
 Two harvest sources live here:
 
-- every unarchived feed's recent articles (always on);
+- every unarchived feed's unextracted article versions, oldest first;
 - optionally each feed's `website_url` homepage, for the blogroll / "友情連結"
   block that independent blogs still keep. That one costs a request per feed, so
   it is behind FEED_DISCOVERY_BLOGROLL_ENABLED and off by default.
@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -36,6 +38,7 @@ from services.discovery_config import (
     harvest_interval_hours,
     harvest_max_links_per_feed,
     max_frontier_size,
+    tick_seconds,
 )
 from services.feed_discovery import (
     MAX_FEED_BYTES,
@@ -163,6 +166,8 @@ class HostIndex:
     # URL and so needs them called out — otherwise a directory listing could walk
     # a rejected host straight back into the frontier under a new URL.
     blocked_hosts: frozenset[str] = frozenset()
+    # Shared mutable capacity for a single worker snapshot; not a DB-wide lock.
+    frontier_remaining: list[int] | None = None
 
 
 @dataclass(frozen=True)
@@ -288,22 +293,24 @@ def is_denied_host(host: str) -> bool:
     return host.endswith(dotted) or key.endswith(dotted)
 
 
-def extract_anchor_hosts(html: str, base_url: str | None = None) -> list[tuple[str, str]]:
-    """(host, absolute_url) for each <a href> in `html`, in document order.
+@dataclass(frozen=True)
+class DocumentExtraction:
+    pairs: list[tuple[str, str]]
+    complete: bool
 
-    SoupStrainer keeps this from building a full DOM: a harvest cycle parses
-    articles from ten feeds on the worker's event loop, and anchors are all we
-    read. `rel="nofollow"` is deliberately ignored — it's a ranking directive,
-    not a crawl directive, and blogroll links are frequently nofollowed, so
-    honouring it would throw away the best signal we have.
-    """
+
+def extract_document_hosts(html: str, base_url: str | None = None) -> DocumentExtraction:
+    """Bounded local parsing with explicit evidence that the full HTML was read."""
     if not html:
-        return []
-    soup = BeautifulSoup(
-        html[:MAX_HARVEST_HTML_BYTES], "html.parser", parse_only=SoupStrainer("a")
-    )
+        return DocumentExtraction([], True)
+    encoded = html.encode("utf-8")
+    complete = len(encoded) <= MAX_HARVEST_HTML_BYTES
+    text = encoded[:MAX_HARVEST_HTML_BYTES].decode("utf-8", errors="ignore")
+    soup = BeautifulSoup(text, "html.parser", parse_only=SoupStrainer("a"))
+    anchors = soup.find_all("a", limit=MAX_ANCHORS_PER_DOC + 1)
+    complete = complete and len(anchors) <= MAX_ANCHORS_PER_DOC
     out: list[tuple[str, str]] = []
-    for anchor in soup.find_all("a", limit=MAX_ANCHORS_PER_DOC):
+    for anchor in anchors[:MAX_ANCHORS_PER_DOC]:
         href = anchor.get("href")
         if not href:
             continue
@@ -311,7 +318,12 @@ def extract_anchor_hosts(html: str, base_url: str | None = None) -> list[tuple[s
         host = normalize_host(absolute)
         if host:
             out.append((host, absolute))
-    return out
+    return DocumentExtraction(out, complete)
+
+
+def extract_anchor_hosts(html: str, base_url: str | None = None) -> list[tuple[str, str]]:
+    """Compatibility helper for bounded directory and blogroll link mining."""
+    return extract_document_hosts(html, base_url).pairs
 
 
 def select_due_harvest_feeds(db: "Client", limit: int) -> list[dict]:
@@ -381,7 +393,8 @@ def build_host_index(db: "Client") -> HostIndex:
     return HostIndex(
         feed_hosts=frozenset(feed_hosts),
         target_hosts=target_hosts,
-        frontier_full=pending_count > max_frontier_size(),
+        frontier_full=pending_count >= max_frontier_size(),
+        frontier_remaining=[max(0, max_frontier_size() - pending_count)],
         target_urls=frozenset(target_urls),
         blocked_hosts=frozenset(blocked_hosts),
     )
@@ -407,6 +420,8 @@ def record_targets(
     known = index.target_hosts
     fresh = {host: url for host, url in host_urls.items() if host not in known}
 
+    if index.frontier_remaining is not None:
+        fresh = dict(list(fresh.items())[:index.frontier_remaining[0]])
     created_ids: dict[str, str] = {}
     if fresh and not index.frontier_full:
         payload = [
@@ -422,6 +437,9 @@ def record_targets(
         for row in result.data or []:
             created_ids[row["host"]] = str(row["id"])
             known[row["host"]] = str(row["id"])
+
+    if index.frontier_remaining is not None:
+        index.frontier_remaining[0] -= len(created_ids)
 
     if feed_id is None:
         # Directory sources have no owning feed, so there is no distinct-feed
@@ -443,16 +461,117 @@ def record_targets(
     return (len(created_ids), len(rows))
 
 
-def _schedule_next_harvest(db: "Client", feed_id: str) -> None:
+def content_fingerprint(content: str | None, summary: str | None) -> str:
+    """Version of original source text, independent of retention and metadata."""
+    payload = json.dumps([content, summary], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class PendingHarvest:
+    scanned: int = 0
+    anchors: int = 0
+    hosts: int = 0
+    created: int = 0
+    referrers: int = 0
+    more_pending: bool = False
+    retry_pending: bool = False
+
+
+def harvest_pending_articles(
+    db: "Client", feed: dict, index: HostIndex, limit: int,
+    prepared: dict[tuple[str, str], DocumentExtraction] | None = None,
+) -> PendingHarvest:
+    """Consume oldest unextracted source versions without network requests.
+
+    Successful empty results are marked. Failed writes and a full frontier leave
+    the version pending, and each completion is guarded against concurrent RSS
+    updates. Per-document parsing and per-feed host budgets bound the work.
+    """
+    feed_id = str(feed["id"])
+    rows = list(db.rpc("pending_article_discovery", {
+        "p_feed_id": feed_id, "p_limit": limit,
+    }).execute().data or [])
+    self_hosts = {normalize_host(feed.get("url")), normalize_host(feed.get("website_url"))}
+    max_hosts = harvest_max_links_per_feed()
+    seen: set[str] = set()
+    scanned = anchors = created = referrers = 0
+    deferred = False
+    retry_pending = False
+    for article in rows:
+        fingerprint = article.get("content_hash") or content_fingerprint(
+            article.get("content"), article.get("summary")
+        )
+        extraction = (prepared or {}).get((article["url"], fingerprint))
+        if extraction is None:
+            extraction = extract_document_hosts(
+                article.get("content") or article.get("summary") or "", article["url"]
+            )
+        pairs = extraction.pairs
+        eligible: dict[str, str] = {}
+        for host, absolute in pairs:
+            if host in self_hosts or host in index.feed_hosts or is_denied_host(host):
+                continue
+            origin = origin_of(absolute)
+            if origin:
+                eligible.setdefault(host, origin)
+        # A document exceeding the new-host budget progresses across retries.
+        remaining = max_hosts - len(seen)
+        fresh = [host for host in eligible if host not in index.target_hosts]
+        chosen = fresh[:remaining]
+        host_urls = {host: eligible[host] for host in chosen}
+        host_urls.update({host: url for host, url in eligible.items()
+                          if host in index.target_hosts})
+        scanned += 1
+        anchors += len(pairs)
+        seen.update(chosen)
+        new_count, edge_count = record_targets(db, feed_id, host_urls, index)
+        created += new_count
+        referrers += edge_count
+        if article.get("content_hash") is None:
+            # Pass long source bodies in POST JSON, never URL query filters.
+            db.rpc("initialize_article_source_hash", {
+                "p_feed_id": feed_id,
+                "p_url": article["url"],
+                "p_content": article.get("content"),
+                "p_summary": article.get("summary"),
+                "p_hash": fingerprint,
+            }).execute()
+        if not extraction.complete:
+            db.table("articles").update({
+                "discovery_retry_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
+            }, returning="minimal").eq("feed_id", feed_id).eq("url", article["url"]).eq(
+                "content_hash", fingerprint
+            ).execute()
+            retry_pending = True
+            continue
+        if any(host not in index.target_hosts for host in eligible):
+            # Frontier pressure and budgets are pending work, never completion.
+            deferred = True
+            continue
+        db.table("articles").update({
+            "discovery_retry_at": None,
+            "discovery_extracted_hash": fingerprint,
+            "discovery_extracted_at": datetime.now(timezone.utc).isoformat(),
+        }, returning="minimal").eq("feed_id", feed_id).eq("url", article["url"]).eq(
+            "content_hash", fingerprint
+        ).execute()
+    return PendingHarvest(scanned, anchors, len(seen), created, referrers,
+                          deferred or len(rows) >= limit, retry_pending)
+
+
+def _schedule_next_harvest(db: "Client", feed_id: str, *, success: bool = True,
+                           more_pending: bool = False, retry_pending: bool = False) -> None:
     now = datetime.now(timezone.utc)
-    db.table("feeds").update(
-        {
-            "last_harvested_at": now.isoformat(),
-            "next_harvest_at": (
-                now + timedelta(hours=harvest_interval_hours())
-            ).isoformat(),
-        }
-    ).eq("id", feed_id).execute()
+    delay = timedelta(hours=harvest_interval_hours())
+    if retry_pending:
+        delay = min(delay, timedelta(hours=24))
+    if more_pending or not success:
+        delay = min(delay, timedelta(seconds=tick_seconds()))
+    payload = {"next_harvest_at": (now + delay).isoformat()}
+    if success:
+        payload["last_harvested_at"] = now.isoformat()
+    db.table("feeds").update(payload, returning="minimal").eq("id", feed_id).execute()
 
 
 async def _fetch_blogroll(website_url: str, allow_url: AllowUrl | None) -> str | None:
@@ -477,9 +596,8 @@ async def harvest_one(
 ) -> HarvestResult:
     """Mine one feed for outbound hosts.
 
-    Never raises for a bad feed — the refresh_one() contract. The schedule is
-    advanced whatever happens, so one unparseable article can't wedge a feed at
-    the head of the due queue forever.
+    Never raises for a bad feed. Failures reschedule at the next tick without
+    claiming success; completed source hashes are the retention safety signal.
     """
     feed_id = str(feed["id"])
     max_hosts = harvest_max_links_per_feed()
@@ -495,6 +613,7 @@ async def harvest_one(
     articles_scanned = 0
     blogroll_fetched = False
     error: str | None = None
+    pending = PendingHarvest()
 
     def _absorb(pairs: list[tuple[str, str]]) -> None:
         nonlocal anchors_seen
@@ -516,46 +635,40 @@ async def harvest_one(
                 host_urls[host] = origin
 
     try:
-        articles = (
-            db.table("articles")
-            # fetched_at, not published_at: published_at is nullable and Postgres
-            # sorts NULLS FIRST on DESC, so ordering by it would systematically
-            # mine only the undated articles.
-            .select("content,summary,url")
-            .eq("feed_id", feed_id)
-            .order("fetched_at", desc=True)
-            .limit(harvest_articles_per_feed())
-            .execute()
+        pending = await asyncio.to_thread(
+            harvest_pending_articles, db, feed, index, harvest_articles_per_feed()
         )
-        for article in list(articles.data or []):
-            articles_scanned += 1
-            html = article.get("content") or article.get("summary") or ""
-            if html:
-                _absorb(extract_anchor_hosts(html, article.get("url")))
-            # Yield between articles: this is the only CPU-bound work sharing the
-            # worker's event loop with the refresh tick. If it ever shows up in a
-            # profile, wrap extract_anchor_hosts in asyncio.to_thread.
-            await asyncio.sleep(0)
+        articles_scanned = pending.scanned
+        anchors_seen = pending.anchors
+        created, referrers = pending.created, pending.referrers
 
         if blogroll_enabled() and feed.get("website_url"):
             try:
                 html = await _fetch_blogroll(feed["website_url"], allow_url)
                 blogroll_fetched = True
                 if html:
-                    _absorb(extract_anchor_hosts(html, feed["website_url"]))
+                    pairs = await asyncio.to_thread(extract_anchor_hosts, html, feed["website_url"])
+                    _absorb(pairs)
             except (httpx.HTTPError, DiscoveryError, ValueError) as e:
                 # A blogroll we can't fetch is not a harvest failure: the article
                 # path may well have produced hosts already.
                 logger.debug("Blogroll fetch failed for feed %s: %s", feed_id, e)
 
-        created, referrers = record_targets(db, feed_id, host_urls, index)
+        blog_created, blog_referrers = await asyncio.to_thread(
+            record_targets, db, feed_id, host_urls, index
+        )
+        created += blog_created
+        referrers += blog_referrers
     except Exception as e:  # noqa: BLE001 - see docstring
         logger.exception("Harvest failed for feed %s", feed_id)
         error = str(e)[:500]
         created = referrers = 0
     finally:
         try:
-            _schedule_next_harvest(db, feed_id)
+            await asyncio.to_thread(
+                _schedule_next_harvest, db, feed_id, success=error is None,
+                more_pending=pending.more_pending, retry_pending=pending.retry_pending
+            )
         except Exception:  # pragma: no cover - defensive
             logger.exception("Could not advance harvest schedule for feed %s", feed_id)
 
@@ -563,7 +676,7 @@ async def harvest_one(
         feed_id=feed_id,
         articles_scanned=articles_scanned,
         anchors_seen=anchors_seen,
-        hosts_kept=len(host_urls),
+        hosts_kept=pending.hosts + len(host_urls),
         targets_created=created,
         referrers_recorded=referrers,
         blogroll_fetched=blogroll_fetched,
@@ -587,12 +700,12 @@ async def harvest_due(
     `index` lets a caller supply that snapshot — services/discovery.py passes the
     one the directory stage already used, so the two stages agree on what exists.
     """
-    feeds = select_due_harvest_feeds(db, limit or harvest_batch_size())
+    feeds = await asyncio.to_thread(select_due_harvest_feeds, db, limit or harvest_batch_size())
     if not feeds:
         return []
 
     if index is None:
-        index = build_host_index(db)
+        index = await asyncio.to_thread(build_host_index, db)
     return [await harvest_one(db, feed, index, allow_url) for feed in feeds]
 
 

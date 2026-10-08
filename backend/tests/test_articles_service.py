@@ -24,30 +24,22 @@ class _FakeTable:
     def __init__(self):
         self.calls: list[list[dict]] = []
 
-    def upsert(self, rows, on_conflict=None, returning=None):
-        # Must target articles_feed_id_url_key (migration 005) — the old
-        # global-unique "url" constraint no longer exists, so an upsert naming
-        # it would fail against a migrated database.
-        assert on_conflict == "feed_id,url"
-        # "minimal" — migration 020's generated articles.search_vector makes
-        # the default "representation" return needlessly expensive for a
-        # batch this size (PR #59 review, P2); the row count is computed
-        # from `len(chunk)` instead, not the response body.
-        assert returning == "minimal"
-        self.calls.append(rows)
-        return self
-
-    def execute(self):
-        return _FakeResult(self.calls[-1])
-
 
 class _FakeDB:
     def __init__(self):
         self.articles = _FakeTable()
+        self.touched = None
 
-    def table(self, name):
-        assert name == "articles"
-        return self.articles
+    def rpc(self, name, params):
+        assert name == "ingest_article_batch"
+        assert params["p_feed_id"] == "feed-1"
+        rows = params["p_articles"]
+        self.articles.calls.append(rows)
+        count = len(rows) if self.touched is None else self.touched
+        class Request:
+            def execute(self):
+                return _FakeResult(count)
+        return Request()
 
 
 def test_upsert_articles_empty_list_makes_no_call():
@@ -96,3 +88,78 @@ def test_upsert_articles_serializes_published_at():
     row = db.articles.calls[0][0]
     assert row["published_at"] == when.isoformat()
     assert row["feed_id"] == "feed-1"
+
+
+def test_unchanged_ingestion_returns_actual_changed_count(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+    db = _FakeDB()
+    db.touched = 0
+    assert upsert_articles(db, "feed-1", [_FakeArticle(url="https://a")]) == 0
+
+
+def test_source_hash_tracks_content_and_summary_not_title(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+    db = _FakeDB()
+    upsert_articles(db, "feed-1", [_FakeArticle(url="https://a", content="body")])
+    first = db.articles.calls[-1][0]["content_hash"]
+    upsert_articles(db, "feed-1", [_FakeArticle(url="https://a", content="body", title="new")])
+    assert db.articles.calls[-1][0]["content_hash"] == first
+    upsert_articles(db, "feed-1", [_FakeArticle(url="https://a", content="changed")])
+    assert db.articles.calls[-1][0]["content_hash"] != first
+
+
+def test_disabled_discovery_ingestion_never_creates_network_client(monkeypatch):
+    from unittest.mock import patch
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+    with patch("httpx.AsyncClient", side_effect=AssertionError("network")):
+        assert upsert_articles(_FakeDB(), "feed-1", [
+            _FakeArticle(url="https://a", content='<a href="https://b.example.org">x</a>')
+        ]) == 1
+
+
+def test_discovery_failure_does_not_undo_durable_ingestion(monkeypatch):
+    from unittest.mock import patch
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    db = _FakeDB()
+    with patch("services.articles.build_host_index", side_effect=RuntimeError("frontier offline")):
+        assert upsert_articles(db, "feed-1", [_FakeArticle(url="https://a")]) == 1
+    assert len(db.articles.calls) == 1
+
+
+def test_incoming_html_is_parsed_before_ingestion(monkeypatch):
+    from unittest.mock import patch
+    from services.link_harvest import HostIndex, DocumentExtraction
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    db = _FakeDB()
+    class FeedQuery:
+        def select(self, *args): return self
+        def eq(self, *args): return self
+        def limit(self, *args): return self
+        def execute(self): return _FakeResult([{"id": "feed-1"}])
+    db.table = lambda name: FeedQuery()
+    original_rpc = db.rpc
+    observed = []
+    def rpc(name, params):
+        assert observed == ["parse"]
+        observed.append("store")
+        return original_rpc(name, params)
+    db.rpc = rpc
+    def extract(*args):
+        observed.append("parse")
+        return DocumentExtraction([("friend.example.org", "https://friend.example.org/x")], True)
+    with (
+        patch("services.articles.extract_document_hosts", side_effect=extract),
+        patch("services.articles.build_host_index", return_value=HostIndex(frozenset(), {})),
+        patch("services.articles.harvest_pending_articles") as harvest,
+    ):
+        upsert_articles(db, "feed-1", [_FakeArticle(url="https://a", content="source HTML")])
+    assert observed == ["parse", "store"]
+    prepared = harvest.call_args.kwargs["prepared"]
+    assert next(iter(prepared.values())).pairs == [("friend.example.org", "https://friend.example.org/x")]
+
+
+def test_disabled_discovery_does_not_parse_source_html(monkeypatch):
+    from unittest.mock import patch
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+    with patch("services.articles.extract_document_hosts", side_effect=AssertionError("parse")):
+        assert upsert_articles(_FakeDB(), "feed-1", [_FakeArticle(url="https://a")]) == 1

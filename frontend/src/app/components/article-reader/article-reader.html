@@ -51,6 +51,9 @@
       </p>
     </header>
 
+    @if (a.content_compacted_at) {
+      <p class="none">這篇文章的完整正文已依保存期限移除，仍可前往原文閱讀。</p>
+    }
     @if (a.content) {
       <!--
         Remote HTML. It goes through [innerHTML] so Angular's DomSanitizer strips

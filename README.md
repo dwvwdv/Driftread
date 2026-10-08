@@ -36,6 +36,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 | [`docs/FEATURES.md`](docs/FEATURES.md) | 當前功能、API 端點、資料表、生效中的各項限制 |
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 逐 PR 變更紀錄（#1–#24）與架構演進 |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | 安全加固紀錄（#14–#24）與改動時的注意事項 |
+| [`docs/CRAWLER_OPERATIONS.md`](docs/CRAWLER_OPERATIONS.md) | 增量抽取、中文種子、資料量監控與正文保存操作 |
 | [`extension/README.md`](extension/README.md) | 瀏覽器擴充安裝與設定 |
 | [`CLAUDE.md`](CLAUDE.md) | 專案上下文與開發規則 |
 
@@ -70,7 +71,7 @@ Compose 有三個服務：
 | 服務 | 內容 |
 |------|------|
 | `api` | FastAPI。不發布 port，只能透過 `frontend` 的 nginx 容器存取（`/api/` 反向代理到 `api:8000`）|
-| `worker` | 背景排程器，跑兩個獨立迴圈：自動抓取與主動發現（各有自己的開關與 tick，共用同一個 event loop 與 stop 訊號）。與 `api` 共用同一個 image，只換 `command` 跑 `worker.py`。不對外服務，只接 `default` network。restart policy 是 `on-failure`（不是 `unless-stopped`），這樣兩個開關都關掉時乾淨退出就會保持停止，某個迴圈崩潰時仍會自動重啟 |
+| `worker` | 背景排程器，執行自動抓取、主動發現與可選正文縮減迴圈，各有開關與 tick，共用 event loop 與停止訊號。與 `api` 共用 image，以 `worker.py` 執行；不對外服務。全部迴圈關閉時正常退出，`on-failure` 在錯誤時重新啟動。管理介面提供 heartbeat 與近期執行狀態。|
 | `frontend` | Angular build 產物 + nginx。接 `web_network` 供外部反向代理 |
 
 資料庫 migration 由後端啟動時的 `backend/migrate.py` 自動套用 `backend/migrations/*.sql`。

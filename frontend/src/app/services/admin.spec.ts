@@ -79,4 +79,16 @@ describe('AdminService 409 handling', () => {
       { tone: 'danger', text: '加入待探測失敗：Resource already exists' },
     ]);
   });
+
+  it('fetches read-only operation and storage snapshots with the admin key', () => {
+    const service = TestBed.inject(AdminService);
+    service.operations().subscribe();
+    service.storageStats().subscribe();
+    for (const path of ['/admin/operations', '/admin/retention/stats']) {
+      const request = httpMock.expectOne((req) => req.url.endsWith(path));
+      expect(request.request.method).toBe('GET');
+      expect(request.request.headers.get('x-api-key')).toBe('test-key');
+      request.flush({});
+    }
+  });
 });

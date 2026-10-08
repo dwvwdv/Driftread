@@ -9,3 +9,6 @@ supabase/.temp/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local orchestration, test runtimes and temporary artifacts
+work/

@@ -4,6 +4,8 @@ import { Router } from '@angular/router';
 import { Observable, catchError, throwError } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
+  ArticleStorageStats,
+  OperationsStatus,
   DiscoveryCycleSummary,
   DiscoverySource,
   DiscoveryStats,
@@ -218,6 +220,14 @@ export class AdminService {
       {},
       '載入預設來源失敗',
     );
+  }
+
+  operations(): Observable<OperationsStatus> {
+    return this.get<OperationsStatus>('/admin/operations', '讀取排程狀態失敗');
+  }
+
+  storageStats(): Observable<ArticleStorageStats> {
+    return this.get<ArticleStorageStats>('/admin/retention/stats', '讀取儲存統計失敗');
   }
 
   // ── Plumbing ──────────────────────────────────────────────────────────────

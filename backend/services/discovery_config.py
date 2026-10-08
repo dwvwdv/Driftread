@@ -14,6 +14,9 @@ free.
 """
 from __future__ import annotations
 
+import os
+import re
+
 from env_utils import env_flag, env_float, env_int
 
 
@@ -73,6 +76,27 @@ def directory_batch_size() -> int:
 
 def probe_batch_size() -> int:
     return env_int("FEED_DISCOVERY_PROBE_BATCH_SIZE", 20)
+
+
+def chinese_seed_quota() -> int:
+    """Reserved due-seed slots, also capped to half of each probe batch."""
+    return env_int("FEED_DISCOVERY_CHINESE_SEED_QUOTA", 4, minimum=0)
+
+
+def chinese_seed_hosts() -> tuple[str, ...]:
+    """Explicit Chinese seed hosts; this neither seeds nor approves new feeds.
+
+    Accept plain DNS names only, keeping PostgREST filter syntax out of config.
+    An empty override disables the host list. Defaults span multiple subjects.
+    """
+    raw = os.environ.get(
+        "FEED_DISCOVERY_CHINESE_SEED_HOSTS",
+        "technews.tw,inside.com.tw,pansci.asia,twreporter.org,openbook.org.tw,"
+        "e-info.org.tw,storystudio.tw,managertoday.com.tw,icook.tw",
+    )
+    return tuple(sorted({host.strip().lower() for host in raw.split(",")
+                         if re.fullmatch(r"[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*",
+                                         host.strip())}))
 
 
 def probe_concurrency() -> int:

@@ -10,6 +10,7 @@ the harvest, probe and promotion that would otherwise have run after it.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -47,6 +48,7 @@ class CycleSummary:
     probe: dict = field(default_factory=lambda: dict(_EMPTY_PROBE))
     auto_promoted: int = 0
     imported: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 async def run_cycle(
@@ -68,6 +70,7 @@ async def run_cycle(
     harvest = dict(_EMPTY_HARVEST)
     probe = dict(_EMPTY_PROBE)
     auto_promoted = imported = 0
+    errors: list[str] = []
 
     # Both harvest stages make outbound requests — the blogroll hop and the
     # directory-page fetch — so both are gated; without this,
@@ -88,8 +91,9 @@ async def run_cycle(
     # directory contributes is then visible to article harvesting instead of
     # being inserted twice.
     try:
-        index = build_host_index(db)
+        index = await asyncio.to_thread(build_host_index, db)
     except Exception:
+        errors.append("host_index")
         logger.exception("Could not build host index — skipping harvest stages")
         index = None
 
@@ -101,6 +105,7 @@ async def run_cycle(
                 )
             )
         except Exception:
+            errors.append("directory")
             logger.exception("Directory harvest stage failed")
 
     if index is not None:
@@ -111,6 +116,7 @@ async def run_cycle(
                 )
             )
         except Exception:
+            errors.append("harvest")
             logger.exception("Article harvest stage failed")
 
     try:
@@ -118,16 +124,19 @@ async def run_cycle(
             await probe_due(db, limit=probe_limit, max_concurrency=max_concurrency)
         )
     except Exception:
+        errors.append("probe")
         logger.exception("Probe stage failed")
 
     try:
         auto_promoted = len(auto_promote_due(db))
     except Exception:
+        errors.append("auto_promote")
         logger.exception("Auto-promote stage failed")
 
     try:
         imported = len(promote_approved(db))
     except Exception:
+        errors.append("promote")
         logger.exception("Approved-candidate promotion stage failed")
 
     return CycleSummary(
@@ -136,4 +145,5 @@ async def run_cycle(
         probe=probe,
         auto_promoted=auto_promoted,
         imported=imported,
+        errors=errors,
     )

@@ -94,3 +94,23 @@ code {
     gap: var(--sp-3);
   }
 }
+
+.operation-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--sp-3) 0;
+
+  li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--sp-2) var(--sp-4);
+    padding: var(--sp-2) 0;
+    border-bottom: var(--border-width-thin) solid var(--border);
+    overflow-wrap: anywhere;
+  }
+}
+
+.warning {
+  color: var(--caution-ink);
+}

@@ -38,6 +38,8 @@ from services import robots
 from services.crawl_policy import make_gate
 from services.discovery_candidates import record_candidates
 from services.discovery_config import (
+    chinese_seed_hosts,
+    chinese_seed_quota,
     host_delay_seconds,
     probe_batch_size,
     probe_concurrency,
@@ -77,14 +79,25 @@ class ProbeResult:
 
 
 def select_due_targets(db: "Client", limit: int) -> list[dict]:
-    """Pending targets whose next_probe_at has passed, best-evidenced first.
+    """Due pending targets, with bounded priority for explicit Chinese seeds.
 
     Matches discovery_targets_due_idx from migration 006. Ordering by
-    referring_feed_count before next_probe_at is deliberate: the probe budget is
-    the scarce resource, so it should always be spent on the hosts the most
-    distinct feeds vouch for.
+    referring_feed_count before next_probe_at spends the remaining probe budget
+    on hosts vouched for by distinct feeds. Reserved seeds never exceed half of
+    the batch and never fabricate evidence; a one-slot batch uses normal order.
     """
+    if limit <= 0:
+        return []
     now = datetime.now(timezone.utc).isoformat()
+    quota = min(chinese_seed_quota(), limit // 2)
+    hosts = chinese_seed_hosts()
+    seeds = []
+    if quota and hosts:
+        seeds = list((db.table("discovery_targets").select("*")
+                      .eq("status", "pending").lte("next_probe_at", now)
+                      .eq("source", "seed").in_("host", list(hosts))
+                      .order("next_probe_at").order("host").order("url")
+                      .limit(quota).execute()).data or [])
     result = (
         db.table("discovery_targets")
         .select("*")
@@ -95,7 +108,10 @@ def select_due_targets(db: "Client", limit: int) -> list[dict]:
         .limit(limit)
         .execute()
     )
-    return list(result.data or [])
+    seed_ids = {str(row["id"]) for row in seeds}
+    normal = [row for row in list(result.data or [])
+              if str(row["id"]) not in seed_ids]
+    return seeds + normal[:limit - len(seeds)]
 
 
 def next_probe_delay_hours(attempts: int) -> int:

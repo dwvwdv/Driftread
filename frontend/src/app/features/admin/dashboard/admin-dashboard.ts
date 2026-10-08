@@ -1,7 +1,13 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { AdminService } from '../../../services/admin';
-import { DiscoveryStats, FeedHealthSummary } from '../../../models';
+import {
+  ArticleStorageStats,
+  OperationsStatus,
+  DiscoveryStats,
+  FeedHealthSummary,
+} from '../../../models';
 import { ObCard } from '../../../ui/card/card';
 import { ObIcon } from '../../../ui/icon/icon';
 import { ObLoading, ObEmpty } from '../../../ui/state/state';
@@ -22,7 +28,7 @@ import { ToastService } from '../../../ui/toast/toast';
 @Component({
   selector: 'app-admin-dashboard',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, ObCard, ObIcon, ObLoading, ObEmpty, ObPageHeader, ObStat],
+  imports: [DatePipe, RouterLink, ObCard, ObIcon, ObLoading, ObEmpty, ObPageHeader, ObStat],
   templateUrl: './admin-dashboard.html',
   styleUrl: './admin-dashboard.scss',
 })
@@ -35,12 +41,65 @@ export class AdminDashboard implements OnInit {
   protected loading = signal(true);
   protected running = signal(false);
   protected refreshing = signal(false);
+  protected operations = signal<OperationsStatus | null>(null);
+  protected storage = signal<ArticleStorageStats | null>(null);
+  protected operationsLoading = signal(true);
+  protected storageLoading = signal(true);
+  private snapshotRequest = 0;
+
+  protected bytes(value: number): string {
+    return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+  }
+
+  protected runStatus(status: string): string {
+    return (
+      (
+        {
+          running: '執行中',
+          completed: '完成',
+          success: '完成',
+          succeeded: '完成',
+          cancelled: '已取消',
+          failed: '失敗',
+          partial: '部分失敗',
+          interrupted: '中斷',
+        } as Record<string, string>
+      )[status] ?? status
+    );
+  }
 
   ngOnInit(): void {
     this.load();
   }
 
   protected load(): void {
+    const request = ++this.snapshotRequest;
+    this.operationsLoading.set(true);
+    this.storageLoading.set(true);
+    this.admin.operations().subscribe({
+      next: (snapshot) => {
+        if (request !== this.snapshotRequest) return;
+        this.operations.set(snapshot);
+        this.operationsLoading.set(false);
+      },
+      error: () => {
+        if (request !== this.snapshotRequest) return;
+        this.operations.set(null);
+        this.operationsLoading.set(false);
+      },
+    });
+    this.admin.storageStats().subscribe({
+      next: (snapshot) => {
+        if (request !== this.snapshotRequest) return;
+        this.storage.set(snapshot);
+        this.storageLoading.set(false);
+      },
+      error: () => {
+        if (request !== this.snapshotRequest) return;
+        this.storage.set(null);
+        this.storageLoading.set(false);
+      },
+    });
     this.loading.set(true);
     this.admin.stats().subscribe({
       next: (stats) => {

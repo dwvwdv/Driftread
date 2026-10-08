@@ -166,7 +166,9 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
 
     assert fetched.parsed is not None
     before = count_articles(db, feed_id)
-    upserted = upsert_articles(db, feed_id, fetched.parsed.articles)
+    # Batch ingestion includes synchronous PostgREST calls and HTML parsing.
+    # Keep worker heartbeat and other async refreshes responsive during it.
+    upserted = await asyncio.to_thread(upsert_articles, db, feed_id, fetched.parsed.articles)
     total = count_articles(db, feed_id)
     new_articles = max(0, total - before)
     interval = next_interval(current_interval, "new" if new_articles else "unchanged")

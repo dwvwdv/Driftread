@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from services.discovery_config import auto_promote_min_referrers
+from services.source_identity import feed_url_aliases, is_comment_feed
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -91,6 +92,22 @@ def _row_or_none(result) -> dict | None:
     return result.data
 
 
+def _find_feed_alias(db: "Client", table: str, column: str, url: str) -> dict | None:
+    """Exact scalar filters preserve URLs containing PostgREST punctuation.
+
+    Prefer a manual rejection/hold if historical slash aliases both exist.
+    These rows stay untouched; identities here prevent further duplicates.
+    """
+    found = []
+    for alias in feed_url_aliases(url):
+        row = _row_or_none(db.table(table).select("*").eq(column, alias)
+                           .maybe_single().execute())
+        if row:
+            found.append(row)
+    return next((row for row in found if row.get("status") in {"rejected", "held"}),
+                found[0] if found else None)
+
+
 def record_candidates(
     db: "Client", target: dict, candidates: list["DiscoveryCandidate"]
 ) -> tuple[int, int]:
@@ -108,16 +125,10 @@ def record_candidates(
 
     for candidate in candidates:
         feed_url = sanitize_http_url(getattr(candidate, "feed_url", None))
-        if not feed_url:
+        if not feed_url or is_comment_feed(feed_url):
             continue
 
-        existing = _row_or_none(
-            db.table("discovery_candidates")
-            .select("id,status")
-            .eq("feed_url", feed_url)
-            .maybe_single()
-            .execute()
-        )
+        existing = _find_feed_alias(db, "discovery_candidates", "feed_url", feed_url)
         if existing:
             # Only ever refresh last_seen_at, and only while still pending. An
             # upsert here would flip a 'rejected' row back to 'pending' and
@@ -129,9 +140,7 @@ def record_candidates(
             seen += 1
             continue
 
-        already_a_feed = _row_or_none(
-            db.table("feeds").select("id").eq("url", feed_url).maybe_single().execute()
-        )
+        already_a_feed = _find_feed_alias(db, "feeds", "url", feed_url)
         payload = {
             "target_id": target_id,
             "feed_url": feed_url,
@@ -292,7 +301,7 @@ def promote_candidate(
 ) -> dict | None:
     """Create the `feeds` row for an approved candidate. Never fetches."""
     feed_url = sanitize_http_url(candidate.get("feed_url"))
-    if not feed_url:
+    if not feed_url or is_comment_feed(feed_url):
         return None
 
     # A feed on this URL may already exist — imported by hand, by the extension,
@@ -300,9 +309,7 @@ def promote_candidate(
     # Upserting instead would overwrite a curated title, website, category and
     # tags with scraped values and this call's (probably empty) defaults, so an
     # otherwise harmless duplicate approval would quietly damage the catalog.
-    existing = _row_or_none(
-        db.table("feeds").select("*").eq("url", feed_url).maybe_single().execute()
-    )
+    existing = _find_feed_alias(db, "feeds", "url", feed_url)
     if existing:
         _mark_imported(db, candidate["id"], existing["id"])
         return existing
@@ -416,6 +423,12 @@ def auto_promote_due(db: "Client", limit: int = 50) -> list[dict]:
     )
     promoted = []
     for candidate in list(rows.data or []):
+        # Historical slash duplicates may predate identity checks. Do not let
+        # their pending row bypass a reviewer-held or rejected counterpart.
+        identity = _find_feed_alias(db, "discovery_candidates", "feed_url",
+                                    candidate["feed_url"])
+        if identity and identity.get("status") in {"held", "rejected"}:
+            continue
         feed = promote_candidate(db, candidate)
         if feed:
             promoted.append(feed)
