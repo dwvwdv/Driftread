@@ -29,6 +29,11 @@ export const ADMIN_ROUTES: Routes = [
     loadComponent: () => import('./frontier/admin-frontier').then((m) => m.AdminFrontier),
   },
   {
+    path: 'settings',
+    title: '全域設定 — Driftread 後台',
+    loadComponent: () => import('./settings/admin-settings').then((m) => m.AdminSettings),
+  },
+  {
     path: 'import',
     title: '匯入 — Driftread 後台',
     loadComponent: () => import('./import/admin-import').then((m) => m.AdminImport),

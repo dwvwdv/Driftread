@@ -79,4 +79,38 @@ describe('AdminService 409 handling', () => {
       { tone: 'danger', text: '加入待探測失敗：Resource already exists' },
     ]);
   });
+
+  it('fetches read-only operation and storage snapshots with the admin key', () => {
+    const service = TestBed.inject(AdminService);
+    service.operations().subscribe();
+    service.storageStats().subscribe();
+    for (const path of ['/admin/operations', '/admin/retention/stats']) {
+      const request = httpMock.expectOne((req) => req.url.endsWith(path));
+      expect(request.request.method).toBe('GET');
+      expect(request.request.headers.get('x-api-key')).toBe('test-key');
+      request.flush({});
+    }
+  });
+
+  it('reads settings and writes a typed setting with a version precondition', () => {
+    const service = TestBed.inject(AdminService);
+    service.globalSettings().subscribe();
+    const read = httpMock.expectOne((req) => req.url.endsWith('/admin/settings'));
+    expect(read.request.method).toBe('GET');
+    expect(read.request.headers.get('x-api-key')).toBe('test-key');
+    read.flush({ settings: [] });
+    service.saveGlobalSetting('discovery.profiles', { profiles: [] }, 3).subscribe();
+    const write = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/settings/discovery.profiles'),
+    );
+    expect(write.request.method).toBe('PUT');
+    expect(write.request.headers.get('x-api-key')).toBe('test-key');
+    expect(write.request.body).toEqual({ value: { profiles: [] }, expected_version: 3 });
+    write.flush({
+      key: 'discovery.profiles',
+      value: { profiles: [] },
+      version: 4,
+      updated_at: null,
+    });
+  });
 });

@@ -1,0 +1,175 @@
+<ob-page-header kicker="SETTINGS" heading="全域設定" subtitle="管理整個服務共用的設定" />
+<h2 class="section-heading">探測方向</h2>
+<p class="hint">
+  以起始網站引導探索指定語言與類別，讓新來源更均衡；語言與類別作為方向設定，仍需審核來源內容。清單變更須按「儲存全域設定」才會生效。首次使用可直接按「套用目前設定」，將啟用方向的起始網站加入待探測佇列。
+</p>
+@if (conflict()) {
+  <p class="conflict" role="alert">
+    設定已被其他管理者修改。你的變更已保留，請先複製需要保留的內容，再重新載入最新設定。
+  </p>
+}
+<div class="save-bar">
+  <button
+    type="button"
+    class="ob-btn ob-btn--primary ob-btn--sm"
+    [disabled]="saving() || loading() || loadFailed() || conflict()"
+    (click)="saveSettings()"
+  >
+    {{ saving() ? '儲存中…' : dirty() ? '儲存全域設定' : '套用目前設定' }}
+  </button>
+  <span class="hint">{{ dirty() ? '有尚未儲存的變更' : '目前沒有待儲存的變更' }}</span>
+</div>
+
+<div class="cols">
+  <ob-card [heading]="editingId ? '編輯擷取方向' : '新增擷取方向'" meta="PREFERENCES">
+    <form (ngSubmit)="applyDraft()">
+      <fieldset [disabled]="saving() || loading() || loadFailed()">
+        <label class="field"
+          ><span>名稱</span>
+          <input
+            class="ob-input"
+            name="name"
+            maxlength="100"
+            required
+            [(ngModel)]="draft.name"
+            placeholder="例如：中文科學"
+          />
+        </label>
+        <label class="field"
+          ><span>語言代碼</span>
+          <input
+            class="ob-input"
+            name="language"
+            maxlength="35"
+            required
+            [(ngModel)]="draft.language"
+            placeholder="zh"
+          />
+          <span class="hint">中文使用 zh，英文使用 en。</span>
+        </label>
+        <label class="field"
+          ><span>內容類別</span>
+          <input
+            class="ob-input"
+            name="category"
+            maxlength="100"
+            [(ngModel)]="draft.category"
+            placeholder="例如：科技、科學、文化；可留空"
+          />
+        </label>
+        <label class="field"
+          ><span>每輪優先探測名額</span>
+          <input
+            class="ob-input"
+            name="quota"
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            required
+            [(ngModel)]="draft.quota"
+          />
+          <span class="hint">0–100 個。各方向共用最多一半的每輪探測名額；超過時會輪流分配。</span>
+        </label>
+        <label class="field"
+          ><span>起始網站</span>
+          <textarea
+            class="ob-textarea"
+            name="seedUrls"
+            rows="6"
+            [(ngModel)]="seedUrls"
+            placeholder="https://example.com&#10;https://another.example"
+          ></textarea>
+          <span class="hint"
+            >一行一個 http 或 https 網址，最多 30
+            個。儲存後會加入啟用方向的新網址，下一輪開始使用設定。</span
+          >
+        </label>
+        <label class="field"
+          ><span
+            ><input name="enabled" type="checkbox" [(ngModel)]="draft.enabled" /> 啟用這個方向</span
+          ></label
+        >
+        <div class="actions">
+          <button type="submit" class="ob-btn ob-btn--primary ob-btn--sm" [disabled]="saving()">
+            {{ editingId ? '更新清單' : '加入清單' }}
+          </button>
+          @if (editingId || draft.name || seedUrls) {
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              [disabled]="saving()"
+              (click)="resetForm()"
+            >
+              清除表單
+            </button>
+          }
+        </div>
+      </fieldset>
+    </form>
+  </ob-card>
+
+  <ob-card heading="目前擷取方向" meta="PROFILES">
+    <p class="hint">
+      停用只會停止這個方向的優先探測；已加入的信息源仍會繼續更新。找到的新來源依既有審核規則處理。
+    </p>
+    @if (loading()) {
+      <ob-loading label="讀取擷取方向中" />
+    } @else if (loadFailed()) {
+      <ob-empty message="無法讀取擷取方向，請重新整理再試。" />
+    } @else if (profiles().length === 0) {
+      <ob-empty message="尚未設定擷取方向。" />
+    } @else {
+      @for (profile of profiles(); track profile.id) {
+        <article class="profile">
+          <h3>
+            {{ profile.name }}
+            <span class="ob-chip" [class.ob-chip--success]="profile.enabled">{{
+              profile.enabled ? '啟用中' : '已停用'
+            }}</span>
+          </h3>
+          <p class="hint">
+            {{ profile.language }} · {{ profile.category || '不限類別' }} · 每輪
+            {{ profile.quota }} 個優先名額 · {{ profile.seed_urls.length }} 個起始網站
+          </p>
+          <div class="actions">
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              [disabled]="saving() || loading()"
+              (click)="edit(profile)"
+            >
+              編輯
+            </button>
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              [disabled]="saving() || loading()"
+              (click)="toggle(profile)"
+            >
+              {{ profile.enabled ? '停用' : '啟用' }}
+            </button>
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              [disabled]="saving() || loading()"
+              (click)="remove(profile)"
+            >
+              刪除
+            </button>
+          </div>
+        </article>
+      }
+    }
+    <div cardActions>
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="loading() || saving()"
+        (click)="load()"
+      >
+        重新整理
+      </button>
+    </div>
+  </ob-card>
+</div>

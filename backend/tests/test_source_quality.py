@@ -1,0 +1,159 @@
+from types import SimpleNamespace
+
+import pytest
+
+from services.discovery_candidates import (
+    approve_candidate, auto_promote_due, promote_approved, promote_candidate, record_candidates,
+)
+from services.discovery_probe import select_due_targets
+from services.source_identity import feed_url_aliases, is_comment_feed
+from tests.discovery_fakes import FakeDB
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.org/comments/feed/", "https://example.org/?feed=comments-rss2",
+    "https://example.org/comments.xml", "https://example.org/feed/?withcomments=1",
+    "https://example.org/feed/comments/",
+])
+def test_comment_feeds_never_enter_review_or_promote(url):
+    assert is_comment_feed(url)
+    db = FakeDB(discovery_candidates=[], feeds=[])
+    assert record_candidates(db, {"id": "target"},
+                             [SimpleNamespace(feed_url=url)]) == (0, 0)
+    assert promote_candidate(db, {"id": "candidate", "feed_url": url}) is None
+    assert db.ops == []
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.org/commentary/feed", "https://example.org/news/feed/",
+    "https://example.org/feed/?withcomments=0",
+])
+def test_editorial_feeds_are_not_comment_feeds(url):
+    assert not is_comment_feed(url)
+
+
+@pytest.mark.parametrize("status", ["rejected", "held"])
+def test_alias_cannot_circumvent_manual_decision(status):
+    existing = {"id": "old", "feed_url": "https://example.org/feed/", "status": status}
+    db = FakeDB(discovery_candidates=[existing], feeds=[])
+    assert record_candidates(db, {"id": "target"},
+                             [SimpleNamespace(feed_url="https://example.org/feed")]) == (0, 1)
+    assert existing["status"] == status
+    assert len(db.rows("discovery_candidates")) == 1
+
+
+def test_alias_links_existing_curated_feed_without_overwrite():
+    feed = {"id": "feed", "url": "https://example.org/rss/", "title": "Curated"}
+    candidate = {"id": "candidate", "feed_url": "https://example.org/rss", "status": "approved"}
+    db = FakeDB(feeds=[feed], discovery_candidates=[candidate])
+    assert promote_candidate(db, candidate)["id"] == "feed"
+    assert feed["title"] == "Curated"
+    assert len(db.rows("feeds")) == 1
+    assert candidate["status"] == "imported"
+
+
+def test_historical_pending_alias_cannot_auto_promote_past_hold(monkeypatch):
+    monkeypatch.setenv("FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS", "2")
+    db = FakeDB(feeds=[], discovery_candidates=[
+        {"id": "pending", "feed_url": "https://example.org/feed",
+         "status": "pending", "referring_feed_count": 10},
+        {"id": "held", "feed_url": "https://example.org/feed/", "status": "held"},
+    ])
+    assert auto_promote_due(db) == []
+    assert db.rows("feeds") == []
+
+
+def test_manual_comment_approval_never_records_an_approval():
+    candidate = {"id": "comment", "feed_url": "https://example.org/comments/feed/",
+                 "status": "pending"}
+    db = FakeDB(feeds=[], discovery_candidates=[candidate])
+    assert approve_candidate(db, "comment") == (None, "comment_feed")
+    assert candidate["status"] == "pending"
+    assert not db.updates and not db.upserts
+
+
+def test_legacy_approved_comments_are_retired_and_do_not_fill_retry_batch():
+    comment = {"id": "comment", "feed_url": "https://example.org/comments/feed/",
+               "status": "approved"}
+    article = {"id": "article", "feed_url": "https://example.org/feed", "status": "approved"}
+    db = FakeDB(feeds=[], discovery_candidates=[comment, article])
+    assert promote_approved(db, limit=1) == []
+    assert comment["status"] == "rejected"
+    assert promote_approved(db, limit=1)[0]["url"] == article["feed_url"]
+    assert article["status"] == "imported"
+
+
+@pytest.mark.parametrize("status", ["held", "rejected"])
+def test_manual_pending_alias_cannot_bypass_existing_review(status):
+    pending = {"id": "pending", "feed_url": "https://example.org/feed", "status": "pending"}
+    reviewed = {"id": "reviewed", "feed_url": "https://example.org/feed/", "status": status}
+    db = FakeDB(feeds=[], discovery_candidates=[pending, reviewed])
+    assert approve_candidate(db, "pending") == (None, "alias_blocked")
+    assert pending["status"] == "pending" and reviewed["status"] == status
+    assert not db.updates and not db.upserts
+
+
+def test_explicit_approval_of_held_row_itself_still_imports():
+    candidate = {"id": "held", "feed_url": "https://example.org/feed/", "status": "held"}
+    db = FakeDB(feeds=[], discovery_candidates=[candidate])
+    feed, outcome = approve_candidate(db, "held")
+    assert outcome == "imported" and feed["url"] == candidate["feed_url"]
+    assert candidate["status"] == "imported"
+
+
+@pytest.mark.parametrize("status", ["held", "rejected"])
+def test_legacy_approved_alias_cannot_bypass_existing_review(status):
+    approved = {"id": "approved", "feed_url": "https://example.org/feed", "status": "approved"}
+    reviewed = {"id": "reviewed", "feed_url": "https://example.org/feed/", "status": status}
+    db = FakeDB(feeds=[], discovery_candidates=[approved, reviewed])
+    assert promote_approved(db) == []
+    assert approved["status"] == status and reviewed["status"] == status
+    assert db.rows("feeds") == []
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.org/a/", "https://example.org/feed?category=1",
+    "https://example.org/feed#different", "http://other.org/custom.xml",
+])
+def test_opaque_feeds_stay_distinct(url):
+    assert feed_url_aliases(url) == (url,)
+
+
+def _target(id, host="ordinary.org", source="article_link", count=10, **extra):
+    return {"id": id, "host": host, "url": f"https://{host}/{id}",
+            "source": source, "referring_feed_count": count,
+            "status": "pending", "next_probe_at": "2020-01-01T00:00:00+00:00", **extra}
+
+
+def _settings(enabled=True, quota=99):
+    return [{"key": "discovery.profiles", "version": 1,
+             "value": {"profiles": [{"id": "science", "name": "Science", "language": "zh",
+                                     "category": "science", "enabled": enabled, "quota": quota,
+                                     "seed_urls": ["https://pansci.asia/"]}]}}]
+
+
+def test_chinese_seeds_get_bounded_slots_without_faking_referrers():
+    normal = [_target(f"normal{i}") for i in range(5)]
+    seeds = [_target(f"seed{i}", "pansci.asia", "seed", 0) for i in range(5)]
+    db = FakeDB(discovery_targets=normal + seeds, app_settings=_settings())
+    result = select_due_targets(db, 4)
+    assert [row["id"] for row in result] == ["seed0", "seed1", "normal0", "normal1"]
+    assert all(row["referring_feed_count"] == 0 for row in result[:2])
+    assert not db.updates
+
+
+def test_priority_never_revives_terminal_or_future_seeds():
+    db = FakeDB(discovery_targets=[
+        _target("normal"),
+        _target("rejected", "pansci.asia", "seed", 0, status="rejected"),
+        _target("future", "pansci.asia", "seed", 0,
+                next_probe_at="2099-01-01T00:00:00+00:00"),
+    ], app_settings=_settings())
+    assert [row["id"] for row in select_due_targets(db, 4)] == ["normal"]
+
+
+def test_profile_quota_zero_keeps_normal_probe_order():
+    db = FakeDB(discovery_targets=[_target("normal"),
+                                   _target("seed", "pansci.asia", "seed", 0)],
+                app_settings=_settings(quota=0))
+    assert [row["id"] for row in select_due_targets(db, 1)] == ["normal"]

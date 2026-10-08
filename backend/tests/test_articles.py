@@ -37,7 +37,7 @@ def test_get_article_does_not_wildcard_select(client):
     c.get(f"/api/articles/{uuid4()}")
 
     select_args = mock_db.table.return_value.select.call_args[0]
-    assert select_args == ("id,feed_id,title,url,summary,content,author,published_at,fetched_at",)
+    assert select_args == ("id,feed_id,title,url,summary,content,author,published_at,fetched_at,content_compacted_at",)
 
 
 def _token() -> str:

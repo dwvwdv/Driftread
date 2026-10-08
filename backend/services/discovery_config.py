@@ -14,6 +14,8 @@ free.
 """
 from __future__ import annotations
 
+import os
+
 from env_utils import env_flag, env_float, env_int
 
 

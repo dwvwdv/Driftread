@@ -27,6 +27,7 @@ export interface ArticleSummary {
 export interface Article extends ArticleSummary {
   content: string | null;
   fetched_at: string;
+  content_compacted_at?: string | null;
 }
 
 export interface FeedWithArticles extends Feed {
@@ -340,4 +341,72 @@ export interface DiscoveryCycleSummary {
   probe: Record<string, number>;
   auto_promoted: number;
   imported: number;
+}
+
+
+export interface WorkerHeartbeat {
+  worker_id: string;
+  hostname: string;
+  heartbeat_at: string;
+  status: string;
+  age_seconds: number;
+  stale: boolean;
+}
+
+export interface WorkerRun {
+  id: string;
+  worker_id: string;
+  kind: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  summary: Record<string, unknown>;
+  error: string | null;
+}
+
+export interface OperationsStatus {
+  observed_at: string;
+  stale_after_seconds: number;
+  retention_days: number;
+  workers: WorkerHeartbeat[];
+  recent_runs: WorkerRun[];
+  recent_failures: number;
+}
+
+export interface ArticleStorageStats {
+  article_count: number;
+  full_content_count: number;
+  summary_only_count: number;
+  pending_discovery_count: number;
+  compacted_count: number;
+  table_bytes: number;
+  index_bytes: number;
+  total_bytes: number;
+  database_bytes: number;
+}
+
+
+export interface DiscoveryProfile {
+  id: string;
+  name: string;
+  language: string;
+  category: string | null;
+  enabled: boolean;
+  quota: number;
+  seed_urls: string[];
+}
+
+export interface DiscoveryProfilesValue {
+  profiles: DiscoveryProfile[];
+}
+
+export interface GlobalSetting<T = unknown> {
+  key: string;
+  value: T;
+  version: number;
+  updated_at: string | null;
+}
+
+export interface GlobalSettingsResponse {
+  settings: GlobalSetting[];
 }

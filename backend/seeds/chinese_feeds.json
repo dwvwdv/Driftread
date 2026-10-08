@@ -1,0 +1,63 @@
+{
+  "feeds": [
+    {
+      "title": "TechNews 科技新報",
+      "url": "https://technews.tw/feed/",
+      "language": "zh",
+      "category": "科技",
+      "tags": [
+        "繁體中文",
+        "台灣",
+        "科技",
+        "商業"
+      ]
+    },
+    {
+      "title": "INSIDE",
+      "url": "https://www.inside.com.tw/feed/rss",
+      "language": "zh",
+      "category": "商業",
+      "tags": [
+        "繁體中文",
+        "台灣",
+        "創業",
+        "科技"
+      ]
+    },
+    {
+      "title": "PanSci 泛科學",
+      "url": "https://pansci.asia/feed/",
+      "language": "zh",
+      "category": "科學",
+      "tags": [
+        "繁體中文",
+        "台灣",
+        "科學",
+        "健康"
+      ]
+    },
+    {
+      "title": "報導者 The Reporter",
+      "url": "https://www.twreporter.org/a/rss2.xml",
+      "language": "zh",
+      "category": "社會",
+      "tags": [
+        "繁體中文",
+        "台灣",
+        "深度報導"
+      ]
+    },
+    {
+      "title": "Openbook 閱讀誌",
+      "url": "https://www.openbook.org.tw/rss.xml",
+      "language": "zh",
+      "category": "文化",
+      "tags": [
+        "繁體中文",
+        "台灣",
+        "閱讀",
+        "書評"
+      ]
+    }
+  ]
+}

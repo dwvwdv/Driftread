@@ -47,6 +47,7 @@ def _db(targets=None, **extra):
         discovery_targets=targets if targets is not None else [],
         discovery_candidates=[],
         feeds=[],
+        app_settings=[{"key": "discovery.profiles", "value": {"profiles": []}, "version": 1}],
         **extra,
     )
 
@@ -93,7 +94,7 @@ def test_next_probe_delay_is_capped(monkeypatch):
 
 # ── due queue ────────────────────────────────────────────────────────────────
 
-def test_select_due_targets_matches_the_partial_index():
+def test_select_due_targets_matches_the_partial_index(monkeypatch):
     db = _db()
     select_due_targets(db, 20)
     assert db.op_names("discovery_targets") == [

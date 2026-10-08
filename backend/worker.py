@@ -5,16 +5,16 @@ service in docker-compose.yml). Keeping it out of the API process means its work
 doesn't compete with request handling and the API can be scaled to multiple
 replicas without every replica re-fetching the same feeds.
 
-Two independent loops share one event loop and one stop signal:
+Three scheduler loops share one event loop and one stop signal:
 
 - **refresh** polls the due queue so imported feeds keep getting new articles;
 - **discovery** mines the article corpus for outbound links, probes the resulting
-  hosts for feeds, and fills the review queue.
+  hosts for feeds, and fills the review queue;
+- **retention**, opt-in only, compacts a bounded batch of eligible old bodies.
 
-They coexist safely because every wait in both is `await asyncio.sleep` — a slow
-discovery cycle never delays a refresh tick. The one shared-loop hazard is the
-CPU-bound HTML parsing in link_harvest, which is bounded there (SoupStrainer, a
-512 KiB slice per article, a yield between articles).
+Network waits yield to other loops and a separate heartbeat task. Synchronous
+ingestion database calls and bounded HTML parsing can still briefly block this
+shared event loop; the heartbeat does not claim isolation from those bursts.
 
 Deliberately does not run migrations — the API container does that on startup,
 and the worker waits for it via compose's `depends_on: service_healthy`.
@@ -26,12 +26,17 @@ import logging
 import os
 import signal
 import sys
+from dataclasses import asdict
 
 from database import get_client
 from services.discovery import run_cycle
 from services.discovery_config import discovery_enabled
 from services.discovery_config import tick_seconds as discovery_tick_seconds
 from services.feed_refresh import refresh_due, refresh_enabled, summarize, tick_seconds
+from services.operations import OperationsRecorder
+from services.retention import (
+    retention_enabled, scheduled_compaction, tick_seconds as retention_tick_seconds,
+)
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -49,69 +54,69 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
             signal.signal(sig, lambda *_: stop.set())
 
 
-async def run_forever(stop: asyncio.Event | None = None) -> None:
-    """Poll the due queue until signalled to stop."""
-    stop = stop or asyncio.Event()
-    interval = tick_seconds()
+async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summary_of) -> None:
     db = get_client()
-    logger.info("Feed refresh worker started (tick=%ds)", interval)
+    recorder = OperationsRecorder(db, kind)
+    done = asyncio.Event()
+    pulse = asyncio.create_task(recorder.pulse(done))
+    logger.info("%s worker started (tick=%ds)", kind, interval)
+    try:
+        while not stop.is_set():
+            run_id = await recorder.begin()
+            try:
+                result = await action(db)
+                summary = summary_of(result)
+                if kind == "refresh":
+                    failed = summary.get("failed", 0)
+                    errors = []
+                elif kind == "discovery":
+                    failed = sum(summary.get(stage, {}).get("failed", 0)
+                                 for stage in ("directory", "harvest", "probe"))
+                    errors = summary.get("errors", [])
+                else:  # Retention RPC errors raise; successful bounded writes have no stages.
+                    failed = 0
+                    errors = []
+                await recorder.finish(run_id, "partial" if failed or errors else "succeeded",
+                                      summary, "; ".join(errors) or None)
+                logger.info("%s cycle: %s", kind, summary)
+            except asyncio.CancelledError:
+                await recorder.finish(run_id, "cancelled")
+                raise
+            except Exception as exc:
+                await recorder.finish(run_id, "failed", error=type(exc).__name__)
+                logger.exception("%s cycle failed", kind)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        done.set()
+        await pulse
+        logger.info("%s worker stopped", kind)
 
-    while not stop.is_set():
-        try:
-            results = await refresh_due(db)
-            if results:
-                logger.info("Refresh cycle: %s", summarize(results))
-            else:
-                logger.debug("Refresh cycle: no feeds due")
-        except Exception:
-            # A cycle must never kill the process: restarting the container on a
-            # transient Supabase blip would just loop, and compose's restart
-            # policy gives no backoff. Log and wait for the next tick.
-            logger.exception("Refresh cycle failed")
 
-        # wait_for on the stop event rather than plain sleep, so SIGTERM takes
-        # effect immediately instead of after up to a full tick.
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=interval)
-        except asyncio.TimeoutError:
-            pass
-
-    logger.info("Feed refresh worker stopped")
+async def run_forever(stop: asyncio.Event | None = None) -> None:
+    """Poll due feeds while persisting cycle outcomes and an independent heartbeat."""
+    await _run_loop(stop or asyncio.Event(), "refresh", tick_seconds(), refresh_due, summarize)
 
 
 async def run_discovery_forever(stop: asyncio.Event | None = None) -> None:
-    """Run a discovery cycle on a timer until signalled to stop."""
-    stop = stop or asyncio.Event()
-    interval = discovery_tick_seconds()
-    db = get_client()
-    logger.info("Discovery worker started (tick=%ds)", interval)
+    """Discovery is independent of refresh, including its ledger and heartbeat."""
+    await _run_loop(stop or asyncio.Event(), "discovery", discovery_tick_seconds(), run_cycle, asdict)
 
-    while not stop.is_set():
-        try:
-            summary = await run_cycle(db)
-            logger.info(
-                "Discovery cycle: directory=%s harvest=%s probe=%s "
-                "auto_promoted=%d imported=%d",
-                summary.directory, summary.harvest, summary.probe,
-                summary.auto_promoted, summary.imported,
-            )
-        except Exception:
-            # Same reasoning as the refresh loop: a cycle must never kill the
-            # process, because compose's restart policy gives no backoff.
-            logger.exception("Discovery cycle failed")
 
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=interval)
-        except asyncio.TimeoutError:
-            pass
-
-    logger.info("Discovery worker stopped")
+async def run_retention_forever(stop: asyncio.Event | None = None) -> None:
+    """Opt-in bounded compaction uses its own timer and ledger, like refresh."""
+    await _run_loop(
+        stop or asyncio.Event(), "retention", retention_tick_seconds(),
+        scheduled_compaction, lambda result: result.model_dump() if result else {},
+    )
 
 
 async def main() -> int:
-    if not refresh_enabled() and not discovery_enabled():
+    if not refresh_enabled() and not discovery_enabled() and not retention_enabled():
         logger.info(
-            "FEED_REFRESH_ENABLED and FEED_DISCOVERY_ENABLED are both false — "
+            "Refresh, discovery and article retention are disabled — "
             "worker exiting without polling"
         )
         return 0
@@ -127,6 +132,8 @@ async def main() -> int:
         loops.append(run_forever(stop))
     if discovery_enabled():
         loops.append(run_discovery_forever(stop))
+    if retention_enabled():
+        loops.append(run_retention_forever(stop))
 
     # return_exceptions=True is load-bearing: a bare gather propagates the first
     # exception and leaves the sibling task running and unawaited — an orphaned

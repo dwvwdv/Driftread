@@ -79,7 +79,7 @@ class FakeQuery:
         self._payload = rows if isinstance(rows, list) else [rows]
         return self
 
-    def update(self, payload: dict) -> "FakeQuery":
+    def update(self, payload: dict, returning: str | None = None) -> "FakeQuery":
         self._record("update", payload)
         self._mode = "update"
         self._payload = payload

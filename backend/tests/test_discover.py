@@ -55,6 +55,9 @@ def test_discover_import_succeeds_for_authenticated_user(client):
     mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(
         data=[feed_row]
     )
+    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        count=37, data=[]
+    )
     mock_db.table.return_value.update.return_value.eq.return_value.execute.return_value = (
         MagicMock(data=[])
     )
@@ -84,6 +87,11 @@ def test_discover_import_succeeds_for_authenticated_user(client):
 
     assert resp.status_code == 200
     assert resp.json()["id"] == feed_row["id"]
+    assert resp.json()["article_count"] == 37
+    assert resp.json()["last_fetched_at"]
+    catalog_update = mock_db.table.return_value.update.call_args.args[0]
+    assert catalog_update["article_count"] == 37
+    mock_db.table.return_value.select.assert_called_once_with("id", count="exact", head=True)
     # Auto-subscribes the importer, unconditionally now that the caller is
     # always a real signed-in user.
     user_feeds_upsert = mock_db.table.return_value.upsert.call_args_list

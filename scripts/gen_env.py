@@ -54,6 +54,10 @@ OPTIONAL_DISCOVERY_DEFAULTS = {
 # Read by backend/worker.py. Optional, with a code-level default.
 OPTIONAL_MISC_DEFAULTS = {
     "LOG_LEVEL": "INFO",
+    "ARTICLE_RETENTION_ENABLED": "false",
+    "ARTICLE_RETENTION_DAYS": "30",
+    "ARTICLE_RETENTION_BATCH_SIZE": "200",
+    "ARTICLE_RETENTION_INTERVAL_MINUTES": "1440",
 }
 
 

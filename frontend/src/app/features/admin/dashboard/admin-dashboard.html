@@ -38,6 +38,101 @@
 }
 
 <section class="block">
+  <ob-card heading="排程器狀態" meta="WORKERS">
+    @if (operationsLoading()) {
+      <ob-loading label="讀取排程狀態中" />
+    } @else if (operations(); as ops) {
+      <p class="hint">
+        觀測時間：{{ ops.observed_at | date: 'yyyy/MM/dd HH:mm:ss' }}。超過
+        {{ ops.stale_after_seconds }} 秒未收到心跳會標示過期。
+      </p>
+      @if (ops.workers.length === 0) {
+        <ob-empty message="狀態未知：尚無排程器心跳，請確認 worker 與監測設定。" />
+      } @else {
+        <ul class="operation-list">
+          @for (worker of ops.workers; track worker.worker_id) {
+            <li>
+              <strong>{{ worker.hostname }}</strong>
+              <span [class.warning]="worker.stale || worker.status !== 'running'">
+                {{
+                  worker.stale
+                    ? '心跳過期'
+                    : worker.status === 'running'
+                      ? '運作中'
+                      : worker.status === 'stopped'
+                        ? '已停止'
+                        : '狀態未知'
+                }}
+              </span>
+              <span class="hint"
+                >最近心跳 {{ worker.heartbeat_at | date: 'yyyy/MM/dd HH:mm:ss' }}</span
+              >
+            </li>
+          }
+        </ul>
+      }
+      <p class="hint">
+        最近 {{ ops.recent_runs.length }} 輪：{{
+          ops.recent_failures
+        }}
+        輪失敗、部分失敗或中斷；紀錄保留 {{ ops.retention_days }} 天。
+      </p>
+      @if (ops.recent_runs.length === 0) {
+        <ob-empty message="尚無執行紀錄。" />
+      } @else {
+        <ul class="operation-list">
+          @for (run of ops.recent_runs; track run.id) {
+            <li>
+              <strong>{{ run.kind }}</strong>
+              <span [class.warning]="['failed', 'partial', 'interrupted'].includes(run.status)">{{
+                runStatus(run.status)
+              }}</span>
+              <span class="hint"
+                >開始 {{ run.started_at | date: 'yyyy/MM/dd HH:mm:ss' }}
+                @if (run.finished_at) {
+                  · 結束 {{ run.finished_at | date: 'yyyy/MM/dd HH:mm:ss' }}
+                }
+              </span>
+              @if (run.error) {
+                <span class="warning">{{ run.error }}</span>
+              }
+            </li>
+          }
+        </ul>
+      }
+    } @else {
+      <ob-empty message="排程器狀態未知：目前無法取得監測資料。" />
+    }
+  </ob-card>
+</section>
+
+<section class="block">
+  <ob-card heading="文章儲存量" meta="STORAGE SNAPSHOT">
+    @if (storageLoading()) {
+      <ob-loading label="讀取儲存統計中" />
+    } @else if (storage(); as snapshot) {
+      <div class="stats">
+        <ob-stat label="文章總數" [value]="snapshot.article_count" />
+        <ob-stat label="保留正文" [value]="snapshot.full_content_count" />
+        <ob-stat label="只有摘要" [value]="snapshot.summary_only_count" />
+        <ob-stat label="待抽取外連" [value]="snapshot.pending_discovery_count" tone="warning" />
+        <ob-stat label="已縮減正文" [value]="snapshot.compacted_count" />
+        <ob-stat label="文章資料" [value]="bytes(snapshot.table_bytes)" />
+        <ob-stat label="文章索引" [value]="bytes(snapshot.index_bytes)" />
+        <ob-stat label="文章合計" [value]="bytes(snapshot.total_bytes)" tone="accent" />
+        <ob-stat label="資料庫總量" [value]="bytes(snapshot.database_bytes)" />
+      </div>
+      <p class="hint">
+        目前用量快照；文章合計包含資料與索引，資料庫總量不含 Storage
+        檔案。單次快照無法推算成長率或清理後可回收空間。
+      </p>
+    } @else {
+      <ob-empty message="儲存量未知：目前無法取得統計資料。" />
+    }
+  </ob-card>
+</section>
+
+<section class="block">
   <ob-card heading="手動觸發" meta="ON DEMAND">
     <p class="hint">
       兩者平常由排程器自動執行，這裡只是讓你不必等下一輪。自主發現若以
