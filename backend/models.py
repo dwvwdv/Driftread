@@ -3,10 +3,42 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 
-class Feed(BaseModel):
+ParticipationMode = Literal["normal", "signal_only", "private"]
+FulltextPolicy = Literal["rss", "summary_only"]
+
+
+class SourceMetadata(BaseModel):
+    first_party: bool = False
+    participation_mode: ParticipationMode = "normal"
+    signal_group: str | None = Field(default=None, max_length=100)
+    fulltext_policy: FulltextPolicy = "rss"
+
+    @field_validator("signal_group")
+    @classmethod
+    def normalize_signal_group(cls, value: str | None) -> str | None:
+        return value.strip().casefold() or None if value is not None else None
+
+
+class SourceMetadataUpdate(BaseModel):
+    first_party: bool | None = None
+    participation_mode: ParticipationMode | None = None
+    signal_group: str | None = Field(default=None, max_length=100)
+    fulltext_policy: FulltextPolicy | None = None
+
+    @field_validator("first_party", "participation_mode", "fulltext_policy")
+    @classmethod
+    def reject_explicit_null(cls, value):
+        if value is None:
+            raise ValueError("This field cannot be null")
+        return value
+
+    _normalize_group = field_validator("signal_group")(SourceMetadata.normalize_signal_group.__func__)
+
+
+class Feed(SourceMetadata):
     id: UUID
     title: str
     url: str
@@ -17,6 +49,8 @@ class Feed(BaseModel):
     tags: list[str] = []
     article_count: int = 0
     last_fetched_at: datetime | None = None
+    last_fetch_at: datetime | None = None
+    last_ok_at: datetime | None = None
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -47,7 +81,7 @@ class SubscriptionUpdate(BaseModel):
     muted: bool | None = None
 
 
-class FeedCreate(BaseModel):
+class FeedCreate(SourceMetadata):
     title: str
     url: str
     description: str | None = None

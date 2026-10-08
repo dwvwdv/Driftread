@@ -12,6 +12,7 @@ from database import get_client
 from models import OpmlImportResult
 from rss_parser import fetch_and_parse
 from services.feed_discovery import DiscoveryError, validate_fetch_url
+from services.source_visibility import import_readable_source
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -89,11 +90,12 @@ async def import_opml(
             # request. Mark each feed due so the scheduler fetches it next pass.
             "next_fetch_at": datetime.now(timezone.utc).isoformat(),
         }
-        result = db.table("feeds").upsert(feed_data, on_conflict="url").execute()
-        if not result.data:
-            failed.append(f"{feed_url}: upsert returned no data")
+        row = import_readable_source(db, feed_data)
+        if not row:
+            failed.append(f"{feed_url}: feed not available")
             continue
-        feed_id = result.data[0]["id"]
+        feed_id = row["id"]
+        db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": datetime.now(timezone.utc).isoformat(), "p_ok": True}).execute()
         imported += 1
 
         sub = db.table("user_feeds").upsert(
@@ -113,8 +115,9 @@ async def export_opml(
 ) -> Response:
     rows = (
         db.table("user_feeds")
-        .select("feeds(title,url,website_url)")
+        .select("feeds!inner(title,url,website_url,participation_mode)")
         .eq("user_id", user.id)
+        .eq("feeds.participation_mode", "normal")
         .execute()
     )
 
@@ -126,7 +129,7 @@ async def export_opml(
 
     for row in rows.data:
         feed = row.get("feeds") or {}
-        if not feed.get("url"):
+        if not feed.get("url") or feed.get("participation_mode", "normal") != "normal":
             continue
         ET.SubElement(
             body,

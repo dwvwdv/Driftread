@@ -19,7 +19,8 @@ router = APIRouter(prefix="/feeds", tags=["feeds"])
 _FEED_COLUMNS = (
     "id,title,url,description,website_url,language,category,tags,article_count,"
     "last_fetched_at,archived_at,created_at,updated_at,fetch_interval_minutes,"
-    "next_fetch_at,etag,last_modified"
+    "next_fetch_at,etag,last_modified,first_party,participation_mode,signal_group,"
+    "last_fetch_at,last_ok_at,fulltext_policy"
 )
 
 
@@ -35,7 +36,7 @@ async def list_feeds(
 ) -> PaginatedFeeds:
     offset = (page - 1) * page_size
 
-    query = db.table("feeds").select(_FEED_COLUMNS, count="exact").is_("archived_at", "null")
+    query = db.table("feeds").select(_FEED_COLUMNS, count="exact").is_("archived_at", "null").eq("participation_mode", "normal")
 
     if category:
         query = query.eq("category", category)
@@ -71,7 +72,7 @@ async def list_languages(db: Client = Depends(get_client)) -> list[str]:
 
 @router.get("/{feed_id}", response_model=FeedWithArticles)
 async def get_feed(feed_id: UUID, db: Client = Depends(get_client)) -> FeedWithArticles:
-    result = db.table("feeds").select(_FEED_COLUMNS).eq("id", str(feed_id)).maybe_single().execute()
+    result = db.table("feeds").select(_FEED_COLUMNS).eq("id", str(feed_id)).eq("participation_mode", "normal").maybe_single().execute()
     # postgrest-py has shipped versions where maybe_single().execute() returns
     # bare None on 0 rows instead of a response object with data=None; guard
     # both shapes rather than relying on result.data alone.

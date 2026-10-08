@@ -12,7 +12,7 @@ def test_get_feed_postgrest_error_is_mapped_not_a_bare_500(client):
     # APIError raised out of a real .execute() call must come back as the
     # mapped status/body, not propagate as an unhandled exception.
     c, mock_db = client
-    chain = mock_db.table.return_value.select.return_value.eq.return_value
+    chain = mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value
     chain.maybe_single.return_value.execute.side_effect = APIError(
         {"message": "duplicate key value violates unique constraint", "code": "23505"}
     )
@@ -31,7 +31,7 @@ def test_get_feed_not_found_returns_404(client, execute_return):
     # returning bare None (rather than a response object with data=None) on
     # 0 rows, so both shapes must be handled without raising AttributeError.
     c, mock_db = client
-    chain = mock_db.table.return_value.select.return_value.eq.return_value
+    chain = mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value
     chain.maybe_single.return_value.execute.return_value = execute_return
 
     resp = c.get(f"/api/feeds/{uuid4()}")
@@ -48,7 +48,7 @@ def test_get_feed_does_not_wildcard_select(client):
     # response model never uses it (PR #59 review, P2) — pin the explicit
     # column list instead.
     c, mock_db = client
-    chain = mock_db.table.return_value.select.return_value.eq.return_value
+    chain = mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value
     chain.maybe_single.return_value.execute.return_value = MagicMock(data=None)
 
     c.get(f"/api/feeds/{uuid4()}")
@@ -63,7 +63,7 @@ def test_list_feeds_does_not_wildcard_select(client):
     # paginated listing — up to page_size (100) rows per request, so the
     # wasted transfer scales with page size.
     c, mock_db = client
-    chain = mock_db.table.return_value.select.return_value.is_.return_value
+    chain = mock_db.table.return_value.select.return_value.is_.return_value.eq.return_value
     chain.range.return_value.order.return_value.execute.return_value = MagicMock(data=[], count=0)
 
     c.get("/api/feeds")
@@ -98,7 +98,7 @@ def test_list_feeds_filters_by_language(client):
     # combined category/language/tag filtering the frontend now offers has
     # somewhere real to land.
     c, mock_db = client
-    chain = mock_db.table.return_value.select.return_value.is_.return_value
+    chain = mock_db.table.return_value.select.return_value.is_.return_value.eq.return_value
     chain.eq.return_value.range.return_value.order.return_value.execute.return_value = MagicMock(
         data=[], count=0
     )

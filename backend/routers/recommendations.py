@@ -195,8 +195,9 @@ def _load_signals(db: Client, user_id: str, signals: Signals) -> None:
     feeds."""
     sub_rows = (
         db.table("user_feeds")
-        .select("feed_id, feeds(category, tags, language)")
+        .select("feed_id, feeds!inner(category, tags, language, participation_mode)")
         .eq("user_id", user_id)
+        .eq("feeds.participation_mode", "normal")
         .execute()
     )
     for row in sub_rows.data:
@@ -220,8 +221,9 @@ def _load_signals(db: Client, user_id: str, signals: Signals) -> None:
 
     feedback_rows = (
         db.table("user_feed_feedback")
-        .select("feed_id, feedback_type, created_at, feeds(category, tags, language)")
+        .select("feed_id, feedback_type, created_at, feeds!inner(category, tags, language, participation_mode)")
         .eq("user_id", user_id)
+        .eq("feeds.participation_mode", "normal")
         .execute()
     )
     now = datetime.now(timezone.utc)
@@ -271,6 +273,7 @@ def _load_signals(db: Client, user_id: str, signals: Signals) -> None:
         bookmarked_feeds = (
             db.table("feeds")
             .select("category, tags, language")
+            .eq("participation_mode", "normal")
             .in_("id", list(bookmarked_feed_ids))
             .execute()
         )
@@ -401,6 +404,7 @@ async def get_recommendations(
         liked_rows = (
             db.table("feeds")
             .select("category, tags, language")
+            .eq("participation_mode", "normal")
             .in_("id", [str(u) for u in liked])
             .execute()
         )

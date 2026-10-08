@@ -71,6 +71,12 @@ class _FakeDB:
         self._upsert_result = upsert_result or _FakeResult([])
         self.articles_ops: list = []
         self.feed_updates: list[dict] = []
+        self.source_fetch_calls: list[dict] = []
+
+    def rpc(self, name, args):
+        assert name == "record_source_fetch"
+        self.source_fetch_calls.append(args)
+        return _FakeTable(_FakeResult()).query()
 
     def table(self, name):
         if name == "feeds":

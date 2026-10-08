@@ -17,6 +17,7 @@ from models import (
 from rate_limit import rate_limit
 from rss_parser import fetch_and_parse
 from services.articles import upsert_articles
+from services.source_visibility import import_readable_source
 from services.feed_discovery import DiscoveryError, discover_feeds, validate_fetch_url
 
 router = APIRouter(prefix="/discover", tags=["discover"])
@@ -49,7 +50,7 @@ async def discover(
     # services/discovery_candidates.py already uses for the same reason.
     existing: dict[str, str] = {}
     for feed_url in {c.feed_url for c in candidates}:
-        row = db.table("feeds").select("id,url").eq("url", feed_url).maybe_single().execute()
+        row = db.table("feeds").select("id,url").eq("participation_mode", "normal").eq("url", feed_url).maybe_single().execute()
         if row and row.data:
             existing[row.data["url"]] = row.data["id"]
 
@@ -99,10 +100,11 @@ async def discover_and_import(
         "website_url": parsed.website_url,
         "language": parsed.language,
     }
-    result = db.table("feeds").upsert(feed_data, on_conflict="url").execute()
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Failed to upsert feed")
-    feed = Feed(**result.data[0])
+    row = import_readable_source(db, feed_data)
+    if not row:
+        raise HTTPException(status_code=404, detail="Feed not available")
+    feed = Feed(**row)
+    db.rpc("record_source_fetch", {"p_feed_id": str(feed.id), "p_at": datetime.now(timezone.utc).isoformat(), "p_ok": True}).execute()
 
     db.table("user_feeds").upsert(
         {"user_id": user.id, "feed_id": str(feed.id)},

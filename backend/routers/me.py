@@ -25,6 +25,7 @@ from models import (
     UserPreferences,
     UserPreferencesUpdate,
 )
+from services.source_visibility import require_readable_source
 from utils import decode_keyset_cursor, encode_keyset_cursor, escape_postgrest_literal
 
 router = APIRouter(prefix="/me", tags=["me"])
@@ -39,8 +40,9 @@ async def list_subscriptions(
 ) -> list[SubscribedFeed]:
     rows = (
         db.table("user_feeds")
-        .select("feed_id, custom_title, muted_at, feeds(*)")
+        .select("feed_id, custom_title, muted_at, feeds!inner(*)")
         .eq("user_id", user.id)
+        .eq("feeds.participation_mode", "normal")
         .execute()
     )
     return [
@@ -58,9 +60,7 @@ async def subscribe(
     user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
 ) -> None:
-    feed = db.table("feeds").select("id").eq("id", str(feed_id)).execute()
-    if not feed.data:
-        raise HTTPException(status_code=404, detail="Feed not found")
+    require_readable_source(db, str(feed_id))
     db.table("user_feeds").upsert(
         {"user_id": user.id, "feed_id": str(feed_id)},
         on_conflict="user_id,feed_id",
@@ -93,6 +93,7 @@ async def update_subscription(
     "no custom title" / "unmuted" just because it wasn't repeated. A blank/
     whitespace-only title is normalized to NULL, matching the migration's
     "empty string behaves the same as no custom title" contract."""
+    require_readable_source(db, str(feed_id))
     existing = (
         db.table("user_feeds")
         .select("feed_id")
@@ -369,11 +370,12 @@ async def list_feed_feedback(
 ) -> list[FeedFeedback]:
     rows = (
         db.table("user_feed_feedback")
-        .select("feed_id, feedback_type, created_at")
+        .select("feed_id, feedback_type, created_at, feeds!inner(participation_mode)")
         .eq("user_id", user.id)
+        .eq("feeds.participation_mode", "normal")
         .execute()
     )
-    return [FeedFeedback(**row) for row in rows.data]
+    return [FeedFeedback(**row) for row in rows.data if (row.get("feeds") or {}).get("participation_mode", "normal") == "normal"]
 
 
 @router.put("/feed-feedback/{feed_id}", status_code=204)
@@ -383,6 +385,7 @@ async def set_feed_feedback(
     user: AuthUser = Depends(get_current_user),
     db: Client = Depends(get_client),
 ) -> None:
+    require_readable_source(db, str(feed_id))
     db.table("user_feed_feedback").upsert(
         {
             "user_id": user.id,

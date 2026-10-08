@@ -27,7 +27,7 @@ def _token() -> str:
 
 def test_list_subscriptions_includes_custom_title(client):
     c, mock_db = client
-    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
         data=[
             {
                 "feed_id": "11111111-1111-1111-1111-111111111111",
@@ -115,7 +115,7 @@ def test_update_subscription_404_when_not_subscribed(client):
 
 def test_list_subscriptions_includes_muted_at(client):
     c, mock_db = client
-    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
         data=[
             {
                 "feed_id": "11111111-1111-1111-1111-111111111111",
