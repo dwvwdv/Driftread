@@ -71,6 +71,8 @@ services:
   worker:
     image: ghcr.io/dwvwdv/driftread-api:latest
     command: ["python", "worker.py"]
+    # Worker drains for 20s, then cancels and leaves durable leases for recovery.
+    stop_grace_period: 30s
     # on-failure, not unless-stopped: worker.py logs one line and exits 0 when
     # BOTH FEED_REFRESH_ENABLED and FEED_DISCOVERY_ENABLED are false, and
     # unless-stopped (which carries `always` semantics apart from honoring a

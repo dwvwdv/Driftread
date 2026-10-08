@@ -1,11 +1,13 @@
 from __future__ import annotations
 import logging
+import asyncio
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from postgrest.exceptions import APIError
+from services.watchdog import run_watchdog
 from starlette.responses import JSONResponse, PlainTextResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -136,7 +138,15 @@ async def lifespan(app: FastAPI):
     # html.unescape()-backed logic, which is not expressible as SQL.
     run_backfills()
     async with reset_transport().run():
-        yield
+        stop = asyncio.Event()
+        watchdog = asyncio.create_task(run_watchdog(stop))
+        try:
+            yield
+        finally:
+            stop.set()
+            watchdog.cancel()
+            with suppress(asyncio.CancelledError):
+                await watchdog
 
 
 app = FastAPI(

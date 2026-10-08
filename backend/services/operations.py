@@ -113,7 +113,15 @@ def operations_status(db, limit: int = 20) -> dict:
             not worker or worker["stale"] or worker["status"] == "stopped"
         ):
             run["status"] = "interrupted"
-    return {"observed_at": now.isoformat(), "stale_after_seconds": STALE_SECONDS,
+    alerts = db.table("worker_alerts").select("*").order(
+        "created_at", desc=True
+    ).limit(limit).execute().data or []
+    queue = db.rpc("background_queue_status", {}).execute().data
+    jobs = db.table("background_jobs").select(
+        "id,kind,status,attempts,max_attempts,priority,timeout_seconds,available_at,lease_expires_at,created_at,finished_at,error"
+    ).order("created_at", desc=True).limit(limit).execute().data or []
+    return {"alerts": alerts, "queue": queue, "recent_jobs": jobs,
+            "observed_at": now.isoformat(), "stale_after_seconds": STALE_SECONDS,
             "retention_days": RETENTION_DAYS, "workers": workers, "recent_runs": runs,
             "recent_failures": sum(r["status"] in {"failed", "partial", "interrupted"}
                                    for r in runs)}

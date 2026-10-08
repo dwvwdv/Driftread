@@ -6,6 +6,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import worker
+from tests.worker_fakes import MemoryQueue
+
+
+@pytest.fixture(autouse=True)
+def _durable_queue(monkeypatch):
+    monkeypatch.setattr(worker, "JobQueue", MemoryQueue)
+
 from services.feed_refresh import RefreshResult
 
 
