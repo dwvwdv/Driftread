@@ -91,7 +91,7 @@ Image 只有兩種 tag：`latest`（永遠指向最後一次成功的 push）與
 
 ## 環境變數檢查
 
-新增／移除／修改環境變數的三處同步規則見 `CLAUDE.md`
+新增／移除／修改環境變數的三處同步規則見 `AGENTS.md` 的「環境變數維護」
 （`.env.example` / `docker-compose.yml` / `scripts/gen_env.py`）。`scripts/gen_env.py`
 本身只會檢查「必要變數是否為空」並補上有預設值的變數，不會幫你判斷該填什麼——`SUPABASE_URL`
 ／`SUPABASE_KEY`／`SUPABASE_ANON_KEY`／`DATABASE_URL`／`SUPABASE_JWT_SECRET` 五個一定要

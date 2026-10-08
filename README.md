@@ -34,12 +34,13 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 | 文件 | 內容 |
 |------|------|
 | [`docs/FEATURES.md`](docs/FEATURES.md) | 當前功能、API 端點、資料表、生效中的各項限制 |
-| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 逐 PR 變更紀錄（#1–#24）與架構演進 |
-| [`docs/SECURITY.md`](docs/SECURITY.md) | 安全加固紀錄（#14–#24）與改動時的注意事項 |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 逐 PR 變更紀錄與架構演進（最近兩個十位段；更早的在 [`docs/changelog-archive/`](docs/changelog-archive/)） |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | 安全加固紀錄、目前的防線總覽與改動時的注意事項 |
+| [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | 部署與回滾操作順序 |
 | [`docs/CRAWLER_OPERATIONS.md`](docs/CRAWLER_OPERATIONS.md) | 增量抽取、中文種子、資料量監控與正文保存操作 |
 | [`docs/GLOBAL_SETTINGS.md`](docs/GLOBAL_SETTINGS.md) | 共用設定表、語言／分類探測方向與版本管理 |
 | [`extension/README.md`](extension/README.md) | 瀏覽器擴充安裝與設定 |
-| [`CLAUDE.md`](CLAUDE.md) | 專案上下文與開發規則 |
+| [`AGENTS.md`](AGENTS.md) | 開發規範、文件與 changelog 維護規則、PR／Code Review 原則（Claude Code 與 Codex 共用；`CLAUDE.md` 只 import 它） |
 
 ---
 
@@ -144,7 +145,7 @@ docker compose down
 > `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**；瀏覽器只吃
 > `SUPABASE_ANON_KEY`。
 
-新增 / 移除環境變數時，必須同步更新 `.env.example`、`docker-compose.yml`、`scripts/gen_env.py` 三處（見 `CLAUDE.md`）。
+新增 / 移除環境變數時，必須同步更新 `.env.example`、`docker-compose.yml`、`scripts/gen_env.py` 三處（見 `AGENTS.md` 的「環境變數維護」）。
 
 ### 前端 Supabase 設定是 runtime 決定的
 
@@ -209,10 +210,11 @@ npm start                                      # http://localhost:4200
 
 | Workflow | 觸發路徑 | 內容 |
 |----------|----------|------|
-| `.github/workflows/backend.yml` | `backend/**` | pytest → build & push `ghcr.io/dwvwdv/driftread-api:latest` |
-| `.github/workflows/frontend.yml` | `frontend/**` | `npm ci` + `npm run build` → build & push `ghcr.io/dwvwdv/driftread-frontend:latest` |
+| `.github/workflows/backend.yml` | `backend/**`、`supabase/**` | pytest（含 PostgreSQL service）→ build & push `ghcr.io/dwvwdv/driftread-api` |
+| `.github/workflows/frontend.yml` | `frontend/**` | `npm ci` + `npm test` + `npm run build` → build & push `ghcr.io/dwvwdv/driftread-frontend` |
+| `.github/workflows/docs.yml` | `**/*.md`、`scripts/check_docs.py` | 文件一致性檢查（`scripts/check_docs.py`） |
 
-Pull request 會跑測試 / build，但不推 image。
+Pull request 會跑測試 / build，但不推 image；推送時每個 image 同時打 `:latest` 與 `:sha-<commit>` 兩個 tag。
 
 ### 必要的 GitHub Secrets
 
@@ -222,5 +224,4 @@ Pull request 會跑測試 / build，但不推 image。
 
 ## 開發規則
 
-- 分支命名：`claude/<task>-<id>`
-- 所有變更先開 PR，不直接推 `main` / `master`
+分支、PR、環境變數、migration、changelog 與文件維護規則，以及 PR／Code Review 原則，統一寫在 [`AGENTS.md`](AGENTS.md)（Claude Code 與 Codex 共用）。
