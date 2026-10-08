@@ -65,7 +65,7 @@ export class AdminFeeds implements OnInit {
     const feed = this.editing();
     if (!feed || this.savingSource()) return;
     this.savingSource.set(true);
-    this.admin.updateSource(feed.id, {
+    this.admin.updateSourceMetadata(feed.id, {
       participation_mode: this.sourceRole,
       fulltext_policy: this.fulltextPolicy,
       signal_group: this.signalGroup.trim() || null,

@@ -56,7 +56,7 @@ describe('AdminFeeds active paging', () => {
       archive: () => of(undefined),
       unarchive: () => of(undefined),
       refreshFeed: () => of({ new_articles: 0, inserted: 0 }),
-      updateSource: (id: string, body: unknown) => {
+      updateSourceMetadata: (id: string, body: unknown) => {
         sourceCalls.push({ id, body });
         return sourceFailure ? throwError(() => new Error('unavailable')) : of(feed(1));
       },

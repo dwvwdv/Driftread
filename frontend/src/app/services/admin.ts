@@ -127,7 +127,7 @@ export class AdminService {
     return this.post<RefreshFeedResult>(`/admin/feeds/${id}/refresh`, {}, '更新文章失敗');
   }
 
-  updateSource(id: string, body: {
+  updateSourceMetadata(id: string, body: {
     participation_mode: 'normal' | 'signal_only' | 'private';
     fulltext_policy: 'rss' | 'summary_only';
     signal_group: string | null;
