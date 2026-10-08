@@ -1,4 +1,5 @@
 import { DatePipe } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { AdminService } from '../../../services/admin';
 import { Feed, FeedHealthSummary } from '../../../models';
@@ -22,7 +23,7 @@ import { clampPage } from '../../../shared/paging';
 @Component({
   selector: 'app-admin-feeds',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DatePipe, ObIcon, ObListRow, ObLoading, ObEmpty, ObPageHeader, ObPaginator, ObTabs],
+  imports: [DatePipe, FormsModule, ObIcon, ObListRow, ObLoading, ObEmpty, ObPageHeader, ObPaginator, ObTabs],
   templateUrl: './admin-feeds.html',
   styleUrl: './admin-feeds.scss',
 })
@@ -45,6 +46,40 @@ export class AdminFeeds implements OnInit {
   protected loading = signal(true);
   /** Feed ids with a refresh in flight, so each row can show its own state. */
   protected busy = signal<ReadonlySet<string>>(new Set());
+  protected editing = signal<Feed | null>(null);
+  protected savingSource = signal(false);
+  protected sourceRole: 'normal' | 'signal_only' | 'private' = 'normal';
+  protected fulltextPolicy: 'rss' | 'summary_only' = 'rss';
+  protected signalGroup = '';
+  protected firstParty = false;
+
+  protected editSource(feed: Feed): void {
+    this.editing.set(feed);
+    this.sourceRole = feed.participation_mode ?? 'normal';
+    this.fulltextPolicy = feed.fulltext_policy ?? 'rss';
+    this.signalGroup = feed.signal_group ?? '';
+    this.firstParty = feed.first_party ?? false;
+  }
+
+  protected saveSource(): void {
+    const feed = this.editing();
+    if (!feed || this.savingSource()) return;
+    this.savingSource.set(true);
+    this.admin.updateSource(feed.id, {
+      participation_mode: this.sourceRole,
+      fulltext_policy: this.fulltextPolicy,
+      signal_group: this.signalGroup.trim() || null,
+      first_party: this.firstParty,
+    }).subscribe({
+      next: () => {
+        this.savingSource.set(false);
+        this.editing.set(null);
+        this.toast.success('來源設定已儲存');
+        this.reload();
+      },
+      error: () => this.savingSource.set(false),
+    });
+  }
 
   ngOnInit(): void {
     this.loadActive();

@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Subject, of } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { AdminFeeds } from './admin-feeds';
 import { AdminService } from '../../../services/admin';
 import { ConfirmService } from '../../../ui/confirm/confirm';
@@ -31,11 +31,15 @@ describe('AdminFeeds active paging', () => {
   let respondWith: PaginatedFeeds;
   /** When set, list responses are held open here instead of resolving inline. */
   let held: Subject<PaginatedFeeds>[] | null;
+  let sourceFailure: boolean;
+  let sourceCalls: { id: string; body: unknown }[];
 
   function setup(initial: PaginatedFeeds, pageSize = 50) {
     requests = [];
     respondWith = initial;
     held = null;
+    sourceFailure = false;
+    sourceCalls = [];
 
     const admin = {
       listFeeds: (page: number) => {
@@ -52,6 +56,10 @@ describe('AdminFeeds active paging', () => {
       archive: () => of(undefined),
       unarchive: () => of(undefined),
       refreshFeed: () => of({ new_articles: 0, inserted: 0 }),
+      updateSource: (id: string, body: unknown) => {
+        sourceCalls.push({ id, body });
+        return sourceFailure ? throwError(() => new Error('unavailable')) : of(feed(1));
+      },
     };
 
     TestBed.resetTestingModule();
@@ -74,6 +82,12 @@ describe('AdminFeeds active paging', () => {
       page: () => number;
       loading: () => boolean;
       archive: (f: Feed) => Promise<void>;
+      editSource: (f: Feed) => void;
+      saveSource: () => void;
+      editing: () => Feed | null;
+      savingSource: () => boolean;
+      sourceRole: string;
+      signalGroup: string;
     };
     fixture.detectChanges();
     Object.assign(fixture.componentInstance, { pageSize: () => pageSize });
@@ -89,6 +103,24 @@ describe('AdminFeeds active paging', () => {
 
     expect(requests.length).toBe(before + 1);
     expect(reader.active().map((f) => f.id)).toEqual(['feed-2', 'feed-3', 'feed-4']);
+  });
+
+  it('retains unsaved source edits after failure and refreshes inventory after retry', () => {
+    const { reader } = setup({ items: [feed(1)], total: 1, page: 1, page_size: 50 });
+    reader.editSource(feed(1));
+    reader.sourceRole = 'signal_only';
+    reader.signalGroup = ' shared-source ';
+    sourceFailure = true;
+    reader.saveSource();
+    expect(reader.editing()?.id).toBe('feed-1');
+    expect(reader.savingSource()).toBe(false);
+    sourceFailure = false;
+    reader.saveSource();
+    expect(sourceCalls.at(-1)).toEqual({ id: 'feed-1', body: {
+      participation_mode: 'signal_only', fulltext_policy: 'rss', signal_group: 'shared-source', first_party: false,
+    } });
+    expect(reader.editing()).toBeNull();
+    expect(requests).toEqual([1, 1]);
   });
 
   it('backfills quietly, without swapping the list for the spinner', async () => {

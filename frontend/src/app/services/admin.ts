@@ -127,6 +127,15 @@ export class AdminService {
     return this.post<RefreshFeedResult>(`/admin/feeds/${id}/refresh`, {}, '更新文章失敗');
   }
 
+  updateSource(id: string, body: {
+    participation_mode: 'normal' | 'signal_only' | 'private';
+    fulltext_policy: 'rss' | 'summary_only';
+    signal_group: string | null;
+    first_party: boolean;
+  }): Observable<Feed> {
+    return this.patch<Feed>(`/admin/feeds/${id}/source`, body, '儲存來源設定失敗');
+  }
+
   /** Previously unused by the UI. Drains the scheduler's due queue on demand. */
   refreshDue(limit?: number, maxConcurrency?: number): Observable<RefreshDueSummary> {
     let params = new HttpParams();

@@ -12,6 +12,12 @@ export interface Feed {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  first_party?: boolean;
+  participation_mode?: 'normal' | 'signal_only' | 'private';
+  signal_group?: string | null;
+  fulltext_policy?: 'rss' | 'summary_only';
+  last_fetch_at?: string | null;
+  last_ok_at?: string | null;
 }
 
 export interface ArticleSummary {
@@ -382,6 +388,20 @@ export interface OperationsStatus {
   workers: WorkerHeartbeat[];
   recent_runs: WorkerRun[];
   recent_failures: number;
+  queue?: {
+    queued: number;
+    running: number;
+    dead: number;
+    succeeded: number;
+    next_available_at: string | null;
+  };
+  alerts?: {
+    id: string;
+    worker_id: string;
+    kind: string;
+    created_at: string;
+    resolved_at: string | null;
+  }[];
 }
 
 export interface ArticleStorageStats {

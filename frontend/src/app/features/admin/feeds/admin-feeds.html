@@ -10,6 +10,33 @@
   </button>
 </ob-page-header>
 
+@if (editing(); as feed) {
+  <form (ngSubmit)="saveSource()">
+    <h2>來源設定：{{ feed.title }}</h2>
+    <p>一般來源提供閱讀；訊號來源只參與熱度；私有來源僅限管理者存取。</p>
+    <label>來源角色
+      <select class="ob-select" name="role" [(ngModel)]="sourceRole" [disabled]="savingSource()">
+        <option value="normal">一般閱讀</option>
+        <option value="signal_only">僅作訊號</option>
+        <option value="private">私有</option>
+      </select>
+    </label>
+    <label>閱讀內容
+      <select class="ob-select" name="fulltext" [(ngModel)]="fulltextPolicy" [disabled]="savingSource()">
+        <option value="rss">來源提供的內容</option>
+        <option value="summary_only">僅摘要與原文連結</option>
+      </select>
+    </label>
+    <label>訊號群組
+      <input class="ob-input" name="group" [(ngModel)]="signalGroup" maxlength="100" [disabled]="savingSource()" />
+    </label>
+    <label class="ob-checkbox"><input type="checkbox" name="firstParty" [(ngModel)]="firstParty" [disabled]="savingSource()" />第一手來源</label>
+    <p>鏡像或同集團來源使用相同訊號群組，避免重複計算熱度。</p>
+    <button type="submit" class="ob-btn ob-btn--primary" [disabled]="savingSource()">{{ savingSource() ? '儲存中…' : '儲存' }}</button>
+    <button type="button" class="ob-btn ob-btn--ghost" [disabled]="savingSource()" (click)="editing.set(null)">取消</button>
+  </form>
+}
+
 <ob-tabs [tabs]="tabs" [selected]="tab()" (selectedChange)="onTab($event)">
   @if (loading()) {
     <ob-loading label="讀取中" />
@@ -33,6 +60,7 @@
                 </span>
               </div>
               <div rowMeta>
+                <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" [disabled]="savingSource()" (click)="editSource(feed)">來源設定</button>
                 <button
                   type="button"
                   class="ob-btn ob-btn--ghost ob-btn--sm"
