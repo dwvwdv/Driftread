@@ -12,7 +12,8 @@ from models import (
     PaginatedFeedSearchResults,
 )
 from rate_limit import rate_limit
-from utils import decode_rank_cursor, encode_rank_cursor
+from utils import (decode_rank_cursor, encode_rank_cursor, cursor_scope,
+                   decode_scoped_cursor, encode_scoped_cursor)
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -28,7 +29,7 @@ _MAX_QUERY_LEN = 200
 @router.get(
     "/articles",
     response_model=PaginatedArticleSearchResults,
-    dependencies=[Depends(rate_limit("search_articles"))],
+    dependencies=[Depends(rate_limit("search_publications"))],
 )
 async def search_articles(
     q: str = Query(..., min_length=1, max_length=_MAX_QUERY_LEN),
@@ -43,17 +44,18 @@ async def search_articles(
     caller gets their own read/bookmark state resolved per row, an anonymous
     one gets both false rather than the request failing. Kept separate from
     search_feeds below per that item's "Feed 名稱／描述搜尋與文章搜尋分開呈現"."""
+    scope = cursor_scope("search_publications", q=q, language=language, user_id=user.id if user else None)
     cursor_rank: float | None = None
     cursor_sort_at: str | None = None
     cursor_id: str | None = None
     if cursor:
         try:
-            cursor_rank, cursor_sort_at, cursor_id = decode_rank_cursor(cursor)
+            cursor_rank, cursor_sort_at, cursor_id = decode_rank_cursor(decode_scoped_cursor(cursor, scope))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
     result = db.rpc(
-        "search_articles",
+        "search_publications",
         {
             "p_query": q,
             "p_user_id": user.id if user else None,
@@ -69,9 +71,9 @@ async def search_articles(
     next_cursor = None
     if len(items) == limit:
         last = items[-1]
-        next_cursor = encode_rank_cursor(
-            last.rank, last.published_at or last.fetched_at, last.id
-        )
+        next_cursor = encode_scoped_cursor(encode_rank_cursor(
+            last.rank, getattr(last, "timeline_at", None) or last.published_at or last.fetched_at, last.id
+        ), scope)
     return PaginatedArticleSearchResults(items=items, next_cursor=next_cursor)
 
 
@@ -90,12 +92,13 @@ async def search_feeds(
     """Feed name/description search — public, excludes archived feeds like
     GET /feeds already does. Separate result shape and endpoint from
     search_articles above, not a shared "search everything" response."""
+    scope = cursor_scope("search_feeds", q=q, language=language)
     cursor_rank: float | None = None
     cursor_created_at: str | None = None
     cursor_id: str | None = None
     if cursor:
         try:
-            cursor_rank, cursor_created_at, cursor_id = decode_rank_cursor(cursor)
+            cursor_rank, cursor_created_at, cursor_id = decode_rank_cursor(decode_scoped_cursor(cursor, scope))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
@@ -115,5 +118,5 @@ async def search_feeds(
     next_cursor = None
     if len(items) == limit:
         last = items[-1]
-        next_cursor = encode_rank_cursor(last.rank, last.created_at, last.id)
+        next_cursor = encode_scoped_cursor(encode_rank_cursor(last.rank, last.created_at, last.id), scope)
     return PaginatedFeedSearchResults(items=items, next_cursor=next_cursor)

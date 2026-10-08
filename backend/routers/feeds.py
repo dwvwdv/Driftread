@@ -80,10 +80,10 @@ async def get_feed(feed_id: UUID, db: Client = Depends(get_client)) -> FeedWithA
         raise HTTPException(status_code=404, detail="Feed not found")
 
     articles_result = (
-        db.table("articles")
-        .select("id,feed_id,title,url,summary,author,published_at")
+        db.table("article_publications")
+        .select("id,feed_id,title,url,summary,author,published_at,timeline_at,discovered_at,backfill,backfill_reason,current_revision_id")
         .eq("feed_id", str(feed_id))
-        .order("published_at", desc=True)
+        .order("timeline_at", desc=True).order("id", desc=True)
         .limit(10)
         .execute()
     )

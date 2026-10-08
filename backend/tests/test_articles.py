@@ -37,7 +37,9 @@ def test_get_article_does_not_wildcard_select(client):
     c.get(f"/api/articles/{uuid4()}")
 
     select_args = mock_db.table.return_value.select.call_args[0]
-    assert select_args == ("id,feed_id,title,url,summary,content,author,published_at,fetched_at,content_compacted_at",)
+    from services.publications import PUBLICATION_COLUMNS
+    assert select_args == (PUBLICATION_COLUMNS,)
+    mock_db.table.assert_called_with("article_publications")
 
 
 def _token() -> str:
@@ -84,7 +86,7 @@ def test_list_feed_articles_calls_rpc_with_feed_id_and_no_user(client):
     assert len(body["items"]) == 1
     assert body["items"][0]["is_read"] is False
     name, params = mock_db.rpc.call_args[0]
-    assert name == "list_feed_articles"
+    assert name == "list_feed_publications"
     assert params["p_feed_id"] == feed_id
     assert params["p_user_id"] is None
 
@@ -151,10 +153,13 @@ def test_list_feed_articles_decodes_cursor_into_rpc_params(client):
     cursor = base64.urlsafe_b64encode(
         b"2026-08-14T10:00:00+00:00|11111111-1111-1111-1111-111111111111"
     ).decode()
+    from utils import cursor_scope, encode_scoped_cursor
+    feed_id = str(uuid4())
+    cursor = encode_scoped_cursor(cursor, cursor_scope("feed_articles", feed_id=feed_id, user_id=None))
     mock_db.rpc.return_value.execute.return_value = MagicMock(data=[])
 
     resp = c.get(
-        f"/api/feeds/{uuid4()}/articles",
+        f"/api/feeds/{feed_id}/articles",
         params={"cursor": cursor},
     )
 

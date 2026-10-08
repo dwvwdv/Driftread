@@ -226,10 +226,9 @@ def test_list_bookmarks_omits_article_content(client):
     full cached article HTML in `content` would bloat every fetch for data the
     list never renders."""
     c, mock_db = client
-    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.execute.return_value = MagicMock(
+    mock_db.rpc.return_value.execute.return_value = MagicMock(
         data=[
-            {
-                "articles": {
+                {
                     "id": "11111111-1111-1111-1111-111111111111",
                     "feed_id": "22222222-2222-2222-2222-222222222222",
                     "title": "Some Article",
@@ -238,7 +237,6 @@ def test_list_bookmarks_omits_article_content(client):
                     "author": "Jane",
                     "published_at": None,
                 }
-            }
         ]
     )
     resp = c.get(
@@ -252,8 +250,7 @@ def test_list_bookmarks_omits_article_content(client):
     assert "content" not in body[0]
     assert "fetched_at" not in body[0]
 
-    select_args = mock_db.table.return_value.select.call_args[0][0]
-    assert "content" not in select_args
+    assert mock_db.rpc.call_args[0] == ("list_bookmark_publications", {"p_user_id": "user-abc", "p_bookmark_type": "favorite"})
 
 
 def test_list_bookmarks_rejects_invalid_type(client):
@@ -319,6 +316,8 @@ def test_list_reads_applies_keyset_filter_from_cursor(client):
     cursor = base64.urlsafe_b64encode(
         b"2026-08-14T10:00:00+00:00|11111111-1111-1111-1111-111111111111"
     ).decode()
+    from utils import cursor_scope, encode_scoped_cursor
+    cursor = encode_scoped_cursor(cursor, cursor_scope("reads", user_id="user-abc"))
     _reads_chain(mock_db, with_cursor=True).execute.return_value = MagicMock(data=[])
 
     resp = c.get(
@@ -571,7 +570,7 @@ def test_list_stream_passes_feed_and_unread_filters_to_rpc(client):
 
     assert resp.status_code == 200
     name, params = mock_db.rpc.call_args[0]
-    assert name == "list_reading_stream"
+    assert name == "list_reading_publications"
     assert params["p_feed_id"] == "22222222-2222-2222-2222-222222222222"
     assert params["p_unread_only"] is True
     assert params["p_user_id"] == "user-abc"
@@ -582,6 +581,8 @@ def test_list_stream_decodes_cursor_into_rpc_params(client):
     cursor = base64.urlsafe_b64encode(
         b"2026-08-14T10:00:00+00:00|11111111-1111-1111-1111-111111111111"
     ).decode()
+    from utils import cursor_scope, encode_scoped_cursor
+    cursor = encode_scoped_cursor(cursor, cursor_scope("stream", user_id="user-abc", feed_id=None, unread_only=False))
     mock_db.rpc.return_value.execute.return_value = MagicMock(data=[])
 
     resp = c.get(

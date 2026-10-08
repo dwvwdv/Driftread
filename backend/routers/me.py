@@ -26,7 +26,8 @@ from models import (
     UserPreferencesUpdate,
 )
 from services.source_visibility import require_readable_source
-from utils import decode_keyset_cursor, encode_keyset_cursor, escape_postgrest_literal
+from utils import (decode_keyset_cursor, encode_keyset_cursor, escape_postgrest_literal,
+                   cursor_scope, decode_scoped_cursor, encode_scoped_cursor)
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -134,12 +135,12 @@ async def mark_read(
     ).execute()
 
 
-def _decode_cursor_or_400(cursor: str) -> tuple[str, str]:
+def _decode_cursor_or_400(cursor: str, scope: str) -> tuple[str, str]:
     """Shared by /reads and /stream — both are (timestamp, id) keyset pages
     and both want the same "malformed cursor -> 400" behavior rather than a
     decode error leaking through as an unhandled ValueError -> 500."""
     try:
-        return decode_keyset_cursor(cursor)
+        return decode_keyset_cursor(decode_scoped_cursor(cursor, scope))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
@@ -157,9 +158,11 @@ async def list_reads(
     # slower — and offsets can skip/duplicate rows — as it grows. (read_at,
     # article_id) DESC is a stable sort key even when multiple rows share a
     # read_at timestamp (e.g. a bulk "mark all read").
+    scope = cursor_scope("reads", user_id=user.id)
+    position = _decode_cursor_or_400(cursor, scope) if cursor else None
     query = db.table("user_article_reads").select("article_id, read_at").eq("user_id", user.id)
-    if cursor:
-        read_at, article_id = _decode_cursor_or_400(cursor)
+    if position:
+        read_at, article_id = position
         read_at_lit = escape_postgrest_literal(read_at)
         article_id_lit = escape_postgrest_literal(article_id)
         query = query.or_(
@@ -176,7 +179,7 @@ async def list_reads(
 
     items = [ReadReceipt(**row) for row in rows.data]
     next_cursor = (
-        encode_keyset_cursor(items[-1].read_at, items[-1].article_id)
+        encode_scoped_cursor(encode_keyset_cursor(items[-1].read_at, items[-1].article_id), scope)
         if len(items) == limit
         else None
     )
@@ -252,18 +255,19 @@ async def list_stream(
     db: Client = Depends(get_client),
 ) -> PaginatedStream:
     """The unified article timeline across every feed the caller is
-    subscribed to (TODO.md "我的閱讀流") — sorted by published_at (falling
-    back to fetched_at for undated articles, see migration 015), cursor
+    subscribed to (TODO.md "我的閱讀流") — sorted by timeline_at
+    (source publication time bounded by first discovery), cursor
     (keyset) paginated the same way GET /me/reads is, with `unread_only` and
     `feed_id` filters and each row's read state joined in so the frontend
     doesn't need a second request per page to know what's already read."""
+    scope = cursor_scope("stream", user_id=user.id, feed_id=str(feed_id) if feed_id else None, unread_only=unread_only)
     cursor_sort_at: str | None = None
     cursor_id: str | None = None
     if cursor:
-        cursor_sort_at, cursor_id = _decode_cursor_or_400(cursor)
+        cursor_sort_at, cursor_id = _decode_cursor_or_400(cursor, scope)
 
     result = db.rpc(
-        "list_reading_stream",
+        "list_reading_publications",
         {
             "p_user_id": user.id,
             "p_feed_id": str(feed_id) if feed_id else None,
@@ -278,7 +282,8 @@ async def list_stream(
     next_cursor = None
     if len(items) == limit:
         last = items[-1]
-        next_cursor = encode_keyset_cursor(last.published_at or last.fetched_at, last.id)
+        next_cursor = encode_scoped_cursor(encode_keyset_cursor(
+            getattr(last, "timeline_at", None) or last.published_at or last.fetched_at, last.id), scope)
     return PaginatedStream(items=items, next_cursor=next_cursor)
 
 
@@ -298,9 +303,6 @@ async def stream_unread_counts(
 
 # --- Bookmarks ---------------------------------------------------------------
 
-_BOOKMARK_ARTICLE_FIELDS = "id,feed_id,title,url,summary,author,published_at"
-
-
 @router.get("/bookmarks", response_model=list[ArticleSummary])
 async def list_bookmarks(
     bookmark_type: str = Query("favorite"),
@@ -309,17 +311,11 @@ async def list_bookmarks(
 ) -> list[ArticleSummary]:
     if bookmark_type not in ("favorite", "read_later"):
         raise HTTPException(status_code=400, detail="Invalid bookmark_type")
-    rows = (
-        db.table("user_bookmarks")
-        .select(f"articles({_BOOKMARK_ARTICLE_FIELDS})")
-        .eq("user_id", user.id)
-        .eq("bookmark_type", bookmark_type)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return [
-        ArticleSummary(**row["articles"]) for row in rows.data if row.get("articles")
-    ]
+    rows = db.rpc("list_bookmark_publications", {
+        "p_user_id": user.id, "p_bookmark_type": bookmark_type,
+    }).execute()
+    return [ArticleSummary(**row) for row in rows.data]
+
 
 
 @router.post("/bookmarks", status_code=204)

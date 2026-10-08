@@ -73,7 +73,7 @@ def test_search_articles_calls_rpc_with_query_and_no_user(client):
     assert body["items"][0]["is_read"] is False
     assert body["items"][0]["feed_title"] == "Some Feed"
     name, params = mock_db.rpc.call_args[0]
-    assert name == "search_articles"
+    assert name == "search_publications"
     assert params["p_query"] == "hello world"
     assert params["p_user_id"] is None
 
@@ -154,6 +154,8 @@ def test_search_articles_decodes_cursor_into_rpc_params(client):
         datetime(2026, 8, 14, 10, 0, 0, tzinfo=timezone.utc),
         "11111111-1111-1111-1111-111111111111",
     )
+    from utils import cursor_scope, encode_scoped_cursor
+    cursor = encode_scoped_cursor(cursor, cursor_scope("search_publications", q="hello", language=None, user_id=None))
     mock_db.rpc.return_value.execute.return_value = MagicMock(data=[])
 
     resp = c.get("/api/search/articles", params={"q": "hello", "cursor": cursor})

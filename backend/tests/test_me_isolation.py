@@ -209,7 +209,7 @@ def test_stream_scoped_per_user(client):
     r2 = c.get("/api/me/stream", headers=_auth(USER_B))
     assert r1.status_code == r2.status_code == 200
 
-    rpc_calls = [c_ for c_ in mock_db.rpc.call_args_list if c_[0][0] == "list_reading_stream"]
+    rpc_calls = [c_ for c_ in mock_db.rpc.call_args_list if c_[0][0] == "list_reading_publications"]
     assert [c_[0][1]["p_user_id"] for c_ in rpc_calls] == [USER_A, USER_B]
 
 
@@ -232,14 +232,13 @@ def test_stream_unread_counts_scoped_per_user(client):
 
 def test_list_bookmarks_scoped_per_user(client):
     c, mock_db = client
-    chain = mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value
-    chain.order.return_value.execute.return_value = MagicMock(data=[])
-
+    mock_db.rpc.return_value.execute.return_value = MagicMock(data=[])
     r1 = c.get("/api/me/bookmarks", headers=_auth(USER_A))
     r2 = c.get("/api/me/bookmarks", headers=_auth(USER_B))
     assert r1.status_code == r2.status_code == 200
-
-    _assert_isolated(mock_db.table.return_value.select.return_value.eq.call_args_list)
+    calls = mock_db.rpc.call_args_list
+    assert [call.args[0] for call in calls] == ["list_bookmark_publications"] * 2
+    assert [call.args[1]["p_user_id"] for call in calls] == [USER_A, USER_B]
 
 
 def test_add_bookmark_writes_calling_users_id(client):

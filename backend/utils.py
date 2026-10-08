@@ -1,5 +1,8 @@
 from __future__ import annotations
 import base64
+import binascii
+import hashlib
+import json
 import math
 from datetime import datetime
 from uuid import UUID
@@ -80,3 +83,28 @@ def escape_postgrest_literal(value: str) -> str:
     """
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def cursor_scope(endpoint: str, **filters) -> str:
+    """Query compatibility check; DB authorization still uses the JWT owner."""
+    raw = json.dumps({"endpoint": endpoint, "filters": filters}, sort_keys=True,
+                     separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def encode_scoped_cursor(cursor: str, scope: str) -> str:
+    raw = json.dumps({"v": 1, "scope": scope, "position": cursor}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def decode_scoped_cursor(cursor: str, scope: str) -> str:
+    try:
+        if len(cursor) > 2048:
+            raise ValueError("Invalid cursor")
+        payload = json.loads(base64.b64decode(cursor.encode(), altchars=b"-_", validate=True))
+        if (not isinstance(payload, dict) or payload.get("v") != 1
+                or payload.get("scope") != scope or not isinstance(payload.get("position"), str)):
+            raise ValueError("Invalid cursor")
+        return payload["position"]
+    except (ValueError, UnicodeDecodeError, binascii.Error, TypeError, RecursionError) as exc:
+        raise ValueError("Invalid cursor") from exc
