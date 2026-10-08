@@ -1,0 +1,345 @@
+# 變更紀錄歸檔：階段十一～二十
+
+> 從 [../CHANGELOG.md](../CHANGELOG.md) 整段搬來，**只搬不改**——內容就是當時的紀錄，文中的路徑、行為與「目前」都以當時為準，現況請看 [../FEATURES.md](../FEATURES.md)。
+
+## 階段十一：DNS rebinding pin-and-connect 與 discover.py 的 filter 收尾（PR #25，2026-07-30）
+
+同一個「持續改善專案」排程任務，補完 #24 明確列為「不在此 PR 範圍」的兩項。完整說明見 [SECURITY.md](../SECURITY.md) 的對應章節。
+
+- **pin-and-connect**（#22 的已知限制，#24 第 2 點稱其優先度應提高）。`validate_fetch_url()` 與實際連線各自獨立呼叫 `socket.getaddrinfo()`，中間沒有任何東西把兩次解析釘在一起 —— 短 TTL 或多筆 A 記錄的 DNS 答案可以讓驗證那次回公開 IP、連線那次回 `169.254.169.254` 之類的內網位址。新增 `services/feed_discovery.py::PinnedTransport`（包住 `httpx.AsyncHTTPTransport`）與 `_resolve_pinned_ips()`：在**傳輸層**單次解析、驗證每一筆位址、把連線目標換成解析出的 IP，同時保留原始 hostname 給 `Host` 標頭與 TLS SNI（`extensions["sni_hostname"]`）。透過新的 `ssrf_safe_client()` 工廠函式接上全部 6 個 `httpx.AsyncClient` 建構點（`feed_discovery.discover_feeds`、`rss_parser` 的兩個 fetch 函式、`robots._fetch`、`directory_sources._fetch`、`link_harvest._fetch_blogroll`），不逐一手動修改每個 call site 是刻意的 —— SECURITY.md 規則 9 講的就是這件事。`validate_fetch_url()` / `_is_safe_host()` 完全不動，既有測試全部照舊通過；新測試直接對 `PinnedTransport.handle_async_request()` 灌假的內層 transport 斷言連線目標、`Host`、`sni_hostname`。
+- **`routers/discover.py:41`**（#24 附帶記錄的既存暴露）。`feed_url` 是從遠端 HTML 的 `<link rel="alternate">` 抽出來的第三方字串，原本整批塞進 `.in_("url", feed_urls)` 一個 PostgREST filter —— 與 #14 修的 `.or_()` 注入同一類問題，只是換一個進場方式。改為逐一 `.eq("url", feed_url).maybe_single()`，與 `services/discovery_candidates.py` 既有的作法一致，第三方字串完全不進 filter 語法。
+- **PR review（九輪）又抓出十二個問題，同一輪補上**（完整說明見 SECURITY.md #25）：連線池 key 被換成 IP、兩個共用同一 IP 的不同 hostname 可能撞進同一條連線因而共用了錯的 TLS session（`ssrf_safe_client()` 補上 `PinnedTransport(limits=Limits(max_keepalive_connections=0))` 關掉 keep-alive 重用）；`_extract_feed_links()` 的候選數量沒有上限，補上 `MAX_FEED_LINK_CANDIDATES = 50`；只取第一筆解析位址丟了 dual-stack fallback，`_resolve_pinned_ip()` 改名 `_resolve_pinned_ips()` 回傳全部驗證過的位址並依序重試。第二輪對這三個修法本身又抓出兩個問題：候選數上限原本用 `find_all(..., limit=50)` 限制掃描到的 `<link>` 標籤數，會在正常頁面的真正 feed 宣告前就停手（改成篩選後才 cap）；位址 fallback 原本只接 `httpx.ConnectError`，漏接了語意上平行、且更常見的 `httpx.ConnectTimeout`（改成兩個都接）。第三輪又抓出位址 fallback 沒有共用一個 deadline，攻擊者可用回傳多筆公開但打不通位址的 DNS answer 把單次 `/api/discover` 請求拖到約「位址數 × 逾時」那麼久；改用風險較低的固定上限 `MAX_PINNED_CONNECT_ATTEMPTS = 2`（而非需要正確組出 httpx 內部 timeout extension、但這個 sandbox 沒有網路能驗證的共用 deadline 寫法）。第四輪又抓出這個上限本身沒顧到位址族——resolver 若把兩筆以上 AAAA 排在唯一一筆 A 前面，兩個名額會被 IPv6 佔滿；新增純函式 `_pick_pinned_ips()` 依「先出現的族優先」交錯排列後再截斷。第五輪又抓出 `PinnedTransport` 回傳前沒有還原 `request.url`，導致 httpx 的 cookie jar 會把 Set-Cookie 歸檔到連線用的 IP 而非真正的 hostname，讓帶 cookie 才能過關的重新導向鏈失敗；改用 `try/finally` 保證回傳或拋例外前一定把 `request.url` 還原成原始 hostname。第六輪又抓出明確 `transport=` 不會讓 `httpx.AsyncClient` 跳過環境代理（`HTTP_PROXY`/`HTTPS_PROXY`）偵測，命中 mount 時可能繞過 `PinnedTransport` 走 httpx 自己組的、沒有 pinning 的 proxy transport；`ssrf_safe_client()` 補上 `trust_env=False` 讓這批 fetch 明確不依賴環境代理設定（Driftread 本來就沒有記載代理支援）。第七輪又抓出 `_resolve_pinned_ips()` 在事件迴圈裡同步呼叫阻塞的 `socket.getaddrinfo()`，公開免認證的 `/api/discover` 每個候選 / fallback path 都觸發一次，攻擊者指向回應很慢的 DNS 就能卡住整個 worker 的事件迴圈；改成 `async def`，用 `await asyncio.to_thread(...)` 丟到執行緒池（`validate_fetch_url()`/`_is_safe_host()` 有同樣的既有問題，但那是本 PR 之前就存在、呼叫點遍布全專案的既有型態，不在本次範圍）。第八輪又抓出 `asyncio.to_thread()` 本身不帶逾時，攻擊者控制、回應很慢的 DNS 伺服器可以讓一次解析卡到系統 resolver 自己的逾時（遠長於 httpx 配置的 12–15 秒）；`_resolve_pinned_ips()` 加上可選的 `timeout` 參數並包進 `asyncio.wait_for(...)`，`PinnedTransport` 從 `request.extensions["timeout"]["connect"]`（`httpx.Client.build_request()` 幫每個請求組好的值）取值傳入，重用呼叫端原本設定的連線逾時。第九輪又抓出 `asyncio.wait_for()` 逾時後，`to_thread()` 提交的阻塞查詢仍在 process 共用的預設執行緒池裡跑，沒有任何純 Python 手段能中斷它；多個並發的惡意請求可以佔滿那個共用池，連健康 feed 的解析都會排在後面逾時。改用專屬、固定大小（`DNS_RESOLVER_MAX_WORKERS = 8`）的 `concurrent.futures.ThreadPoolExecutor`，`_resolve_pinned_ips()` 改走 `loop.run_in_executor(...)` 而非 `to_thread()`，把占用範圍限制在這一個小池子裡，不波及 app 其他地方共用的預設執行緒池。
+
+### 測試
+
+`test_feed_discovery.py` 新增 28 個測試（`_resolve_pinned_ips` 的正常 / 多筆位址 / 拒絕私網 / 多筆位址其一為私網 / DNS 失敗 / 逾時中止 / 走專屬執行緒池與其他共用預設池的工作互不干擾、`_pick_pinned_ips` 的族交錯 / 單一族 / 位址數少於上限、`_extract_feed_links` 的候選數上限 / 真正 feed 宣告排在許多無關 `<link>` 標籤之後仍找得到、`PinnedTransport` 的連線目標與 `Host`/SNI 保留、逾時取自 request 的連線逾時 extension、回傳成功或全部位址失敗後都還原 `request.url`、位址 fallback（`ConnectError` 與 `ConnectTimeout` 各一）、位址嘗試次數上限、多筆 AAAA 後仍 fallback 到 IPv4、全部位址失敗、DNS rebind 拒絕、`ssrf_safe_client` 的預設 transport / 預設關 keep-alive / 預設關 trust_env / 可覆寫 transport / 可覆寫 trust_env、專屬 DNS 執行緒池的大小固定）；`test_discover.py` 新增 1 個測試斷言帶 PostgREST 特殊字元的 `feed_url` 只會走 `.eq()`，`.in_()` 從未被呼叫。
+
+## 階段十二：猜你喜歡誤把 category 當硬性篩選（PR #26，2026-07-31）
+
+同一個「持續改善專案」排程任務。這次不是安全加固，是核心功能（`GET /api/recommendations`）本身的一個行為 bug，直接違背 CLAUDE.md／FEATURES.md 記載的產品目的：「根據用戶喜好推薦**未知** RSS 源，幫助挖掘**新**資訊源」。
+
+- **問題**：`_score_candidates()` 已經把 category 當成 +3 分的評分訊號（與 tag +2、language +1 同一套設計），但 `get_recommendations()` 在評分**之前**又對候選池下了 `query.in_("category", list(categories))` —— 等於把「加權」實作成了「篩選」。任何有訂閱紀錄或偏好設定的使用者，從此再也看不到自己已知類別以外的 feed，「猜你喜歡」名副其實地只剩下「猜你已經喜歡的」，新使用者發現全新類別的路徑被自己的訂閱紀錄堵死了。tags 與 language 從來沒有被這樣處理，這是三個訊號裡唯一不一致的一個。
+- **修法（第一版）**：刪掉那行 `query.in_("category", ...)`，讓 category 回到單純的評分訊號，候選池只用 `archived_at IS NULL` 與排除清單（訂閱 / liked / disliked）過濾，其餘交給既有的 `_score_candidates()` 排序。行為與 FEATURES.md 第 2 節一直記載的評分表一致——文件本來就沒宣稱過有這道篩選，是實作跟文件對不上。
+- **PR review（Codex，P1）抓出第一版修法的迴歸**：候選池查詢仍是 `query.limit(limit * 5)`、不帶 `.order()`。對超過這個上限的 catalog 而言，拿掉 category 篩選後，PostgREST 回傳的（未排序）第一批候選完全有可能一筆都不落在使用者已知的類別裡——於是個人化訊號悄悄消失，`_score_candidates()` 對著一堆零分候選排序，即使資料庫裡明明有更相關的 feed。原本的硬性篩選雖然堵死了跨類別發現，但至少保證候選池裡「有」符合已知偏好的列。
+- **修法（第二版，本次落地）**：把候選池拆成兩次查詢——`preferred`（`in_("category", known)`，保證已知偏好仍能可靠進到候選池）與 `exploratory`（`not_.in_("category", known)`，保留給未知類別，維持這個 PR 原本要修的「能發現新類別」）。兩池的大小依 `_EXPLORATION_POOL_SHARE`（0.3）從 `limit * 5` 切分，合併後才進 `_score_candidates()` 排序。兩個保證同時成立：已知偏好不再可能被「排到第一批之外」而消失，也不會回到第一版之前「有訂閱就完全看不到新類別」的狀態。`tags` / `language` 不受影響——它們從來不是查詢層的篩選條件，這次的迴歸與修法只針對 category。
+- **PR review（Codex）對第二版又抓出兩個問題，同一輪補上（第三版，本次落地）**：
+  1. **P1 — 保留的 exploration 名額沒有活到最後一步**。第二版只在候選**池**裡保留了 exploratory 的名額，但合併後仍是整批交給 `_score_candidates()` 排序、`candidates[:limit]` 取前 N 筆。只要有其他訊號的 exploratory 候選一律是 0 分，而 preferred 候選只要命中 category 就至少 3 分——只要 catalog 夠大、preferred 池湊得滿 `limit` 筆，最終回傳的頁面就會是清一色 preferred，池子裡留的 exploratory 名額從未真正出現在使用者看到的結果裡，等於白留。修法：`_fetch_candidate_pool()` 改回傳 `(preferred, exploratory)` 兩個獨立列表而不先合併；`get_recommendations()` 對兩邊分別評分，各自依 `_EXPLORATION_SHARE` 切出名額後才組成最終的 `top`，其中一邊筆數不足時用另一邊補滿到 `limit`。
+  2. **P2 — 沒有分類的 feed 進不了 exploratory 池**。`not_.in_("category", known)` 編譯成 SQL 的 `NOT IN`，而 `category IS NULL` 的列跟 `NOT IN` 比較的結果是 unknown、不是 true，所以完全篩不到——`feeds.category` 本來就可為 NULL（migration 001），主動發現入庫在候選沒被指定分類時也確實會寫 `None`，這是常態不是邊界案例。任何有 category 訊號的使用者因此永遠看不到沒分類的 feed。修法：exploratory 名額再拆成「已知的其他分類」（`not_.in_`）與「完全沒分類」（新的第三次查詢，`is_("category", "null")`）兩份，各自獨立查詢。**刻意不用 `.or_()` 把兩個條件併成一個 filter 字串**——`categories` 集合可能包含使用者自己填的 `preferred_categories`（透過 `PUT /me/preferences` 完全可控），併進 `.or_()` 會重開 SECURITY.md #14 修過的同一類 PostgREST filter 注入。
+- **PR review（Codex，P2）對第三版再抓出一個問題，同一輪補上（第四版，本次落地）**：exploratory 的兩份子查詢原本各自只拿 `exploration_n` 的一半（`other_category_n` / `uncategorized_n`），這代表其中一種類型完全沒有資料時（例如 catalog 裡根本沒有無分類的 feed），另一種類型即使有充足的候選也被腰斬在一半的名額——`limit` 明明有機會湊滿卻悄悄少交付。修法：兩份子查詢各自都用**完整**的 `exploration_n` 當上限去查，取回後才 `(other_category + uncategorized)[:exploration_n]` 合併截斷，讓任一邊都能在另一邊沒資料時獨自撐滿整個 exploration 名額。
+- **PR review（Codex，P2）對第四版再抓出一個問題，同一輪補上（第五版，本次落地）**：`other_category + uncategorized` 這個串接本身仍有順序偏差——`other_category`排在前面，只要它自己就湊滿 `exploration_n`（有 catalog 的常態），`[:exploration_n]` 會把排在後面的 `uncategorized` 整批砍光，等於第三版才修好的「無分類 feed 永遠看不到」以另一種方式原地復活。修法：合併後、截斷**前**先 `random.shuffle()`，讓兩種子類型不論查詢順序都有公平機會留下——**shuffle 的順序是重點**：截斷之後才 shuffle 沒有意義，救不回已經被砍掉的列。新增的測試把 `random.shuffle` monkeypatch 成確定性的「反轉」而非依賴真隨機：只有 shuffle 真的發生在截斷**之前**，原本排在尾端（`uncategorized`）的列才可能在反轉後被救回、出現在最終結果——這個測試對「shuffle 放在截斷之後」這種等價但錯誤的寫法會失敗，能精準釘住順序本身。
+- **PR review（Codex，P2）對第五版再抓出一個問題，同一輪補上（第六版，本次落地）**：quota 邏輯（先取滿 preferred 名額、再取 exploratory 名額）決定的是**哪些列會上頁**，但 concatenate 出來的 `top` 順序仍是「所有 preferred 排在所有 exploratory 前面」，不是照分數排——一個命中兩個 tag 的 exploratory 候選（+4）理應排在只命中 category 的 preferred 候選（+3）前面，但原本的組法讓 preferred 永遠先出現，前端依序消費這個陣列時，畫面順序就不再反映文件記載的評分權重。修法：把逐列算分的邏輯抽成 `_score()`（`_score_candidates()` 改呼叫它，行為不變），quota 選出 `top` 之後再依 `_score()` 對這個子集合整體重新排序一次——保留 quota 決定的名額分配，只修正最終顯示順序。
+- **範圍以外**：子查詢個別仍不帶 `.order()`，各自取到的仍是 PostgREST 預設順序的前 N 筆，不是各自子集合的隨機樣本——這是既有行為（在這幾版修法之前就是如此），需要 server 端 `ORDER BY random()`（RPC）才能真正解決，留給以後。
+
+### 測試
+
+`backend/routers/recommendations.py` 先前完全沒有測試檔案——核心功能反而是測試覆蓋率的空白，這個 bug 也是因此才留到現在。`backend/tests/test_recommendations.py`：`_score_candidates()` 的 category / tag / language 個別加分與疊加排序；無任何訊號時只送一次不帶 category 篩選的查詢；有 category 訊號時斷言候選拆成三次獨立查詢——`in_("category", ...)` 的 preferred、`not_.in_("category", ...)` 的同類排除、`is_("category", "null")` 的無分類——且三者都正確帶上 id 排除條件（釘住第三版修法）；在 preferred 候選數遠超過 `limit` 的情境下，斷言 exploratory 候選仍會出現在最終回傳的分頁裡（釘住 P1 迴歸）；新增一個會真的依 `.limit(n)` 引數截斷資料的假 query builder（先前的假物件會忽略引數，測不出「要求的筆數不夠」這類 bug），斷言其中一種 exploratory 子類型完全無資料時，另一種仍能單獨湊滿 `limit`（釘住第四版修的 P2 迴歸）；monkeypatch `random.shuffle` 成確定性反轉，斷言 `other_category` 遠多於 `exploration_n` 時，排在尾端的 `uncategorized` 候選仍能出現在最終結果裡（釘住第五版修的 P2 迴歸，且對「截斷後才 shuffle」這種錯誤順序會失敗）；一個命中多個 tag 的 exploratory 候選對上只命中 category 的 preferred 候選，斷言前者出現在回傳陣列的第一位（釘住第六版修的 P2 迴歸）；已登入使用者的訂閱會被排除；`limit` 超出 1–50 範圍回 422。測試總數 474 → 487。
+
+沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，交由 CI 跑完整測試。
+
+## 階段十三：猜你喜歡的候選池改成資料庫端真隨機抽樣（PR #27，2026-08-01）
+
+同一個「持續改善專案」排程任務，接續 PR #26「範圍以外」記下的已知限制：候選池子查詢個別仍不帶 `.order()`，在超過抓取上限的 catalog 上永遠只拿到 PostgREST 預設順序的前 N 筆，應用層的 `random.shuffle()` 只能重排這固定的一批，永遠碰不到表裡其餘的列——早期版本一直沒做，是因為 `supabase-py` 的 query builder 沒有 `ORDER BY random()`，必須換一顆 DB function。
+
+- **修法**：`backend/migrations/007_random_feed_sampling.sql` 新增 `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`，`ORDER BY random() LIMIT p_limit` 一次覆蓋 `_fetch_candidate_pool()` 需要的四種候選池形狀（`unfiltered` / `in_categories` / `not_in_categories` / `uncategorized`），用同一顆 function 而非四顆幾乎重複的，靠 `p_mode` 用 `=` 比對固定字面值切換分支——這個字面值由後端程式碼決定、從不是使用者輸入拼字串，不會重開 SECURITY.md #14 修過的 PostgREST filter injection 那類洞。`routers/recommendations.py` 把原本的 `db.table("feeds")...limit(n)` 四種查詢組合，換成呼叫這顆 function 的 `db.rpc(...)`（新的 `_sample_feeds()` 輔助函式），拆分候選池 / 選 preferred vs exploratory / 事後補滿 / 最終依分數重排的既有邏輯完全不動。
+- **順手清掉一處連帶變成多餘的程式碼**：`get_recommendations()` 在完全沒有任何訊號（無 category / tag / language）時走的 fallback 分支，原本會對候選池再做一次 `random.shuffle()`——這在候選池本來就是 PostgREST 預設順序時是必要的，但候選池現在改由 `sample_feed_candidates()` 以 `ORDER BY random()` 抽出，這次應用層 shuffle 已經是對已經隨機過的資料再洗一次，純粹浪費，直接移除。
+- **PR review（Codex，P1）**：新函式建在 `public` schema，Postgres 對新函式預設把 `EXECUTE` 授權給 `PUBLIC`，而 PostgREST 的 `anon` / `authenticated` 角色會繼承這個授權——意味著只要持有瀏覽器就看得到的 anon key，就能繞過後端直接呼叫這顆 RPC，帶入超出 API 限制（`limit` 1–50、id/category 陣列各上限 50）的巨大 `p_limit` 或陣列，反覆觸發整張 `feeds` 表的 `ORDER BY random()` 掃描，且完全不吃 `rate_limit.py` 的配額——一個未認證的資料庫資源耗盡路徑。修法：`REVOKE EXECUTE ... FROM PUBLIC` + `GRANT EXECUTE ... TO service_role`，比照專案裡其他寫入路徑（見 004、006）一律只信任 service_role 的既有原則；並在 function 內部加 `LIMIT LEAST(p_limit, 250)` 當 defense-in-depth——即使日後哪個呼叫路徑忘記做邊界檢查，這顆 function 本身也不會被騙去掃全表。
+- **PR review（Codex，P1，同一輪再抓）**：上一版只 revoke `PUBLIC`，但 Supabase Cloud 專案會額外對 `postgres` 角色設定 default privileges，讓它建立的新物件直接把 `EXECUTE` 授權給 `anon` 與 `authenticated`——這是獨立於 `PUBLIC` 繼承鏈之外的直接授權，只 revoke `PUBLIC` 救不到它，anon key 仍能直接呼叫。修法：對 `anon` 與 `authenticated` 各自明確補上 `REVOKE EXECUTE`，三個 revoke 都下完才 `GRANT ... TO service_role`。
+- **PR review（Codex，P1，第三輪）**：鎖住 RPC 本身的授權只堵住「繞過後端直接呼叫」這條路，堵不住「正常打 `GET /api/recommendations` 但瘋狂重複打」這條——這條路線完全不經過 RPC 授權檢查，而 migration 007 之後這個端點每次呼叫最多對 `feeds` 做三次 `ORDER BY random()` 全表掃描（掃描 + 排序，比原本單純的 `.limit()` 貴得多）。`/discover`、`/discover/import` 早在 SECURITY.md #18 就因為同樣的理由裝了 `rate_limit`，`/recommendations` 卻一直沒有——不是這次改動造成的舊缺口，但這次改動把它的代價從「可忽略」放大到「值得立刻補」。修法：`get_recommendations()` 加上 `Depends(rate_limit("recommendations"))`，沿用既有的每 client IP 每端點 20 requests / 60 秒配額，與 `/discover` 系列共用同一套機制、各自獨立配額桶。
+
+### 測試
+
+`backend/tests/test_recommendations.py` 改寫既有測試的 mock 層，從模擬 `db.table("feeds")` 的 query-builder chain 改成模擬 `db.rpc("sample_feed_candidates", params)`：新增 `_sampling_rpc()` 假物件，依 `params["p_mode"]` 分派到對應的假資料集，並依 `params["p_limit"]` 真的截斷回傳筆數（取代原本會忽略引數的假 `.limit()`），讓「要求的筆數不夠」這類 bug 仍測得出來。測試涵蓋的行為（三池拆分、exploration 名額存活到最終輸出、任一子池獨自撐滿名額、shuffle 必須在截斷前發生、依分數而非 quota 來源排序、已登入使用者排除自己的訂閱、`limit` 邊界）本身不變，只是斷言的對象從 query-builder 呼叫換成 `db.rpc` 呼叫參數。新增 `test_recommendations_rate_limited_after_threshold`，仿照 `test_discover.py` 的既有寫法：連打 `DEFAULT_MAX_REQUESTS` 次都拿 200，第 `DEFAULT_MAX_REQUESTS + 1` 次應回 429 並帶 `Retry-After`。測試總數 487 → 488。
+
+沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25、#26 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，並手動逐一推演每個測試案例的資料流確認邏輯正確，交由 CI 跑完整測試套件驗證。
+
+## 階段十四：`validate_fetch_url()` 補上 #25 第七輪明確記下、當時未修的既有問題（PR #28，2026-08-02）
+
+同一個「持續改善專案」排程任務。完整說明見 [SECURITY.md #26](../SECURITY.md)。
+
+- **問題**：#25 第七輪把 `PinnedTransport` 新增的第二道 DNS 解析（pin-and-connect 用的那次）從同步改成非同步，並在紀錄裡明確寫下「`validate_fetch_url()`/`_is_safe_host()` 有同樣的既有問題，但… 呼叫點遍布全專案… 不在本次範圍」——那次修法沒有動到**第一道**：`validate_fetch_url()` 本身，它在每一條抓取路徑最前面（包括完全公開免認證的 `POST /api/discover`）同步呼叫 `socket.getaddrinfo()`，攻擊者指向回應很慢的 DNS 就能卡住整個 worker 的事件迴圈——與 #25 第七輪修的是同一個服務層級 DoS，只是換了個尚未補上的呼叫點。
+- **修法**：`_is_safe_host()` 改成 `async def`，解析借用 `_resolve_pinned_ips()` 已在用的同一個專屬、固定大小的 `_dns_resolver_executor`，並帶上新常數 `DNS_VALIDATION_TIMEOUT_SECONDS = 10.0`（`validate_fetch_url()` 執行時通常還沒有 client/request 存在、部分呼叫端如 `routers/opml.py` 也沒有現成 `timeout` 變數可借）。`validate_fetch_url()` 隨之改成 `async def`；`fetch_with_cap_response()` 與 `discover_feeds()` 改傳入各自函式簽章上原本就有的 `timeout`，其餘 10 個呼叫端（`rss_parser.py` 兩處、`services/feed_refresh.py`、`services/discovery_probe.py`、`routers/admin.py`、`routers/admin_discovery.py` 兩處、`routers/discover.py`、`routers/opml.py`）維持預設值——全部呼叫點都已在 `async def` 函式裡，只需加上 `await`。判斷邏輯（private / loopback / link-local / multicast / reserved）與 #25 的 pin-and-connect 完全不動，這次只是把既有的第一道門從同步搬成非同步。
+
+### 測試
+
+`backend/tests/test_feed_discovery.py` 新增 2 個測試：`test_is_safe_host_runs_dns_resolution_off_the_event_loop`（沿用 #25 第九輪驗證阻塞行為的手法，斷言解析發生在 `pinned-dns-resolve` 執行緒、事件迴圈期間仍能完成無關的 `asyncio.to_thread()` 工作）、`test_is_safe_host_rejects_dns_timeout`（逾時回傳 `False` 而非掛住或洩漏例外）。既有的 `test_normalize_url_*` 系列改成 `async def` + `await`——`unittest.mock.patch()` 對已改成 `async def` 的目標會自動改用 `AsyncMock`，既有的 `return_value=`/`side_effect=` 不必跟著改寫。沒有網路能在這個 sandbox 安裝依賴跑 `pytest`（與 #25/#27 同樣的既有限制），改用 `python3 -m py_compile` 與 `ruff check` 驗證語法與風格，交由 CI 跑完整測試。
+
+## 階段十五：web 端全面重設計——Offbeat 設計系統與前後台結構分離（PR #29，2026-08-03）
+
+前端從 `ng new` 的骨架長成一套有識別度的設計系統，並把前台與後台在結構上真正拆開。
+
+### 起點
+
+- 全站 CSS 約 150 行。`styles.scss` 43 行裡有 38 行是 Angular CLI 原始 boilerplate——未更動的 `mat.theme()`、stock azure palette、寫死的 `color-scheme: light`，沒有任何 token 層。
+- `.center` / `.error { color: red }` / `.empty` 三條規則在四個元件的 SCSS 裡逐字重複。中性色一律寫成 `rgba(0,0,0,.x)`，另有 `#f5f5f5`、`#e3f2fd`、`#d32f2f` 等硬編碼散落 8 個檔案——任何深色主題都會直接壞掉。
+- `app.html` 是未刪的 344 行 Angular 起始頁（Angular logo、`Hello, {{ title() }}`），沒有被引用；`app.scss` 是空檔；`app.spec.ts` 對著那個死掉的模板斷言。`index.html` 標題還是 `DriftreadFrontend`，`lang="en"`，整個 UI 卻是繁體中文且沒有任何 CJK 字型堆疊。
+- **前後台沒有分離**：14 行扁平路由，`/admin` 只是其中一個 leaf，與前台共用同一個 shell；`nav.html` 把「後台」連結永久顯示給所有訪客；`/admin` 完全沒有 guard。後台是單一頁面塞 6 個 `mat-card`，直接呼叫 `HttpClient` 並手工組 `x-api-key` header 共 12 次。
+
+### 設計系統（Offbeat：Nord × Brutalism）
+
+兩層 token：raw palette 只出現在 `_tokens.scss`，其餘一律走語意別名，換主題只是 `<html>` 上換一個屬性。
+
+**關於對比度**——Nord 是為語法高亮設計的低對比色票，數個自然搭配在 UI 文字上達不到 WCAG AA。逐一量測並在檔案內記錄：
+
+- frost3 `#5E81AC` 配 snow2 文字只有 **3.47:1**，不能當主要按鈕底。主要按鈕改用 frost1 + polar0（**6.25:1**），兩個主題共用同一組值。
+- aurora_red 是中間調，在 polar0（3.06:1）與 snow2（3.53:1）上都不合格。Aurora 因此拆成兩種形式：原色供填色 / 狀態點 / 邊框（≥3:1 即可），另加每主題的 `-ink` 變體供文字。
+- polar3 在 polar0 上是 2.3:1（禁用為文字），在 snow2 上卻是 **6.7:1**——禁令是跟背景綁定的，淺色模式正好是它合法的地方。
+
+偏移陰影改用 `box-shadow: Npx Npx 0 0` 而非參考文件的 `::after` + `z-index:-1`。視覺完全相同（零模糊零擴散＝實心位移矩形），但不需定位脈絡、不會被 stacking context 裁掉——sticky header 與 drawer transform 都會破壞後者。
+
+### 元件庫
+
+移除 `@angular/material` 與 `@angular/animations`，只留 `@angular/cdk`（overlay / a11y）。
+
+分界不是隨意的：「原生元素加上塗裝」的東西（button / input / textarea / select / checkbox / chip / divider）留在原生元素上，樣式放全域 recipe class；只有真的有結構或行為的才做成元件。兩個理由——放棄 Material 等於放棄它的無障礙成果，靠平台把鍵盤操作、type-ahead 與行動裝置原生選單買回來比重寫一套 combobox ARIA 可靠得多；而且 `anyComponentStyle` 是每元件 4kB，mixin 被 12 個元件 include 就是 12 份各自計費，全域 class 只算一次。
+
+無障礙補回的重點：`ob-tabs` 實作完整 WAI-ARIA tabs（roving tabindex、左右鍵與 Home/End，且焦點必須跟著選取移動，否則焦點會留在 `tabindex="-1"` 的 tab 上導致下一次 Tab 跳出整組）；`ob-icon` 用 `@switch` 選 literal `<path>`，不經 `innerHTML`、不碰 `bypassSecurityTrust`；`ob-error` 帶 `role="alert"`——它取代的 `<p class="error">` 對輔助技術完全隱形；toast 一律同步送 `LiveAnnouncer`。行動版側欄除了 transform 位移還要 `visibility: hidden`，否則鍵盤使用者會 Tab 進一個看不見的選單。
+
+### 前後台分離
+
+`/admin/**` 自成子路由樹掛在獨立的 `AdminLayout` 下（側欄、更緊的間距、STRUCTURE 6），前台移除「後台」連結。`adminGuard` 只檢查金鑰是否存在，註解裡寫死它不是認證。金鑰改存 `sessionStorage`——原本存在非持久化的 signal，重新整理就消失，所以每個面板都需要手動按「載入」，改成撐得過 F5 之後那個 workaround 連同解釋它的註解一起消失。
+
+`AdminService` 收掉 12 處手工 header，並把原本一律 `失敗：<detail>` 的錯誤處理拆開：0（沒到達後端）、403 / 422（金鑰無效或遺漏 → 清除並送回 unlock）、409（狀態衝突不是失敗）、502（遠端 feed 抓取失敗，用 warning 不用 danger）、503（設定狀態，用 info）。
+
+`auth.interceptor` 從「無條件貼在所有請求上」收斂為只貼自家 API 且跳過 `/admin/*`。
+
+後台拆成 5 個子頁，並接上 5 個後端早就存在但前台從未呼叫的端點：`feeds/unhealthy`（健康度只存在資料庫裡沒人看得到）、`feeds/refresh-due`、`feeds/from-url`（原本加一個來源要手寫 JSON 陣列）、`discovery/targets` 清單與 `targets/{id}/block`（探測佇列原本是唯寫的）。
+
+### 順手修掉的既有 bug
+
+1. **猜你喜歡在收藏第 51 個之後永久失效**——`services/recommendation.ts` 無上限 append 所有 liked/disliked，後端上限 `max_length=50`，超過就 422。越常用這個功能的人越早壞掉。
+2. **OPML 匯出必定 401**——`exportOpmlUrl()` 回傳的字串被塞進 `<a [href]>`，跟著連結走是瀏覽器導覽而不是 HttpClient 請求，interceptor 看不到它、不會帶 `Authorization`，但端點需要 JWT。
+3. **未設定 Supabase 時登入表單仍可送出**——原本只有警告文字，輸入框和按鈕照常可用，送出後靜默失敗。
+4. **登入頁按 Enter 沒反應**——原本只有 click handler，沒有 `<form>`。
+5. **已收藏的文章重新打開時星號永遠是空的**——`favorited` / `readLater` 從來沒有從伺服器初始化過。
+6. **猜你喜歡快速點擊會撞 429 且毫無說明**——`next()` 在翻完 15 張時自動重抓，一分鐘內就能燒光 20 次配額。deck 改為 50（後端上限）、重抓改為顯式操作、429 讀 `Retry-After` 倒數顯示。
+
+### 驗證
+
+`npm run build`（production config，`strictTemplates` 與樣式預算全開）與 `npm test`（vitest，30 個測試）通過，`prettier --check` 乾淨。
+
+另以 Playwright 驅動 **production build**（非 `ng serve`）跑 30 項檢查全數通過，並攔截所有 `/api/` 回應以精確回傳狀態碼：`/admin` 無金鑰時導向 unlock、金鑰撐過重新整理、403 清除金鑰並退回 unlock、429 顯示 `Retry-After` 倒數、503 說明 kill switch、tabs 方向鍵、焦點環可見、drawer 的 Escape 與 `aria-expanded`、三個斷點皆無水平溢出、淺色表面不是純白、文章欄寬 720px。截圖涵蓋 14 個頁面 × 深/淺 × 三個斷點。
+
+登入相關流程在這個環境**無法端到端驗證**——`environment.ts` 的 Supabase 設定是空字串（build 時寫死），`AuthService.isConfigured()` 回 `false`。
+
+initial bundle 從 607 kB 降到 503 kB，仍超出預設 500 kB 預算 3.31 kB。已確認原因與本次改版無關：203 kB 的 `@supabase/supabase-js` 被 `app.config.ts` 的 auth interceptor 靜態引入而進了 initial bundle。改成延遲載入可省下這 203 kB，但那會動到完全無法在此驗證的登入流程，因此不放進這個 PR。
+
+## 階段十七：`MaxBodySizeMiddleware` 補上串流位元組計數，堵住 chunked body 繞過 6 MiB 上限的缺口（PR #32，2026-08-04）
+
+同一個「持續改善專案」排程任務，補完 [SECURITY.md #17](../SECURITY.md) 上線時就記下的已知限制：`MaxBodySizeMiddleware` 只檢查請求宣告的 `Content-Length` header，以 chunked transfer-encoding 送出、不帶 `Content-Length` 的請求完全不受這道 6 MiB 上限約束，公開免認證的 `POST /api/discover`、`POST /api/discover/import` 因此仍是無上限的記憶體耗盡向量。
+
+- **修法**：`MaxBodySizeMiddleware.__call__` 包一層 `receive`，逐則 ASGI 訊息累加已收到的 body 位元組數，累計超過上限就把 `receive` 之後一律回傳 `http.disconnect`，並同時包一層 `send` 吞掉 app 在那之後想送出的任何回應；`self.app(...)` 結束後，`finally` 區塊用**原始、未包裝**的 `send` 送出唯一真正抵達 client 的 `413`。`Content-Length` 過大時仍走原本「讀 body 前」的早期回絕；未宣告或宣告不實的請求則由新的串流計數兜底，兩條路徑互不取代。
+- **CI 這次真的抓到一個問題**：第一版實作原本是讓自訂例外從 `receive` 一路冒出到 `self.app(...)` 外層的 `try/except`，但 FastAPI 的 body 解析本身包了一層寬鬆的 `except Exception`，會把途中冒出的任何例外吞掉、轉成它自己的 `HTTPException(400)`。這個 sandbox 一直沒有網路能裝依賴跑 `pytest`，只能用 `py_compile` / `ruff` 驗證語法，這類「執行期才會現形」的框架內部行為因此一直沒被抓到；這次 GitHub Actions 的 `Test` job（有完整依賴）第一次真的跑了這個新測試，斷言 413 卻收到 400，當場失敗。改用上面「讓 `receive` 回報斷線、`send` 期間全吞掉，最後由外層自己送出唯一回應」的設計後重推，CI 轉綠。完整分析見 [SECURITY.md #27](../SECURITY.md)。
+- **測試**：`backend/tests/test_main.py` 新增 `test_oversized_chunked_body_without_content_length_rejected`，用產生器當請求內容讓 `httpx` 不送出 `Content-Length`，斷言 413、請求確實沒有該 header、且 route 邏輯（`mock_db.table`）從未被觸發——這是這次唯一一段實際在裝有完整依賴的環境（CI）跑過、而非只靠推理驗證的變更。
+
+## 階段十六：補齊 001 / 002 / 004 的 `CREATE TRIGGER` / `CREATE POLICY` 存在性防護（PR #31，2026-08-03）
+
+同一個「持續改善專案」排程任務，接續階段十「不在此 PR 範圍」記下的已知限制：`001_initial_schema.sql` 與 `002_user_features.sql` 的 `CREATE TRIGGER` / `CREATE POLICY` 語句沒有 `IF NOT EXISTS`，把 `_migrations` 整個清空後重跑會在 **001** 就因為「trigger 已存在」而中止——`main.py` 的 lifespan 在服務請求前呼叫 `run_migrations()`，中止的 migration 會讓容器開機失敗。005 其實已經替 `ADD CONSTRAINT` 補過同類 DO-guard，006 的四張新表也全套 guard，只是沒回頭補 001/002。
+
+- **範圍比原先記錄的稍大**：檢查全部 7 個 migration 檔後發現 `004_enable_rls_on_public_tables.sql` 的兩個 `CREATE POLICY`（`feeds_public_read` / `articles_public_read`）同樣沒有防護。只修 001/002 沒有意義——修完之後從頭重跑仍會在 004 中止，等於沒解決「`_migrations` 被清空後可以安全重跑到底」這個實際目標，因此一併補上。003/005/006/007 本來就已是 `IF NOT EXISTS` / `DO`-guard / 純 `CREATE OR REPLACE FUNCTION`，不需要改動。
+- **修法**：`CREATE TRIGGER` 比照 006 的既有寫法，用 `DO $$ ... IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = ... AND tgrelid = '<table>'::regclass) THEN CREATE TRIGGER ... END IF; END $$;` 包住（001 的 `feeds_updated_at`、002 的 `user_preferences_updated_at`）。`CREATE POLICY` 用同樣的 `DO` 結構改查 `pg_policies`（依 `schemaname` / `tablename` / `policyname` 判斷），包住 002 的四個 owner policy 與 004 的兩個 public-read policy。判斷邏輯與被包住的 DDL 本身完全不動，純粹加上存在性檢查。
+- **驗證**：這個 sandbox 剛好裝有本機 `postgresql-16` 且 `psql` / `sudo` 可用，因此沒有停在「改完只能靠推理」——實際起了一個暫時 cluster、建好 `anon` / `authenticated` / `service_role` 三個角色與 `auth.users` / `auth.uid()`，依序套用全部 7 個 migration 檔（成功），接著清空 `_migrations` 並從 001 重新整個跑一遍：修改前的版本會如預期在 001 的 `CREATE TRIGGER feeds_updated_at` 那行炸掉（`trigger "feeds_updated_at" for relation "feeds" already exists`），精確重現了階段十記錄的既知限制；修改後的版本 7 個檔案全數重跑成功，且 `pg_trigger` / `pg_policies` 查詢確認 `feeds_updated_at`、`user_preferences_updated_at` 兩個 trigger 與六個 policy 都仍然只有一份、沒有重複建立。過程沒有動到 `backend/tests/`——現有測試套件裡沒有任何測試對這幾個 migration 檔的原始內容做斷言，也沒有能連真實 PostgreSQL 的既有 migration 測試（`migrate.py` 需要 `DATABASE_URL` 才會執行，pytest 套件走的是 mock 掉 Supabase client 的路徑）。
+
+## 階段十七：文章全文顯示成 HTML 原始碼（PR #32，2026-08-05）
+
+使用者回報在 `/articles/:id` 讀文章時整頁都是 `<p>` `<a href="…">` 這類標籤字面值，貼了一篇阮一峰《科技爱好者周刊》第 406 期作為範例。
+
+### 根因
+
+不在渲染層。`article-reader.html` 的主要分支一直是 `<div class="prose" [innerHTML]="a.content">`，會正常渲染；問題是**那個分支根本沒被走到**。
+
+`rss_parser.py` 的 RSS 解析把 `<description>` 原封不動塞進 `summary`，`content` 只從 `content:encoded` 取。阮一峰的 feed（以及非常多 feed）整篇文章就放在 `<description>` 裡、完全不送 `content:encoded`——於是 `content` 是 NULL，reader 落到 `@else if (a.summary)` 這條 **`{{ }}` 插值**的後備分支，Angular 依約把那串 HTML 逐字轉義輸出，標籤就上了畫面。`components/bookmarks` 的預覽行是同一個 `{{ article.summary }}`，症狀相同。
+
+順帶找到第二條會壞掉的路徑：`_text()` 只讀 `el.text`，也就是第一個子元素之前的文字。Atom 的 `type="xhtml"` content 是**真的子元素**而不是轉義字串，`.text` 只有子元素前的空白，所以那類 feed 的 `content` 一律被截成空字串——症狀是文章顯示「沒有快取內容」。
+
+### 修法
+
+**`backend/rss_parser.py`**——把 `content`（HTML）與 `summary`（純文字）的職責分清楚：
+
+- `_inner_html()` 取代 content/description 欄位上的 `_text()`。CDATA／轉義的 HTML 仍然原樣從 `.text` 取出不動；有子元素時（Atom xhtml）改用 `_serialize()` 遞迴輸出，剝掉命名空間前綴、void element 不補結束標籤——輸出必須是瀏覽器認得的 HTML，不是 `ET.tostring()` 那種 `<ns0:p xmlns:ns0="…">` 的 XML round-trip。
+- 沒有 `content:encoded`／Atom `<content>` 而 description／summary 本身是 markup 時，把它升格為 `content`。判定用的 `_TAG_RE` 刻意保守——`<` 後面必須接字母或 `/`，所以 `if x < 3 and y > 2` 這種純文字摘要不會被誤判成 markup 而升格。
+- `summary` 一律經過 `_plain_text()`：先整段丟掉 `<script>` / `<style>`（那是原始碼不是文章），再把 block 標籤換成空格、inline 標籤直接刪掉，最後才解 entity。**不做截斷**——`summary` 是純 blurb 的 feed 仍然需要完整內容當 reader 的後備。
+
+block／inline 分開處理是為了中文：一律換成空格會讓 `<p>這裡記錄<a>開源</a>。</p>` 變成「這裡記錄 開源 。」，讀起來像打錯字。entity 放在剝標籤**之後**解，是為了讓上游雙重轉義殘留的 `&lt;p&gt;` 變成看得見的文字，而不是被重新當成標籤刪掉。
+
+**`backend/backfill.py`**——解析器只修得到之後再 upsert 的資料列，已經滑出 feed 視窗的舊文章永遠不會被再寫一次，所以歷史資料要回填。**回填直接呼叫解析器本身**（`_looks_like_markup()` / `_plain_text()`），不在 SQL 裡重寫一份規則；在 `main.py` 的 lifespan 於 migration 之後執行，記在同一張 `_migrations` 表。這個設計是走了冤枉路才定下來的，理由見下面第七輪。
+
+**前端**——後端修完之後 `summary` 就是純文字了，但這兩處仍加了防禦，因為回填跑之前、或任何未來又混進 markup 的情況下畫面不該再出現裸標籤：
+
+- 新增 `shared/html.ts`（`looksLikeHtml()` / `stripHtml()`），規則與後端逐條對齊，純字串處理不碰 DOM。
+- `article-reader` 的 summary 後備改成先判斷 `summaryIsHtml()`：是 markup 才走 `[innerHTML]`（一樣經 DomSanitizer，不用 `bypassSecurityTrust`），否則維持 `{{ }}`。**不無條件用 `[innerHTML]`**——純文字摘要裡的 `if x < 3` 會被 sanitizer 當成標籤開頭吞掉後半句。
+- `bookmarks` 的預覽行改吃預先算好的 `rows()`，`stripHtml()` 一份清單只跑一次；列表列是單行預覽，殘留 markup 應該變成文字而不是版面。
+
+### 驗證
+
+- `pytest`：548 passed（523 → 548，新增 19 個解析器測試與 6 個回填測試，涵蓋 description 升格、`content:encoded` 優先、純文字不被動、script/style 丟棄、Atom xhtml 序列化、entity 解碼順序、以及下面兩條 review 修正的判定規則）。
+- `ng test`：85 passed（66 → 85，新增 `shared/html.spec.ts` 19 項）；`ng build` production 通過，`prettier --check` 乾淨。initial bundle 504.97 kB 與 master 完全相同，超出預設預算 4.97 kB 是既有狀況（`@supabase/supabase-js` 被靜態引入，見階段十五），與本次改動無關。
+- 回填在**真的 PostgreSQL 16** 上跑過，不是只靠推理：起了暫時 cluster，用 16 列涵蓋前六輪每一個爭議案例的樣本（含使用者貼的那篇周刊的實際片段）驗證回填結果——body 有被救回 `content`、中文摘要沒有多餘空格、`if x < 3 and y > 2` 原封不動、`&amp;lt;p&amp;gt;` 正確解成可見文字、script/style 整段消失、`NULL`／空字串／`<p></p>` 都沒有炸掉。
+
+### Codex review：不能把「引用了標籤的純文字」當成 HTML
+
+判定 markup 的規則原本是「含有標籤形狀的東西」，Codex 指出這條規則會反過來吃掉資料。XML 規定兩者都必須轉義，所以文章本體送成 `&lt;p&gt;text&lt;/p&gt;`、和一句在講 HTML 的散文寫成 `Use &lt;p&gt; for paragraphs`，經過 XML parser 之後**長得一模一樣**——都帶著真的 `<` 字元。舊規則把後者判成 markup，於是 `_plain_text()` 會把那個 `<p>` 剝掉，前端 reader 也會把它丟進 `[innerHTML]` 讓瀏覽器吞掉。錯的方向很糟：**文字直接從畫面上消失**，而不只是難看。
+
+本 PR 自己的測試就寫出了會被踩到的值——`test_summary_decodes_entities_after_stripping_tags` 斷言 summary 是 `Tom & Jerry wrote <p>`，那正好會被前端啟發式判成 legacy markup 而吞掉結尾。
+
+**改用「有沒有結束標籤或自閉合標籤」當判準**（`_MARKUP_RE` / `MARKUP_RE` / migration 的同一條 regex）：會包住東西的 markup 一定有 `</x>` 或 `<x …/>`，而引用標籤名的散文幾乎不可能有。**有屬性刻意不算數**——講 HTML 的文章成天引用 `<a href="…">`。同一條規則同時套在三個地方：是不是要升格成 `content`、要不要剝標籤、以及前端走哪個渲染分支。剝標籤與升格都改成只對「真的是文件」的值動手，entity 解碼與空白收斂則兩種情況都照做。
+
+現在誤判的方向也翻過來了：漏判（例如整段只用 `<br>` 分行的 legacy 內容）最多是標籤露在畫面上，看得見、修得掉，不會靜悄悄弄丟東西。
+
+migration 也跟著拆成四步（升格 / 剝標籤 / 解 entity 與收空白 / 把只剩空字串的 summary 正規化成 NULL）。
+
+### Codex review 第二輪：沒有斜線的 void 標籤
+
+同一個 bot 接著指出 `<br>` / `<img>` 這種合法但沒有結束標籤也沒有 `/>` 的 void element 會被判成純文字。這條只對了一半，而且**兩輪 review 的方向是相反的**——把 bare `<br>` 收進 markup，等於把第一輪修掉的洞照原樣開回來（`use <br> to break lines` 會被剝成 `use  to break lines`）。
+
+拆開處理：
+
+- **收進來**：void element **帶屬性**的形式（`<img src="…">`、`<hr class="…">`）。圖片型部落格與網路漫畫的 description 常常就是一個 bare `<img>`，那張圖就是整篇文章；判成純文字的話 reader 會把標籤當文字印出來、圖片完全不顯示，這是真的會弄丟內容。限定在 void element 是關鍵——「有屬性就算數」會把 `<a href="…">` 一起收進去，那正是第一輪的地雷。
+- **繼續排除**：**沒有屬性的** bare void 標籤。`one<br>two` 確實是 markup，但 `use <br> to break lines` 也長一樣，兩者無法區分；只有後者猜錯會弄丟文字，所以平手時判給「不動它」。前者猜錯只是畫面上多一個 `<br>`，看得見、修得掉。
+
+三處（parser、前端、migration）同步更新，並在 PostgreSQL 16 上用 16 列樣本重跑確認三邊判定一致：`<img src="…" alt="today">` 與 `<IMG SRC="a.png">` 正確升格，`use <br> to break lines`、`one<br>two`、`Use <p> for paragraphs and <a href="…"> for links`、單獨一個 `<p>` 全部原封不動。
+
+### Codex review 第三輪：引用成對標籤的散文（未採納，已寫成測試記錄）
+
+第三輪指出 `Use &lt;strong&gt;bold&lt;/strong&gt; for emphasis` 這種引用**成對**標籤的散文會被判成文件。機制上正確，但這次沒有改，理由是實測之後可以確定它落在安全那一側：
+
+```
+prose：Use <strong>bold</strong> for emphasis
+  → content='Use <strong>bold</strong> for emphasis'  summary='Use bold for emphasis'
+真body：Hello <b>world</b>, welcome
+  → content='Hello <b>world</b>, welcome'             summary='Hello world, welcome'
+```
+
+兩者是**完全相同的字串形狀**，沒有任何規則能分開。而且成對標籤被誤判時**一個字都不會少**——`bold` 完整保留，只有兩個標籤 token 被吃掉；這正是第一輪那個空的 `<p>` 被排除的原因（剝掉會變成 `Use  for paragraphs`，句子壞掉）。
+
+反過來說，任何為了排除這句散文而收緊的規則，都會連帶排除 `Hello <b>world</b>, welcome` 這種 RSS 裡極常見的短內文，把它打回「畫面上顯示裸標籤」——那正是這個 PR 要修的原始 bug。三輪下來這條啟發式已經到達它的有效邊界，再收緊就是拿常見情況換罕見情況。
+
+決定寫成 `test_prose_quoting_a_paired_tag_is_knowingly_treated_as_markup`，把「知道、且刻意接受」釘在程式碼裡，而不是只留在 PR 討論串。
+
+### Codex review 第四輪：屬性值裡的 `>`（已修）
+
+這輪不是啟發式取捨，是實打實的字串處理 bug。`<p title="2 &gt; 1"&gt;` 是合法 HTML，但所有 tag pattern 都用 `[^>]*` 吃到第一個 `>` 為止——那個 `>` 在引號**裡面**，於是剩下的 `1">Hi` 被當成內文存進 `summary`：
+
+```
+修前：<p title="2 > 1">Hi</p>                    → summary='1">Hi'
+      <a href="x" title="a > b">link</a> tail    → summary='b">link tail'
+修後：                                            → 'Hi' / 'link tail'
+```
+
+改成走引號的 `_ATTRS = (?:[^>"']|"[^"]*"|'[^']*')*`，三處同步（`_TAG_RE` / `_DROP_WHOLE_RE` / `_MARKUP_RE`，前端與 migration 亦同）。兩個實作細節：
+
+- **三個分支的第一個字元互斥**（`"` 只由引號分支吃、`'` 同理、其餘由 `[^>"']`），所以星號是確定性的、不會指數回溯。feed 內容是遠端可控輸入，這是真的暴露面而非假想，因此補了計時測試（20000 字元的惡意輸入 < 1 秒）。
+- **保留原本的 `[^>]*` 當最後一個分支**，處理引號不成對的壞標籤（`<p title="unclosed>`）——走引號的版本比對不到它。順序不能反。
+
+順帶收緊了 void element 分支：改成 `[^><]*=[^><]*>`，要求標籤真的閉合且中間不能有 `<`。原本 `the <img tag is useful, x = 1` 這種沒閉合的散文會一路吃到後面不相干的 `=` 而被判成 markup。
+
+migration 在同一個 cluster 上用 21 列樣本重跑，新增的 5 列（引號內 `>`、`<pre>`、引號不成對、未閉合散文）三邊判定與 Python 端逐列一致。
+
+### Codex review 第五輪：數字實體（已修）
+
+migration 只用固定的 `replace()` 清單解 `&#39;` 與幾個具名實體，但解析器走的是 `html.unescape()`——它認得所有形式。feed 裡 `&#8217;`（彎引號）和 `&#8212;` / `&#x2014;`（破折號）滿地都是，而永遠不會再被 upsert 的舊資料列會一直在預覽裡顯示那串原始碼。
+
+新增 step 3：一個 `DO` 區塊逐列掃出數字實體並轉成字元（`migrate.py` 是整份檔案一次 execute，且 001/002/004/005/006 早就在用 `DO $$`，不會有語句切割問題）。排在具名實體之前，讓整體維持 `html.unescape()` 的**單次掃描**語意——雙重轉義的 `&amp;#8217;` 在這步找不到 `&#`，到 step 4 才變成看得見的文字 `&#8217;`，與 Python 一致。
+
+實作時自己踩到並修掉一個坑：**十六進位分支原本靜默失效**。`('x' || '2014')::bit(32)` 在 Postgres 是向**右**補零，得到 `0x20140000` 而不是 `0x2014`，超出 Unicode 範圍後被例外處理吞掉，`&#x2014;` 原封不動留著。要 `lpad(hex, 8, '0')` 才對。是實跑 26 列樣本才看見的，不是推理出來的。
+
+另外把「無效碼位」的行為對齊 Python：`&#0;`、`&#1114112;`、`&#xD800;` 這些 `chr()` 不接受的值，`html.unescape()` 產出 U+FFFD，migration 也照做。原本打算保留原始文字（其實比 `�` 好看），但那會讓「同一個 feed 的兩篇文章，一篇走 migration、一篇被重新 upsert」顯示不一樣——這種細微不一致以後會害人查半天，不值得。
+
+前端 `stripHtml()` 有同一個缺口，一併補上，並把具名 + 數字合併成單一 regex 的**一次掃描**（原本是多次 `replace` 串接），語意才真的與 Python 相同。
+
+### Codex review 第六輪：C1 範圍的數字實體（已修，並窮舉驗證）
+
+`&#151;`、`&#145;`、`&#128;` 這些 0x80–0x9F 的數字實體，`html.unescape()` **不當成控制字元**——依 HTML5 規範改用 Windows-1252 對應字元，所以 `&#151;` 是破折號、`&#128;` 是歐元符號。舊 feed（凡是經過 Word 的）滿地都是。migration 存 `chr(151)` 會塞一個看不見的控制字元進去。
+
+修法是把 Python 的 `html._invalid_charrefs` **程式產生**成 32 格對照表寫進 migration 與前端，不手抄——這種表手抄一定會錯。
+
+**這輪真正的收穫是驗證方式改了。** 前五輪都是拿手挑的樣本比對，這次改成**窮舉**：0–255 全部碼位、0xFDCE–0xFDF1、各平面邊界、surrogate、noncharacter、超範圍值，每個都跑十進位與十六進位兩種寫法，加上字面空白字元，共 638 列，逐列 base64 匯出後與 Python 輸出**逐位元組**比對。
+
+結果是它抓到兩個 Codex 沒提、我也沒想到的差異：
+
+1. **`_invalid_codepoints` 沒實作**。除了 tab/LF/FF/CR 以外的控制字元，`html.unescape()` 是**整個丟掉**引用，不是轉成字元。這一組加上 Unicode noncharacter 共 126 個碼位、22 個區間，但最後 17 個是 `0xNFFFE/0xNFFFF` 的規律，可以縮成一行 `(code & 0xFFFE) = 0xFFFE`。
+2. **step 4 的 WHERE 條件漏選**。原本為了避免整表重寫，只選「含實體 / 連續空白 / 首尾空白」的列——`line one<TAB>line two` 三個條件都不符合，於是那個 tab 永遠不會被正規化。這是我自己為了微優化而製造的 bug。**改成 `WHERE summary IS NOT NULL` 掃全表**：前三步本來就已經在重寫了，省這一次沒有意義，卻換來一整類「這個條件涵蓋到了嗎」的推理負擔。順帶補上 Postgres `[[:space:]]` 比 Python `\s`少的字元（NBSP 等）。
+
+第 2 點特別值得記：**聰明的 WHERE 條件是這個 migration 唯一一個「我自己寫壞、而且五輪 review 都沒抓到」的地方**，是窮舉才逼出來的。
+
+### Codex review 第七輪：兩個發現，一個共同根因（架構改掉）
+
+第七輪指出兩件事：
+
+1. **具名實體只解了六個**。`&rsquo;`、`&mdash;`、`&hellip;`、`&copy;` 這些常見的都沒解——Python 的 `html.unescape()` 認得 **2231 個**。
+2. **我的數字實體解碼不是單次掃描**。`&#38;` 就是 `&`，解開它會**製造出**一個新的 `&#8217;`，而 `SELECT DISTINCT` 沒有順序保證，後面那輪會把它也解掉。`X&#38;#8217; and &#8217;Y` 應該是 `X&#8217; and ’Y`，我的版本會變成 `X’ and ’Y`。
+
+兩條都對。但**第五、六、七輪（共四個發現）是同一個根因**：我在 PL/pgSQL 裡重寫 `html.unescape()`。每一輪都在補症狀——先是實體表不全、然後十六進位分支靜默失效、然後 C1 範圍存成控制字元、然後解碼會重掃自己的輸出。「2231 個具名實體」這個數字是最後一根稻草：真要對齊就得把 2231 筆表格產生進 SQL，再手寫一個單次掃描器。
+
+**改掉架構：回填不再用 SQL，改成 Python 直接呼叫解析器。**
+
+- 刪掉 `migrations/009_plain_text_article_summaries.sql`（145 行 PL/pgSQL）。
+- 新增 `backend/backfill.py`：用 server-side cursor 分批走過 `articles`，每列丟進 `_repair()`，而 `_repair()` 直接呼叫 `_looks_like_markup()` 與 `_plain_text()`。與解析器的一致性**由建構保證**，不是靠比對維持。
+- 在 `main.py` 的 lifespan 於 `run_migrations()` 之後呼叫，沿用同一張 `_migrations` 表追蹤，語意與既有 migration 完全一致（缺 `DATABASE_URL` 時只警告不中斷）。
+
+**前端同一個根因，同一種解法**：`stripHtml()` 的六筆具名實體表 + 手寫數字解碼 + C1 對照表 + 丟棄碼位集合（共約 60 行），全部換成把字串交給瀏覽器自己的 HTML parser——它**就是** HTML 規範的實作，2231 個實體、C1 代換、單次掃描全都內建。先把 `<` 轉義再丟進去，這一步是關鍵：既擋住殘留的標籤形狀文字被當成元素吃掉（`Use <p> for paragraphs` 是要保留的散文），也保證餵進去的是惰性文字。
+
+淨效果是**刪掉的程式碼比新增的多**，而且前六輪每一個爭議案例都仍然正確——16 列端到端樣本在真 PostgreSQL 上驗證，全部與解析器輸出一致。
+
+**已知且刻意的差異**：控制字元引用（`&#1;`）在前端會被**輸出**而非丟棄。HTML 規範說輸出（附帶 parse error），`html.unescape()` 比規範更嚴格、選擇丟棄。要對齊就得把剛剛刪掉的碼位表加回來，而它換不到任何東西——後端根本不會存下這種值（解析器在寫入前就丟掉了），而且兩種寫法在畫面上都是看不見的。已寫成測試 `emits control-character references, where Python drops them` 記錄。
+
+### 已知未處理
+
+`<p></p>` 這種只有空標籤的 description 會被升格成 `content`，reader 於是渲染出一個空的 `.prose` 而不顯示「前往原文閱讀」。沒有加「必須有文字才升格」的條件是刻意的：那條件會連帶把 `<p><img src="…"></p>` 這種只有圖片的 description（圖片部落格、網路漫畫很常見，而且圖片就是內文）也擋掉，代價比它換到的好處大。
+
+009 的第二段 UPDATE **不是冪等的**——entity 解碼本質上不可能冪等，重跑一次會把上游雙重轉義殘留的 `&lt;p&gt;` 再解一層變成 `<p>`。正常路徑不會踩到（`_migrations` 保證只跑一次），但階段十六提到有人手動清空過 `_migrations`；那種情況下這個檔案會對已經乾淨的 `summary` 多解一層。沒有為此加防護，因為判斷「這個 entity 是原文還是殘留」本身就沒有正確答案，而 refresh worker 之後的 upsert 會把值蓋回解析器算出的正確結果。
+
+## 階段十八：`GET /api/recommendations` 的 `liked`/`disliked` 補上 UUID 型別驗證（PR #34，2026-08-05）
+
+同一個「持續改善專案」排程任務。`feeds.id` 是 `migrations/001_initial_schema.sql` 宣告的 `UUID` 欄位，本專案其餘每個接 feed/article id 的端點都把對應參數宣告成 `UUID`，讓 FastAPI/pydantic 在進任何 DB 呼叫前就把格式錯誤的值擋成乾淨的 `422`——唯獨這個公開免認證端點的 `liked`/`disliked` 兩個 query 參數仍是 `list[str]`，只限制陣列長度，不限制每個字串要長得像 UUID。一個像 `?liked=not-a-uuid` 的請求會帶著這個字串一路走到 `.in_("id", liked)` 與 `sample_feed_candidates` RPC 型別是 `uuid[]` 的參數，讓 Postgres 端的型別轉換直接炸掉；`backend/` 全專案沒有任何地方對 `postgrest`/`APIError` 掛 `exception_handler`，未接住的例外變成裸的 FastAPI `500`，不是輸入驗證該給的 `4xx`。
+
+- **修法**：`backend/routers/recommendations.py` 的 `liked`、`disliked` 型別改成 `list[UUID]`，比照本專案其他 id 參數一貫的宣告方式；兩個實際使用處（組 `excluded` 集合、`.in_("id", ...)`）在呼叫端用 `str(u)` 轉回字串，同樣沿用其餘 router 既有的 `str(feed_id)` 寫法，行為本身不變，只是把「格式錯誤」這一類輸入提前攔在請求驗證這一層。
+- **測試**：`backend/tests/test_recommendations.py` 新增 `test_malformed_id_in_liked_or_disliked_is_rejected`（`liked`、`disliked` 各跑一次），斷言帶入非 UUID 字串回 `422`，且 `mock_db.table` / `mock_db.rpc` 都未被呼叫——證明是請求驗證層擋下，不是等 DB 端才處理。沒有網路能在本 sandbox 安裝依賴跑 `pytest`（與 #25–#27 同樣的既有限制），本機以 `python3 -m py_compile` 與 `ruff check` 驗證，交給 CI 實際跑過。
+- 詳細前後對照見 [SECURITY.md #28](../SECURITY.md)。
+
+## 階段十九：Supabase `driftread` schema 隔離與 RLS hardening（2026-08-12）
+
+- 所有 Driftread tables、functions 與 migration ledger 從共用 `public` 原地搬入 `driftread`。
+- backend Supabase client 固定使用 `ClientOptions(schema="driftread")`；SQL migration、backfill
+  與 function body 全改用 schema-qualified names。
+- `_migrations` 開 RLS 並撤銷 anon/authenticated grants；公開 catalog、使用者資料與後台 discovery
+  資料分別使用 public-read、permanent-user owner-only、service-role-only 權限模型。
+- owner policy 額外拒絕 Supabase Anonymous Sign-In 帳號，並把 `auth.uid()` / `auth.jwt()` 包成
+  init-plan subquery；functions 固定 `search_path=pg_catalog` 並收斂 EXECUTE grants。
+- migration 010 將資料搬遷、Data API exposure、RLS 與 client 切換放在同一次 backend deployment，
+  避免舊版 public-scoped client 與已搬移 tables 之間產生停機窗口。
+
+## 階段二十：前端 Supabase 設定改為 runtime config，官方 GHCR image 免自建（2026-08-17）
+
+TODO.md 建議開發批次第 2 批。`frontend/src/environments/environment.ts` 的 `supabaseUrl` /
+`supabaseAnonKey` 在 `npm run build` 時就編進 JS bundle，repo 內留空，所以 CI 建出的
+`ghcr.io/dwvwdv/driftread-frontend:latest` 永遠是空的——`AuthService.isConfigured()` 恆回
+`false`，註冊 / 登入 / 訂閱 / 已讀 / 收藏 / 稍後讀全部不會運作，只能自建 image 才能用（見
+`docs/FEATURES.md` 舊版第 4 節）。
+
+- **修法**：新增一個小的 runtime config 讀取層，不改 `AuthService` 既有的登入 / 登出 /
+  session restore 邏輯本身：
+  - `frontend/src/app/services/runtime-config.ts`：`runtimeSupabaseConfig()` 讀
+    `window.__env`，缺值時退回 `environment.ts`（與改動前行為一致，`ng serve` 不受影響）。
+  - `frontend/public/env.js`：本地開發預設值（空字串），透過既有的 `public/` asset pipeline
+    編進 bundle，與 `favicon.ico` 同一套機制。
+  - `frontend/src/index.html`：在 Angular bundle 之前用一般（非 module）`<script src="env.js">`
+    載入，確保 `window.__env` 在 `AuthService` 建構時已經存在。
+  - `frontend/env.template.js` + `frontend/docker-entrypoint.d/15-render-driftread-env.sh`：
+    nginx 官方 image 既有的 entrypoint 擴充點（`/docker-entrypoint.d/*.sh`，執行完才
+    `exec nginx`），用 `envsubst` 把容器的 `SUPABASE_URL` / `SUPABASE_ANON_KEY` 渲染進
+    `env.js`，不需要自訂 `ENTRYPOINT`。
+  - `AuthService` 建構子唯一改動：兩個字串的來源從 `environment.*` 換成
+    `runtimeSupabaseConfig()`，其餘 signIn / signUp / signOut / session signal 完全不動。
+- **環境變數**：新增 `SUPABASE_ANON_KEY`（瀏覽器用的 anon / publishable key，與 backend 的
+  `SUPABASE_KEY` service_role key 分開），三處同步更新：`.env.example`、
+  `docker-compose.yml`（`frontend.environment`）、`scripts/gen_env.py`（併入
+  `SUPABASE_URL` / `SUPABASE_KEY` 既有的手動填寫提示）。
+- **測試**：`frontend/src/app/services/runtime-config.spec.ts` 覆蓋四種情境——`window.__env`
+  未設定、`env.js` 出的是本地空預設值、entrypoint 真的渲染了值、只渲染了一半（驗證是
+  field-by-field 退回，不是整組退回）。本 sandbox 的 npm registry allowlist 沒收錄
+  vitest/jsdom 這條依賴鏈用到的一批套件（`whatwg-url`、`yargs`、`zod` 等，`npm ci` 在這批
+  套件上收到 "no rule or allowlist entry allows host" 而失敗），因此無法在本機跑
+  `ng test` / `ng build` 驗證，以 `node --check` 對新增檔案做語法檢查，交給 CI 實際跑過。
+  `AuthService` 本身未新增測試——它的邏輯零改動，既有的登入相關元件測試一律用
+  `{ provide: AuthService, useValue: ... }` mock 掉，不受這次改動影響。
+- 對應文件更新：`docs/FEATURES.md` 第 4 節、`README.md`（環境變數表與「前端 Supabase 設定」章節）。

@@ -349,7 +349,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 4. **「可能查不到」的單筆查詢** → 用 `.maybe_single()`，不要用 `.single()`。
 5. **新增公開免認證端點** → 評估是否要掛 `rate_limit(...)`，特別是會觸發外連或大量 DB 工作的端點。
 6. **測試用的 db mock** → 避免裸 `MagicMock()` 讓錯誤的方法名靜默通過（#20 的教訓）。
-7. **環境變數** → 依 `CLAUDE.md` 規則同步 `.env.example`、`docker-compose.yml`、`scripts/gen_env.py` 三處（#15 就是漏了 compose 那一處）。
+7. **環境變數** → 依 `AGENTS.md` 的「環境變數維護」同步 `.env.example`、`docker-compose.yml`、`scripts/gen_env.py` 三處（#15 就是漏了 compose 那一處）。
 8. **新增任何「自主」（非使用者觸發）的外連迴圈** → 必須有獨立的 enable flag 且**預設關閉**、批次與並發上限、per-host 延遲，並經過 robots 檢查。對應的手動觸發端點要一起尊重那個 flag，否則「已停用」是個沒有意義的說法。
 9. **新增任何抓取政策**（denylist、robots、allowlist）→ 掛在 `fetch_with_cap_response()` 的 `allow_url` hook 上，不要在各 call site 各寫一份。#22 與 #24 第 4 點是同一個教訓的兩次出現。
 10. **任何寫入公開表的第三方文字** → 先過 `sanitize_text()` / `sanitize_http_url()`，前端只能用插值呈現，並且把我們自己算出的識別資訊（host）顯示在旁邊。
