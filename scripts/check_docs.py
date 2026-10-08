@@ -4,14 +4,22 @@
 規則的來由見 AGENTS.md 的「文件維護」：
 - CLAUDE.md 只能是 `@AGENTS.md`（AGENTS.md 是唯一的規範來源）
 - AGENTS.md 不得超過 30 KiB（Codex 預設只讀前 32 KiB）
-- 所有 Markdown 文件的相對連結都必須指向存在的檔案或目錄
+- 所有 Markdown 文件的相對連結與圖片都必須指向存在的檔案或目錄
 - AGENTS.md 以反引號提到的路徑都必須存在
+
+Markdown 一律交給 CommonMark 解析器（markdown-it-py）處理，不自己用 regex 判斷：
+圍欄／縮排程式碼區塊、行內程式碼、reference-style 連結、帶標題或角括號的目標，
+解析器都已依規格處理好。依賴版本釘在 scripts/requirements-docs.txt。
 """
 from __future__ import annotations
 
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote
+
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 ROOT = Path(__file__).resolve().parent.parent
 AGENTS_MAX_BYTES = 30 * 1024
@@ -27,28 +35,9 @@ PATH_ROOTS = [
     ROOT / "frontend/public",
 ]
 PATH_SUFFIXES = (".py", ".ts", ".scss", ".html", ".sql", ".md", ".json", ".yml", ".yaml", ".toml", ".js", ".sh")
+SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
 
-# 連結與圖片都檢查：`[說明](a.md)`、`![圖](img.png)`、`[說明](a.md "標題")`、`[說明](<a b.md>)`
-LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*(<[^>\n]+>|[^)\s]+)(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)")
-CODE_RE = re.compile(r"`([^`\n]+)`")
-# CommonMark 的程式碼圍欄：最多三個空格縮排、``` 或 ~~~（至少三個），以同字元且不短於開頭的圍欄結束
-FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-
-
-def strip_code_fences(text: str) -> str:
-    """把圍欄內的範例拿掉，避免示範語法被當成真正的連結或路徑。"""
-    kept, fence = [], None
-    for line in text.split("\n"):
-        match = FENCE_OPEN_RE.match(line)
-        if fence is None:
-            if match:
-                fence = match.group(1)
-                continue
-            kept.append(line)
-        elif match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence) \
-                and not line.strip()[len(match.group(1)):].strip():
-            fence = None
-    return "\n".join(kept)
+MD = MarkdownIt("commonmark").enable("table")
 
 
 def markdown_files() -> list[Path]:
@@ -58,6 +47,15 @@ def markdown_files() -> list[Path]:
             continue
         files.append(path)
     return sorted(files)
+
+
+def inline_tokens(path: Path) -> list[Token]:
+    """回傳文件裡所有行內 token；程式碼區塊本身不是 inline，自然不會出現。"""
+    tokens = []
+    for block in MD.parse(path.read_text(encoding="utf-8")):
+        if block.type == "inline" and block.children:
+            tokens.extend(block.children)
+    return tokens
 
 
 def check_claude_md() -> list[str]:
@@ -76,37 +74,39 @@ def check_agents_size() -> list[str]:
 
 def check_links(path: Path) -> list[str]:
     errors = []
-    # 行內程式碼裡的 `[說明](a.md)` 是示範語法，不是連結
-    text = CODE_RE.sub("", strip_code_fences(path.read_text(encoding="utf-8")))
-    for target in LINK_RE.findall(text):
-        if re.match(r"^[a-z][a-z0-9+.-]*:", target.lstrip("<"), re.I) or target.startswith("#"):
+    for token in inline_tokens(path):
+        if token.type == "link_open":
+            target = str(token.attrGet("href") or "")
+        elif token.type == "image":
+            target = str(token.attrGet("src") or "")
+        else:
             continue
-        target = target.strip("<>")
-        file_part = target.split("#", 1)[0]
-        if not file_part:
+        if not target or target.startswith("#") or SCHEME_RE.match(target):
             continue
-        if not (path.parent / file_part).exists():
-            errors.append(f"{path.relative_to(ROOT)}: 連結指向不存在的路徑 {target}")
+        file_part = unquote(target.split("#", 1)[0].split("?", 1)[0])
+        if file_part and not (path.parent / file_part).exists():
+            errors.append(f"{path.relative_to(ROOT)}: 連結指向不存在的路徑 {file_part}")
     return errors
 
 
-def looks_like_path(token: str) -> bool:
-    if any(ch in token for ch in " *<>{}$=|,()"):
+def looks_like_path(text: str) -> bool:
+    if any(ch in text for ch in " *<>{}$=|,()"):
         return False
-    if token.startswith(("-", "/", "http", "@", "~")):
+    if text.startswith(("-", "/", "http", "@", "~")):
         return False
-    return "/" in token or token.endswith(PATH_SUFFIXES)
+    return "/" in text or text.endswith(PATH_SUFFIXES)
 
 
 def check_code_paths(path: Path) -> list[str]:
     errors = []
-    text = strip_code_fences(path.read_text(encoding="utf-8"))
-    for token in CODE_RE.findall(text):
-        token = token.split("::", 1)[0].rstrip("/")
-        if not looks_like_path(token):
+    for token in inline_tokens(path):
+        if token.type != "code_inline":
             continue
-        if not any((root / token).exists() for root in PATH_ROOTS):
-            errors.append(f"{path.relative_to(ROOT)}: 提到的路徑不存在 `{token}`")
+        text = token.content.split("::", 1)[0].rstrip("/")
+        if not looks_like_path(text):
+            continue
+        if not any((root / text).exists() for root in PATH_ROOTS):
+            errors.append(f"{path.relative_to(ROOT)}: 提到的路徑不存在 `{text}`")
     return errors
 
 

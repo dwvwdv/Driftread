@@ -1351,7 +1351,8 @@ Review 修復：匯入保留累計文章數、空待抽取佇列跳過 HostIndex
 - **新增 `scripts/check_docs.py` 與 `.github/workflows/docs.yml`**：`CLAUDE.md` 只能是 `@AGENTS.md`、`AGENTS.md` 不超過 30 KiB
   （Codex 預設只讀前 32 KiB）、所有 Markdown 的相對連結都存在、`AGENTS.md` 以反引號提到的路徑都存在。
   workflow 不設路徑篩選（Codex review：只改名或刪除被引用的程式檔、沒動到 `.md` 的 PR 也會讓連結失效），每次 PR／push 都跑。
-  連結檢查涵蓋圖片、帶標題與角括號形式的連結；程式碼圍欄依 CommonMark 辨識（反引號與波浪號圍欄、最多三格縮排），圍欄與行內程式碼裡的示範語法不檢查（Codex review）。
+  Markdown 交給 CommonMark 解析器 `markdown-it-py`（版本釘在 `scripts/requirements-docs.txt`）而非手寫 regex：Codex review 連續指出圖片、帶標題、
+  reference-style 連結與波浪號／縮排／縮排式程式碼區塊的漏判，根因是自己解析 Markdown，改用解析器一次涵蓋；程式碼區塊與行內程式碼裡的示範語法不檢查。
 - README 的文件表、CI 表（補上 `supabase/**` 觸發、`npm test`、docs workflow、sha tag）與開發規則改為指向 `AGENTS.md`；
   `SECURITY.md`、`RUNBOOK.md` 引用 `CLAUDE.md` 的地方改指 `AGENTS.md` 的「環境變數維護」。
 
@@ -1359,6 +1360,6 @@ Review 修復：匯入保留累計文章數、空待抽取佇列跳過 HostIndex
 
 ### 驗證
 
-- `python3 scripts/check_docs.py` 通過；把 `CLAUDE.md` 改成多一行時確實失敗；臨時文件裡的壞圖片、帶標題與 `<…>` 的壞連結都會被抓到，`~~~`／縮排／四個反引號圍欄內的示範連結不會誤報。
+- `python3 scripts/check_docs.py` 通過；把 `CLAUDE.md` 改成多一行時確實失敗；臨時文件裡的壞圖片、帶標題、角括號、reference-style、清單延續段落與表格裡的壞連結都會被抓到，各種圍欄、縮排式程式碼區塊與行內程式碼裡的示範連結不會誤報；`AGENTS.md` 提到不存在的路徑時會失敗。
 - 以逐行比對確認歸檔後的 CHANGELOG 與歸檔檔合起來涵蓋原檔每一行（只有被改寫的檔頭與「尚未合併」標題不同）。
 - 未改動任何程式碼，backend／frontend workflow 不受影響。

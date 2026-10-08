@@ -104,7 +104,8 @@ cd frontend && npm ci
 npm start                                       # http://localhost:4200
 npm test && npm run build                       # 提交前兩者都要過（含 anyComponentStyle 預算）
 
-# 文件一致性（改到任何 .md 時）
+# 文件一致性（改到任何 .md、改名或刪檔時）
+pip install -r scripts/requirements-docs.txt
 python3 scripts/check_docs.py
 ```
 
