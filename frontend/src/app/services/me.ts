@@ -13,6 +13,7 @@ import {
   OpmlImportResult,
   PaginatedReads,
   PaginatedStream,
+  PersonalHeatSnapshot,
   SubscribedFeed,
   UnreadSummary,
   UserPreferences,
@@ -93,6 +94,16 @@ export class MeService {
 
   getUnreadCounts(): Observable<UnreadSummary> {
     return this.http.get<UnreadSummary>(`${this.base}/me/stream/unread-counts`);
+  }
+
+  getPersonalHeat(options: {
+    feedId?: string | null;
+    unreadOnly?: boolean;
+  }): Observable<PersonalHeatSnapshot> {
+    let params = new HttpParams().set('limit', 100);
+    if (options.feedId) params = params.set('feed_id', options.feedId);
+    if (options.unreadOnly) params = params.set('unread_only', true);
+    return this.http.get<PersonalHeatSnapshot>(`${this.base}/me/personal-heat`, { params });
   }
 
   listBookmarks(bookmarkType: BookmarkType = 'favorite'): Observable<ArticleSummary[]> {

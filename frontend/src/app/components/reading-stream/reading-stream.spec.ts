@@ -29,12 +29,14 @@ describe('ReadingStream', () => {
   let confirmCalls: number;
   let markAllCalls: unknown[];
   let getStreamCalls: { feedId?: string | null; unreadOnly?: boolean }[];
+  let heatCalls: { feedId?: string | null; unreadOnly?: boolean }[];
 
   function setup() {
     streamPage = { items: [article('a'), article('b', { is_read: true })], next_cursor: null };
     confirmCalls = 0;
     markAllCalls = [];
     getStreamCalls = [];
+    heatCalls = [];
 
     const unreadSummary: UnreadSummary = {
       total_unread: 1,
@@ -45,6 +47,10 @@ describe('ReadingStream', () => {
       getStream: (opts: { feedId?: string | null; unreadOnly?: boolean }) => {
         getStreamCalls.push(opts);
         return of(streamPage);
+      },
+      getPersonalHeat: (opts: { feedId?: string | null; unreadOnly?: boolean }) => {
+        heatCalls.push(opts);
+        return of({ items: [article('hot', { why: '符合你的偏好' })], next_cursor: null, snapshot_at: '2026-10-09T00:00:00Z', complete: false, behind_participant_count: 1, candidate_limit: 500 });
       },
       getUnreadCounts: () => of(unreadSummary),
       markRead: () => of(undefined),
@@ -101,6 +107,18 @@ describe('ReadingStream', () => {
     page.hideRead.set(true);
 
     expect(page.visibleItems().map((a) => a.id)).toEqual(['a']);
+  });
+
+  it('switches to personal heat while retaining the selected feed and unread scope', () => {
+    const { page, stream } = setup();
+    page.onFeedFilter('feed-1');
+    page.onUnreadOnly(true);
+    page.onMode('heat');
+    expect(heatCalls.at(-1)).toEqual({ feedId: 'feed-1', unreadOnly: true });
+    expect(stream.items()[0].why).toBe('符合你的偏好');
+    expect(stream.heatSnapshot()?.complete).toBe(false);
+    page.onMode('timeline');
+    expect(stream.heatSnapshot()).toBeNull();
   });
 
   it('toggleRead marks an unread article read, and a read one back to unread', () => {

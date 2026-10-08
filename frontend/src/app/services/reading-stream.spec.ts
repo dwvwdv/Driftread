@@ -4,7 +4,7 @@ import { Subject, of, throwError } from 'rxjs';
 import { ReadingStreamService } from './reading-stream';
 import { AuthService } from './auth';
 import { MeService } from './me';
-import { MarkAllReadResult, PaginatedStream, StreamArticle, UnreadSummary } from '../models';
+import { MarkAllReadResult, PaginatedStream, PersonalHeatSnapshot, StreamArticle, UnreadSummary } from '../models';
 
 const article = (id: string, overrides: Partial<StreamArticle> = {}): StreamArticle => ({
   id,
@@ -26,6 +26,7 @@ describe('ReadingStreamService', () => {
   let me: {
     getUnreadCounts: () => ReturnType<MeService['getUnreadCounts']>;
     getStream: (opts: unknown) => ReturnType<MeService['getStream']>;
+    getPersonalHeat: (opts: unknown) => ReturnType<MeService['getPersonalHeat']>;
     markRead: (id: string) => ReturnType<MeService['markRead']>;
     markUnread: (id: string) => ReturnType<MeService['markUnread']>;
     markAllRead: (body: unknown) => ReturnType<MeService['markAllRead']>;
@@ -52,6 +53,7 @@ describe('ReadingStreamService', () => {
         streamCalls.push(opts);
         return of(streamPage);
       },
+      getPersonalHeat: () => of({ ...streamPage, snapshot_at: '2026-10-09T00:00:00Z', complete: true, behind_participant_count: 0, candidate_limit: 500 }),
       markRead: () => of(undefined),
       markUnread: () => of(undefined),
       markAllRead: () => of({ marked: 0 } as MarkAllReadResult),
@@ -75,6 +77,37 @@ describe('ReadingStreamService', () => {
     expect(svc.totalUnread()).toBe(2);
     expect(svc.feedCounts()).toEqual(unreadSummary.feeds);
     expect(svc.countsLoaded()).toBe(true);
+  });
+
+  it('ignores a late timeline page after switching to heat and keeps read writes', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    const oldPage = new Subject<PaginatedStream>();
+    const hotPage = new Subject<PersonalHeatSnapshot>();
+    me.getStream = () => oldPage;
+    me.getPersonalHeat = () => hotPage;
+    svc.load({ mode: 'timeline' });
+    svc.load({ mode: 'heat' });
+    hotPage.next({ items: [article('hot', { why: '符合你的閱讀偏好' })], next_cursor: null, snapshot_at: '2026-10-09T00:00:00Z', complete: false, behind_participant_count: 2, candidate_limit: 500 });
+    svc.markRead('hot');
+    oldPage.next({ items: [article('old')], next_cursor: 'old-cursor' });
+    expect(svc.items().map(a => a.id)).toEqual(['hot']);
+    expect(svc.items()[0].is_read).toBe(true);
+    expect(svc.heatSnapshot()?.complete).toBe(false);
+    expect(svc.hasMore()).toBe(false);
+  });
+
+  it('clears a heat snapshot when changing identity and rejects its late response', () => {
+    const svc = setup();
+    TestBed.flushEffects();
+    const response = new Subject<PersonalHeatSnapshot>();
+    me.getPersonalHeat = () => response;
+    svc.load({ mode: 'heat' });
+    session.set({ user: { id: 'user-2' } });
+    TestBed.flushEffects();
+    response.next({ items: [article('other-user')], next_cursor: null, snapshot_at: '2026-10-09T00:00:00Z', complete: true, behind_participant_count: 0, candidate_limit: 500 });
+    expect(svc.items()).toEqual([]);
+    expect(svc.heatSnapshot()).toBeNull();
   });
 
   it('resets state when the signed-in identity changes', () => {

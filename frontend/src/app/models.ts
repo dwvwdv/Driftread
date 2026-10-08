@@ -134,11 +134,22 @@ export interface StreamArticle {
   fetched_at: string;
   is_read: boolean;
   read_at: string | null;
+  why?: string | null;
+  heat?: number;
+  participant_count?: number;
+  group_key?: string;
 }
 
 export interface PaginatedStream {
   items: StreamArticle[];
   next_cursor: string | null;
+}
+
+export interface PersonalHeatSnapshot extends PaginatedStream {
+  snapshot_at: string;
+  complete: boolean;
+  behind_participant_count: number;
+  candidate_limit: number;
 }
 
 export interface FeedUnreadCount {
