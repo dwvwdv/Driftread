@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.discovery_candidates import auto_promote_due, promote_candidate, record_candidates
+from services.discovery_candidates import (
+    approve_candidate, auto_promote_due, promote_approved, promote_candidate, record_candidates,
+)
 from services.discovery_probe import select_due_targets
 from services.source_identity import feed_url_aliases, is_comment_feed
 from tests.discovery_fakes import FakeDB
@@ -58,6 +60,54 @@ def test_historical_pending_alias_cannot_auto_promote_past_hold(monkeypatch):
         {"id": "held", "feed_url": "https://example.org/feed/", "status": "held"},
     ])
     assert auto_promote_due(db) == []
+    assert db.rows("feeds") == []
+
+
+def test_manual_comment_approval_never_records_an_approval():
+    candidate = {"id": "comment", "feed_url": "https://example.org/comments/feed/",
+                 "status": "pending"}
+    db = FakeDB(feeds=[], discovery_candidates=[candidate])
+    assert approve_candidate(db, "comment") == (None, "comment_feed")
+    assert candidate["status"] == "pending"
+    assert not db.updates and not db.upserts
+
+
+def test_legacy_approved_comments_are_retired_and_do_not_fill_retry_batch():
+    comment = {"id": "comment", "feed_url": "https://example.org/comments/feed/",
+               "status": "approved"}
+    article = {"id": "article", "feed_url": "https://example.org/feed", "status": "approved"}
+    db = FakeDB(feeds=[], discovery_candidates=[comment, article])
+    assert promote_approved(db, limit=1) == []
+    assert comment["status"] == "rejected"
+    assert promote_approved(db, limit=1)[0]["url"] == article["feed_url"]
+    assert article["status"] == "imported"
+
+
+@pytest.mark.parametrize("status", ["held", "rejected"])
+def test_manual_pending_alias_cannot_bypass_existing_review(status):
+    pending = {"id": "pending", "feed_url": "https://example.org/feed", "status": "pending"}
+    reviewed = {"id": "reviewed", "feed_url": "https://example.org/feed/", "status": status}
+    db = FakeDB(feeds=[], discovery_candidates=[pending, reviewed])
+    assert approve_candidate(db, "pending") == (None, "alias_blocked")
+    assert pending["status"] == "pending" and reviewed["status"] == status
+    assert not db.updates and not db.upserts
+
+
+def test_explicit_approval_of_held_row_itself_still_imports():
+    candidate = {"id": "held", "feed_url": "https://example.org/feed/", "status": "held"}
+    db = FakeDB(feeds=[], discovery_candidates=[candidate])
+    feed, outcome = approve_candidate(db, "held")
+    assert outcome == "imported" and feed["url"] == candidate["feed_url"]
+    assert candidate["status"] == "imported"
+
+
+@pytest.mark.parametrize("status", ["held", "rejected"])
+def test_legacy_approved_alias_cannot_bypass_existing_review(status):
+    approved = {"id": "approved", "feed_url": "https://example.org/feed", "status": "approved"}
+    reviewed = {"id": "reviewed", "feed_url": "https://example.org/feed/", "status": status}
+    db = FakeDB(feeds=[], discovery_candidates=[approved, reviewed])
+    assert promote_approved(db) == []
+    assert approved["status"] == status and reviewed["status"] == status
     assert db.rows("feeds") == []
 
 

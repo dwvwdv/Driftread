@@ -247,6 +247,11 @@ async def approve(
             status_code=409,
             detail="Candidate was rejected; re-approving must be done deliberately",
         )
+    if outcome in {"comment_feed", "alias_blocked"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Comment feed or alias with an existing hold/rejection cannot be approved",
+        )
     if not feed:
         raise HTTPException(status_code=500, detail="Failed to create feed")
     return Feed(**feed)

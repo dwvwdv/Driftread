@@ -97,18 +97,25 @@ def select_due_targets(db: "Client", limit: int) -> list[dict]:
 
     Profile language/category describe desired sources; they never substitute
     for a feed's detected facts. Reservation applies only to due pending seeds
-    at explicitly configured exact hosts. Other targets retain evidence order.
+    at explicitly configured exact hosts. Those seeds cannot spill into normal
+    slots, even when they have strong evidence or the normal pool is underfull.
+    Organic targets and unprofiled seeds retain evidence order; zero-quota
+    profiles also use normal order.
     """
     if limit <= 0:
         return []
     now = datetime.now(timezone.utc).isoformat()
     profiles = load_discovery_profiles(db)
     enabled_hosts: set[str] = set()
+    priority_hosts: set[str] = set()
     disabled_hosts: set[str] = set()
     for profile in profiles:
         hosts = _profile_hosts(profile)
         (enabled_hosts if profile.enabled else disabled_hosts).update(hosts)
+        if profile.enabled and profile.quota > 0:
+            priority_hosts.update(hosts)
     exclusive_disabled = sorted(disabled_hosts - enabled_hosts)
+    normal_excluded_seed_hosts = sorted(set(exclusive_disabled) | priority_hosts)
     reserved_limit = limit // 2
     queues = []
     for profile in profiles:
@@ -146,7 +153,7 @@ def select_due_targets(db: "Client", limit: int) -> list[dict]:
         query = (db.table("discovery_targets").select("*")
                  .eq("status", "pending").lte("next_probe_at", now))
         if source == "seed":
-            query = query.eq("source", "seed").not_.in_("host", exclusive_disabled)
+            query = query.eq("source", "seed").not_.in_("host", normal_excluded_seed_hosts)
         elif source == "organic":
             query = query.neq("source", "seed")
         if reserved_ids:
@@ -155,7 +162,7 @@ def select_due_targets(db: "Client", limit: int) -> list[dict]:
         return list(query.order("referring_feed_count", desc=True)
                     .order("next_probe_at").limit(limit - len(reserved)).execute().data or [])
 
-    if exclusive_disabled:
+    if normal_excluded_seed_hosts:
         normal = normal_query(source="organic") + normal_query(source="seed")
         normal.sort(key=_normal_order)
     else:

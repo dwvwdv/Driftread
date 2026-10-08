@@ -17,7 +17,7 @@ BEGIN
  SELECT id INTO a FROM driftread.articles WHERE feed_id=f AND url='https://fixture.invalid/article';
  touched:=driftread.ingest_article_batch(f,jsonb_build_array(jsonb_build_object('title','original','url','https://fixture.invalid/article','summary','brief','content','<p>uniqueoldword</p>','content_hash',h)));
  IF touched<>0 THEN RAISE EXCEPTION 'identical ingest should not update'; END IF;
- UPDATE driftread.articles SET fetched_at=now()-interval '40 days',discovery_extracted_hash=h,discovery_extracted_at=now() WHERE id=a;
+ UPDATE driftread.articles SET fetched_at=now()-interval '40 days',content_revision_at=now()-interval '40 days',discovery_extracted_hash=h,discovery_extracted_at=now() WHERE id=a;
  INSERT INTO driftread.articles(feed_id,title,url,content,content_hash,discovery_extracted_hash,discovery_extracted_at,fetched_at)
  VALUES(f,'bookmark','https://fixture.invalid/b','body',h,h,now(),now()-interval '40 days') RETURNING id INTO b;
  INSERT INTO driftread.articles(feed_id,title,url,content,content_hash,discovery_extracted_hash,discovery_extracted_at,fetched_at)
@@ -47,6 +47,9 @@ BEGIN
  touched:=driftread.ingest_article_batch(f,jsonb_build_array(jsonb_build_object('title','renamed','url','https://fixture.invalid/article','summary','brief','content','new revision','content_hash',h2)));
  IF NOT EXISTS(SELECT 1 FROM driftread.articles WHERE id=a AND content='new revision' AND content_compacted_at IS NULL AND discovery_extracted_at IS NULL) THEN RAISE EXCEPTION 'revision state did not reset'; END IF;
  IF NOT EXISTS(SELECT 1 FROM driftread.pending_article_discovery(f,200) WHERE id=a) THEN RAISE EXCEPTION 'new revision missing discovery work'; END IF;
+ UPDATE driftread.articles SET discovery_extracted_at=now(),discovery_extracted_hash=h2 WHERE id=a;
+ result:=driftread.compact_article_content(30,200,false);
+ IF (result->>'compacted')::int<>0 OR NOT EXISTS(SELECT 1 FROM driftread.articles WHERE id=a AND content='new revision' AND content_revision_at>=now()-interval '1 minute' AND fetched_at<now()-interval '30 days') THEN RAISE EXCEPTION 'new source revision compacted by old fetched date'; END IF;
  UPDATE driftread.articles SET discovery_retry_at=now()+interval '1 day' WHERE id=pending;
  IF EXISTS(SELECT 1 FROM driftread.pending_article_discovery(f,200) WHERE id=pending) THEN RAISE EXCEPTION 'deferred article blocks queue'; END IF;
  IF has_function_privilege('anon','driftread.ingest_article_batch(uuid,jsonb)','EXECUTE') OR has_function_privilege('authenticated','driftread.compact_article_content(integer,integer,boolean)','EXECUTE') THEN RAISE EXCEPTION 'privileged RPC exposed'; END IF;

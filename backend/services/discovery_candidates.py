@@ -108,6 +108,35 @@ def _find_feed_alias(db: "Client", table: str, column: str, url: str) -> dict | 
                 found[0] if found else None)
 
 
+def _blocked_candidate_alias(db: "Client", candidate: dict) -> dict | None:
+    """Only a different row can block explicit approval of a held row itself."""
+    for alias in feed_url_aliases(candidate["feed_url"]):
+        row = _row_or_none(db.table("discovery_candidates").select("id,status")
+                           .eq("feed_url", alias).maybe_single().execute())
+        if (row and str(row["id"]) != str(candidate["id"])
+                and row.get("status") in {"rejected", "held"}):
+            return row
+    return None
+
+
+def _retire_unpromotable(db: "Client", candidate: dict) -> bool:
+    """Remove legacy invalid approvals from the retry queue without importing."""
+    status = note = None
+    if is_comment_feed(candidate["feed_url"]):
+        status, note = "rejected", "Excluded from article discovery: comment feed"
+    else:
+        blocked = _blocked_candidate_alias(db, candidate)
+        if blocked:
+            status = blocked["status"]
+            note = "Preserved existing review decision on a feed URL alias"
+    if not status:
+        return False
+    db.table("discovery_candidates").update({
+        "status": status, "review_note": note, "reviewed_at": _now(),
+    }).eq("id", str(candidate["id"])).eq("status", candidate["status"]).execute()
+    return True
+
+
 def record_candidates(
     db: "Client", target: dict, candidates: list["DiscoveryCandidate"]
 ) -> tuple[int, int]:
@@ -354,7 +383,9 @@ def approve_candidate(
 ) -> tuple[dict | None, str]:
     """Approve and promote in one step. Returns (feed_row, outcome).
 
-    Outcome is one of "imported", "not_found", "already_rejected", "failed" — the
+    Outcomes include "comment_feed" and "alias_blocked", rejected before any
+    status change; the remaining outcomes are "imported", "not_found",
+    "already_rejected", "failed". The
     router maps those to status codes.
     """
     candidate = get_candidate(db, candidate_id)
@@ -364,6 +395,10 @@ def approve_candidate(
         # Approving something previously rejected has to be explicit; silently
         # reviving it would undo the one guarantee this queue makes.
         return (None, "already_rejected")
+    if is_comment_feed(candidate["feed_url"]):
+        return (None, "comment_feed")
+    if _blocked_candidate_alias(db, candidate):
+        return (None, "alias_blocked")
 
     # Record the approval — including what the reviewer chose — before writing
     # feeds. If the feeds write fails, the whole decision survives and
@@ -394,6 +429,8 @@ def promote_approved(db: "Client", limit: int = 50) -> list[dict]:
     )
     promoted = []
     for candidate in list(rows.data or []):
+        if _retire_unpromotable(db, candidate):
+            continue
         feed = promote_candidate(db, candidate)
         if feed:
             promoted.append(feed)
@@ -425,9 +462,7 @@ def auto_promote_due(db: "Client", limit: int = 50) -> list[dict]:
     for candidate in list(rows.data or []):
         # Historical slash duplicates may predate identity checks. Do not let
         # their pending row bypass a reviewer-held or rejected counterpart.
-        identity = _find_feed_alias(db, "discovery_candidates", "feed_url",
-                                    candidate["feed_url"])
-        if identity and identity.get("status") in {"held", "rejected"}:
+        if _retire_unpromotable(db, candidate):
             continue
         feed = promote_candidate(db, candidate)
         if feed:

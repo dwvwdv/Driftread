@@ -4,12 +4,13 @@ ALTER TABLE driftread.articles
   ADD COLUMN IF NOT EXISTS discovery_extracted_hash text,
   ADD COLUMN IF NOT EXISTS discovery_extracted_at timestamptz,
   ADD COLUMN IF NOT EXISTS content_compacted_at timestamptz,
-  ADD COLUMN IF NOT EXISTS discovery_retry_at timestamptz;
+  ADD COLUMN IF NOT EXISTS discovery_retry_at timestamptz,
+  ADD COLUMN IF NOT EXISTS content_revision_at timestamptz;
 CREATE INDEX IF NOT EXISTS articles_discovery_pending_idx
  ON driftread.articles(feed_id, fetched_at, id)
  WHERE discovery_extracted_at IS NULL OR discovery_extracted_hash IS DISTINCT FROM content_hash;
-CREATE INDEX IF NOT EXISTS articles_compaction_idx
- ON driftread.articles(fetched_at, feed_id, id)
+CREATE INDEX IF NOT EXISTS articles_compaction_revision_idx
+ ON driftread.articles(coalesce(content_revision_at,fetched_at), feed_id, id)
  WHERE content_compacted_at IS NULL AND content IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION driftread.ingest_article_batch(p_feed_id uuid, p_articles jsonb)
@@ -22,8 +23,8 @@ BEGIN
  IF EXISTS(SELECT 1 FROM jsonb_array_elements(p_articles) r WHERE coalesce(r->>'content_hash','') !~ '^[0-9a-f]{64}$') THEN
   RAISE EXCEPTION 'content_hash must be a SHA256 digest';
  END IF;
- INSERT INTO driftread.articles AS a(feed_id,title,url,summary,content,author,published_at,content_hash)
- SELECT p_feed_id,r.title,r.url,r.summary,r.content,r.author,r.published_at,r.content_hash
+ INSERT INTO driftread.articles AS a(feed_id,title,url,summary,content,author,published_at,content_hash,content_revision_at)
+ SELECT p_feed_id,r.title,r.url,r.summary,r.content,r.author,r.published_at,r.content_hash,now()
  FROM jsonb_to_recordset(p_articles) AS r(title text,url text,summary text,content text,author text,published_at timestamptz,content_hash text)
  ORDER BY r.url
  ON CONFLICT(feed_id,url) DO UPDATE SET
@@ -33,6 +34,7 @@ BEGIN
  discovery_extracted_at=CASE WHEN a.content_hash=excluded.content_hash THEN a.discovery_extracted_at ELSE NULL END,
  content_compacted_at=CASE WHEN a.content_hash=excluded.content_hash THEN a.content_compacted_at ELSE NULL END,
  discovery_retry_at=CASE WHEN a.content_hash=excluded.content_hash THEN a.discovery_retry_at ELSE NULL END,
+ content_revision_at=CASE WHEN a.content_hash=excluded.content_hash THEN a.content_revision_at ELSE now() END,
  content_hash=excluded.content_hash
  WHERE a.content_hash IS DISTINCT FROM excluded.content_hash
  OR (a.title,a.summary,a.author,a.published_at) IS DISTINCT FROM (excluded.title,excluded.summary,excluded.author,excluded.published_at);
@@ -77,7 +79,7 @@ BEGIN
   RETURN jsonb_build_object('dry_run',false,'eligible',0,'compacted',0,'content_bytes',0);
  END IF;
  FOR item IN SELECT a.id,a.feed_id FROM driftread.articles a
-  WHERE a.fetched_at<now()-make_interval(days=>p_retention_days)
+  WHERE coalesce(a.content_revision_at,a.fetched_at)<now()-make_interval(days=>p_retention_days)
    AND nullif(a.content,'') IS NOT NULL AND a.content_compacted_at IS NULL
    AND a.content_hash IS NOT NULL AND a.discovery_extracted_hash=a.content_hash AND a.discovery_extracted_at IS NOT NULL
    AND NOT EXISTS(SELECT 1 FROM driftread.user_feeds s WHERE s.feed_id=a.feed_id)
@@ -97,7 +99,7 @@ BEGIN
   END IF;
   SELECT octet_length(a.content) INTO affected FROM driftread.articles a
    WHERE a.id=item.id AND nullif(a.content,'') IS NOT NULL AND a.content_compacted_at IS NULL
-    AND a.fetched_at<now()-make_interval(days=>p_retention_days)
+    AND coalesce(a.content_revision_at,a.fetched_at)<now()-make_interval(days=>p_retention_days)
     AND a.content_hash IS NOT NULL AND a.discovery_extracted_hash=a.content_hash AND a.discovery_extracted_at IS NOT NULL
     AND NOT EXISTS(SELECT 1 FROM driftread.user_feeds s WHERE s.feed_id=a.feed_id)
     AND NOT EXISTS(SELECT 1 FROM driftread.user_bookmarks b WHERE b.article_id=a.id)

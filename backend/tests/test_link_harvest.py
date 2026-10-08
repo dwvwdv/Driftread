@@ -869,3 +869,17 @@ async def test_slow_harvest_database_work_does_not_block_heartbeat():
             harvest_one(db, db.rows("feeds")[0], HostIndex(frozenset(), {})), heartbeat()
         )
     assert result.error is None
+
+
+def test_prefetched_pending_rows_do_not_repeat_the_queue_rpc():
+    from services.link_harvest import content_fingerprint, harvest_pending_articles
+    db = _db_with_articles("<p>fully scanned zero links</p>")
+    article = db.rows("articles")[0]
+    article["content_hash"] = content_fingerprint(article["content"], article["summary"])
+    with patch.object(db, "rpc", side_effect=AssertionError("duplicate pending query")):
+        result = harvest_pending_articles(
+            db, db.rows("feeds")[0], HostIndex(frozenset(), {}), 200,
+            pending_rows=[dict(article)],
+        )
+    assert result.scanned == 1
+    assert article["discovery_extracted_at"]

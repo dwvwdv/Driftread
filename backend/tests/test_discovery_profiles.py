@@ -126,3 +126,28 @@ def test_oldest_profile_head_wins_when_reserved_budget_cannot_fit_all_profiles()
                 profile("z-oldest", "oldest.example.org")]
     selected = select_due_targets(database(profiles, [newer, oldest, organic]), 2)
     assert selected == [oldest, organic]
+
+
+def test_high_ranked_profile_seed_overflow_cannot_consume_normal_half():
+    configured = [target("priority.example.org", refs=1000,
+                         url=f"https://priority.example.org/{i}") for i in range(10)]
+    ordinary_seed = target("unprofiled.example.org", refs=20)
+    organic_same_host = target("priority.example.org", source="article_link", refs=30,
+                               url="https://priority.example.org/article")
+    ordinary = target("normal.example.org", source="directory", refs=10)
+    profiles = [profile("priority", "priority.example.org", quota=100)]
+    selected = select_due_targets(database(profiles, configured + [ordinary_seed, organic_same_host, ordinary]), 6)
+    assert len(selected) == 6
+    assert sum(row["source"] == "seed" and row["host"] == "priority.example.org"
+               for row in selected) == 3
+    assert {row["id"] for row in selected[3:]} == {
+        ordinary_seed["id"], organic_same_host["id"], ordinary["id"],
+    }
+
+
+def test_profile_seed_quota_does_not_expand_to_fill_underfull_normal_pool():
+    configured = [target("priority.example.org", refs=1000,
+                         url=f"https://priority.example.org/{i}") for i in range(10)]
+    profiles = [profile("priority", "priority.example.org", quota=1)]
+    selected = select_due_targets(database(profiles, configured), 8)
+    assert len(selected) == 1

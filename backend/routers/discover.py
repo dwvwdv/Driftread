@@ -110,9 +110,19 @@ async def discover_and_import(
     ).execute()
 
     now = datetime.now(timezone.utc).isoformat()
-    inserted = await asyncio.to_thread(upsert_articles, db, str(feed.id), parsed.articles)
+    await asyncio.to_thread(upsert_articles, db, str(feed.id), parsed.articles)
+    # Ingestion reports changed rows, which is zero for an unchanged reimport.
+    # The catalog count must reflect every stored article, including old items
+    # no longer present in the RSS document.
+    count_result = await asyncio.to_thread(
+        lambda: db.table("articles").select("id", count="exact", head=True)
+        .eq("feed_id", str(feed.id)).execute()
+    )
+    total_articles = count_result.count or 0
     db.table("feeds").update(
-        {"last_fetched_at": now, "article_count": inserted}
+        {"last_fetched_at": now, "article_count": total_articles}
     ).eq("id", str(feed.id)).execute()
 
-    return feed
+    return feed.model_copy(update={
+        "article_count": total_articles, "last_fetched_at": datetime.fromisoformat(now),
+    })

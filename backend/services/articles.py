@@ -67,13 +67,23 @@ def upsert_articles(db: "Client", feed_id: str, articles: list["ParsedArticle"])
         if not enabled:
             continue
         try:
+            # Unchanged input can still have a failed historical extraction.
+            # Ask the indexed per-feed queue first; do not scan the global feed
+            # and frontier catalogs when this feed has no work to extract.
+            pending_rows = list(db.rpc("pending_article_discovery", {
+                "p_feed_id": feed_id, "p_limit": CHUNK_SIZE,
+            }).execute().data or [])
+            if not pending_rows:
+                continue
             if index is None:
                 index = build_host_index(db)
                 response = db.table("feeds").select("id,url,website_url").eq(
                     "id", feed_id
                 ).limit(1).execute()
                 feed = next(iter(response.data or []), {"id": feed_id})
-            harvest_pending_articles(db, feed, index, CHUNK_SIZE, prepared=prepared)
+            harvest_pending_articles(
+                db, feed, index, CHUNK_SIZE, prepared=prepared, pending_rows=pending_rows
+            )
         except Exception:
             # Article durability is independent of frontier availability. The
             # backlog worker retries unmarked versions, including zero-link HTML.

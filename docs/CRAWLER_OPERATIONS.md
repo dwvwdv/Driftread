@@ -17,7 +17,7 @@ docker compose up -d worker frontend
 
 ## 文章與 discovery 分開完成
 
-正文與摘要的 SHA256 是來源版本。相同版本與相同中繼資料不重寫文章；已縮減的版本再次出現在 RSS 中，也不會寫回完整正文。來源正文／摘要有變化時，會重新保存內容並重設抽取狀態；只修改標題／作者／日期則保留抽取成果。
+正文與摘要的 SHA256 是來源版本。相同版本與相同中繼資料不重寫文章；已縮減的版本再次出現在 RSS 中，也不會寫回完整正文。來源正文／摘要有變化時，會重新保存內容、重設抽取狀態與版本保存期；只修改標題／作者／日期則保留抽取成果。
 
 啟用 discovery 時，寫入前先在本地解析外連；文章成功保存後才寫入候選與來源關聯。只有全部可處理外連及 referrer 寫入成功，才記錄該版本已抽取。零外連文件也可完成。失敗、佇列容量不足或新 host 預算不足會留下待處理狀態，舊資料以最早尚未抽取的版本優先補齊，不再只看最新文章。
 
@@ -51,7 +51,7 @@ X-API-Key: <admin key>
 
 回傳 `dry_run`、`eligible`、`compacted`、`content_bytes`。只有明確使用 `dry_run=false` 才修改正文；手動執行不受排程開關限制。`content_bytes` 是原始正文 bytes，並非磁碟回收量；PostgreSQL 仍需正常 vacuum，檔案也不一定立刻縮小。
 
-條件同時成立才縮減：抓取超過保存天數、完整抽取過目前版本、正文尚未縮減、沒有任何使用者收藏或已讀關聯、來源沒有任何使用者訂閱。資料庫鎖定後再檢查，保護已先提交的使用者互動。縮減僅將 `content` 設為 NULL，保留 article ID、URL、標題、摘要與其他欄位；不刪除文章或使用者關聯。搜尋 generated vector 隨正文同步更新，已移除的正文詞彙不再提供命中。閱讀頁顯示保存期限提示與原文連結。
+條件同時成立才縮減：目前正文版本超過保存天數（`content_revision_at`；未追蹤版本的舊資料退回 `fetched_at`）、完整抽取過目前版本、正文尚未縮減、沒有任何使用者收藏或已讀關聯、來源沒有任何使用者訂閱。資料庫鎖定後再檢查，保護已先提交的使用者互動。縮減僅將 `content` 設為 NULL，保留 article ID、URL、標題、摘要與其他欄位；不刪除文章或使用者關聯。搜尋 generated vector 隨正文同步更新，已移除的正文詞彙不再提供命中。閱讀頁顯示保存期限提示與原文連結。
 
 套用後無法由這些欄位自行還原原始正文；需要備份或原站重新取回。未來新增的收藏不會還原正文。已有訂閱的來源全部受保護，因此本策略不能保證資料量停止增長。也不要回退到會無條件 upsert 正文的舊版 worker。
 
@@ -72,4 +72,4 @@ X-API-Key: <admin key>
 
 ## 驗證
 
-後端使用 `pytest`，前端使用 `npm test -- --watch=false` 與 `npm run build`。`backend/tests/sql/test_crawler_lifecycle.sql` 是額外的 PostgreSQL 整合 fixture，必須在空的隔離資料庫套用遷移，並建立一個 `auth.users` 測試使用者後執行；不得在正式資料庫執行。它檢查正文縮減、搜尋同步、使用者保護、重跑、版本重設、legacy hash CAS、權限與監控清理上限。交易最後 rollback。
+後端使用 `pytest`，前端使用 `npm test -- --watch=false` 與 `npm run build`。Backend CI 使用 PostgreSQL 17 service，設定 `DRIFTREAD_TEST_DATABASE_URL` 讓 `tests/test_postgres_lifecycle.py` 自動建立專用隔離資料庫、用實際 runner 執行完整 migration chain 與 SQL fixtures，並以獨立連線驗證未提交收藏／已讀／訂閱的 FK 鎖、新正文與舊抽取完成標記、正文縮減與相同版本 refresh 的競態。另驗證真正的 anon 拒絕與 owner RLS。只有 localhost 的 `*_test` 資料庫可作為建立測試資料庫的入口；不使用正式 `DATABASE_URL`。本地未提供測試 URL 時會 skip，CI 必須執行。

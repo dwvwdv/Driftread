@@ -246,6 +246,21 @@ def test_approve_a_rejected_candidate_is_409(client):
     assert row["status"] == "rejected"
 
 
+@pytest.mark.parametrize("kind", ["comment", "rejected_alias", "held_alias"])
+def test_legacy_unapprovable_candidate_is_conflict_without_losing_pending_state(client, kind):
+    c, _mock = client
+    row = _candidate(feed_url="https://blog.example.org/comments/feed" if kind == "comment" else "https://blog.example.org/feed")
+    rows = [row]
+    if kind != "comment":
+        rows.append(_candidate(feed_url=row["feed_url"] + "/", status=kind.split("_")[0]))
+    fake = FakeDB(discovery_candidates=rows, feeds=[])
+    _fake_db_client(c, fake)
+    resp = c.post(f"{BASE}/candidates/{row['id']}/approve", json={}, headers=KEY)
+    assert resp.status_code == 409
+    assert row["status"] == "pending"
+    assert fake.rows("feeds") == []
+
+
 def test_hold_keeps_candidate_as_a_replacement_without_blocking_host(client):
     c, _mock = client
     row = _candidate()

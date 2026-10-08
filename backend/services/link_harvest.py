@@ -481,6 +481,7 @@ class PendingHarvest:
 def harvest_pending_articles(
     db: "Client", feed: dict, index: HostIndex, limit: int,
     prepared: dict[tuple[str, str], DocumentExtraction] | None = None,
+    pending_rows: list[dict] | None = None,
 ) -> PendingHarvest:
     """Consume oldest unextracted source versions without network requests.
 
@@ -489,9 +490,11 @@ def harvest_pending_articles(
     updates. Per-document parsing and per-feed host budgets bound the work.
     """
     feed_id = str(feed["id"])
-    rows = list(db.rpc("pending_article_discovery", {
-        "p_feed_id": feed_id, "p_limit": limit,
-    }).execute().data or [])
+    rows = pending_rows if pending_rows is not None else list(
+        db.rpc("pending_article_discovery", {
+            "p_feed_id": feed_id, "p_limit": limit,
+        }).execute().data or []
+    )
     self_hosts = {normalize_host(feed.get("url")), normalize_host(feed.get("website_url"))}
     max_hosts = harvest_max_links_per_feed()
     seen: set[str] = set()
