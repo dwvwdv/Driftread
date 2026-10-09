@@ -44,6 +44,8 @@ async function applyStorageMutation(message) {
     catch (error) { await restoreCache(); throw error; }
     return true;
   }
+  // A stale render cleanup is harmless and must not reject an observer callback.
+  if (message.action === 'prune' && (!matches || !cfg.account)) return;
   if (!matches || !cfg.account) throw new Error('帳號已切換');
   let state = (await chrome.storage.local.get('readingCache')).readingCache;
   if (message.action === 'prune') {

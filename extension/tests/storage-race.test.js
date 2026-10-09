@@ -116,7 +116,7 @@ test('a delayed old auth failure and stale popup cleanup cannot clear a new acco
   const old = h.sync().catch(error => error); await settle();
   await h.connect('b');
   denied({ status: 401 }); await old;
-  await vm.runInContext("storageMutation('prune', { connectionId: 'connection-a' }).catch(() => {})", h.popup.context);
+  await vm.runInContext("storageMutation('prune', { connectionId: 'connection-a' })", h.popup.context);
   assert.equal(h.session.account, 'b'); assert.equal(h.local.readingCache.account, 'b');
 });
 
@@ -125,14 +125,13 @@ test('disconnect invalidates a separately running candidate response while popup
   let candidate;
   h.fetch = async (_, options) => options.headers.Authorization === 'Bearer token-b'
     ? new Promise(resolve => { candidate = resolve; }) : snapshot();
+  const connecting = h.connect('b'); await settle();
+  assert.equal(typeof candidate, 'function');
   const release = h.blockWrite(1);
   const old = h.sync().catch(error => error); await settle();
-  const connecting = h.connect('b'); await settle();
   const disconnecting = h.disconnect(); await settle();
-  await release(); await settle();
-  // The disconnect supersedes the queued candidate intent before it can fetch.
-  if (candidate) candidate(snapshot('b'));
-  await Promise.all([old, connecting, disconnecting]);
+  candidate(snapshot('b')); await connecting;
+  await release(); await Promise.all([old, disconnecting]);
   assert.equal(h.session.account, undefined); assert.equal(h.local.readingCache, undefined);
 });
 
