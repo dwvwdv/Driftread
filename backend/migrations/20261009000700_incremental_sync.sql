@@ -148,3 +148,7 @@ EXCEPTION WHEN lock_not_available OR deadlock_detected THEN
 END $$;
 REVOKE ALL ON FUNCTION driftread.replay_personal_article_state(uuid,uuid,text,boolean) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION driftread.replay_personal_article_state(uuid,uuid,text,boolean) TO service_role;
+
+-- This is the final schema migration in this release. PostgREST must reload
+-- after every publication/event/heat/sync object and its grants have committed.
+NOTIFY pgrst, 'reload schema';

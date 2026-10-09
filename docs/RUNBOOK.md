@@ -69,6 +69,8 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 本批新增佇列、來源／正文政策、文章版本、人工事件、個人熱度與消費出口；不新增環境變數或 exposed schema。完整模型分別見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)、[PUBLICATION.md](PUBLICATION.md) 與 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。
 
+本批最後一支 `20261009000700_incremental_sync.sql` 在所有 DDL／grants 之後送出 `NOTIFY pgrst, 'reload schema'`；通知在 migration 交易成功提交後才送達，讓 PostgREST 更新 publication／事件／熱度／sync 物件快取，不依賴額外的 DDL event trigger。部署驗收仍須實際呼叫新增 RPC／API，不能只以 `/api/health` 判定 Data API 已完成非同步 reload。
+
 1. 備份資料庫並保留 `driftread._migrations` ledger，記下目前三個 image SHA。
 2. `docker compose stop worker`，等待正常停機；不要混跑舊記憶體排程 worker 與新佇列 worker。
 3. 取得同一版本 api／worker 與 frontend image，先更新 `api`，等 migration／backfill 完成與 `/api/health` healthy。

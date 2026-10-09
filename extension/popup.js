@@ -67,7 +67,7 @@ async function renderReading(state) {
   const target = document.getElementById('reading'); target.replaceChildren();
   const cfg = await connection();
   if (!DriftreadOffline.usable(state, cfg.account)) {
-    if (state && state.account !== cfg.account) await chrome.storage.local.remove('readingCache');
+    if (state && cfg.account && state.account !== cfg.account) await chrome.storage.local.remove('readingCache');
     document.getElementById('status').textContent = '請連線並同步閱讀（離線保存最多 24 小時）'; return;
   }
   for (const article of state.items) {

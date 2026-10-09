@@ -11,6 +11,8 @@
 
 選項連線會移除舊版同步儲存的 admin credentials。token 僅留在 session storage；關閉 browser session 後需重新連線。斷線會清除本機個人快取。帳號切換及延遲連線回應受到 connectionId／generation 保護。
 
+browser 重啟後先開 popup 不會刪除待同步操作；未連線或摘要超過 24 小時時不顯示私人文章，保留 queue 等待同帳號重新連線並同步。
+
 「連線」會先用候選 API／token 取得初始 snapshot，成功後才替換目前連線；錯誤 token、拒絕權限或網路失敗保留原連線、快取與待同步操作。同一 API／帳號重新連線保留 pending queue，接著在 popup 按「同步」確認權限並重放；成功切換帳號或 API 則使用新帳號的空 queue。可按「中斷連線」主動清除保留資料。
 
 ## 使用

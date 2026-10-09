@@ -1393,4 +1393,6 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - 人工事件公开支路直接使用 publication，archived normal 成員保留閱讀能力，private／signal-only／exclusions 仍隱藏；success-only 的重新匯入會以 GREATEST 同時推進 last_fetch_at，舊完成時間不能倒退觀測。
 - 後續 review 發現候選連線尚未驗證就清掉舊快取，錯誤 token／網路失敗會遺失 pending。改為先以候選設定取得 snapshot，成功後才提交連線；失敗保留舊資料，同帳號／API 更新 token 保留 queue，切換帳號或 API 不帶入舊 queue。
 - Story 合併原本僅搬 membership，原人工 relation 留在 alias 而消失。合併在同交易重掛來源及既有 aliases 的兩端關係，正規化端點、合併相同聲明並刪除等效自關係；不同聲明衝突拒絕整筆合併並回滾，讓操作者先明確處理。relation PATCH 與 merge 共用先於 row locks 的交易鎖，避免並發寫回 alias；這個鎖僅限小型人工管理操作。
-- 本輪 backend 991 tests（含授權／批次競態／Story relations 真 PostgreSQL fixtures）、extension 32 tests（含候選連線與在途儲存競態）通過；前端未更動，沿用 289 tests／build 驗證。文件檢查與 diff check 通過。GitHub CI 結果以 PR 最新 commit 的 checks 為準；正式部署未執行。
+- popup 曾把 browser 重啟後 session 帳號缺失當成切換帳號，先於 options 重連刪除 local queue；改為只有目前帳號確定存在且不同才清除。未連線與 TTL 過期不顯示私人摘要，但保留 pending 等待驗證／同步，補 popup → options 真 storage lifecycle 回歸。
+- 原 schema reload 通知早於來源／publication／事件／熱度／sync DDL；本批最後 migration 的全部 DDL／grants 之後補 `NOTIFY pgrst, 'reload schema'`。真 PostgreSQL listener 驗證提交後才收到、rollback 無通知，且通知後可見新增物件及最終 RPC 權限；實際 migration runner 補執行最後檔及 ledger rerun 皆驗證。未宣稱正式 Supabase 的非同步 cache reload 已走查，部署驗收仍須呼叫新出口。
+- 本輪 backend 994 tests（含授權／批次競態／Story relations／schema reload 真 PostgreSQL fixtures）、extension 35 tests（含候選連線、在途儲存與 popup lifecycle）通過；前端未更動，沿用 289 tests／build 驗證。文件檢查與 diff check 通過。GitHub CI 結果以 PR 最新 commit 的 checks 為準；正式部署未執行。
