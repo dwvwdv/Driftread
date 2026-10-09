@@ -23,6 +23,8 @@
 
 全部工具標註 readOnlyHint；沒有寫入、feed 抓取或 AI 工具。CLI SDK client 可無 Origin；瀏覽器 Origin 必須與 Host 相同。部署時 reverse proxy 必須限制可信 Host。
 
+個人搜尋的一般正詞 AND／OR 查詢先使用原始 `articles.search_vector` 與許可摘要 expression 的兩個 GIN 索引聯集篩選候選 ID，再以 publication 的許可向量確認命中及排序。摘要索引使用與 summary-only projection 完全相同的表達式，保留摘要 500 字元裁切產生的詞；禁止正文不會影響結果相關度，也不回傳正文或向量。負詞／片語查詢刻意退回本人未靜音訂閱的許可向量比對，避免原始正文的負詞或政策裁切後的詞位置排除可見結果；此類查詢仍可能掃描訂閱歷史。摘要 expression 索引增加一份摘要／metadata 的索引儲存與文章寫入成本。
+
 ## 同步與離線快取的限制
 
 `GET /api/me/sync?cursor=...&pending_ids=<uuid>` 使用帳號綁定的版本化游標；另一個使用者的游標與畸形游標回 400。游標不是權限憑證，每次仍須認證。最多 100 個 pending article IDs（extension 超過上限會要求先同步），回應會再次確認其訂閱／publication 權限。
@@ -40,5 +42,7 @@ Extension 同步先拉權限 snapshot，剔除失權 pending operation，再用�
 ## 驗證
 
 `backend/tests/test_sync_postgres.py` 使用獨立 PostgreSQL 測試資料庫驗證角色權限、owner RLS 寫入、交易 race／rollback、刪除與撤權、使用者搜尋隔離。`test_mcp.py` 使用官方 ClientSession 做 protocol interoperability；extension Node tests 覆蓋 account／options lifecycle、權限預檢、404 後重試及網路失敗。daily frontend tests 覆蓋登入、時區、空畫面、錯誤、帳號切換與 destroy。
+
+個人搜尋另以 `backend/tests/sql/test_personal_search_candidates.sql` 驗證候選前後命中／排名、禁止正文、摘要裁切詞、負詞／片語／OR、owner／mute 與 metadata 契約，並重跑 migration；5,000 篇歷史資料的 `EXPLAIN ANALYZE` 驗證實際 RPC SQL 的選擇性查詢使用兩個 GIN，先縮減至候選後才執行許可 projection。
 
 `.github/workflows/extension.yml` 在 extension 變更的 PR／push 執行 Node 測試，不取代安裝 Chrome 的實際 UI 走查。

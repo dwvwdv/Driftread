@@ -81,6 +81,16 @@ END $$;
 REVOKE ALL ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint,uuid[]) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint,uuid[]) TO service_role;
 
+-- Summary-only clipping can create a lexeme absent from the raw vector (for
+-- example, a word cut at character 500). Index the exact excerpt expression
+-- too, so the two index branches together are a true policy-vector superset.
+CREATE INDEX IF NOT EXISTS articles_excerpt_search_vector_idx ON driftread.articles USING GIN (
+ to_tsvector('simple', driftread.bounded_search_text(
+ coalesce(title,'') || ' ' ||
+ coalesce(left(driftread.strip_html_for_search(driftread.bounded_search_text(summary)),500),'') || ' ' ||
+ coalesce(author,'')))
+);
+
 -- Match/rank with the rights-aware vector, but return metadata only. Recreate
 -- this unmerged RPC so replay also corrects its former publication-row return.
 DROP FUNCTION IF EXISTS driftread.personal_publication_search(uuid,text,int);
@@ -92,13 +102,35 @@ RETURNS TABLE(id uuid,feed_id uuid,title text,url text,summary text,author text,
  fulltext_allowed boolean)
 LANGUAGE sql STABLE SECURITY INVOKER
 SET search_path=pg_catalog AS $$
+ -- Materialize only IDs before building the policy-dependent vector. Ordinary
+ -- positive AND/OR queries use the raw and exact-excerpt GIN candidate union.
+ -- Negative/phrase queries must retain the original rights-only matching:
+ -- forbidden body words and changed token positions can reject visible hits.
+ WITH query AS (SELECT websearch_to_tsquery('simple',p_query) AS tsq),
+ candidates AS MATERIALIZED (
+   SELECT indexed.id FROM driftread.articles indexed CROSS JOIN query
+   WHERE query.tsq::text !~ '(!|<)' AND (
+     indexed.search_vector @@ query.tsq OR
+     to_tsvector('simple', driftread.bounded_search_text(
+       coalesce(indexed.title,'') || ' ' ||
+       coalesce(left(driftread.strip_html_for_search(driftread.bounded_search_text(indexed.summary)),500),'') || ' ' ||
+       coalesce(indexed.author,''))) @@ query.tsq
+   )
+   UNION ALL
+   SELECT indexed.id FROM driftread.articles indexed
+   JOIN driftread.user_feeds subscribed ON subscribed.feed_id=indexed.feed_id
+     AND subscribed.user_id=p_user_id AND subscribed.muted_at IS NULL
+   CROSS JOIN query
+   WHERE query.tsq::text ~ '(!|<)'
+ )
  SELECT a.id,a.feed_id,a.title,a.url,a.summary,a.author,a.published_at,a.fetched_at,
  a.content_compacted_at,a.timeline_at,a.discovered_at,a.backfill,a.backfill_reason,a.current_revision_id,
  coalesce(s.custom_title,a.feed_title),a.feed_language,a.feed_archived_at,a.fulltext_allowed
- FROM driftread.article_publications a
+ FROM candidates c JOIN driftread.article_publications a ON a.id=c.id
  JOIN driftread.user_feeds s ON s.feed_id=a.feed_id AND s.user_id=p_user_id AND s.muted_at IS NULL
- WHERE a.search_vector @@ websearch_to_tsquery('simple',p_query)
- ORDER BY ts_rank_cd(a.search_vector,websearch_to_tsquery('simple',p_query)) DESC,a.timeline_at DESC,a.id DESC
+ CROSS JOIN query
+ WHERE a.search_vector @@ query.tsq
+ ORDER BY ts_rank_cd(a.search_vector,query.tsq) DESC,a.timeline_at DESC,a.id DESC
  LIMIT least(greatest(p_limit,1),100)
 $$;
 REVOKE ALL ON FUNCTION driftread.personal_publication_search(uuid,text,int) FROM PUBLIC,anon,authenticated;

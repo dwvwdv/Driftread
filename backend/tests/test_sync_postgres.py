@@ -111,3 +111,51 @@ def test_search_is_owner_scoped_and_ledger_window_reset_is_bounded(pg_database):
         setup.commit()
         result=snapshot(reader,owner,0)
         assert result['reset'] is True and result['cache_limit']==100 and len(result['items'])<=100
+
+
+def test_personal_search_candidates_preserve_rights_and_replay(pg_database):
+    root = Path(__file__).parent.parent
+    with connection(pg_database) as conn:
+        with conn.cursor() as cur:
+            for _ in range(2):
+                cur.execute((root / 'migrations/20261009000700_incremental_sync.sql').read_text())
+                cur.execute((Path(__file__).parent / 'sql/test_personal_search_candidates.sql').read_text())
+
+
+def test_personal_search_selective_query_uses_gin_before_projection(pg_database):
+    with connection(pg_database) as conn:
+        feed, _, owner = subscribed(conn)
+        with conn.cursor() as cur:
+            cur.execute("UPDATE driftread.feeds SET fulltext_policy='summary_only' WHERE id=%s", (feed,))
+            cur.execute("""INSERT INTO driftread.articles(feed_id,title,url,summary,content)
+                SELECT %s,'history', 'https://search-plan.invalid/'||n,
+                  CASE WHEN n=1 THEN 'selectiveneedle' ELSE 'ordinary history' END,
+                  'bodyonly '||repeat('cached article text ',100)
+                FROM generate_series(1,5000) n""", (feed,))
+            cur.execute('ANALYZE driftread.articles; ANALYZE driftread.feeds; ANALYZE driftread.user_feeds')
+            # SET search_path prevents SQL-function inlining. Explain the actual
+            # catalog body with bound RPC arguments, not a hand-copied query.
+            cur.execute("SELECT prosrc FROM pg_proc WHERE oid='driftread.personal_publication_search(uuid,text,int)'::regprocedure")
+            body = cur.fetchone()[0]
+            for name, placeholder in [('p_user_id', '%(owner)s::uuid'), ('p_query', '%(query)s::text'), ('p_limit', '%(limit)s::int')]:
+                body = body.replace(name, placeholder)
+            cur.execute('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + body,
+                        {'owner': owner, 'query': 'selectiveneedle', 'limit': 20})
+            plan = cur.fetchone()[0][0]['Plan']
+
+        def nodes(node):
+            yield node
+            for child in node.get('Plans', []):
+                yield from nodes(child)
+
+        gin = [node for node in nodes(plan) if node.get('Index Name') == 'articles_search_vector_idx']
+        assert len(gin) == 1, json.dumps(plan)
+        assert gin[0]['Actual Rows'] == 1 and gin[0]['Actual Loops'] == 1
+        excerpt_gin = [node for node in nodes(plan) if node.get('Index Name') == 'articles_excerpt_search_vector_idx']
+        assert len(excerpt_gin) == 1, json.dumps(plan)
+        assert excerpt_gin[0]['Actual Rows'] == 1 and excerpt_gin[0]['Actual Loops'] == 1
+        candidates = [node for node in nodes(plan) if node.get('Subplan Name') == 'CTE candidates']
+        assert len(candidates) == 1 and candidates[0]['Actual Rows'] == 1
+        assert plan['Actual Rows'] == 1
+        assert scalar(conn, 'SELECT count(*) FROM driftread.personal_publication_search(%s,%s)',
+                      (owner, 'selectiveneedle')) == 1

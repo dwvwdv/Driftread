@@ -9,6 +9,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -109,7 +110,9 @@ class AuthenticatedMCP:
             await JSONResponse({"detail": "Invalid origin"}, 403)(scope, receive, send)
             return
         try:
-            user = get_current_user(request.headers.get("authorization"))
+            # Cold/rotated JWKS lookup performs synchronous HTTPS. Use the same
+            # bounded threadpool as FastAPI sync dependencies, once per request.
+            user = await run_in_threadpool(get_current_user, request.headers.get("authorization"))
         except HTTPException as exc:
             await JSONResponse({"detail": exc.detail}, exc.status_code,
                                headers={"WWW-Authenticate": "Bearer"})(scope, receive, send)

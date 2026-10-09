@@ -86,3 +86,84 @@ async def test_official_sdk_client_interoperability():
                             invalid = await session.call_tool('search', arguments)
                             assert invalid.isError is True
                         assert db.rpc.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('valid_signing_key', [True, False])
+async def test_slow_jwks_keeps_event_loop_available_and_request_identity_isolated(monkeypatch, valid_signing_key):
+    import asyncio
+    import threading
+
+    import httpx
+    from jwt import PyJWKClient
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    import auth
+    from services import mcp_server
+    from tests.test_auth import _asymmetric_token_and_jwks, _token
+
+    token, jwks = _asymmetric_token_and_jwks(user_id='slow-owner')
+    if not valid_signing_key:
+        _, jwks = _asymmetric_token_and_jwks(user_id='another-key-owner')
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    fetch_started = asyncio.Event()
+    release_fetch = threading.Event()
+    fetch_threads = []
+    identities = []
+
+    def slow_fetch(self):
+        fetch_threads.append(threading.get_ident())
+        loop.call_soon_threadsafe(fetch_started.set)
+        if not release_fetch.wait(timeout=3):
+            raise AssertionError('JWKS fetch blocked the event loop before another request could finish')
+        return jwks
+
+    async def transport(scope, receive, send):
+        identity = Request(scope).state.driftread_user.id
+        identities.append(identity)
+        await JSONResponse({'owner': identity})(scope, receive, send)
+
+    database = Mock(spec=[])
+    get_database = Mock(return_value=database)
+    monkeypatch.setenv('SUPABASE_URL', 'https://example.supabase.co')
+    monkeypatch.setenv('SUPABASE_JWT_SECRET', 'mcp-threadpool-test-secret-with-32-plus-bytes')
+    monkeypatch.setattr(PyJWKClient, 'fetch_data', slow_fetch)
+    monkeypatch.setattr(mcp_server, 'mcp_http', transport)
+    monkeypatch.setattr(mcp_server, 'get_client', get_database)
+    auth.reset_jwks_client()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_server.AuthenticatedMCP()),
+                                     base_url='http://testserver') as client:
+            slow_request = asyncio.create_task(client.post('/', headers={'Authorization':f'Bearer {token}'}))
+            try:
+                await asyncio.wait_for(fetch_started.wait(), timeout=1)
+                # This request verifies its own JWT and completes while A waits on JWKS.
+                fast = await asyncio.wait_for(client.post('/', headers={
+                    'Authorization':f'Bearer {_token(user_id="fast-owner")}'
+                }), timeout=1)
+                assert fast.status_code == 200 and fast.json() == {'owner':'fast-owner'}
+                assert not slow_request.done()
+                assert get_database.call_count == 1
+                denied = await asyncio.wait_for(client.post('/', headers={
+                    'Authorization':'Bearer invalid-token'
+                }), timeout=1)
+                assert denied.status_code == 401
+                assert denied.headers['www-authenticate'] == 'Bearer'
+                assert get_database.call_count == 1  # Failed auth cannot reach the SDK/DB.
+            finally:
+                release_fetch.set()
+                result = await asyncio.wait_for(slow_request, timeout=2)
+            assert len(fetch_threads) == 1
+            assert fetch_threads[0] != loop_thread
+            if valid_signing_key:
+                assert result.status_code == 200 and result.json() == {'owner':'slow-owner'}
+                assert identities == ['fast-owner','slow-owner']
+            else:
+                assert result.status_code == 401
+                assert identities == ['fast-owner']
+                assert get_database.call_count == 1
+    finally:
+        release_fetch.set()
+        auth.reset_jwks_client()

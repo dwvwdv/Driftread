@@ -1396,4 +1396,6 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - popup 曾把 browser 重啟後 session 帳號缺失當成切換帳號，先於 options 重連刪除 local queue；改為只有目前帳號確定存在且不同才清除。未連線與 TTL 過期不顯示私人摘要，但保留 pending 等待驗證／同步，補 popup → options 真 storage lifecycle 回歸。
 - 原 schema reload 通知早於來源／publication／事件／熱度／sync DDL；本批最後 migration 的全部 DDL／grants 之後補 `NOTIFY pgrst, 'reload schema'`。真 PostgreSQL listener 驗證提交後才收到、rollback 無通知，且通知後可見新增物件及最終 RPC 權限；實際 migration runner 補執行最後檔及 ledger rerun 皆驗證。未宣稱正式 Supabase 的非同步 cache reload 已走查，部署驗收仍須呼叫新出口。
 - RSS 查詢按校正後 timeline 排序，輸出卻優先使用原始 published_at，使錯誤的未來日期在外部 reader 長期置頂。`pubDate` 改用 timeline_at，只有舊資料缺少 timeline 時回退原始日期；補未來日期／UTC 轉換、順序、舊資料回退及無日期回歸。依使用者後續要求啟用每小時 review 檢查，本次有修正推送後保留排程供下一輪確認。
-- 本輪 backend 996 tests（含授權／批次競態／Story relations／schema reload 真 PostgreSQL fixtures及 RSS 日期回歸）通過；extension 與前端未更動，沿用 35／289 tests 及前端 build 驗證。文件檢查與 diff check 通過。GitHub CI 結果以 PR 最新 commit 的 checks 為準；正式部署未執行。
+- 個人搜尋曾直接在 publication 的政策 CASE 向量上比對，無法使用原始 GIN 索引而掃描所有訂閱文章。一般正詞 AND／OR 改先用原始向量與精確摘要 expression 的 GIN 聯集做候選篩選，再以許可向量重驗命中與排名，保持本人／靜音隔離與純 metadata 回傳。摘要索引保留 500 字元裁切產生的詞，增加有界摘要索引的儲存／寫入成本；負詞／片語沿用許可向量查詢，避免禁止正文或詞位置差異讓許可結果漏掉。
+- MCP 自訂 async 認證 wrapper 曾同步驗證 JWT，冷 JWKS 或金鑰輪替的 HTTPS 會阻塞 FastAPI 事件迴圈。改將同步驗證移至 threadpool，維持每次請求的永久帳號驗證、原錯誤回應與請求身份隔離，補等待驗證時其他 task 能進展的回歸。
+- 本輪 backend 1000 tests（含授權／批次競態／Story relations／schema reload／搜尋 GIN 真 PostgreSQL fixtures、RSS 日期與慢 JWKS 並發回歸）通過；extension 與前端未更動，沿用 35／289 tests 及前端 build 驗證。文件檢查與 diff check 通過。GitHub CI 結果以 PR 最新 commit 的 checks 為準；正式部署未執行。

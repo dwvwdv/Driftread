@@ -331,6 +331,8 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 
 MCP 在既有 API 程序使用官方 SDK，逐請求驗證永久使用者 JWT，唯讀工具由 server 認證決定 user_id，檢查 Origin；RSS 使用 Bearer header 且不接受 URL token。離線擴充採 session token、帳號／連線 generation，排除跨帳號在途回應與 pending replay；本地只保存有期限的摘要與原文連結。正文與來源撤權後依 authoritative snapshot 清掉 cache。安裝瀏覽器的真實 lifecycle 仍須部署走查。
 
+MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool 執行，冷 JWKS 或金鑰輪替的 HTTPS 不阻塞事件迴圈。每次請求仍獨立驗證、通過後才設定該 request 的身份及資料庫 client；認證失敗維持 401／403 與 Bearer challenge，不會進入 MCP 工具或資料庫。
+
 工作 lease token 與續租／完成檢查防止舊 attempt 覆寫新佇列狀態；交付為 at-least-once，不宣稱可撤回已提交的業務 side effects，見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)。人工事件公開結果仍重新經 projection；任何集合 membership 都不能擴張出版或使用者權限。
 
 離線 preflight 不授權後續寫入；專用 replay RPC 鎖定来源、本人訂閱與文章，同交易檢查 publication／mute 後寫狀態。撤權拒絕、鎖繁忙完整回滾且保留 pending，由真 PostgreSQL 的撤權先後順序及批次抓取競態驗證，契約見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。
