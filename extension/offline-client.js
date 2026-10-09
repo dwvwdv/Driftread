@@ -2,9 +2,13 @@
 async function connection() {
   return chrome.storage.session.get(['apiUrl', 'accessToken', 'account', 'connectionId']);
 }
-async function clearConnection() {
-  await chrome.storage.session.clear();
-  await chrome.storage.local.remove('readingCache');
+async function storageMutation(action, data = {}) {
+  const result = await chrome.runtime.sendMessage({ type: 'driftread:storage', action, ...data });
+  if (!result?.ok) throw new Error(result?.error || '離線資料儲存失敗，請重試');
+  return result.value;
+}
+async function clearConnection(expected = null, intent = null) {
+  return storageMutation('clear', { expected: Boolean(expected), connectionId: expected?.connectionId, intent });
 }
 async function personalRequest(path, options = {}, expected = null, { candidate = false } = {}) {
   const cfg = expected || await connection();
@@ -17,7 +21,7 @@ async function personalRequest(path, options = {}, expected = null, { candidate 
   });
   if (response.status === 401 || response.status === 403) {
     // Only erase the failing account; a new account may have connected in flight.
-    if (!candidate && (await connection()).connectionId === cfg.connectionId) await clearConnection();
+    if (!candidate) await clearConnection(cfg);
     throw new Error('登入已失效，請重新連線');
   }
   if (!response.ok) { const error = new Error(`請求失敗 (${response.status})`); error.status = response.status; throw error; }
@@ -33,10 +37,7 @@ async function syncReading() {
     if (state.cursor) params.set('cursor', state.cursor);
     for (const id of new Set(state.pending.map(p => p.articleId))) params.append('pending_ids', id);
     const response = await personalRequest('/me/sync?' + params, {}, cfg);
-    if ((await connection()).connectionId !== cfg.connectionId) throw new Error('帳號已切換');
-    state = DriftreadOffline.apply(state, response);
-    state.pending = state.pending.filter(p => response.authorized_article_ids.includes(p.articleId));
-    await chrome.storage.local.set({ readingCache: state });
+    state = await storageMutation('pull', { connectionId: cfg.connectionId, response });
   }
   // Apply rights/deletion invalidations before replay, including pending articles
   // that aged out of the bounded recent cache but remain authorized.
@@ -48,9 +49,7 @@ async function syncReading() {
       await personalRequest('/me/sync/operations', { method: 'POST',
         body: JSON.stringify({ article_id: articleId, kind, enabled }) }, cfg);
     } catch (error) { if (![404,409].includes(error.status)) throw error; }
-    if ((await connection()).connectionId !== cfg.connectionId) throw new Error('帳號已切換');
-    state.pending = state.pending.filter(p => p !== operation);
-    await chrome.storage.local.set({ readingCache: state });
+    state = await storageMutation('acknowledge', { connectionId: cfg.connectionId, operation });
   }
   if (hadPending) await pull();
   return state;

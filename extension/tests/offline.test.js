@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const Offline = require('../offline.js');
+const { installBackground } = require('./helpers/background');
 
 const response = { account_id: 'a', changed: true, cursor: 'one',
   authorized_article_ids:['article'], items: [{id:'article',content:'forbidden',title:'Example',is_read:false,bookmark_types:[]}] };
@@ -36,6 +37,7 @@ function harness(responses) {
     if (result instanceof Error) throw result;
     return { status:result.status ?? 200, ok:(result.status ?? 200)<400, json:async()=>result.body };
   }});
+  installBackground(context.chrome);
   vm.runInContext(fs.readFileSync(require.resolve('../offline-client.js'),'utf8'),context);
   return {context,session,local,calls};
 }
@@ -137,8 +139,8 @@ function optionsHarness() {
   vm.runInContext(fs.readFileSync(require.resolve('../options.js'),'utf8'),h.context);
   async function start(account) {
     elements.apiUrl.value='https://example.test/api'; elements.accessToken.value=`token-${account}`;
-    const task=handlers.save(); permission.shift()(true);
-    for(let i=0;i<20;i++) await Promise.resolve();
+    const task=handlers.save(); for(let i=0;i<150;i++) await Promise.resolve(); permission.shift()(true);
+    for(let i=0;i<100;i++) await Promise.resolve();
     return {task,request:requests.at(-1)};
   }
   return {...h,elements,handlers,requests,permission,start};

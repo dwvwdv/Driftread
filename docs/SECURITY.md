@@ -329,7 +329,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 
 佇列、告警、版本證據、人工事件與同步 ledger 均開 RLS、零公開 policy、撤銷 PUBLIC／anon／authenticated 權限。RPC 為 service-only `SECURITY INVOKER`。同步 invalidation trigger 是窄範圍 `SECURITY DEFINER` 例外：鎖定 `search_path=pg_catalog`、使用 schema-qualified objects、撤銷直接 EXECUTE；讓正常 owner RLS 允許的 Data API 寫入可同交易通知私有 ledger，不讓 owner 呼叫任意 user 的 snapshot。交易、正常 authenticated owner 寫入與 rollback 由真 PostgreSQL 驗證，詳見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。
 
-MCP 在既有 API 程序使用官方 SDK，逐請求驗證永久使用者 JWT，唯讀工具由 server 認證決定 user_id，檢查 Origin；RSS 使用 Bearer header 且不接受 URL token。離線擴充採 session token、帳號／連線 generation，排除跨帳號在途回應與 pending replay；本地只保存有期限的摘要與原文連結。正文與來源撤權後依 authoritative snapshot 清掉 cache。安裝瀏覽器的真實 lifecycle 仍須部署走查。
+MCP 在既有 API 程序使用官方 SDK，逐請求驗證永久使用者 JWT，唯讀工具由 server 認證決定 user_id，檢查 Origin；RSS 使用 Bearer header 且不接受 URL token。離線擴充採 session token、帳號／連線 generation，排除跨帳號在途回應與 pending replay；快取／連線寫入統一由 service worker 協調，只接受本擴充 popup／options 頁面的 mutation message，避免網站 content script 修改私人資料。本地只保存有期限的摘要與原文連結，斷線或切帳號後不能由舊頁面的延遲寫入復活快取；連線契約與測試見 [extension README](../extension/README.md)。正文與來源撤權後依 authoritative snapshot 清掉 cache。安裝瀏覽器的真實 lifecycle 仍須部署走查。
 
 MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool 執行，冷 JWKS 或金鑰輪替的 HTTPS 不阻塞事件迴圈。每次請求仍獨立驗證、通過後才設定該 request 的身份及資料庫 client；認證失敗維持 401／403 與 Bearer challenge，不會進入 MCP 工具或資料庫。
 

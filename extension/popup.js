@@ -67,7 +67,7 @@ async function renderReading(state) {
   const target = document.getElementById('reading'); target.replaceChildren();
   const cfg = await connection();
   if (!DriftreadOffline.usable(state, cfg.account)) {
-    if (state && cfg.account && state.account !== cfg.account) await chrome.storage.local.remove('readingCache');
+    if (state && cfg.account && state.account !== cfg.account) await storageMutation('prune', { connectionId: cfg.connectionId });
     document.getElementById('status').textContent = '請連線並同步閱讀（離線保存最多 24 小時）'; return;
   }
   for (const article of state.items) {
@@ -83,9 +83,9 @@ async function renderReading(state) {
       button.textContent = (enabled ? '取消' : '標記') + label;
       button.disabled = syncing;
       button.onclick = async () => {
-        try { state = DriftreadOffline.queue(state, article.id, kind, !enabled); }
-        catch (error) { document.getElementById('status').textContent = error.message; return; }
-        await chrome.storage.local.set({ readingCache: state });
+        try {
+          state = await storageMutation('queue', { connectionId: cfg.connectionId, articleId: article.id, kind, enabled: !enabled });
+        } catch (error) { document.getElementById('status').textContent = error.message; return; }
         await renderReading(state);
         document.getElementById('status').textContent = '變更已保存，連線後按同步送出';
       };

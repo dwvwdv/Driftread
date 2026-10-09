@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const Offline = require('../offline.js');
+const { installBackground } = require('./helpers/background');
 
 function optionsHarness({ granted = true, request, status = 200, initialSession = {}, initialCache,
   beforeCacheWrite, beforeSessionWrite, onSessionWrite } = {}) {
@@ -32,9 +33,9 @@ function optionsHarness({ granted = true, request, status = 200, initialSession 
             return value;
           },
           set: async value => {
-            if (beforeSessionWrite) await beforeSessionWrite(value);
+            if (value.account && beforeSessionWrite) await beforeSessionWrite(value);
             Object.assign(session, value);
-            if (onSessionWrite) await onSessionWrite(session, local);
+            if (value.account && onSessionWrite) await onSessionWrite(session, local);
           },
           clear: async () => { for (const key of Object.keys(session)) delete session[key]; },
         },
@@ -56,6 +57,7 @@ function optionsHarness({ granted = true, request, status = 200, initialSession 
       return { status, ok: status < 400, json: async () => body };
     },
   });
+  installBackground(context.chrome);
   vm.runInContext(fs.readFileSync(require.resolve('../offline-client.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(require.resolve('../options.js'), 'utf8'), context);
   elements.apiUrl.value = 'https://example.test/api';
@@ -105,7 +107,7 @@ test('a late connection error cannot replace visible disconnect feedback', async
   let rejectRequest;
   const h = optionsHarness({ request: () => new Promise((_, reject) => { rejectRequest = reject; }) });
   const connecting = h.handlers.save();
-  for (let i = 0; i < 20 && !rejectRequest; i++) await Promise.resolve();
+  for (let i = 0; i < 100 && !rejectRequest; i++) await Promise.resolve();
   assert.equal(typeof rejectRequest, 'function');
   await h.handlers.disconnect();
   rejectRequest(new Error('舊連線失敗'));
@@ -124,7 +126,7 @@ test('failed candidate token or network retains the old connection and pending w
     { request: async () => { throw new Error('offline'); } }]) {
     const h = optionsHarness({ ...failure, initialSession: oldSession, initialCache: oldCache });
     await h.handlers.save();
-    assert.deepEqual(h.session, oldSession);
+    assert.deepEqual(Object.fromEntries(Object.entries(h.session).filter(([key]) => key !== 'connectionIntent')), oldSession);
     assert.deepEqual(h.local.readingCache, oldCache);
     assert.ok(h.visibleMessage());
     assert.equal(h.requests[0].options.headers.Authorization, 'Bearer token-a');
@@ -153,9 +155,9 @@ test('candidate account is isolated and replaces old data only after successful 
   const h = optionsHarness({ initialSession: oldSession, initialCache: oldCache,
     request: () => new Promise(resolve => { resolveRequest = resolve; }) });
   const connecting = h.handlers.save();
-  for (let i = 0; i < 20 && !resolveRequest; i++) await Promise.resolve();
+  for (let i = 0; i < 100 && !resolveRequest; i++) await Promise.resolve();
   assert.equal(typeof resolveRequest, 'function');
-  assert.deepEqual(h.session, oldSession);
+  assert.deepEqual(Object.fromEntries(Object.entries(h.session).filter(([key]) => key !== 'connectionIntent')), oldSession);
   assert.deepEqual(h.local.readingCache, oldCache);
   resolveRequest({ account_id: 'b', changed: true, cursor: 'b-one', items: [{ id: 'b-article' }] });
   await connecting;
@@ -180,7 +182,7 @@ test('malformed initial snapshot leaves the established connection and cache unc
     { account_id: 'a', changed: false, cursor: 'bad', items: [] }]) {
     const h = optionsHarness({ initialSession: oldSession, initialCache: oldCache, request: async () => response });
     await h.handlers.save();
-    assert.deepEqual(h.session, oldSession);
+    assert.deepEqual(Object.fromEntries(Object.entries(h.session).filter(([key]) => key !== 'connectionIntent')), oldSession);
     assert.deepEqual(h.local.readingCache, oldCache);
     assert.match(h.visibleMessage(), /原連線已保留/);
   }
@@ -211,7 +213,7 @@ test('disconnect waits for in-flight cache or session writes and leaves no resur
         return new Promise(resolve => { resolveWrite = resolve; });
       } });
     const connecting = h.handlers.save();
-    for (let i = 0; i < 40 && !resolveWrite; i++) await Promise.resolve();
+    for (let i = 0; i < 150 && !resolveWrite; i++) await Promise.resolve();
     assert.equal(typeof resolveWrite, 'function');
     const disconnecting = h.handlers.disconnect();
     resolveWrite();
@@ -242,13 +244,13 @@ test('a newer failed candidate invalidates the old in-flight cache commit withou
       return new Promise(resolve => { resolveWrite = resolve; });
     } });
   const first = h.handlers.save();
-  for (let i = 0; i < 40 && !resolveWrite; i++) await Promise.resolve();
+  for (let i = 0; i < 150 && !resolveWrite; i++) await Promise.resolve();
   assert.equal(typeof resolveWrite, 'function');
   h.elements.accessToken.value = 'bad-token';
   const second = h.handlers.save();
   resolveWrite();
   await Promise.all([first, second]);
-  assert.deepEqual(h.session, oldSession);
+  assert.deepEqual(Object.fromEntries(Object.entries(h.session).filter(([key]) => key !== 'connectionIntent')), oldSession);
   assert.deepEqual(h.local.readingCache, oldCache);
   assert.equal(h.visibleMessage(), 'candidate failed');
 });
@@ -265,11 +267,11 @@ test('the latest successful connection wins when an older session write is still
       return new Promise(resolve => { resolveWrite = resolve; });
     } });
   const first = h.handlers.save();
-  for (let i = 0; i < 40 && !resolveWrite; i++) await Promise.resolve();
+  for (let i = 0; i < 150 && !resolveWrite; i++) await Promise.resolve();
   assert.equal(typeof resolveWrite, 'function');
   h.elements.accessToken.value = 'token-b';
   const second = h.handlers.save();
-  for (let i = 0; i < 40; i++) await Promise.resolve();
+  for (let i = 0; i < 150; i++) await Promise.resolve();
   resolveWrite();
   await Promise.all([first, second]);
   assert.equal(h.session.account, 'b');
@@ -294,13 +296,13 @@ test('a later candidate response still commits after an older session write fini
       return new Promise(resolve => { resolveWrite = resolve; });
     } });
   const first = h.handlers.save();
-  for (let i = 0; i < 40 && !resolveWrite; i++) await Promise.resolve();
+  for (let i = 0; i < 150 && !resolveWrite; i++) await Promise.resolve();
   assert.equal(typeof resolveWrite, 'function');
   h.elements.accessToken.value = 'token-b';
   const second = h.handlers.save();
   resolveWrite();
   await first;
-  for (let i = 0; i < 40 && !resolveCandidate; i++) await Promise.resolve();
+  for (let i = 0; i < 150 && !resolveCandidate; i++) await Promise.resolve();
   assert.equal(typeof resolveCandidate, 'function');
   resolveCandidate({ account_id: 'b', changed: true, cursor: 'two', items: [] });
   await second;

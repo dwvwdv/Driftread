@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const Offline = require('../offline.js');
+const { installBackground } = require('./helpers/background');
 
 const apiUrl = 'https://example.test/api';
 const snapshot = { account_id: 'a', changed: true, cursor: 'one', authorized_article_ids: ['article'],
@@ -19,7 +20,7 @@ function element() {
     append(...children) { this.children.push(...children); },
     appendChild(child) { this.children.push(child); } };
 }
-async function settle() { for (let i = 0; i < 40; i++) await Promise.resolve(); }
+async function settle() { for (let i = 0; i < 150; i++) await Promise.resolve(); }
 function popupHarness(initialSession, state) {
   const session = { ...initialSession };
   const local = { readingCache: structuredClone(state) };
@@ -58,6 +59,7 @@ function popupHarness(initialSession, state) {
       return { status: 200, ok: true, json: async () => structuredClone(snapshot) };
     },
   });
+  installBackground(context.chrome);
   vm.runInContext(fs.readFileSync(require.resolve('../offline-client.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(require.resolve('../popup.js'), 'utf8'), context);
   return { session, local, elements, removals, requests,

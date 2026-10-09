@@ -37,7 +37,7 @@ Extension 同步先拉權限 snapshot，剔除失權 pending operation，再用�
 
 批次文章寫入與 sync ledger 的既有鎖順序可能與 replay 競跑；RPC 設 250ms lock timeout，捕捉鎖逾時／死鎖時由 exception subtransaction 回滾狀態與 ledger，回 503／Retry-After: 1。Client 保留 pending，下一次同步再送，不以 409 丟掉暫時繁忙的操作。網路失敗同樣保留 queue。已老化出最近 100 篇、仍有權限的 pending operation 可繼續重放。
 
-本機快取只有摘要和狀態；有效期 24 小時，明確斷線、目前連線收到 401／403、成功切換帳號或 API 時清除，token 只存 Chrome session storage，不跨 Chrome 帳號同步。候選連線驗證失敗保留目前帳號的快取與 pending，同一 API／帳號重新連線保留 queue；細節見 [extension 連線契約](../extension/README.md#安裝與連線)。沒有 server push；離線時無法即時察覺撤權，須重新連線同步或等待快取過期。沒有完整歷史下載、正文離線閱讀或無限期離線支援。
+本機快取只有摘要和狀態；有效期 24 小時，明確斷線、目前連線收到 401／403、成功切換帳號或 API 時清除，token 只存 Chrome session storage，不跨 Chrome 帳號同步。跨頁面的連線及快取變更由擴充 service worker 序列化，斷線／切帳號會等待已接受的 storage 寫入完成再清除或替換，拒絕舊 connectionId 的後續寫入；細節見 [extension 連線契約](../extension/README.md#安裝與連線)。候選連線驗證失敗保留目前帳號的快取與 pending，同一 API／帳號重新連線保留 queue。沒有 server push；離線時無法即時察覺撤權，須重新連線同步或等待快取過期。沒有完整歷史下載、正文離線閱讀或無限期離線支援。
 
 ## 驗證
 
