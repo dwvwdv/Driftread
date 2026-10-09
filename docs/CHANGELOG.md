@@ -1364,3 +1364,22 @@ Review 修復：匯入保留累計文章數、空待抽取佇列跳過 HostIndex
 - `python3 scripts/check_docs.py` 通過；把 `CLAUDE.md` 改成多一行時確實失敗；臨時文件裡的壞圖片、帶標題、角括號、reference-style、清單延續段落與表格裡的壞連結都會被抓到，各種圍欄、縮排式程式碼區塊與行內程式碼裡的示範連結不會誤報；`AGENTS.md` 提到不存在的路徑時會失敗。
 - 以逐行比對確認歸檔後的 CHANGELOG 與歸檔檔合起來涵蓋原檔每一行（只有被改寫的檔頭與「尚未合併」標題不同）。
 - 未改動任何程式碼，backend／frontend workflow 不受影響。
+
+## 階段三十九：依非 AI 依賴完成持久化採集、個人閱讀與消費出口（PR 待定，2026-10-09）
+
+issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人閱讀與 AI。依使用者指定先排除所有 AI 功能，建立 #68–#80 共 13 個工作議題，以多個 sub-agent 分工，再依基礎依賴整合到單一 PR。父議題 checklist 與各工作議題互相連結；目前 connector 沒有寫入 GitHub 原生 sub-issue 關係的工具，未宣稱原生 parent relationship 已建立。
+
+- 採集 cycle 改用 PostgreSQL durable queue，加入 priority、lease fencing、bounded retry／timeout、過期回收、週期 singleton 設定更新與下一輪原子入列。SIGTERM 停止接新工作、bounded drain；API watchdog 獨立監控失聯／恢復，管理頁可見佇列與私有告警。交付為 at-least-once，lease 不撤回已提交業務寫入或終止同步 thread，見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)。
+- 保留 source-specific article id／訂閱／收藏，追加 metadata/hash revisions 與多入口 provenance，canonical URL 只移除 fragment。區分 source publication、first discovery、timeline 與不可洗成 realtime 的 backfill；初次抓取、歷史匯入與 legacy 資料不製造當前熱度／日報。沒有永久保存每版本全文，見 [CONTENT_MODEL.md](CONTENT_MODEL.md)。
+- 来源 normal／signal_only／private、鏡像群、first_party、正文政策與 fetch/ok 時間加入管理表單。匯入冪等且不重設既有角色；來源健康包含沒有近期文章的來源。所有文章出口共用 publication，summary_only 即時限摘要，搜索不能由禁止正文命中／排名／出片段；raw articles 的匿名 Data API SELECT 已撤銷。cursor 綁定 user／endpoint／query，舊 cursor 須重載，見 [SOURCE_MODEL.md](SOURCE_MODEL.md) 與 [PUBLICATION.md](PUBLICATION.md)。
+- 人工 Fact／Story 以版本 CAS 原子更新，永久排除、merge／alias、顯式 relation 不作自動語意擴張。個人熱度只按同 URL／人工 Story 的獨立來源與 source time 衰減，偏好主導且 lag 明示 incomplete；閱讀流提供時間／熱度選擇。本人熱度保存有界證據 snapshot，歷史修復補晚到證據但凍結當時來源健康，讀取重新套用目前權限／訂閱／回饋；不宣稱還原歷史偏好。已讀只提供有界弱訊號，探索維持 category 配額與可解釋理由，見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md)。
+- 確定性 daily digest 按 IANA timezone／DST 日界切分，私人 RSS 只匯出摘要／原文；官方 MCP SDK 同 FastAPI 程序提供五個唯讀工具，每請求驗 JWT。sync ledger 以交易序列鎖處理 commit race，新增 trigger 是固定 search_path、撤銷 API EXECUTE 的窄範圍 DEFINER 例外。離線擴充採摘要快取、session token、pinned connection generation、權限預檢與有界 idempotent queue，撤權／刪除後 replacement snapshot 清 cache；離線期間撤權須重連或 TTL 才生效，見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。新增 extension CI 跑 account／cache lifecycle。
+
+### 驗證與部署界限
+
+- 最終 backend 全套含隔離 PostgreSQL 17、publication／queue／history／owner RLS／sync commit race、官方 MCP ClientSession：964 tests 通過。
+- Frontend 33 files、289 tests 通過；production build 通過，initial bundle 506.28 kB 相對 500 kB warning budget 超出 6.28 kB，沒有調高預算掩蓋。
+- Extension 13 Node lifecycle tests、`scripts/check_docs.py` 與 `git diff --check` 通過。
+- 未驗證正式 Supabase、Docker image／compose 部署與實際 Chrome／瀏覽器流程；[RUNBOOK.md](RUNBOOK.md) 補先停舊 worker、API migrations healthy、再升級 worker／frontend 的順序。不新增環境變數或 exposed schema。
+- 新增 migrations 的 baseline 升級與重跑通過；完整清空歷史 ledger 後重播所有舊 migration 仍遇到既有 006→010 public trigger dependency 問題，本次不改已合併 migration。升級須保留 ledger，不宣稱完整歷史 reset 已驗證。
+- 不含模型呼叫、embedding、自動語意事件判斷、AI 摘要、模型路由／prompt／benchmark；MCP 為讀取協定。PR review 事件 hook 工具不可用，依既有偏好未建立替代輪詢。

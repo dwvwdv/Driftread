@@ -1,0 +1,21 @@
+name: Extension
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['extension/**', '.github/workflows/extension.yml']
+  pull_request:
+    branches: [main, master]
+    paths: ['extension/**', '.github/workflows/extension.yml']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Offline and account lifecycle
+        run: node -e "require('./extension/tests/offline.test.js')"

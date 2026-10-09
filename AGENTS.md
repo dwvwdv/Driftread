@@ -79,6 +79,12 @@ driftread/
 | 主動發現（外連採集、blogroll、目錄頁、探測、候選審核） | [docs/FEATURES.md](docs/FEATURES.md) 的「主動發現管道」、[docs/SECURITY.md](docs/SECURITY.md) #24 |
 | 文章寫入、增量抽取、正文保存／縮減、worker heartbeat、中文種子 | [docs/CRAWLER_OPERATIONS.md](docs/CRAWLER_OPERATIONS.md) |
 | `app_settings` 全域設定、探測方向與名額、設定版本衝突 | [docs/GLOBAL_SETTINGS.md](docs/GLOBAL_SETTINGS.md) |
+| 工作佇列、租約、重試、停機與 watchdog | [docs/BACKGROUND_JOBS.md](docs/BACKGROUND_JOBS.md) |
+| 文章版本、來源證據與 backfill | [docs/CONTENT_MODEL.md](docs/CONTENT_MODEL.md) |
+| 來源角色、正文政策與健康度 | [docs/SOURCE_MODEL.md](docs/SOURCE_MODEL.md) |
+| 共用閱讀 projection、查詢／帳號綁定 cursor | [docs/PUBLICATION.md](docs/PUBLICATION.md) |
+| 人工事件、個人熱度與推薦 | [docs/NON_AI_INTELLIGENCE.md](docs/NON_AI_INTELLIGENCE.md) |
+| 日報、RSS、唯讀 MCP 與同步 ledger | [docs/CONSUMPTION_SURFACES.md](docs/CONSUMPTION_SURFACES.md) |
 | 資料表、RLS、schema 隔離、migration | [docs/FEATURES.md](docs/FEATURES.md) 的「資料表」、本檔「資料庫與 migration」 |
 | API 端點、前端路由、各項上限與門檻 | [docs/FEATURES.md](docs/FEATURES.md) 的「API 端點」「前端路由」「生效中的限制與門檻」 |
 | 前端樣式、元件庫、主題、文章內容渲染 | [frontend/README.md](frontend/README.md) 的「三條規則」「主題」「對比度」 |
@@ -119,6 +125,7 @@ python3 scripts/check_docs.py
 |----------|----------|------|
 | `.github/workflows/backend.yml` | `backend/**`、`supabase/**` | pytest（含 PostgreSQL 17 service）→ `driftread-api` image |
 | `.github/workflows/frontend.yml` | `frontend/**` | `npm test` + `npm run build` → `driftread-frontend` image |
+| `.github/workflows/extension.yml` | `extension/**` | Node 離線快取、權限與帳號切換 lifecycle tests |
 | `.github/workflows/docs.yml` | 每次 PR／push（不設路徑篩選，改名或刪檔也可能讓文件連結失效） | `scripts/check_docs.py` |
 
 必要的 GitHub Secrets 只有自動提供的 `GITHUB_TOKEN`（推送 image 至 GHCR）。

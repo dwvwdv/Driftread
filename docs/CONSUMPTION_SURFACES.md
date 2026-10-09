@@ -4,7 +4,7 @@
 
 ## 每日閱讀與個人 RSS
 
-- `/daily` 顯示指定日期、IANA 時區的來源摘要；`GET /api/me/digest?date=YYYY-MM-DD&timezone=Asia/Taipei&limit=100` 使用當地午夜到次日午夜，包含 DST 的 23／25 小時日期。最多 100 筆，`truncated` 表示仍有資料。
+- `/me/digest` 顯示指定日期、IANA 時區的來源摘要；`GET /api/me/digest?date=YYYY-MM-DD&timezone=Asia/Taipei&limit=100` 使用當地午夜到次日午夜，包含 DST 的 23／25 小時日期。最多 100 筆，`truncated` 表示仍有資料。
 - `GET /api/me/rss?limit=50` 匯出個人活躍訂閱的最近文章，最多 100 筆；只含來源摘要及原文連結。daily/RSS 排除 backfill，使用 publication timeline。
 - RSS 需要 Authorization header；目前提供登入後下載檔案，未實作可放進一般 RSS reader 的永久 token URL、排程寄送或公開分享。
 - 前端切換帳號、登出與元件銷毀會取消在途請求，防止舊帳號回應顯示或下載。
@@ -38,3 +38,5 @@ Extension 同步先拉權限 snapshot，剔除失權 pending operation，再用�
 ## 驗證
 
 `backend/tests/test_sync_postgres.py` 使用獨立 PostgreSQL 測試資料庫驗證角色權限、owner RLS 寫入、交易 race／rollback、刪除與撤權、使用者搜尋隔離。`test_mcp.py` 使用官方 ClientSession 做 protocol interoperability；extension Node tests 覆蓋 account／options lifecycle、權限預檢、404 後重試及網路失敗。daily frontend tests 覆蓋登入、時區、空畫面、錯誤、帳號切換與 destroy。
+
+`.github/workflows/extension.yml` 在 extension 變更的 PR／push 執行 Node 測試，不取代安裝 Chrome 的實際 UI 走查。

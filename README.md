@@ -39,6 +39,12 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | 部署與回滾操作順序 |
 | [`docs/CRAWLER_OPERATIONS.md`](docs/CRAWLER_OPERATIONS.md) | 增量抽取、中文種子、資料量監控與正文保存操作 |
 | [`docs/GLOBAL_SETTINGS.md`](docs/GLOBAL_SETTINGS.md) | 共用設定表、語言／分類探測方向與版本管理 |
+| [`docs/BACKGROUND_JOBS.md`](docs/BACKGROUND_JOBS.md) | 持久化佇列、租約、重試、停機與 API watchdog |
+| [`docs/CONTENT_MODEL.md`](docs/CONTENT_MODEL.md) | 文章版本、來源證據與 backfill 時間語義 |
+| [`docs/SOURCE_MODEL.md`](docs/SOURCE_MODEL.md) | 來源角色、正文政策與來源健康度 |
+| [`docs/PUBLICATION.md`](docs/PUBLICATION.md) | 共用閱讀權限與查詢／帳號綁定 cursor |
+| [`docs/NON_AI_INTELLIGENCE.md`](docs/NON_AI_INTELLIGENCE.md) | 人工 Fact／Story、個人熱度與推薦 |
+| [`docs/CONSUMPTION_SURFACES.md`](docs/CONSUMPTION_SURFACES.md) | 個人日報、RSS、唯讀 MCP 與離線同步 |
 | [`extension/README.md`](extension/README.md) | 瀏覽器擴充安裝與設定 |
 | [`AGENTS.md`](AGENTS.md) | 開發規範、文件與 changelog 維護規則、PR／Code Review 原則（Claude Code 與 Codex 共用；`CLAUDE.md` 只 import 它） |
 

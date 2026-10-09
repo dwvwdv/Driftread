@@ -27,7 +27,7 @@
 
 新來源首次成功 fetch 的文章標記 `initial_fetch`；登入 discover/import 的同步文章標記 `discover_import`；明確歷史匯入可指定 reason。普通 refresh 首次看到發布超過七天的文章，標記 `old_publication`。既有資料採首次 `fetched_at` 回填 discovery，保守標記 `legacy_import`，不以部署時間製造新訊號。無日期的普通新文章以 discovery 排序。
 
-歷史文章仍可閱讀、訂閱流顯示與搜尋。`backfill` 是未來即時通知／熱度／日報的排除依據，不把文章隱藏或刪除；本次沒有引入通知或熱度系統。來源 fetch／角色規則另由來源模型管理。
+歷史文章仍可閱讀、訂閱流顯示與搜尋。`backfill` 是[個人熱度](NON_AI_INTELLIGENCE.md)與[日報](CONSUMPTION_SURFACES.md)的排除依據，不把文章隱藏或刪除。目前沒有即時通知功能；來源 fetch／角色規則見[來源模型](SOURCE_MODEL.md)。
 
 ## 驗證
 

@@ -17,6 +17,9 @@ BEGIN
  sid:=(snap->>'snapshot_id')::uuid;
  SELECT sources INTO original_sources FROM driftread.user_heat_snapshots WHERE id=sid;
  IF jsonb_array_length(snap->'candidates')<>1 THEN RAISE EXCEPTION 'capture not connected'; END IF;
+ IF snap->'candidates'->0->>'discovered_at' IS NULL
+  OR (snap->'candidates'->0->>'backfill')::boolean
+ THEN RAISE EXCEPTION 'publication metadata missing'; END IF;
  IF (SELECT candidates::text||evidence::text FROM driftread.user_heat_snapshots WHERE id=sid) LIKE '%persist this text%'
   OR (SELECT candidates::text||evidence::text FROM driftread.user_heat_snapshots WHERE id=sid) LIKE '%private full body%'
  THEN RAISE EXCEPTION 'stored article text'; END IF;

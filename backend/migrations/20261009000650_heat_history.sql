@@ -55,7 +55,7 @@ CREATE OR REPLACE FUNCTION driftread.read_personal_heat_history(p_user_id uuid,p
     OR (f.participation_mode='signal_only' AND NOT EXISTS(SELECT 1 FROM driftread.user_feeds uf
       WHERE uf.user_id=p_user_id AND uf.feed_id=f.id AND uf.muted_at IS NOT NULL)))
  ), candidates AS MATERIALIZED (
-  SELECT p.id,p.feed_id,p.feed_title,p.title,p.url,p.summary,p.author,p.published_at,p.fetched_at,p.timeline_at,
+  SELECT p.id,p.feed_id,p.feed_title,p.title,p.url,p.summary,p.author,p.published_at,p.fetched_at,p.timeline_at,p.discovered_at,p.backfill,p.backfill_reason,p.current_revision_id,
    (r.article_id IS NOT NULL) is_read,r.read_at,c->>'group_key' group_key,f.category,f.tags,f.language
   FROM saved s CROSS JOIN LATERAL jsonb_array_elements(s.candidates) c
   JOIN driftread.article_publications p ON p.id=(c->>'id')::uuid

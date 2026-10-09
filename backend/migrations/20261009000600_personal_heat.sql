@@ -22,7 +22,7 @@ CREATE OR REPLACE FUNCTION driftread.personal_heat_snapshot(
   FROM driftread.articles a JOIN cohort c ON c.id=a.feed_id
   WHERE a.timeline_at>=p_at-interval '7 days' AND a.timeline_at<=p_at AND NOT a.backfill
  ), candidates AS MATERIALIZED (
-  SELECT p.id,p.feed_id,p.feed_title,p.title,p.url,p.summary,p.author,p.published_at,p.fetched_at,p.timeline_at,
+  SELECT p.id,p.feed_id,p.feed_title,p.title,p.url,p.summary,p.author,p.published_at,p.fetched_at,p.timeline_at,p.discovered_at,p.backfill,p.backfill_reason,p.current_revision_id,
    (r.article_id IS NOT NULL) is_read,r.read_at,g.group_key,c.category,c.tags,c.language
   FROM article_groups g JOIN driftread.article_publications p ON p.id=g.id JOIN cohort c ON c.id=p.feed_id
   LEFT JOIN driftread.user_article_reads r ON r.article_id=p.id AND r.user_id=p_user_id
