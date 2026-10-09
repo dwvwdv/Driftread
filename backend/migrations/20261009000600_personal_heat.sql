@@ -31,12 +31,12 @@ CREATE OR REPLACE FUNCTION driftread.personal_heat_snapshot(
      AND (fb.feedback_type='disliked' OR (fb.feedback_type='skipped' AND fb.created_at>p_at-interval '14 days')))
   ORDER BY p.timeline_at DESC,p.id DESC LIMIT least(greatest(p_limit,1),500)
  ), evidence AS (
-  SELECT g.group_key,CASE WHEN c.signal_group IS NULL THEN 'feed:'||c.id::text ELSE 'group:'||lower(c.signal_group) END participant_key,
+  SELECT c.id feed_id,g.group_key,CASE WHEN c.signal_group IS NULL THEN 'feed:'||c.id::text ELSE 'group:'||lower(c.signal_group) END participant_key,
    max(g.published_at) source_time
   FROM article_groups g JOIN cohort c ON c.id=g.feed_id
   WHERE g.published_at IS NOT NULL AND g.published_at<=p_at AND g.published_at>=p_at-interval '7 days'
    AND g.group_key IN(SELECT group_key FROM candidates)
-  GROUP BY g.group_key,CASE WHEN c.signal_group IS NULL THEN 'feed:'||c.id::text ELSE 'group:'||lower(c.signal_group) END
+  GROUP BY c.id,g.group_key,CASE WHEN c.signal_group IS NULL THEN 'feed:'||c.id::text ELSE 'group:'||lower(c.signal_group) END
  )
  SELECT jsonb_build_object('sources',coalesce((SELECT jsonb_agg(jsonb_build_object('id',c.id,'signal_group',c.signal_group,
   'participation_mode',c.participation_mode,'archived_at',c.archived_at,'last_fetch_at',c.last_fetch_at,

@@ -83,4 +83,7 @@ def rank_personal_heat(
         "complete": health["complete"],
         "behind_participant_count": health["behind_participant_count"],
         "candidate_limit": CANDIDATE_LIMIT,
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "repaired_at": snapshot.get("repaired_at"),
+        "preference_basis": "current",
     }

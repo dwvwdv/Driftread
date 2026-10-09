@@ -262,6 +262,9 @@ class PaginatedStream(BaseModel):
     complete: bool | None = None
     behind_participant_count: int | None = None
     candidate_limit: int | None = None
+    snapshot_id: UUID | None = None
+    repaired_at: datetime | None = None
+    preference_basis: str | None = None
 
 
 class FeedUnreadCount(BaseModel):

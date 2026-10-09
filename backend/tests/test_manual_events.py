@@ -94,3 +94,14 @@ def test_relation_taxonomy_and_merged_alias_contract(client):
     )
     response = c.get(f"/api/events/{ID}")
     assert response.json()["id"] == TARGET and response.json()["requested_id"] == ID
+
+
+def test_expected_occurrence_and_roundup_relations_reach_mutation(client):
+    c, db = client
+    db.rpc.return_value = SimpleNamespace(execute=lambda: SimpleNamespace(data={"id": ID, "version": 2}))
+    for relation in ["SAME_OCCURRENCE", "ROUNDUP"]:
+        response = c.patch(f"/api/admin/events/{ID}", headers=AUTH, json={
+            "expected_version": 1, "relation_target": TARGET, "relation": relation,
+        })
+        assert response.status_code == 200
+        assert db.rpc.call_args.args[1]["p_relation"] == relation

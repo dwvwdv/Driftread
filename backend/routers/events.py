@@ -14,6 +14,8 @@ from routers.admin import require_api_key
 
 router = APIRouter(tags=["manual-events"])
 Relation = Literal[
+    "SAME_OCCURRENCE",
+    "ROUNDUP",
     "SAME_EVENT",
     "SAME_STORY",
     "FOLLOW_UP",

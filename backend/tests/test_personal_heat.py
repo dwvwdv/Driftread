@@ -169,7 +169,7 @@ def test_personal_heat_api_bounds_filters_and_user_isolation(client):
     snapshots = []
 
     def rpc(name, params):
-        assert name == "personal_heat_snapshot"
+        assert name == "capture_personal_heat"
         snapshots.append(params)
         return SimpleNamespace(
             execute=lambda: SimpleNamespace(
@@ -208,3 +208,52 @@ def test_personal_heat_api_bounds_filters_and_user_isolation(client):
         ).status_code
         == 422
     )
+
+
+def test_history_list_read_repair_have_explicit_owner_and_frozen_time(client):
+    c, db = client
+    snapshots = []
+    table = _chain(SimpleNamespace(data=[{"id": ARTICLE, "snapshot_at": AT.isoformat()}]))
+    db.table.return_value = table
+
+    def rpc(name, params):
+        snapshots.append((name, params))
+        if name == "repair_personal_heat_history":
+            data = {"repaired_count": 1, "limit": params["p_limit"]}
+        else:
+            assert name == "read_personal_heat_history"
+            data = {"snapshot_id": ARTICLE, "snapshot_at": AT.isoformat(),
+                    "sources": [source(None)], "candidates": [candidate()],
+                    "evidence": [evidence(at=AT - timedelta(hours=24))]}
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=data))
+
+    db.rpc.side_effect = rpc
+    with patch("routers.personal_heat._load_signals"):
+        for user in ["one", "two"]:
+            headers = {"Authorization": f"Bearer {_token(user)}"}
+            response = c.get("/api/me/personal-heat/history", headers=headers)
+            assert response.status_code == 200
+            table.eq.assert_called_with("user_id", user)
+            assert table.select.call_args.args == ("id,snapshot_at,repaired_at,unread_only",)
+            response = c.get(f"/api/me/personal-heat/history/{ARTICLE}", headers=headers)
+            assert response.status_code == 200
+            body = response.json()
+            assert body["items"][0]["heat"] == 0.5
+            assert not body["complete"]
+            assert body["snapshot_id"] == ARTICLE and body["preference_basis"] == "current"
+            assert "sources" not in body and "evidence" not in body
+            response = c.post("/api/me/personal-heat/history/repair?limit=1", headers=headers)
+            assert response.status_code == 200 and response.json()["repaired_count"] == 1
+    assert [params["p_user_id"] for _, params in snapshots] == ["one", "one", "two", "two"]
+    assert c.post("/api/me/personal-heat/history/repair?limit=21", headers=headers).status_code == 422
+    for method, path in [(c.get,"/api/me/personal-heat/history"),
+                         (c.get,f"/api/me/personal-heat/history/{ARTICLE}"),
+                         (c.post,"/api/me/personal-heat/history/repair")]:
+        assert method(path).status_code == 401
+
+
+def test_history_not_found_returns_404(client):
+    c, db = client
+    db.rpc.return_value = SimpleNamespace(execute=lambda: SimpleNamespace(data=None))
+    assert c.get(f"/api/me/personal-heat/history/{ARTICLE}", headers={
+        "Authorization": f"Bearer {_token()}"}).status_code == 404

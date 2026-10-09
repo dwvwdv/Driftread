@@ -54,7 +54,7 @@ BEGIN
  IF jsonb_array_length(payload->'sources')<>4 THEN RAISE EXCEPTION 'cohort privacy or missing lag source'; END IF;
  IF jsonb_array_length(payload->'candidates')<>2 THEN RAISE EXCEPTION 'display private/signal/backfill leak'; END IF;
  -- Same mirror group dedup, plus signal-only evidence, no private contributor.
- IF jsonb_array_length(payload->'evidence')<>2 THEN RAISE EXCEPTION 'participant dedup'; END IF;
+ IF (SELECT count(DISTINCT (e->>'group_key',e->>'participant_key')) FROM jsonb_array_elements(payload->'evidence') e)<>2 THEN RAISE EXCEPTION 'participant dedup'; END IF;
  IF EXISTS(SELECT 1 FROM jsonb_array_elements(payload->'evidence') e WHERE e->>'participant_key'='feed:'||priv::text) THEN RAISE EXCEPTION 'private heat leak'; END IF;
  INSERT INTO driftread.user_feed_feedback(user_id,feed_id,feedback_type) VALUES(u,f,'disliked');
  payload:=driftread.personal_heat_snapshot(u,now(),f,false,500);

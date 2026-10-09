@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS driftread.story_facts (
 CREATE TABLE IF NOT EXISTS driftread.event_relations (
  left_id uuid NOT NULL REFERENCES driftread.event_objects(id) ON DELETE CASCADE,
  right_id uuid NOT NULL REFERENCES driftread.event_objects(id) ON DELETE CASCADE,
- relation text NOT NULL CHECK(relation IN ('SAME_EVENT','SAME_STORY','FOLLOW_UP','REACTION','CONTEXT','SAME_TOPIC','UNRELATED')),
+ relation text NOT NULL CHECK(relation IN ('SAME_OCCURRENCE','ROUNDUP','SAME_EVENT','SAME_STORY','FOLLOW_UP','REACTION','CONTEXT','SAME_TOPIC','UNRELATED')),
  PRIMARY KEY(left_id,right_id), CHECK(left_id<right_id)
 );
 CREATE INDEX IF NOT EXISTS fact_articles_article_idx ON driftread.fact_articles(article_id);
