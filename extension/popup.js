@@ -83,7 +83,8 @@ async function renderReading(state) {
       button.textContent = (enabled ? '取消' : '標記') + label;
       button.disabled = syncing;
       button.onclick = async () => {
-        state = DriftreadOffline.queue(state, article.id, kind, !enabled);
+        try { state = DriftreadOffline.queue(state, article.id, kind, !enabled); }
+        catch (error) { document.getElementById('status').textContent = error.message; return; }
         await chrome.storage.local.set({ readingCache: state });
         await renderReading(state);
         document.getElementById('status').textContent = '變更已保存，連線後按同步送出';

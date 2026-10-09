@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -23,7 +23,7 @@ def test_official_mcp_protocol_and_user_scope(client):
         assert notification.status_code == 202
         tools = c.post('/api/mcp/', headers=HEADERS, json={
             'jsonrpc':'2.0','id':2,'method':'tools/list'}).json()['result']['tools']
-        assert {t['name'] for t in tools} == {'reading_stream','article','digest'}
+        assert {t['name'] for t in tools} == {'reading_stream','article','digest','subscriptions','search'}
         assert all(t['annotations']['readOnlyHint'] for t in tools)
         result = c.post('/api/mcp/', headers=HEADERS, json={
             'jsonrpc':'2.0','id':3,'method':'tools/call',
@@ -50,8 +50,17 @@ async def test_official_sdk_client_interoperability():
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
     from main import app
+    db = Mock(spec=['table','rpc'])
+    chain = Mock(spec=['select','eq','is_','order','limit','execute'])
+    for method in ['select','eq','is_','order','limit']:
+        getattr(chain,method).return_value = chain
+    chain.execute.return_value = Mock(data=[{'custom_title':'Yours','feeds':{
+        'id':'feed','title':'Original','url':'https://example.test/rss','participation_mode':'normal'}}])
+    db.table.return_value = chain
+    rpc = Mock(spec=['execute']); rpc.execute.return_value = Mock(data=[{'id':'article','title':'Yours','content':'HIDDEN'}])
+    db.rpc.return_value = rpc
     with patch('services.mcp_server.get_current_user', return_value=AuthUser('sdk-owner')), \
-         patch('services.mcp_server.get_client', return_value=object()), \
+         patch('services.mcp_server.get_client', return_value=db), \
          patch('services.mcp_server.publications', return_value=[]) as read:
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as http:
@@ -59,7 +68,21 @@ async def test_official_sdk_client_interoperability():
                     async with ClientSession(receive, send) as session:
                         await session.initialize()
                         tools = await session.list_tools()
-                        assert len(tools.tools) == 3
+                        assert len(tools.tools) == 5
                         result = await session.call_tool('reading_stream', {'limit':1})
                         assert result.isError is False
                         assert read.call_args.args[1] == 'sdk-owner'
+
+                        subscriptions = await session.call_tool('subscriptions', {'limit':2})
+                        assert subscriptions.isError is False
+                        chain.eq.assert_any_call('user_id','sdk-owner')
+                        chain.limit.assert_called_with(2)
+                        search = await session.call_tool('search', {'query':'example','limit':2,'user_id':'attacker'})
+                        assert search.isError is False
+                        db.rpc.assert_called_once_with('personal_publication_search', {
+                            'p_user_id':'sdk-owner','p_query':'example','p_limit':2})
+                        assert 'HIDDEN' not in str(search)
+                        for arguments in ({'query':'x'*201},{'query':'x','limit':101}):
+                            invalid = await session.call_tool('search', arguments)
+                            assert invalid.isError is True
+                        assert db.rpc.call_count == 1

@@ -11,11 +11,13 @@ router = APIRouter(prefix="/me", tags=["consumption"])
 
 
 @router.get("/digest")
-async def digest(day: date | None = Query(None, alias="date"),
+async def digest(response: Response, day: date | None = Query(None, alias="date"),
                  timezone: str = Query("UTC", max_length=100),
                  limit: int = Query(100, ge=1, le=100),
                  user: AuthUser = Depends(get_current_user),
                  db: Client = Depends(get_client)) -> dict:
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Authorization"
     return daily_digest(db, user.id, day, timezone, limit)
 
 

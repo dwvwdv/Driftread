@@ -4,6 +4,8 @@ const DriftreadOffline = {
   queue(state, articleId, kind, enabled) {
     if (!['read', 'favorite', 'read_later'].includes(kind) ||
         !state.items.some(a => a.id === articleId)) throw new Error('Invalid offline action');
+    const articleIds = new Set(state.pending.map(p => p.articleId));
+    if (!articleIds.has(articleId) && articleIds.size >= 100) throw new Error('待同步文章已達 100 篇，請先同步');
     const pending = state.pending.filter(p => !(p.articleId === articleId && p.kind === kind));
     pending.push({ articleId, kind, enabled: Boolean(enabled) });
     return { ...state, pending };

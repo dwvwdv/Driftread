@@ -32,6 +32,26 @@ describe('DailyDigest', () => {
     pending.next({date:'old',timezone:'UTC',items:[],truncated:false});
     expect(component.result()).toBeNull();
   });
+  it('account switch cancels old digest and RSS responses', () => {
+    const {api,session,fixture,component} = setup();
+    const pending = new Subject<DailyDigestResult>(); const rss = new Subject<string>();
+    api.get.mockReturnValue(pending); api.rss.mockReturnValue(rss);
+    component.load(); component.downloadRss();
+    api.get.mockReturnValue(new Subject<DailyDigestResult>());
+    session.set({user:{id:'b'}}); fixture.detectChanges();
+    expect(rss.observed).toBe(false);
+    pending.next({date:'old',timezone:'UTC',items:[],truncated:false});
+    // Account B has a separate fresh query subscription.
+    expect(component.result()).toBeNull();
+  });
+  it('destroy cancels pending requests and anonymous RSS never queries', () => {
+    const {api,fixture,component,session} = setup();
+    const pending = new Subject<DailyDigestResult>(); const rss = new Subject<string>();
+    api.get.mockReturnValue(pending); api.rss.mockReturnValue(rss);
+    component.load(); component.downloadRss(); fixture.destroy();
+    expect(pending.observed).toBe(false); expect(rss.observed).toBe(false);
+    session.set(null); component.downloadRss(); expect(api.rss).toHaveBeenCalledTimes(1);
+  });
   it('shows query errors without stale data', () => {
     const {api,component} = setup(); api.get.mockReturnValue(throwError(() => new Error('bad zone'))); component.load();
     expect(component.result()).toBeNull(); expect(component.error()).toContain('無法載入');

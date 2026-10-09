@@ -53,9 +53,9 @@ DO $$ DECLARE name text; BEGIN
     END LOOP;
 END $$;
 
-CREATE OR REPLACE FUNCTION driftread.personal_sync_snapshot(p_user_id uuid,p_since bigint DEFAULT NULL)
+CREATE OR REPLACE FUNCTION driftread.personal_sync_snapshot(p_user_id uuid,p_since bigint DEFAULT NULL,p_pending_ids uuid[] DEFAULT ARRAY[]::uuid[])
 RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE highwater bigint; reset boolean; changed boolean; items jsonb;
+DECLARE highwater bigint; reset boolean; changed boolean; items jsonb; authorized jsonb;
 BEGIN
     -- Lock before observing the publication projection. Writers of subscription,
     -- rights, overrides and article state hold the same lock until commit.
@@ -64,15 +64,31 @@ BEGIN
     changed := reset OR EXISTS(SELECT 1 FROM driftread.sync_changes c
         WHERE c.sequence>p_since AND (c.user_id IS NULL OR c.user_id=p_user_id));
     IF changed THEN
-        SELECT coalesce(jsonb_agg(to_jsonb(a) - 'search_vector' || jsonb_build_object(
+        SELECT coalesce(jsonb_agg(to_jsonb(a) - 'search_vector' - 'content' || jsonb_build_object(
             'is_read',EXISTS(SELECT 1 FROM driftread.user_article_reads r WHERE r.user_id=p_user_id AND r.article_id=a.id),
             'bookmark_types',coalesce((SELECT jsonb_agg(b.bookmark_type ORDER BY b.bookmark_type)
                FROM driftread.user_bookmarks b WHERE b.user_id=p_user_id AND b.article_id=a.id),'[]'::jsonb)
         ) ORDER BY a.timeline_at DESC,a.id DESC),'[]'::jsonb) INTO items
         FROM driftread.list_personal_publications(p_user_id,NULL,NULL,false,100) a;
     END IF;
-    RETURN jsonb_build_object('sequence',highwater,'reset',reset,'changed',changed,'items',items,
+    SELECT coalesce(jsonb_agg(a.id),'[]'::jsonb) INTO authorized
+    FROM driftread.article_publications a JOIN driftread.user_feeds s
+      ON s.feed_id=a.feed_id AND s.user_id=p_user_id AND s.muted_at IS NULL
+    WHERE a.id=ANY(p_pending_ids);
+    RETURN jsonb_build_object('authorized_article_ids',authorized,'sequence',highwater,'reset',reset,'changed',changed,'items',items,
                              'cache_limit',100);
 END $$;
-REVOKE ALL ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint) FROM PUBLIC,anon,authenticated;
-GRANT EXECUTE ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint) TO service_role;
+REVOKE ALL ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint,uuid[]) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint,uuid[]) TO service_role;
+
+CREATE OR REPLACE FUNCTION driftread.personal_publication_search(p_user_id uuid,p_query text,p_limit int DEFAULT 20)
+RETURNS SETOF driftread.article_publications LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog AS $$
+ SELECT a.* FROM driftread.article_publications a
+ JOIN driftread.user_feeds s ON s.feed_id=a.feed_id AND s.user_id=p_user_id AND s.muted_at IS NULL
+ WHERE a.search_vector @@ websearch_to_tsquery('simple',p_query)
+ ORDER BY ts_rank_cd(a.search_vector,websearch_to_tsquery('simple',p_query)) DESC,a.timeline_at DESC,a.id DESC
+ LIMIT least(greatest(p_limit,1),100)
+$$;
+REVOKE ALL ON FUNCTION driftread.personal_publication_search(uuid,text,int) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION driftread.personal_publication_search(uuid,text,int) TO service_role;

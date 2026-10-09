@@ -2,6 +2,8 @@
 import base64
 import json
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from supabase import Client
 
@@ -21,7 +23,7 @@ def decode_sync_cursor(cursor: str, user_id: str) -> int:
     try:
         value = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
         seq = value["sequence"]
-        if value["v"] != 1 or value["user"] != user_id or type(seq) is not int or seq < 0:
+        if value["v"] != 1 or value["user"] != user_id or type(seq) is not int or not 0 <= seq <= 9223372036854775807:
             raise ValueError
         return seq
     except (ValueError, TypeError, KeyError, UnicodeDecodeError) as exc:
@@ -30,10 +32,11 @@ def decode_sync_cursor(cursor: str, user_id: str) -> int:
 
 @router.get("/sync")
 async def sync(response: Response, cursor: str | None = Query(None, max_length=500),
+               pending_ids: list[UUID] = Query(default=[], max_length=100),
                user: AuthUser = Depends(get_current_user),
                db: Client = Depends(get_client)) -> dict:
     since = decode_sync_cursor(cursor, user.id) if cursor else None
-    data = db.rpc("personal_sync_snapshot", {"p_user_id":user.id,"p_since":since}).execute().data
+    data = db.rpc("personal_sync_snapshot", {"p_user_id":user.id,"p_since":since,"p_pending_ids":[str(x) for x in pending_ids]}).execute().data
     # PostgREST jsonb scalar responses are dicts, not row arrays.
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Vary"] = "Authorization"

@@ -31,7 +31,7 @@ def test_sync_requires_auth_and_does_not_trust_cursor_user(client):
         assert response.status_code == 200
         assert response.json()['account_id'] == 'owner'
         assert decode_sync_cursor(response.json()['cursor'],'owner') == 5
-        db.rpc.assert_called_once_with('personal_sync_snapshot', {'p_user_id':'owner','p_since':2})
+        db.rpc.assert_called_once_with('personal_sync_snapshot', {'p_user_id':'owner','p_since':2,'p_pending_ids':[]})
         assert response.headers['cache-control'] == 'private, no-store'
     finally:
         app.dependency_overrides.pop(get_current_user,None)

@@ -1,4 +1,4 @@
-import { Component, effect, inject, signal } from '@angular/core';
+import { Component, effect, inject, OnDestroy, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
@@ -11,7 +11,7 @@ import { DailyDigestResult, DigestService } from '../../services/digest';
   templateUrl: './daily-digest.html',
   styles: [':host{display:block;max-width:900px;margin:2rem auto;padding:1rem} .controls{display:flex;gap:1rem;flex-wrap:wrap} article{border-bottom:1px solid var(--border);padding:1rem 0}'],
 })
-export class DailyDigest {
+export class DailyDigest implements OnDestroy {
   readonly auth = inject(AuthService);
   private api = inject(DigestService);
   readonly result = signal<DailyDigestResult | null>(null);
@@ -21,11 +21,12 @@ export class DailyDigest {
   day = this.localDate(new Date());
   private request?: Subscription;
   private generation = 0;
+  private rssRequest?: Subscription;
   constructor() {
     effect(() => {
       const session = this.auth.session();
       this.generation++;
-      this.request?.unsubscribe(); this.result.set(null); this.error.set('');
+      this.request?.unsubscribe(); this.rssRequest?.unsubscribe(); this.result.set(null); this.error.set('');
       if (session) this.load(); else this.loading.set(false);
     });
   }
@@ -43,11 +44,16 @@ export class DailyDigest {
   }
   downloadRss() {
     const owner = this.auth.session()?.user.id;
-    this.api.rss().subscribe({ next: (xml) => {
+    if (!owner) return;
+    this.rssRequest?.unsubscribe();
+    this.rssRequest = this.api.rss().subscribe({ next: (xml) => {
       if (owner !== this.auth.session()?.user.id) return;
       const url = URL.createObjectURL(new Blob([xml], { type: 'application/rss+xml' }));
       const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'driftread-personal.rss'; anchor.click();
       URL.revokeObjectURL(url);
-    }, error: () => this.error.set('無法下載個人 RSS，請重試。') });
+    }, error: () => { if (owner === this.auth.session()?.user.id) this.error.set('無法下載個人 RSS，請重試。'); } });
+  }
+  ngOnDestroy() {
+    this.generation++; this.request?.unsubscribe(); this.rssRequest?.unsubscribe();
   }
 }

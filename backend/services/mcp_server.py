@@ -38,6 +38,27 @@ def reading_stream(ctx: Context, limit: Annotated[int, Field(ge=1, le=100)] = 30
 
 
 @mcp.tool(annotations=READ_ONLY)
+def subscriptions(ctx: Context, limit: Annotated[int, Field(ge=1, le=100)] = 100) -> dict:
+    """List your active reading subscriptions with your personal display names."""
+    user, db = _identity(ctx)
+    rows = (db.table("user_feeds").select("custom_title,feeds!inner(id,title,url,participation_mode)")
+            .eq("user_id",user.id).is_("muted_at","null")
+            .eq("feeds.participation_mode","normal").order("feed_id").limit(limit).execute()).data
+    return {"items":[{"id":r["feeds"]["id"],"title":r.get("custom_title") or r["feeds"]["title"],
+                      "url":r["feeds"]["url"]} for r in rows
+                     if r.get("feeds",{}).get("participation_mode") == "normal"]}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def search(ctx: Context, query: Annotated[str, Field(min_length=1, max_length=200)],
+           limit: Annotated[int, Field(ge=1, le=100)] = 20) -> dict:
+    """Search published articles in your active subscriptions using web search syntax."""
+    user, db = _identity(ctx)
+    rows = db.rpc("personal_publication_search",{"p_user_id":user.id,"p_query":query,"p_limit":limit}).execute().data
+    return {"items":[excerpt(r) for r in rows]}
+
+
+@mcp.tool(annotations=READ_ONLY)
 def article(ctx: Context, article_id: UUID) -> dict:
     """Read a published article from your active subscriptions; rights apply."""
     user, db = _identity(ctx)
