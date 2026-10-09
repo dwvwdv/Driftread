@@ -44,6 +44,33 @@ def test_rss_escapes_and_never_transmits_content():
     assert 'FORBIDDEN' not in xml
 
 
+def test_rss_uses_corrected_timeline_for_future_source_date():
+    with patch('services.consumption.publications', return_value=[
+        {'id': 'new', 'title': 'New article', 'url': 'https://example.org/new',
+         'published_at': '2030-01-01T00:00:00Z', 'timeline_at': '2026-10-09T14:00:00+02:00'},
+        {'id': 'older', 'title': 'Older article', 'url': 'https://example.org/older',
+         'published_at': '2026-10-08T12:00:00Z', 'timeline_at': '2026-10-08T12:00:00Z'},
+    ]):
+        items = fromstring(rss_remix(object(), 'owner')).findall('channel/item')
+    assert [item.findtext('pubDate') for item in items] == [
+        'Fri, 09 Oct 2026 12:00:00 GMT', 'Thu, 08 Oct 2026 12:00:00 GMT',
+    ]
+    assert [item.findtext('guid') for item in items] == [
+        'urn:driftread:article:new', 'urn:driftread:article:older',
+    ]
+
+
+def test_rss_legacy_date_fallback_and_undated_item():
+    with patch('services.consumption.publications', return_value=[
+        {'id': 'legacy', 'title': 'Legacy', 'url': 'https://example.org/legacy',
+         'timeline_at': None, 'published_at': '2026-10-08T12:00:00Z'},
+        {'id': 'undated', 'title': 'Undated', 'url': 'https://example.org/undated'},
+    ]):
+        items = fromstring(rss_remix(object(), 'owner')).findall('channel/item')
+    assert items[0].findtext('pubDate') == 'Thu, 08 Oct 2026 12:00:00 GMT'
+    assert items[1].find('pubDate') is None
+
+
 @pytest.mark.parametrize('path', ['/api/me/digest', '/api/me/rss'])
 def test_private_surfaces_require_auth(client, path):
     c, db = client

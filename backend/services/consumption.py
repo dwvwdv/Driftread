@@ -60,7 +60,7 @@ def rss_remix(db, user_id: str, limit: int = 50) -> str:
                      _xml(row["id"]) + '</guid><title>' + _xml(row["title"]) +
                      '</title><link>' + _xml(row["url"]) + '</link><description>' +
                      _xml(row.get("summary")) + '</description>')
-        stamp = row.get("published_at") or row.get("timeline_at")
+        stamp = row.get("timeline_at") or row.get("published_at")
         if stamp:
             stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")) if isinstance(stamp, str) else stamp
             parts.append('<pubDate>' + format_datetime(stamp.astimezone(timezone.utc), usegmt=True) + '</pubDate>')

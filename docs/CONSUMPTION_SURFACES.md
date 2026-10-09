@@ -5,7 +5,7 @@
 ## 每日閱讀與個人 RSS
 
 - `/me/digest` 顯示指定日期、IANA 時區的來源摘要；`GET /api/me/digest?date=YYYY-MM-DD&timezone=Asia/Taipei&limit=100` 使用當地午夜到次日午夜，包含 DST 的 23／25 小時日期。最多 100 筆，`truncated` 表示仍有資料。
-- `GET /api/me/rss?limit=50` 匯出個人活躍訂閱的最近文章，最多 100 筆；只含來源摘要及原文連結。daily/RSS 排除 backfill，使用 publication timeline。
+- `GET /api/me/rss?limit=50` 匯出個人活躍訂閱的最近文章，最多 100 筆；只含來源摘要及原文連結。daily/RSS 排除 backfill，使用 publication timeline；RSS `pubDate` 採 `timeline_at`，僅舊資料缺少 timeline 時回退 `published_at`，避免來源錯誤的未來日期讓文章置頂。
 - RSS 需要 Authorization header；目前提供登入後下載檔案，未實作可放進一般 RSS reader 的永久 token URL、排程寄送或公開分享。
 - 前端切換帳號、登出與元件銷毀會取消在途請求，防止舊帳號回應顯示或下載。
 
