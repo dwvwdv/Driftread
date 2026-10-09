@@ -65,7 +65,7 @@ BEGIN
  NOT EXISTS(SELECT 1 FROM driftread.list_bookmark_publications(bob,'favorite') WHERE id=old_article) THEN
  RAISE EXCEPTION 'bookmark projection isolation failed'; END IF;
  IF (SELECT count(*) FROM driftread.list_personal_publications(alice,'2026-10-08 00:00Z','2026-10-09 00:00Z',true))<>1 OR
- NOT EXISTS(SELECT 1 FROM driftread.list_personal_publications(alice) WHERE id=article AND feed_title='Alice custom' AND content IS NULL) THEN
+ NOT EXISTS(SELECT 1 FROM driftread.list_personal_publications(alice) a WHERE id=article AND feed_title='Alice custom' AND NOT (to_jsonb(a) ? 'content')) THEN
  RAISE EXCEPTION 'personal period/backfill/custom-title/rights contract failed'; END IF;
  IF EXISTS(SELECT 1 FROM driftread.list_personal_publications(bob) WHERE feed_title='Alice custom') THEN
  RAISE EXCEPTION 'personal title crossed user'; END IF;

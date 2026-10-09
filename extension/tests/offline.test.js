@@ -42,7 +42,8 @@ function harness(responses) {
 test('reconnection flushes pending idempotent actions before authoritative cache sync',async()=>{
   const h=harness([{body:response},{status:204},{body:{...response,items:[]}}]);
   await vm.runInContext('syncReading()',h.context);
-  assert.equal(h.calls[1].opts.method,'POST'); assert.match(h.calls[1].url,/\/read$/);
+  assert.equal(h.calls[1].opts.method,'POST'); assert.match(h.calls[1].url,/\/sync\/operations$/);
+  assert.deepEqual(JSON.parse(h.calls[1].opts.body),{article_id:'article',kind:'read',enabled:true});
   assert.equal(h.calls[1].opts.headers.Authorization,'Bearer token-a');
   assert.equal(h.local.readingCache.pending.length,0); assert.equal(h.local.readingCache.items.length,0);
 });
@@ -85,6 +86,29 @@ test('pending work outside the recent window survives authorized preflight',asyn
   await vm.runInContext('syncReading()',h.context);
   assert.match(h.calls[0].url,/pending_ids=article/);
   assert.equal(h.calls[1].opts.method,'POST'); assert.equal(h.local.readingCache.pending.length,0);
+});
+
+test('read and bookmark undo replay through the atomic endpoint using the original account',async()=>{
+  for (const kind of ['read','favorite','read_later']) {
+    const h=harness([{body:response},{status:204},{body:response}]);
+    h.local.readingCache.pending=[{articleId:'article',kind,enabled:false}];
+    await vm.runInContext('syncReading()',h.context);
+    assert.match(h.calls[1].url,/\/me\/sync\/operations$/);
+    assert.equal(h.calls[1].opts.method,'POST');
+    assert.equal(h.calls[1].opts.headers.Authorization,'Bearer token-a');
+    assert.deepEqual(JSON.parse(h.calls[1].opts.body),{article_id:'article',kind,enabled:false});
+    assert.equal(h.local.readingCache.pending.length,0);
+  }
+});
+
+test('busy atomic replay retains pending intent for the next idempotent sync',async()=>{
+  const h=harness([{body:response},{status:503}]);
+  await assert.rejects(vm.runInContext('syncReading()',h.context));
+  assert.equal(h.local.readingCache.pending.length,1);
+  // Supply a successful replay between the two sync pulls.
+  let call=0; h.context.fetch=async()=>++call===2 ? {status:204,ok:true} : {status:200,ok:true,json:async()=>response};
+  await vm.runInContext('syncReading()',h.context);
+  assert.equal(h.local.readingCache.pending.length,0);
 });
 
 test('stale authentication failure cannot erase a newly connected account',async()=>{

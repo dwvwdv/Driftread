@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS feeds_normal_sample_key_idx ON driftread.feeds(sample
 CREATE OR REPLACE FUNCTION driftread.record_source_fetch(p_feed_id uuid,p_at timestamptz,p_ok boolean)
 RETURNS void LANGUAGE sql SECURITY INVOKER SET search_path=pg_catalog AS $$
   UPDATE driftread.feeds SET
-    last_fetch_at=CASE WHEN p_ok THEN COALESCE(last_fetch_at,p_at) ELSE GREATEST(last_fetch_at,p_at) END,
+    last_fetch_at=GREATEST(last_fetch_at,p_at),
     last_ok_at=CASE WHEN p_ok THEN GREATEST(last_ok_at,p_at) ELSE last_ok_at END
   WHERE id=p_feed_id
 $$;

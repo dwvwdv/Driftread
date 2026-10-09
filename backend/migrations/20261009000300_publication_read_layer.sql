@@ -279,14 +279,22 @@ $$;
 REVOKE ALL ON FUNCTION driftread.list_bookmark_publications(uuid,text) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION driftread.list_bookmark_publications(uuid,text) TO service_role;
 
-CREATE OR REPLACE FUNCTION driftread.list_personal_publications(
+-- Summary consumers must not transfer full bodies or internal search vectors.
+-- This unmerged RPC previously returned the view row type; DROP permits that
+-- contract correction and makes replay safe on an already-created function.
+DROP FUNCTION IF EXISTS driftread.list_personal_publications(uuid,timestamptz,timestamptz,boolean,int);
+CREATE FUNCTION driftread.list_personal_publications(
  p_user_id uuid, p_start timestamptz DEFAULT NULL, p_end timestamptz DEFAULT NULL,
  p_exclude_backfill boolean DEFAULT false, p_limit int DEFAULT 100)
-RETURNS SETOF driftread.article_publications
-LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
- SELECT a.id,a.feed_id,a.title,a.url,a.summary,a.content,a.author,a.published_at,a.fetched_at,
+RETURNS TABLE(id uuid,feed_id uuid,title text,url text,summary text,author text,
+ published_at timestamptz,fetched_at timestamptz,content_compacted_at timestamptz,
+ timeline_at timestamptz,discovered_at timestamptz,backfill boolean,backfill_reason text,
+ current_revision_id uuid,feed_title text,feed_language text,feed_archived_at timestamptz,
+ fulltext_allowed boolean)
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT a.id,a.feed_id,a.title,a.url,a.summary,a.author,a.published_at,a.fetched_at,
  a.content_compacted_at,a.timeline_at,a.discovered_at,a.backfill,a.backfill_reason,a.current_revision_id,
- coalesce(uf.custom_title,a.feed_title),a.feed_language,a.feed_archived_at,a.fulltext_allowed,a.search_vector
+ coalesce(uf.custom_title,a.feed_title),a.feed_language,a.feed_archived_at,a.fulltext_allowed
  FROM driftread.article_publications a JOIN driftread.user_feeds uf ON uf.feed_id=a.feed_id
  WHERE uf.user_id=p_user_id AND uf.muted_at IS NULL
  AND (p_start IS NULL OR a.timeline_at >= p_start) AND (p_end IS NULL OR a.timeline_at < p_end)

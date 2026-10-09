@@ -16,7 +16,7 @@ View 使用 `security_invoker=true`，僅 `service_role` 具 SELECT；anon／aut
 
 - `get_publication(db, article_id)` 回傳可閱讀文章字典或 None；無使用者訂閱限制，與公開閱讀頁一致。需限制為自己的訂閱時，出口須再檢查 authenticated user 的 `user_feeds`，包含 `user_id` 與靜音狀態。
 - `list_personal_publications(db, user_id, start=None, end=None, exclude_backfill=False, limit=100)` 透過 RPC 只讀該使用者的正常、未靜音訂閱；時間範圍為 UTC `[start,end)`、可排除 backfill，`timeline_at,id` 遞減，最多 500 筆，來源名稱帶此使用者自己的 custom_title。
-- 回傳文章欄位包含 `timeline_at`、`discovered_at`、`backfill`、`backfill_reason`、`current_revision_id`、`content_compacted_at`，另含 `feed_title`、`feed_language`、`feed_archived_at`、`fulltext_allowed`。Service 移除内部 `search_vector`。
+- 回傳文章欄位包含 `timeline_at`、`discovered_at`、`backfill`、`backfill_reason`、`current_revision_id`、`content_compacted_at`，另含 `feed_title`、`feed_language`、`feed_archived_at`、`fulltext_allowed`。個人列表與 `personal_publication_search` 在 SQL 只投影摘要與 metadata，完全不傳 `content`／`search_vector`；搜尋仍按許可全文向量匹配／排序，單篇 `get_publication` 才按權限提供正文。
 
 ## Cursor 契約
 

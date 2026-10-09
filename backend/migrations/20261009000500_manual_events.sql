@@ -112,8 +112,14 @@ RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS
   JOIN driftread.fact_articles fa ON fa.fact_id=sf.fact_id WHERE e.kind='story'
  ), visible AS (
   SELECT DISTINCT m.article_id,m.excluded,m.fact_id,a.title,a.url,a.feed_id
-  FROM memberships m JOIN driftread.articles a ON a.id=m.article_id JOIN driftread.feeds f ON f.id=a.feed_id
-  WHERE p_admin OR (NOT m.excluded AND f.archived_at IS NULL AND f.participation_mode='normal')
+  FROM memberships m JOIN driftread.articles a ON a.id=m.article_id
+  WHERE p_admin
+  UNION ALL
+  -- Known archived normal articles remain readable, just as in the reader.
+  -- Public membership cannot widen the shared publication's source rights.
+  SELECT DISTINCT m.article_id,m.excluded,m.fact_id,a.title,a.url,a.feed_id
+  FROM memberships m JOIN driftread.article_publications a ON a.id=m.article_id
+  WHERE NOT p_admin AND NOT m.excluded
  )
  SELECT to_jsonb(e) || jsonb_build_object('requested_id',p_id,'articles',coalesce((SELECT jsonb_agg(to_jsonb(v)) FROM visible v),'[]'::jsonb),
  'relations',coalesce((SELECT jsonb_agg(jsonb_build_object('left_id',r.left_id,'right_id',r.right_id,'relation',r.relation))

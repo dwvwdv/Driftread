@@ -1384,3 +1384,11 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - 新增 migrations 的 baseline 升級與重跑通過；完整清空歷史 ledger 後重播所有舊 migration 仍遇到既有 006→010 public trigger dependency 問題，本次不改已合併 migration。升級須保留 ledger，不宣稱完整歷史 reset 已驗證。
 - 不含模型呼叫、embedding、自動語意事件判斷、AI 摘要、模型路由／prompt／benchmark；MCP 為讀取協定。PR review 事件 hook 工具不可用，依既有偏好未建立替代輪詢。
 - CI 首輪發現 `postgres` 的既有 default privileges 為新表授予 service_role ALL，單純 GRANT SELECT/INSERT 沒有移除既有 DELETE/UPDATE；本機不同 owner 原先未重現。新 revision migration 先顯式 REVOKE service_role ALL 再給 append-only 權限，真 PostgreSQL fixture 同步模擬 default grants，避免兩種 owner 環境的假通過。
+
+### Review 修正
+
+- 離線 preflight 與原已讀／收藏 POST 分屬兩次請求，撤權間隙可能永久寫入過期 intent。新增同交易授權的專用 replay RPC／API，以來源、本人訂閱、publication 鎖保護冪等狀態寫入；保留公開 reader 的原線上語義。批次抓取持有 sync_clock 再更新下一篇文章的正常競態可與 replay 形成反向鎖等待；真 PG 重現後加入 250ms lock timeout／exception rollback，以 503 明確重試且保留 queue，避免以 409 靜默丟掉 intent。
+- 擴充 options 的訊息原本仍被 display:none 隱藏；改為每次 feedback 解開 hidden，保留 account generation guards，測試實際 HTML 初始隱藏及成功／API錯誤／權限拒絕／disconnect 可見性。
+- 日報／RSS／MCP 的列表原 RPC 傳回正文／search_vector，事後才 excerpt，造成不必要的大 payload。列表與個人搜尋改 SQL metadata projection；1.95 MB 正文的回傳小於 2 KB，許可全文仍能搜尋、summary_only 禁止正文命中、單篇 reader 保留正文。未合併 RPC 以 DROP／重建處理 return type 改變與重跑。
+- 人工事件公开支路直接使用 publication，archived normal 成員保留閱讀能力，private／signal-only／exclusions 仍隱藏；success-only 的重新匯入會以 GREATEST 同時推進 last_fetch_at，舊完成時間不能倒退觀測。
+- 本輪 backend 986 tests（含新增授權／批次競態真 PostgreSQL fixtures）、extension 20 tests 通過；前端未更動，沿用 289 tests／build 驗證。文件檢查與 diff check 通過。GitHub CI 結果以 PR 最新 commit 的 checks 為準；正式部署未執行。

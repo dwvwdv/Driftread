@@ -43,12 +43,9 @@ async function syncReading() {
   const hadPending = state.pending.length > 0;
   for (const operation of [...state.pending]) {
     const { articleId, kind, enabled } = operation;
-    const read = kind === 'read';
-    const path = read ? `/me/articles/${articleId}/read` :
-      enabled ? '/me/bookmarks' : `/me/bookmarks/${articleId}?bookmark_type=${kind}`;
     try {
-      await personalRequest(path, { method: enabled ? 'POST' : 'DELETE',
-        ...(read || !enabled ? {} : { body: JSON.stringify({ article_id: articleId, bookmark_type: kind }) }) }, cfg);
+      await personalRequest('/me/sync/operations', { method: 'POST',
+        body: JSON.stringify({ article_id: articleId, kind, enabled }) }, cfg);
     } catch (error) { if (![404,409].includes(error.status)) throw error; }
     if ((await connection()).connectionId !== cfg.connectionId) throw new Error('帳號已切換');
     state.pending = state.pending.filter(p => p !== operation);

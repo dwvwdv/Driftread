@@ -326,6 +326,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/me/digest` | 指定日期／IANA timezone 的確定性日報，最多 100 篇 |
 | GET | `/me/rss` | Bearer 認證的私人摘要 RSS，最多 100 篇 |
 | GET | `/me/sync` | 帳號綁定 invalidation cursor 與有界 authoritative snapshot |
+| POST | `/me/sync/operations` | 離線 intent 的同交易授權／冪等寫入；失權 404，鎖繁忙 503 且保留 queue；見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md) |
 
 日報、RSS、同步契約及同 FastAPI 程序的 `/api/mcp/` 唯讀 MCP 工具見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。MCP 使用官方 SDK；提供讀取工具不需要啟用任何 AI 功能。
 

@@ -11,7 +11,7 @@
 | `last_fetch_at` | 最近一次已開始的抓取嘗試，外連前 durable 記錄；失敗不會冒稱成功 |
 | `last_ok_at` | 最近一次成功取得且解析的回應或 HTTP 304，文章寫入失敗仍保留來源成功證據 |
 
-舊 `last_fetched_at` 仍保留既有 API 相容性。migration 只從既有成功時間回填 `last_ok_at`，從成功／失敗最大時間回填 `last_fetch_at`，不以 migration 執行時間冒充成功。`record_source_fetch` 使用 `GREATEST`，較晚完成的舊嘗試不能讓成功時間倒退。
+舊 `last_fetched_at` 仍保留既有 API 相容性。migration 只從既有成功時間回填 `last_ok_at`，從成功／失敗最大時間回填 `last_fetch_at`，不以 migration 執行時間冒充成功。`record_source_fetch` 成功或失敗均以 `GREATEST` 更新 last_fetch_at，僅成功推進 last_ok_at；成功-only 的 discover／OPML 再匯入也會刷新嘗試觀測，較晚完成的舊嘗試不會倒退時間。
 
 ## 管理 API
 

@@ -2,6 +2,10 @@ const apiUrlEl = document.getElementById('apiUrl');
 const tokenEl = document.getElementById('accessToken');
 const savedEl = document.getElementById('saved');
 let connectionGeneration = 0;
+function showFeedback(message) {
+  savedEl.textContent = message;
+  savedEl.hidden = false;
+}
 chrome.storage.session.get(['apiUrl'], cfg => apiUrlEl.value = cfg.apiUrl || '');
 // Erase legacy admin credentials, which personal reading never needs.
 chrome.storage.sync.remove(['apiKey', 'apiUrl']);
@@ -9,7 +13,7 @@ document.getElementById('disconnect').addEventListener('click', async () => {
   const generation = ++connectionGeneration;
   await clearConnection();
   if (generation !== connectionGeneration) return;
-  tokenEl.value = ''; savedEl.textContent = '已中斷連線並清除離線資料';
+  tokenEl.value = ''; showFeedback('已中斷連線並清除離線資料');
 });
 document.getElementById('save').addEventListener('click', async () => {
   const generation = ++connectionGeneration;
@@ -35,6 +39,6 @@ document.getElementById('save').addEventListener('click', async () => {
     if (generation !== connectionGeneration || (await connection()).connectionId !== connectionId) return;
     await chrome.storage.local.set({ readingCache: DriftreadOffline.apply(DriftreadOffline.empty(response.account_id), response) });
     if (generation !== connectionGeneration) return;
-    tokenEl.value = ''; savedEl.textContent = '帳號已連線';
-  } catch (error) { if (generation === connectionGeneration) savedEl.textContent = error.message; }
+    tokenEl.value = ''; showFeedback('帳號已連線');
+  } catch (error) { if (generation === connectionGeneration) showFeedback(error.message); }
 });

@@ -81,10 +81,21 @@ END $$;
 REVOKE ALL ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint,uuid[]) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION driftread.personal_sync_snapshot(uuid,bigint,uuid[]) TO service_role;
 
-CREATE OR REPLACE FUNCTION driftread.personal_publication_search(p_user_id uuid,p_query text,p_limit int DEFAULT 20)
-RETURNS SETOF driftread.article_publications LANGUAGE sql STABLE SECURITY INVOKER
+-- Match/rank with the rights-aware vector, but return metadata only. Recreate
+-- this unmerged RPC so replay also corrects its former publication-row return.
+DROP FUNCTION IF EXISTS driftread.personal_publication_search(uuid,text,int);
+CREATE FUNCTION driftread.personal_publication_search(p_user_id uuid,p_query text,p_limit int DEFAULT 20)
+RETURNS TABLE(id uuid,feed_id uuid,title text,url text,summary text,author text,
+ published_at timestamptz,fetched_at timestamptz,content_compacted_at timestamptz,
+ timeline_at timestamptz,discovered_at timestamptz,backfill boolean,backfill_reason text,
+ current_revision_id uuid,feed_title text,feed_language text,feed_archived_at timestamptz,
+ fulltext_allowed boolean)
+LANGUAGE sql STABLE SECURITY INVOKER
 SET search_path=pg_catalog AS $$
- SELECT a.* FROM driftread.article_publications a
+ SELECT a.id,a.feed_id,a.title,a.url,a.summary,a.author,a.published_at,a.fetched_at,
+ a.content_compacted_at,a.timeline_at,a.discovered_at,a.backfill,a.backfill_reason,a.current_revision_id,
+ coalesce(s.custom_title,a.feed_title),a.feed_language,a.feed_archived_at,a.fulltext_allowed
+ FROM driftread.article_publications a
  JOIN driftread.user_feeds s ON s.feed_id=a.feed_id AND s.user_id=p_user_id AND s.muted_at IS NULL
  WHERE a.search_vector @@ websearch_to_tsquery('simple',p_query)
  ORDER BY ts_rank_cd(a.search_vector,websearch_to_tsquery('simple',p_query)) DESC,a.timeline_at DESC,a.id DESC
@@ -92,3 +103,48 @@ SET search_path=pg_catalog AS $$
 $$;
 REVOKE ALL ON FUNCTION driftread.personal_publication_search(uuid,text,int) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION driftread.personal_publication_search(uuid,text,int) TO service_role;
+
+-- Offline intent must still be authorized when it is written, not just during
+-- an earlier sync preflight. SHARE locks prevent role/mute/unsubscribe changes
+-- from committing between authorization and the idempotent state mutation.
+DROP FUNCTION IF EXISTS driftread.replay_personal_article_state(uuid,uuid,text,boolean);
+CREATE FUNCTION driftread.replay_personal_article_state(
+ p_user_id uuid,p_article_id uuid,p_kind text,p_enabled boolean
+) RETURNS text LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog SET lock_timeout='250ms' AS $$
+DECLARE source_feed uuid;
+BEGIN
+ IF p_kind NOT IN ('read','favorite','read_later') OR p_kind IS NULL OR p_enabled IS NULL THEN
+  RAISE EXCEPTION 'Invalid offline operation' USING ERRCODE='22023';
+ END IF;
+ SELECT feed_id INTO source_feed FROM driftread.articles WHERE id=p_article_id;
+ IF NOT FOUND THEN RETURN 'unavailable'; END IF;
+ PERFORM 1 FROM driftread.feeds WHERE id=source_feed AND participation_mode='normal' FOR SHARE;
+ IF NOT FOUND THEN RETURN 'unavailable'; END IF;
+ PERFORM 1 FROM driftread.user_feeds
+  WHERE user_id=p_user_id AND feed_id=source_feed AND muted_at IS NULL FOR SHARE;
+ IF NOT FOUND THEN RETURN 'unavailable'; END IF;
+ PERFORM 1 FROM driftread.articles a JOIN driftread.article_publications p ON p.id=a.id
+  WHERE a.id=p_article_id AND a.feed_id=source_feed FOR SHARE OF a;
+ IF NOT FOUND THEN RETURN 'unavailable'; END IF;
+ IF p_kind='read' THEN
+  IF p_enabled THEN
+   INSERT INTO driftread.user_article_reads(user_id,article_id) VALUES(p_user_id,p_article_id)
+    ON CONFLICT(user_id,article_id) DO NOTHING;
+  ELSE
+   DELETE FROM driftread.user_article_reads WHERE user_id=p_user_id AND article_id=p_article_id;
+  END IF;
+ ELSIF p_enabled THEN
+  INSERT INTO driftread.user_bookmarks(user_id,article_id,bookmark_type) VALUES(p_user_id,p_article_id,p_kind)
+   ON CONFLICT(user_id,article_id,bookmark_type) DO NOTHING;
+ ELSE
+  DELETE FROM driftread.user_bookmarks
+   WHERE user_id=p_user_id AND article_id=p_article_id AND bookmark_type=p_kind;
+ END IF;
+ RETURN 'applied';
+EXCEPTION WHEN lock_not_available OR deadlock_detected THEN
+ -- The exception subtransaction rolls back state AND its sync invalidation,
+ -- releasing authorization locks. A busy batch must not lose offline intent.
+ RETURN 'retry';
+END $$;
+REVOKE ALL ON FUNCTION driftread.replay_personal_article_state(uuid,uuid,text,boolean) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION driftread.replay_personal_article_state(uuid,uuid,text,boolean) TO service_role;

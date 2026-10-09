@@ -6,7 +6,7 @@
 
 Fact 是操作者明確挑選的文章集合；Story 是操作者明確挑選的 Fact 集合。文章與原來的來源、已讀和收藏關係保留，各篇文章仍可單独閱讀。關係不會自動擴散，也不會根據分類、同文 URL 或人工 relation 自動加入 membership。
 
-後臺端點沿用 `X-API-Key`。`event_objects`、`fact_articles`、`story_facts`、`event_relations` 開 RLS 且無公開 policy；只有 backend 的 `service_role` 能讀寫。RPC 皆為 `SECURITY INVOKER` 並只授權 `service_role`。公開 `/events/{id}` 固定使用可閱讀 projection，私人來源、signal-only 文章及排除項目不會出現在結果；整個集合無可閱讀文章時回 404。
+後臺端點沿用 `X-API-Key`。`event_objects`、`fact_articles`、`story_facts`、`event_relations` 開 RLS 且無公開 policy；只有 backend 的 `service_role` 能讀寫。RPC 皆為 `SECURITY INVOKER` 並只授權 `service_role`。公開 `/events/{id}` 固定使用可閱讀 projection，保留 archived normal 文章與集合 URL 的閱讀能力；私人來源、signal-only 文章及排除項目不會出現在結果，整個集合無可閱讀文章時回 404。
 
 | 方法 | 端點 | 操作 |
 |---|---|---|

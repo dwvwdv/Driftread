@@ -6,6 +6,34 @@ from auth import AuthUser, get_current_user
 from routers.sync import decode_sync_cursor, sync_cursor
 
 
+def test_offline_replay_auth_validation_owner_scope_and_revocation(client):
+    c, db = client
+    operation = {'article_id': '11111111-1111-1111-1111-111111111111', 'kind': 'favorite', 'enabled': True}
+    assert c.post('/api/me/sync/operations', json=operation).status_code == 401
+    db.rpc.assert_not_called()
+    from main import app
+    app.dependency_overrides[get_current_user] = lambda: AuthUser('owner')
+    try:
+        for invalid in ({**operation, 'user_id': 'other'}, {**operation, 'kind': 'subscribe'}, {**operation, 'enabled': 'true'}):
+            assert c.post('/api/me/sync/operations', json=invalid).status_code == 422
+        db.rpc.assert_not_called()
+        call = Mock(spec=['execute']); call.execute.return_value = Mock(data='applied')
+        db.rpc.return_value = call
+        for user_id in ('owner', 'other'):
+            app.dependency_overrides[get_current_user] = lambda uid=user_id: AuthUser(uid)
+            assert c.post('/api/me/sync/operations', json=operation).status_code == 204
+            db.rpc.assert_called_with('replay_personal_article_state', {
+                'p_user_id': user_id, 'p_article_id': operation['article_id'], 'p_kind': 'favorite', 'p_enabled': True})
+        call.execute.return_value = Mock(data='unavailable')
+        assert c.post('/api/me/sync/operations', json=operation).status_code == 404
+        call.execute.return_value = Mock(data='retry')
+        busy = c.post('/api/me/sync/operations', json=operation)
+        assert busy.status_code == 503
+        assert busy.headers['retry-after'] == '1'
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 def test_sync_cursor_rejects_other_account_and_malformed_input():
     from fastapi import HTTPException
     cursor = sync_cursor('owner', 123)

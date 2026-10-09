@@ -18,4 +18,4 @@ jobs:
         with:
           node-version: '22'
       - name: Offline and account lifecycle
-        run: node -e "require('./extension/tests/offline.test.js')"
+        run: node --test extension/tests/*.test.js

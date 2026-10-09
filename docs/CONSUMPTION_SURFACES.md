@@ -31,7 +31,9 @@
 
 `sync_clock` 全域單列鎖在交易內指派 sequence，snapshot 取得同一把鎖，避免跳過尚未提交的早期寫入；rollback 同時回滾 sequence 與 ledger。這會序列化相關寫入與 snapshot，是目前單一自架部署接受的成本。ledger 只記 table、operation、user_id 與時間，不留文章／使用者 payload；約保留 50,000 次 invalidation（每 1,000 次修剪，最多短暫多 999 筆），過期或超前 cursor 會 reset 至最近 100 篇。既有已授權 owner RLS 寫入由限定用途的 SECURITY DEFINER trigger 寫私有 ledger；固定 pg_catalog search_path，撤銷 PUBLIC／anon／authenticated EXECUTE。snapshot／search RPC 僅 service_role 可執行。
 
-Extension 同步先拉權限 snapshot，剔除失權 pending operation，再用原帳號 connectionId 與 token 重放 read／favorite／read_later 的期望狀態，最後拉回 authoritative snapshot。preflight 後才刪除／撤權造成的 404／409 會丟棄該操作並繼續更新，避免永久卡住；網路失敗保留剩餘 queue。已老化出最近 100 篇、仍有權限的 pending operation 可繼續重放。
+Extension 同步先拉權限 snapshot，剔除失權 pending operation，再用原帳號 connectionId 與 token 呼叫 `POST /api/me/sync/operations`（article_id、kind、enabled），最後拉回 authoritative snapshot。專用 service-only INVOKER RPC 同交易鎖定 normal 來源、本人未靜音訂閱與 publication 文章，再冪等寫入／刪除 read、favorite 或 read_later；user_id 只由認證取得。preflight 後撤權回 404，丟棄該操作並繼續更新。公開 reader 的原已讀／收藏 API 語義保留，不作為離線重放入口。
+
+批次文章寫入與 sync ledger 的既有鎖順序可能與 replay 競跑；RPC 設 250ms lock timeout，捕捉鎖逾時／死鎖時由 exception subtransaction 回滾狀態與 ledger，回 503／Retry-After: 1。Client 保留 pending，下一次同步再送，不以 409 丟掉暫時繁忙的操作。網路失敗同樣保留 queue。已老化出最近 100 篇、仍有權限的 pending operation 可繼續重放。
 
 本機快取只有摘要和狀態；有效期 24 小時，斷線、401／403、帳號切換時清除，token 只存 Chrome session storage，不跨 Chrome 帳號同步。沒有 server push；離線時無法即時察覺撤權，須重新連線同步或等待快取過期。沒有完整歷史下載、正文離線閱讀或無限期離線支援。
 
