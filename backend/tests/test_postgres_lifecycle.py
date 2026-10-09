@@ -47,6 +47,10 @@ def pg_database():
                      $$ SELECT (auth.jwt()->>'sub')::uuid $$;
                     GRANT USAGE ON SCHEMA auth TO anon,authenticated,service_role;
                     INSERT INTO auth.users VALUES(gen_random_uuid());""")
+                # CI migrates as postgres, whose migration 010 default grants
+                # give service_role ALL on future tables. Reproduce that even
+                # when the local test cluster uses a differently named owner.
+                cur.execute("ALTER DEFAULT PRIVILEGES GRANT ALL ON TABLES TO service_role")
         conn.close()
         # Use the real ledger/transaction runner, not a list of rewritten DDL.
         from migrate import run_migrations

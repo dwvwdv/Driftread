@@ -47,6 +47,9 @@ CREATE INDEX IF NOT EXISTS article_discoveries_canonical_idx
 ALTER TABLE driftread.article_revisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE driftread.article_discoveries ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON driftread.article_revisions,driftread.article_discoveries FROM PUBLIC,anon,authenticated;
+-- Supabase/default grants may already give service_role ALL on new tables.
+-- Reset inherited ACLs before granting append-only history privileges.
+REVOKE ALL ON driftread.article_revisions FROM service_role;
 GRANT SELECT,INSERT ON driftread.article_revisions TO service_role;
 GRANT SELECT,INSERT,UPDATE,DELETE ON driftread.article_discoveries TO service_role;
 

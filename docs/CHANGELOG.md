@@ -1383,3 +1383,4 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - 未驗證正式 Supabase、Docker image／compose 部署與實際 Chrome／瀏覽器流程；[RUNBOOK.md](RUNBOOK.md) 補先停舊 worker、API migrations healthy、再升級 worker／frontend 的順序。不新增環境變數或 exposed schema。
 - 新增 migrations 的 baseline 升級與重跑通過；完整清空歷史 ledger 後重播所有舊 migration 仍遇到既有 006→010 public trigger dependency 問題，本次不改已合併 migration。升級須保留 ledger，不宣稱完整歷史 reset 已驗證。
 - 不含模型呼叫、embedding、自動語意事件判斷、AI 摘要、模型路由／prompt／benchmark；MCP 為讀取協定。PR review 事件 hook 工具不可用，依既有偏好未建立替代輪詢。
+- CI 首輪發現 `postgres` 的既有 default privileges 為新表授予 service_role ALL，單純 GRANT SELECT/INSERT 沒有移除既有 DELETE/UPDATE；本機不同 owner 原先未重現。新 revision migration 先顯式 REVOKE service_role ALL 再給 append-only 權限，真 PostgreSQL fixture 同步模擬 default grants，避免兩種 owner 環境的假通過。
