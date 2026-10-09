@@ -33,7 +33,7 @@ def _chain(execute_return):
     .limit calls resolves back to the same node — only the terminal
     .execute() result matters unless a test asserts on a specific call."""
     chain = MagicMock()
-    for name in ("select", "is_", "in_", "eq", "limit"):
+    for name in ("select", "is_", "in_", "eq", "limit", "gte", "order"):
         getattr(chain, name).return_value = chain
     chain.not_.in_.return_value = chain
     chain.execute.return_value = execute_return
@@ -92,6 +92,7 @@ def _empty_authenticated_tables(mock_db, subscriptions=None, preferences=None, f
         "user_preferences": _chain(MagicMock(data=preferences or [])),
         "user_feed_feedback": _chain(MagicMock(data=feedback or [])),
         "user_bookmarks": _chain(MagicMock(data=bookmarks or [])),
+        "user_article_reads": _chain(MagicMock(data=[])),
     }
     mock_db.table.side_effect = lambda name: tables[name]
     return tables

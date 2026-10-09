@@ -1364,3 +1364,39 @@ Review 修復：匯入保留累計文章數、空待抽取佇列跳過 HostIndex
 - `python3 scripts/check_docs.py` 通過；把 `CLAUDE.md` 改成多一行時確實失敗；臨時文件裡的壞圖片、帶標題、角括號、reference-style、清單延續段落與表格裡的壞連結都會被抓到，各種圍欄、縮排式程式碼區塊與行內程式碼裡的示範連結不會誤報；`AGENTS.md` 提到不存在的路徑時會失敗。
 - 以逐行比對確認歸檔後的 CHANGELOG 與歸檔檔合起來涵蓋原檔每一行（只有被改寫的檔頭與「尚未合併」標題不同）。
 - 未改動任何程式碼，backend／frontend workflow 不受影響。
+
+## 階段三十九：依非 AI 依賴完成持久化採集、個人閱讀與消費出口（PR #81，2026-10-09）
+
+issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人閱讀與 AI。依使用者指定先排除所有 AI 功能，建立 #68–#80 共 13 個工作議題，以多個 sub-agent 分工，再依基礎依賴整合到單一 PR。父議題 checklist 與各工作議題互相連結；目前 connector 沒有寫入 GitHub 原生 sub-issue 關係的工具，未宣稱原生 parent relationship 已建立。
+
+- 採集 cycle 改用 PostgreSQL durable queue，加入 priority、lease fencing、bounded retry／timeout、過期回收、週期 singleton 設定更新與下一輪原子入列。SIGTERM 停止接新工作、bounded drain；API watchdog 獨立監控失聯／恢復，管理頁可見佇列與私有告警。交付為 at-least-once，lease 不撤回已提交業務寫入或終止同步 thread，見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)。
+- 保留 source-specific article id／訂閱／收藏，追加 metadata/hash revisions 與多入口 provenance，canonical URL 只移除 fragment。區分 source publication、first discovery、timeline 與不可洗成 realtime 的 backfill；初次抓取、歷史匯入與 legacy 資料不製造當前熱度／日報。沒有永久保存每版本全文，見 [CONTENT_MODEL.md](CONTENT_MODEL.md)。
+- 来源 normal／signal_only／private、鏡像群、first_party、正文政策與 fetch/ok 時間加入管理表單。匯入冪等且不重設既有角色；來源健康包含沒有近期文章的來源。所有文章出口共用 publication，summary_only 即時限摘要，搜索不能由禁止正文命中／排名／出片段；raw articles 的匿名 Data API SELECT 已撤銷。cursor 綁定 user／endpoint／query，舊 cursor 須重載，見 [SOURCE_MODEL.md](SOURCE_MODEL.md) 與 [PUBLICATION.md](PUBLICATION.md)。
+- 人工 Fact／Story 以版本 CAS 原子更新，永久排除、merge／alias、顯式 relation 不作自動語意擴張。個人熱度只按同 URL／人工 Story 的獨立來源與 source time 衰減，偏好主導且 lag 明示 incomplete；閱讀流提供時間／熱度選擇。本人熱度保存有界證據 snapshot，歷史修復補晚到證據但凍結當時來源健康，讀取重新套用目前權限／訂閱／回饋；不宣稱還原歷史偏好。已讀只提供有界弱訊號，探索維持 category 配額與可解釋理由，見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md)。
+- 確定性 daily digest 按 IANA timezone／DST 日界切分，私人 RSS 只匯出摘要／原文；官方 MCP SDK 同 FastAPI 程序提供五個唯讀工具，每請求驗 JWT。sync ledger 以交易序列鎖處理 commit race，新增 trigger 是固定 search_path、撤銷 API EXECUTE 的窄範圍 DEFINER 例外。離線擴充採摘要快取、session token、pinned connection generation、權限預檢與有界 idempotent queue，撤權／刪除後 replacement snapshot 清 cache；離線期間撤權須重連或 TTL 才生效，見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。新增 extension CI 跑 account／cache lifecycle。
+
+### 驗證與部署界限
+
+- 最終 backend 全套含隔離 PostgreSQL 17、publication／queue／history／owner RLS／sync commit race、官方 MCP ClientSession：964 tests 通過。
+- Frontend 33 files、289 tests 通過；production build 通過，initial bundle 506.28 kB 相對 500 kB warning budget 超出 6.28 kB，沒有調高預算掩蓋。
+- Extension 13 Node lifecycle tests、`scripts/check_docs.py` 與 `git diff --check` 通過。
+- 未驗證正式 Supabase、Docker image／compose 部署與實際 Chrome／瀏覽器流程；[RUNBOOK.md](RUNBOOK.md) 補先停舊 worker、API migrations healthy、再升級 worker／frontend 的順序。不新增環境變數或 exposed schema。
+- 新增 migrations 的 baseline 升級與重跑通過；完整清空歷史 ledger 後重播所有舊 migration 仍遇到既有 006→010 public trigger dependency 問題，本次不改已合併 migration。升級須保留 ledger，不宣稱完整歷史 reset 已驗證。
+- 不含模型呼叫、embedding、自動語意事件判斷、AI 摘要、模型路由／prompt／benchmark；MCP 為讀取協定。PR review 事件 hook 工具不可用，依既有偏好未建立替代輪詢。
+- CI 首輪發現 `postgres` 的既有 default privileges 為新表授予 service_role ALL，單純 GRANT SELECT/INSERT 沒有移除既有 DELETE/UPDATE；本機不同 owner 原先未重現。新 revision migration 先顯式 REVOKE service_role ALL 再給 append-only 權限，真 PostgreSQL fixture 同步模擬 default grants，避免兩種 owner 環境的假通過。
+
+### Review 修正
+
+- 離線 preflight 與原已讀／收藏 POST 分屬兩次請求，撤權間隙可能永久寫入過期 intent。新增同交易授權的專用 replay RPC／API，以來源、本人訂閱、publication 鎖保護冪等狀態寫入；保留公開 reader 的原線上語義。批次抓取持有 sync_clock 再更新下一篇文章的正常競態可與 replay 形成反向鎖等待；真 PG 重現後加入 250ms lock timeout／exception rollback，以 503 明確重試且保留 queue，避免以 409 靜默丟掉 intent。
+- 擴充 options 的訊息原本仍被 display:none 隱藏；改為每次 feedback 解開 hidden，保留 account generation guards，測試實際 HTML 初始隱藏及成功／API錯誤／權限拒絕／disconnect 可見性。
+- 日報／RSS／MCP 的列表原 RPC 傳回正文／search_vector，事後才 excerpt，造成不必要的大 payload。列表與個人搜尋改 SQL metadata projection；1.95 MB 正文的回傳小於 2 KB，許可全文仍能搜尋、summary_only 禁止正文命中、單篇 reader 保留正文。未合併 RPC 以 DROP／重建處理 return type 改變與重跑。
+- 人工事件公开支路直接使用 publication，archived normal 成員保留閱讀能力，private／signal-only／exclusions 仍隱藏；success-only 的重新匯入會以 GREATEST 同時推進 last_fetch_at，舊完成時間不能倒退觀測。
+- 後續 review 發現候選連線尚未驗證就清掉舊快取，錯誤 token／網路失敗會遺失 pending。改為先以候選設定取得 snapshot，成功後才提交連線；失敗保留舊資料，同帳號／API 更新 token 保留 queue，切換帳號或 API 不帶入舊 queue。
+- Story 合併原本僅搬 membership，原人工 relation 留在 alias 而消失。合併在同交易重掛來源及既有 aliases 的兩端關係，正規化端點、合併相同聲明並刪除等效自關係；不同聲明衝突拒絕整筆合併並回滾，讓操作者先明確處理。relation PATCH 與 merge 共用先於 row locks 的交易鎖，避免並發寫回 alias；這個鎖僅限小型人工管理操作。
+- popup 曾把 browser 重啟後 session 帳號缺失當成切換帳號，先於 options 重連刪除 local queue；改為只有目前帳號確定存在且不同才清除。未連線與 TTL 過期不顯示私人摘要，但保留 pending 等待驗證／同步，補 popup → options 真 storage lifecycle 回歸。
+- 原 schema reload 通知早於來源／publication／事件／熱度／sync DDL；本批最後 migration 的全部 DDL／grants 之後補 `NOTIFY pgrst, 'reload schema'`。真 PostgreSQL listener 驗證提交後才收到、rollback 無通知，且通知後可見新增物件及最終 RPC 權限；實際 migration runner 補執行最後檔及 ledger rerun 皆驗證。未宣稱正式 Supabase 的非同步 cache reload 已走查，部署驗收仍須呼叫新出口。
+- RSS 查詢按校正後 timeline 排序，輸出卻優先使用原始 published_at，使錯誤的未來日期在外部 reader 長期置頂。`pubDate` 改用 timeline_at，只有舊資料缺少 timeline 時回退原始日期；補未來日期／UTC 轉換、順序、舊資料回退及無日期回歸。依使用者後續要求啟用每小時 review 檢查，本次有修正推送後保留排程供下一輪確認。
+- 個人搜尋曾直接在 publication 的政策 CASE 向量上比對，無法使用原始 GIN 索引而掃描所有訂閱文章。一般正詞 AND／OR 改先用原始向量與精確摘要 expression 的 GIN 聯集做候選篩選，再以許可向量重驗命中與排名，保持本人／靜音隔離與純 metadata 回傳。摘要索引保留 500 字元裁切產生的詞，增加有界摘要索引的儲存／寫入成本；負詞／片語沿用許可向量查詢，避免禁止正文或詞位置差異讓許可結果漏掉。
+- MCP 自訂 async 認證 wrapper 曾同步驗證 JWT，冷 JWKS 或金鑰輪替的 HTTPS 會阻塞 FastAPI 事件迴圈。改將同步驗證移至 threadpool，維持每次請求的永久帳號驗證、原錯誤回應與請求身份隔離，補等待驗證時其他 task 能進展的回歸。
+- popup 同步寫入只在呼叫 storage 前檢查 connectionId，與 options 分頁的斷線／切帳號清除沒有共用順序；延遲寫入會復活舊帳號的摘要與 pending。連線與快取變更由擴充 service worker 單一佇列協調，佇列內確認 connectionId、等待已接受寫入完成再清除或替換；連線 intent 保存在 session 以跨 worker idle 重啟。message 限本擴充 popup／options 頁面，儲存錯誤安全回報，保留重啟後 queue 與候選連線契約。獨立三個 VM context 驗證延遲 pull／replay ack／離線按鈕對斷線及切帳號、過期 auth／cleanup、worker 重啟、儲存拒絕與 sender 限制。
+- 本輪 extension 48 tests、文件檢查與 diff check 通過；backend／前端未更動，前一 head 的 backend 1000 tests（含真 PostgreSQL）、前端 289 tests 及 build 為歷史驗證。GitHub CI 結果另確認 PR 最新 commit 的 checks；正式 Supabase、Chrome 實際 lifecycle 與正式部署未執行。

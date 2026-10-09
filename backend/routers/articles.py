@@ -7,7 +7,9 @@ from supabase import Client
 from auth import AuthUser, get_optional_user
 from database import get_client
 from models import Article, FeedArticle, PaginatedFeedArticles
-from utils import decode_keyset_cursor, encode_keyset_cursor
+from utils import (decode_keyset_cursor, encode_keyset_cursor, cursor_scope,
+                   decode_scoped_cursor, encode_scoped_cursor)
+from services.publications import get_publication
 
 router = APIRouter(tags=["articles"])
 
@@ -26,16 +28,17 @@ async def list_articles(
     across pages as new ones were ingested. Public endpoint; when the caller
     is signed in, each row also carries their own read/bookmark state (both
     false when anonymous)."""
+    scope = cursor_scope("feed_articles", feed_id=str(feed_id), user_id=user.id if user else None)
     cursor_sort_at: str | None = None
     cursor_id: str | None = None
     if cursor:
         try:
-            cursor_sort_at, cursor_id = decode_keyset_cursor(cursor)
+            cursor_sort_at, cursor_id = decode_keyset_cursor(decode_scoped_cursor(cursor, scope))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
     result = db.rpc(
-        "list_feed_articles",
+        "list_feed_publications",
         {
             "p_feed_id": str(feed_id),
             "p_user_id": user.id if user else None,
@@ -49,30 +52,14 @@ async def list_articles(
     next_cursor = None
     if len(items) == limit:
         last = items[-1]
-        next_cursor = encode_keyset_cursor(last.published_at or last.fetched_at, last.id)
+        next_cursor = encode_scoped_cursor(encode_keyset_cursor(
+            getattr(last, "timeline_at", None) or last.published_at or last.fetched_at, last.id), scope)
     return PaginatedFeedArticles(items=items, next_cursor=next_cursor)
-
-
-_ARTICLE_COLUMNS = "id,feed_id,title,url,summary,content,author,published_at,fetched_at,content_compacted_at"
 
 
 @router.get("/articles/{article_id}", response_model=Article)
 async def get_article(article_id: UUID, db: Client = Depends(get_client)) -> Article:
-    # Explicit column list, not select("*") — migration 020 added
-    # articles.search_vector, a generated tsvector that can run tens to
-    # hundreds of KB for a long article; a wildcard select would fetch and
-    # serialize it from PostgREST on every single article read even though
-    # the Article response model never uses it (PR #59 review, P2).
-    result = (
-        db.table("articles")
-        .select(_ARTICLE_COLUMNS)
-        .eq("id", str(article_id))
-        .maybe_single()
-        .execute()
-    )
-    # postgrest-py has shipped versions where maybe_single().execute() returns
-    # bare None on 0 rows instead of a response object with data=None; guard
-    # both shapes rather than relying on result.data alone.
-    if not result or not result.data:
+    row = get_publication(db, str(article_id))
+    if not row:
         raise HTTPException(status_code=404, detail="Article not found")
-    return Article(**result.data)
+    return Article(**row)

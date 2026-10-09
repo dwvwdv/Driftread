@@ -13,6 +13,13 @@ from database import get_client
 from routers.admin_operations import router
 from services import operations
 import worker
+from tests.worker_fakes import MemoryQueue
+
+
+@pytest.fixture(autouse=True)
+def _durable_queue(monkeypatch):
+    monkeypatch.setattr(worker, "JobQueue", MemoryQueue)
+
 from services.discovery import CycleSummary
 from services.feed_refresh import RefreshResult
 
@@ -106,7 +113,9 @@ def test_stale_workers_and_interrupted_runs_are_explicit():
     db = MagicMock()
     heartbeat = MagicMock()
     runs = MagicMock()
-    db.table.side_effect = lambda name: heartbeat if name == "worker_heartbeats" else runs
+    extra = MagicMock()
+    extra.select.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[])
+    db.table.side_effect = lambda name: {"worker_heartbeats": heartbeat, "worker_runs": runs}.get(name, extra)
     heartbeat.select.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[{
         "worker_id": "w", "status": "running", "heartbeat_at": (now - timedelta(seconds=91)).isoformat(),
     }])

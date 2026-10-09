@@ -2,7 +2,7 @@ import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { catchError, forkJoin, map, of } from 'rxjs';
 import { AuthService } from './auth';
 import { MeService } from './me';
-import { FeedUnreadCount, StreamArticle } from '../models';
+import { FeedUnreadCount, StreamArticle, PersonalHeatSnapshot } from '../models';
 
 /** Matches backend/models.py MarkAllReadRequest.article_ids' `max_length`
  * validation cap — "本頁全部已讀" must batch requests below this or a
@@ -22,6 +22,7 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 export interface StreamFilters {
   feedId?: string | null;
   unreadOnly?: boolean;
+  mode?: 'timeline' | 'heat';
 }
 
 /**
@@ -83,6 +84,7 @@ export class ReadingStreamService {
   private _nextCursor = signal<string | null>(null);
   private _loading = signal(false);
   private _loadingMore = signal(false);
+  private _heatSnapshot = signal<PersonalHeatSnapshot | null>(null);
 
   /** Article ids with an in-flight read/unread toggle — lets the row show a
    * disabled state instead of racing a double-click against itself, and
@@ -100,6 +102,7 @@ export class ReadingStreamService {
   loading = this._loading.asReadonly();
   loadingMore = this._loadingMore.asReadonly();
   hasMore = computed(() => this._nextCursor() !== null);
+  heatSnapshot = this._heatSnapshot.asReadonly();
 
   /** Unread count among the currently loaded page(s) — used for the "本頁
    *全部已讀" action's label/disabled state, distinct from `totalUnread`
@@ -177,6 +180,7 @@ export class ReadingStreamService {
       this._countsLoaded.set(false);
       this._items.set([]);
       this._nextCursor.set(null);
+      this._heatSnapshot.set(null);
       this._pending.set(new Set());
       this._confirmedRead.clear();
       this._confirmedReadAt.clear();
@@ -307,12 +311,17 @@ export class ReadingStreamService {
     // generation — that request's own callback will now bail out on the
     // generation check below without ever clearing this flag itself.
     this._loadingMore.set(false);
-    this.me.getStream({ feedId: filters.feedId, unreadOnly: filters.unreadOnly }).subscribe({
+    this._heatSnapshot.set(null);
+    this._nextCursor.set(null);
+    const options = { feedId: filters.feedId, unreadOnly: filters.unreadOnly };
+    const request = filters.mode === 'heat' ? this.me.getPersonalHeat(options) : this.me.getStream(options);
+    request.subscribe({
       next: (page) => {
         if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;
         this._loading.set(false);
         this._items.set(this.reconcileItems(page.items, asOf));
         this._nextCursor.set(page.next_cursor);
+        if (filters.mode === 'heat') this._heatSnapshot.set(page as PersonalHeatSnapshot);
       },
       error: (err: unknown) => {
         if (this.loadedFor !== requestedFor || generation !== this._itemsGeneration) return;

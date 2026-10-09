@@ -12,6 +12,12 @@ export interface Feed {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  first_party?: boolean;
+  participation_mode?: 'normal' | 'signal_only' | 'private';
+  signal_group?: string | null;
+  fulltext_policy?: 'rss' | 'summary_only';
+  last_fetch_at?: string | null;
+  last_ok_at?: string | null;
 }
 
 export interface ArticleSummary {
@@ -134,11 +140,22 @@ export interface StreamArticle {
   fetched_at: string;
   is_read: boolean;
   read_at: string | null;
+  why?: string | null;
+  heat?: number;
+  participant_count?: number;
+  group_key?: string;
 }
 
 export interface PaginatedStream {
   items: StreamArticle[];
   next_cursor: string | null;
+}
+
+export interface PersonalHeatSnapshot extends PaginatedStream {
+  snapshot_at: string;
+  complete: boolean;
+  behind_participant_count: number;
+  candidate_limit: number;
 }
 
 export interface FeedUnreadCount {
@@ -371,6 +388,20 @@ export interface OperationsStatus {
   workers: WorkerHeartbeat[];
   recent_runs: WorkerRun[];
   recent_failures: number;
+  queue?: {
+    queued: number;
+    running: number;
+    dead: number;
+    succeeded: number;
+    next_available_at: string | null;
+  };
+  alerts?: {
+    id: string;
+    worker_id: string;
+    kind: string;
+    created_at: string;
+    resolved_at: string | null;
+  }[];
 }
 
 export interface ArticleStorageStats {

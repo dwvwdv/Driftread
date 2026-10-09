@@ -40,6 +40,7 @@ export class ReadingStream {
   unreadOnly = signal(false);
   hideRead = signal(false);
   error = signal('');
+  mode = signal<'timeline' | 'heat'>('timeline');
 
   /** `stream.items()` narrowed by the client-only "隱藏已讀" toggle — distinct
    * from `unreadOnly`, which instead changes what GET /me/stream fetches in
@@ -54,6 +55,7 @@ export class ReadingStream {
   );
 
   get emptyMessage(): string {
+    if (this.mode() === 'heat') return '近期沒有符合你偏好的文章。';
     if (this.feedId() || this.unreadOnly() || this.hideRead()) {
       return '沒有符合目前篩選條件的文章。';
     }
@@ -83,7 +85,7 @@ export class ReadingStream {
     this.error.set('');
     this.stream.loadCounts((e) => this.toast.danger(apiMessage(e, '讀取未讀數失敗')));
     this.stream.load(
-      { feedId: this.feedId(), unreadOnly: this.unreadOnly() },
+      { feedId: this.feedId(), unreadOnly: this.unreadOnly(), mode: this.mode() },
       (e) => this.error.set(apiMessage(e, '讀取閱讀流失敗')),
     );
   }
@@ -93,12 +95,18 @@ export class ReadingStream {
     this.reload();
   }
 
+  onMode(value: string): void {
+    this.mode.set(value === 'heat' ? 'heat' : 'timeline');
+    this.reload();
+  }
+
   onFeedFilter(value: string): void {
     this.feedId.set(value || null);
     this.reload();
   }
 
   clearFilters(): void {
+    this.mode.set('timeline');
     this.feedId.set(null);
     this.unreadOnly.set(false);
     this.hideRead.set(false);

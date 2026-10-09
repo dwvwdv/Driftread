@@ -52,9 +52,7 @@ def test_discover_import_succeeds_for_authenticated_user(client):
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
     }
-    mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(
-        data=[feed_row]
-    )
+    mock_db.rpc.return_value.execute.return_value = MagicMock(data=[feed_row])
     mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
         count=37, data=[]
     )
@@ -217,7 +215,7 @@ def test_discover_checks_existing_feeds_without_bulk_in_filter(client):
             chain.maybe_single.return_value.execute.return_value = MagicMock(data=None)
         return chain
 
-    mock_db.table.return_value.select.return_value.eq.side_effect = fake_eq
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.side_effect = fake_eq
 
     with patch("routers.discover.discover_feeds", new=fake_discover_feeds):
         resp = c.post("/api/discover", json={"url": "https://start.example.com/"})

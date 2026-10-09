@@ -50,6 +50,22 @@ function dashboard(overrides: Record<string, unknown> = {}) {
 }
 
 describe('AdminDashboard operational snapshots', () => {
+  it('shows durable queue backlog and distinguishes unresolved watchdog incidents', () => {
+    const fixture = dashboard({ operations: () => of({
+      ...operations,
+      queue: { queued: 3, running: 1, dead: 2, succeeded: 5, next_available_at: operations.observed_at },
+      alerts: [
+        { id: 'a1', worker_id: 'worker-1', kind: 'worker_stale', created_at: operations.observed_at, resolved_at: null },
+        { id: 'a2', worker_id: 'worker-2', kind: 'worker_stale', created_at: operations.observed_at, resolved_at: operations.observed_at },
+      ],
+    }) });
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('待執行工作');
+    expect(text).toContain('重試耗盡');
+    expect(text).toContain('下一筆可執行時間');
+    expect(text).toContain('排程器失聯');
+    expect(text).toContain('已恢復');
+  });
   it('labels missing heartbeats unknown and shows storage without claiming growth', () => {
     const fixture = dashboard();
     const text = fixture.nativeElement.textContent;

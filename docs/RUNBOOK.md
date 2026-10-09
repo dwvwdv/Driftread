@@ -65,6 +65,23 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 `DROP VIEW public._migrations;`。順序反了（view 移除在舊版本淘汰之前）會讓還沒升級完的
 舊版 backend 在下次重啟時把 ledger 誤判成空的，重新跑一次它以為沒跑過的舊 migration。
 
+## issue #63 非 AI 功能升級
+
+本批新增佇列、來源／正文政策、文章版本、人工事件、個人熱度與消費出口；不新增環境變數或 exposed schema。完整模型分別見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)、[PUBLICATION.md](PUBLICATION.md) 與 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。
+
+本批最後一支 `20261009000700_incremental_sync.sql` 在所有 DDL／grants 之後送出 `NOTIFY pgrst, 'reload schema'`；通知在 migration 交易成功提交後才送達，讓 PostgREST 更新 publication／事件／熱度／sync 物件快取，不依賴額外的 DDL event trigger。部署驗收仍須實際呼叫新增 RPC／API，不能只以 `/api/health` 判定 Data API 已完成非同步 reload。
+
+1. 備份資料庫並保留 `driftread._migrations` ledger，記下目前三個 image SHA。
+2. `docker compose stop worker`，等待正常停機；不要混跑舊記憶體排程 worker 與新佇列 worker。
+3. 取得同一版本 api／worker 與 frontend image，先更新 `api`，等 migration／backfill 完成與 `/api/health` healthy。
+4. 更新 `worker`、`frontend`；worker 的停止寬限為 30 秒，API 的 MCP session manager 與 watchdog 由同一 lifespan 啟停。
+5. 在管理頁確認佇列、heartbeat、來源角色與健康。以兩個永久帳號走查訂閱、已讀、收藏、熱度、日報、RSS、MCP 與擴充 account switch；切換 `summary_only`／`private` 後確認搜尋與所有出口立即遵守政策。原始 articles 的匿名 Data API SELECT 現在應拒絕，前端經 backend 閱讀。
+6. Dashboard Advisors 與正式環境的 publication／新增表 grants 仍需部署者實際確認。
+
+本批 migration 已在隔離 PostgreSQL 17 驗證 baseline 升級及新增 migration 重跑。**不要清空歷史 ledger 作為升級方式**：完整清空後重播所有舊檔，會先遇到既有 006→010 public trigger dependency 問題；本批沒有修改已合併 migration，也不把新增檔可重跑宣稱為完整歷史 reset 已通過。正式 Supabase、Docker 與實際瀏覽器走查尚未驗證。
+
+回滾應先停 worker，再依下節切回同版 image；新增資料不刪除。raw articles grants／正文與來源限制屬權限收緊，不應為恢復舊匿名 client 任意放寬。舊 RPC 保持原 return contract 並轉接 publication，回滾後仍需確認舊讀取端相容；離線擴充清除 cache 後才換回舊版。
+
 ## 回滾
 
 Image 只有兩種 tag：`latest`（永遠指向最後一次成功的 push）與

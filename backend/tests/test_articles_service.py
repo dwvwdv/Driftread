@@ -215,3 +215,23 @@ def test_unchanged_feed_still_processes_old_pending_backlog(monkeypatch):
     build.assert_called_once()
     assert db.pending_checks == 1
     assert harvest.call_args.kwargs["pending_rows"] == db.pending
+
+
+def test_ingestion_carries_explicit_historical_discovery_context():
+    db = _FakeDB()
+    upsert_articles(db, 'feed-1', [_FakeArticle(url='https://a')],
+                    origin='historical_import', backfill=True, backfill_reason='manual_archive')
+    row = db.articles.calls[0][0]
+    assert row['origin'] == 'historical_import'
+    assert row['backfill'] is True
+    assert row['backfill_reason'] == 'manual_archive'
+
+
+def test_invalid_discovery_context_cannot_reach_database():
+    import pytest
+    db = _FakeDB()
+    with pytest.raises(ValueError):
+        upsert_articles(db, 'feed-1', [], origin='untrusted')
+    with pytest.raises(ValueError):
+        upsert_articles(db, 'feed-1', [], backfill_reason='archive')
+    assert db.articles.calls == []

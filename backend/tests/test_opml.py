@@ -23,7 +23,7 @@ def _token() -> str:
 
 def test_export_opml(client):
     c, mock_db = client
-    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
         data=[
             {"feeds": {"title": "Feed A", "url": "https://a.example/rss", "website_url": "https://a.example"}},
             {"feeds": {"title": "Feed B", "url": "https://b.example/atom", "website_url": "https://b.example"}},

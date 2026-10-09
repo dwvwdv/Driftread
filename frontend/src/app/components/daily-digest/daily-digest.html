@@ -1,0 +1,22 @@
+<h1>每日閱讀</h1>
+<p>彙整你訂閱來源提供的摘要與文章連結；靜音來源與歷史匯入不列入。</p>
+@if (!auth.session()) {
+  <a class="ob-btn" routerLink="/login" [queryParams]="{redirect: '/me/digest'}">登入以查看每日閱讀</a>
+} @else {
+  <form class="controls" (ngSubmit)="load()">
+    <label>日期 <input class="ob-input" type="date" name="day" [(ngModel)]="day" required /></label>
+    <label>時區 <input class="ob-input" name="timezone" [(ngModel)]="timezone" required /></label>
+    <button class="ob-btn" type="submit" [disabled]="loading()">查看</button>
+    <button class="ob-btn ob-btn--ghost" type="button" (click)="downloadRss()">下載個人 RSS</button>
+  </form>
+  @if (loading()) { <p role="status">載入中…</p> }
+  @if (error()) { <p role="alert">{{ error() }}</p> }
+  @if (result(); as digest) {
+    <p>{{ digest.date }} · {{ digest.timezone }} · {{ digest.items.length }} 篇</p>
+    @if (digest.truncated) { <p>本日超過 100 篇，顯示最近 100 篇；其餘文章可至我的閱讀瀏覽。</p> }
+    @for (article of digest.items; track article.id) {
+      <article><a [routerLink]="['/articles', article.id]">{{ article.title }}</a>
+        <p>{{ article.feed_title }}</p><p>{{ article.summary }}</p></article>
+    } @empty { <p>這一天沒有符合條件的文章。</p> }
+  }
+}

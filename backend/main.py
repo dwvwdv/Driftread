@@ -1,17 +1,20 @@
 from __future__ import annotations
 import logging
+import asyncio
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from postgrest.exceptions import APIError
+from services.watchdog import run_watchdog
 from starlette.responses import JSONResponse, PlainTextResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from backfill import run_backfills
 from errors import map_postgrest_error
 from migrate import run_migrations
+from services.mcp_server import AuthenticatedMCP, reset_transport
 from routers import (
     admin,
     admin_discovery,
@@ -19,12 +22,16 @@ from routers import (
     admin_retention,
     admin_settings,
     articles,
+    consumption,
     discover,
     feeds,
+    events,
+    personal_heat,
     me,
     opml,
     recommendations,
     search,
+    sync,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -130,7 +137,16 @@ async def lifespan(app: FastAPI):
     # After the schema is in place, and separately: these need the parser's own
     # html.unescape()-backed logic, which is not expressible as SQL.
     run_backfills()
-    yield
+    async with reset_transport().run():
+        stop = asyncio.Event()
+        watchdog = asyncio.create_task(run_watchdog(stop))
+        try:
+            yield
+        finally:
+            stop.set()
+            watchdog.cancel()
+            with suppress(asyncio.CancelledError):
+                await watchdog
 
 
 app = FastAPI(
@@ -192,6 +208,8 @@ async def handle_postgrest_api_error(request: Request, exc: APIError) -> JSONRes
 
 
 app.include_router(feeds.router, prefix="/api")
+app.include_router(events.router, prefix="/api")
+app.include_router(personal_heat.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
@@ -200,6 +218,9 @@ app.include_router(admin_operations.router, prefix="/api")
 app.include_router(admin_retention.router, prefix="/api")
 app.include_router(admin_settings.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
+app.include_router(consumption.router, prefix="/api")
+app.include_router(sync.router, prefix="/api")
+app.mount("/api/mcp", AuthenticatedMCP())
 app.include_router(opml.router, prefix="/api")
 app.include_router(discover.router, prefix="/api")
 app.include_router(search.router, prefix="/api")

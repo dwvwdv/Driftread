@@ -9,6 +9,21 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [~] 進行中
 - [x] 已完成
 
+## issue #63：非 AI 導入
+
+以下勾選表示程式與自動化驗證完成；合併、正式 Supabase／Docker 部署與瀏覽器走查另列，不以程式完成代替上線。
+
+- [x] [#68](https://github.com/dwvwdv/Driftread/issues/68) 持久化佇列與 [#69](https://github.com/dwvwdv/Driftread/issues/69) graceful shutdown／watchdog：`backend/services/job_queue.py`、`backend/worker.py`；[操作文件](docs/BACKGROUND_JOBS.md)。
+- [x] [#70](https://github.com/dwvwdv/Driftread/issues/70) 文章版本／證據與 [#71](https://github.com/dwvwdv/Driftread/issues/71) backfill 時間：`backend/services/articles.py`；[內容模型](docs/CONTENT_MODEL.md)。
+- [x] [#72](https://github.com/dwvwdv/Driftread/issues/72) 來源角色／健康：`backend/services/source_health.py`、管理來源表單；[來源模型](docs/SOURCE_MODEL.md)。
+- [x] [#73](https://github.com/dwvwdv/Driftread/issues/73) 共用閱讀權限與 [#74](https://github.com/dwvwdv/Driftread/issues/74) query/user-bound cursor：`backend/services/publications.py`、`backend/utils.py`；[閱讀契約](docs/PUBLICATION.md)。
+- [x] [#75](https://github.com/dwvwdv/Driftread/issues/75) 人工集合／排除／別名、[#76](https://github.com/dwvwdv/Driftread/issues/76) 個人熱度／歷史修復、[#77](https://github.com/dwvwdv/Driftread/issues/77) 個人偏好／探索／理由：`backend/routers/personal_heat.py`、閱讀流熱度模式；[設計](docs/NON_AI_INTELLIGENCE.md)。
+- [x] [#78](https://github.com/dwvwdv/Driftread/issues/78) 確定性日報／私人 RSS、[#79](https://github.com/dwvwdv/Driftread/issues/79) 唯讀 MCP、[#80](https://github.com/dwvwdv/Driftread/issues/80) sync ledger／離線擴充：[消費出口](docs/CONSUMPTION_SURFACES.md)。
+- [ ] 整合 PR 合併與正式環境部署验證；順序見 [RUNBOOK](docs/RUNBOOK.md#issue-63-非-ai-功能升級)。
+- [ ] 正式瀏覽器的登入→訂閱→閱讀→回饋與擴充離線／account switch 走查。
+
+本輪排除所有 AI 功能（模型、embedding、自動語意事件判斷及 AI 摘要）；MCP 為讀取協定，日報由規則產生。既有 Phase 0 的 Dashboard 與 production 查核仍依下列清單追蹤。
+
 ## Phase 0：Supabase schema 隔離與資料安全（進行中）
 
 - [x] 將 Driftread 的 table、function 與 migration ledger 從 `public` 搬到 `driftread` schema。

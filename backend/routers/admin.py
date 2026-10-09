@@ -17,6 +17,7 @@ from models import (
     ImportFeedsRequest,
     PaginatedFeeds,
     RefreshDueSummary,
+    SourceMetadataUpdate,
 )
 from rss_parser import fetch_and_parse
 from services.feed_discovery import DiscoveryError, validate_fetch_url
@@ -55,7 +56,10 @@ async def import_feeds(
     created: list[Feed] = []
     now = datetime.now(timezone.utc).isoformat()
     for feed_in in body.feeds:
-        data = feed_in.model_dump()
+        # Omitted defaults must not reset an existing administrator-selected
+        # role/fulltext policy on a legacy JSON reimport. PostgreSQL supplies
+        # defaults when the URL is new.
+        data = feed_in.model_dump(exclude_unset=True)
         # Fetching inline would make a bulk import of hundreds of feeds time
         # out; mark them due instead and let the scheduler do the first fetch.
         data["next_fetch_at"] = now
@@ -67,6 +71,40 @@ async def import_feeds(
         if result.data:
             created.append(Feed(**result.data[0]))
     return created
+
+
+@router.patch("/feeds/{feed_id}/source", response_model=Feed, dependencies=[Depends(_require_api_key)])
+async def update_source_metadata(
+    feed_id: UUID,
+    body: SourceMetadataUpdate,
+    db: Client = Depends(get_client),
+) -> Feed:
+    updates = body.model_dump(exclude_unset=True)
+    query = db.table("feeds")
+    result = (query.update(updates) if updates else query.select("*")).eq("id", str(feed_id)).execute()
+    if not result or not result.data:
+        raise HTTPException(status_code=404, detail="Feed not found")
+    return Feed(**result.data[0])
+
+
+@router.get("/feeds/source-health", dependencies=[Depends(_require_api_key)])
+async def source_health_overview(db: Client = Depends(get_client)) -> dict:
+    from services.source_health import summarize_source_health
+
+    # PostgREST has a row cap: page explicitly so missing sources cannot make
+    # an incomplete cohort look healthy. This endpoint is admin-only.
+    sources: list[dict] = []
+    offset = 0
+    while True:
+        rows = db.table("feeds").select(
+            "id,participation_mode,signal_group,archived_at,fetch_interval_minutes,last_fetch_at,last_ok_at"
+        ).is_("archived_at", "null").order("id").range(offset, offset + 499).execute()
+        batch = rows.data or []
+        sources.extend(batch)
+        if len(batch) < 500:
+            break
+        offset += 500
+    return summarize_source_health(sources, datetime.now(timezone.utc))
 
 
 @router.patch("/feeds/{feed_id}/archive", response_model=Feed, dependencies=[Depends(_require_api_key)])

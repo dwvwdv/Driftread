@@ -32,7 +32,7 @@ def _auth() -> dict[str, str]:
 
 def test_list_feed_feedback(client):
     c, mock_db = client
-    mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
         data=[
             {
                 "feed_id": FEED_ID,

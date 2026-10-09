@@ -25,7 +25,22 @@
 | 瀏覽器擴充 | ✅ | 任何網站一鍵加入 feed（Chromium 系，開發版載入） | `extension/` |
 | 全文搜尋 | ✅ | 文章（標題／摘要／作者／全文）與 Feed（名稱／描述）分開搜尋，PostgreSQL tsvector + GIN index，cursor 分頁依相關度排序，附命中摘要片段 | `routers/search.py`、`migrations/020_full_text_search.sql`、`components/search` |
 
+## 1b. 非 AI 功能與操作索引
+
+| 功能 | 入口與文件 |
+|---|---|
+| PostgreSQL 工作佇列、租約重試、停機與 API watchdog | 管理首頁觀測；[BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |
+| 文章版本、來源證據、發佈／發現／backfill | [CONTENT_MODEL.md](CONTENT_MODEL.md) |
+| normal／signal_only／private 來源與正文政策 | 管理來源表單；[SOURCE_MODEL.md](SOURCE_MODEL.md) |
+| 全出口共用 publication 與 query-bound cursor | [PUBLICATION.md](PUBLICATION.md) |
+| 人工 Fact／Story、永久排除、別名及個人熱度 | 管理 API、保留人工關係的原子合併、閱讀流時間／熱度選擇；[NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
+| 確定性日報、私人 RSS、官方 SDK 唯讀 MCP、離線同步 | [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)、[擴充說明](../extension/README.md) |
+
+以上描述程式實作；正式部署驗證另見 [RUNBOOK.md](RUNBOOK.md)，不代表已上線。AI analysis、embedding、自動語意聚合未啟用。
+
 ## 2. 推薦邏輯（猜你喜歡）
+
+近期已讀弱訊號與探索邊界的最新規則另見[個人来源推薦](NON_AI_INTELLIGENCE.md#個人來源推薦)。
 
 `GET /api/recommendations` 的評分方式（`Signals` / `_score`）分五個來源，依 TODO.md
 推薦回饋持久化訂下的強弱排序給不同權重：
@@ -253,13 +268,13 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/feeds/languages` | 所有語言（供 Feed 目錄的語言篩選與偏好設定 UI） |
 | GET | `/feeds/{feed_id}` | feed 詳情 + 最新 10 篇文章摘要（不存在回 404） |
 | GET | `/feeds/{feed_id}/articles` | 該 feed 的完整文章列表，keyset（cursor）分頁（`cursor`／`limit`，上限 100）。帶有效 Supabase token 時，每篇文章一併回傳呼叫者自己的 `is_read`／`is_bookmarked`（收藏類型固定 `favorite`），未登入則兩者皆為 false |
-| GET | `/articles/{article_id}` | 單篇文章全文（不存在回 404） |
+| GET | `/articles/{article_id}` | 單篇可閱讀文章；正文是否回傳依來源政策決定，不可見來源回 404 |
 | GET | `/recommendations` | 猜你喜歡（帶 token 時個人化）。**有 rate limit**：每個 client IP 20 requests / 60 秒，獨立配額，超過回 `429` 並帶 `Retry-After`（migration 007 起每次呼叫最多對 `feeds` 做三次資料庫端隨機抽樣，比原本單純的 `.limit()` 貴得多，因此補上；抽樣本身自 migration 018 起是索引範圍掃描，不再是全表排序，見上方第 2 節）|
 | GET | `/health` | 健康檢查（compose healthcheck 使用） |
 
 ### Search（公開，有 rate limit）
 
-全文搜尋，見第 5 節 `search_vector`（PostgreSQL tsvector + GIN index，`simple` config，
+全文搜尋按 publication 的許可內容決定命中與片段，見 [PUBLICATION.md](PUBLICATION.md)。候選索引見第 5 節 `search_vector`（PostgreSQL tsvector + GIN index，`simple` config，
 取代 `%keyword%` 全表掃描）。文章搜尋與 Feed 搜尋是兩個獨立端點，回傳形狀也不同——不是
 單一「搜尋全部」端點。兩者各自獨立配額：**每個 client IP 每端點 20 requests / 60 秒**，
 超過回 `429` 並帶 `Retry-After`（同 `/recommendations`——每次呼叫都是排序＋對分頁結果算
@@ -304,6 +319,16 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | PUT | `/me/preferences` | 更新偏好（`preferred_categories` / `preferred_languages` 各上限 50 筆） |
 | POST | `/me/import/opml` | 匯入 OPML（檔案上限 5 MiB、單檔最多處理 200 個 outline） |
 | GET | `/me/export/opml` | 匯出 OPML |
+| GET | `/me/personal-heat` | 個人熱度 snapshot；篩選、完整度與歷史契約見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
+| GET | `/me/personal-heat/history` | 本人最近的熱度快照索引，最多 100 筆 |
+| GET | `/me/personal-heat/history/{snapshot_id}` | 本人快照重新套用目前閱讀權限／訂閱／回饋；非本人或過期回 404 |
+| POST | `/me/personal-heat/history/repair` | 補算本人最近至多 20 筆 source-time 證據，保留當時健康觀測 |
+| GET | `/me/digest` | 指定日期／IANA timezone 的確定性日報，最多 100 篇 |
+| GET | `/me/rss` | Bearer 認證的私人摘要 RSS，最多 100 篇 |
+| GET | `/me/sync` | 帳號綁定 invalidation cursor 與有界 authoritative snapshot |
+| POST | `/me/sync/operations` | 離線 intent 的同交易授權／冪等寫入；失權 404，鎖繁忙 503 且保留 queue；見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md) |
+
+日報、RSS、同步契約及同 FastAPI 程序的 `/api/mcp/` 唯讀 MCP 工具見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。MCP 使用官方 SDK；提供讀取工具不需要啟用任何 AI 功能。
 
 ### Admin（需 `X-API-Key`）
 
@@ -318,6 +343,10 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | PATCH | `/admin/feeds/{feed_id}/unarchive` | 解除封存 |
 | GET | `/admin/feeds/unhealthy` | 健康度低於門檻的 feed，差的排前面。`threshold` 預設 50、`limit` 預設 200（上限 1000） |
 | GET | `/admin/feeds/archived` | 已封存的 feed，`limit` 預設 200（上限 1000） |
+| PATCH | `/admin/feeds/{feed_id}/source` | 更新來源角色、signal_group、first_party 與正文政策；見 [SOURCE_MODEL.md](SOURCE_MODEL.md) |
+| GET | `/admin/feeds/source-health` | 包含沒有近期文章的來源健康快照 |
+
+人工 `/admin/events*`、Story merge 與公開 `/events/{id}` 的契約見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md)。`GET /admin/operations` 的佇列、近期工作與失聯／恢復事件見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)。
 
 ### Admin — 主動發現（需 `X-API-Key`）
 
@@ -360,6 +389,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/me/stream` | `reading-stream`（主要閱讀入口——聚合所有已訂閱來源的文章時間流，見下）|
 | `/me/feeds` | `my-feeds`（來源管理：訂閱清單、OPML；不再是主要閱讀入口）|
 | `/me/bookmarks` | `bookmarks` |
+| `/me/digest` | `daily-digest`（登入後的每日摘要） |
 | `/me/preferences` | `preferences` |
 | `**` | 轉回 `/` |
 
@@ -425,6 +455,14 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制；`approved_category` / `approved_tags` 讓核准決定在寫 `feeds` 失敗時不會遺失 |
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
+| `background_job_kinds` / `background_jobs` / `worker_alerts` | 20261009000000 / 20261009000100 | service-only 的佇列與 watchdog；見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |
+| `article_revisions` / `article_discoveries` | 20261009000100 | service-only 版本 metadata／hash 與多入口證據；`articles` 同時新增 canonical_url、discovered_at、timeline_at、backfill；見 [CONTENT_MODEL.md](CONTENT_MODEL.md) |
+| `article_publications`（view） | 20261009000300 | security_invoker、service-only 的閱讀 projection；見 [PUBLICATION.md](PUBLICATION.md) |
+| `event_objects` / `fact_articles` / `story_facts` / `event_relations` | 20261009000500 | service-only 人工集合、永久排除、關係與別名；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
+| `user_heat_snapshots` | 20261009000650 | RLS 零 policy、service-only、沒有全文的本人熱度證據；最多 100 筆、30 日讀取／修復範圍，過期實體於本人下次 capture 清除；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
+| `sync_clock` / `sync_changes` | 20261009000700 | service-only 序列與不含正文的 invalidation ledger；見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md) |
+
+來源 migration `20261009000200` 為 `feeds` 新增角色、鏡像群、first_party、正文政策及抓取／成功時間；設計與權限見 [SOURCE_MODEL.md](SOURCE_MODEL.md)。
 
 Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
 （不建新表）：供 `routers/recommendations.py` 抽樣候選池，見上方第 2 節。migration 018 為
@@ -436,35 +474,9 @@ db-side dedup，供 `GET /feeds/categories`、`GET /feeds/languages` 與偏好�
 `REVOKE ALL FROM PUBLIC, anon, authenticated`，只有 service_role 能 EXECUTE，同
 `sample_feed_candidates` 的鎖法。
 
-Migration 015（我的閱讀流，不建新表——「已讀」仍是 `user_article_reads` 一列存在與否）另外定義三個
-DB function，供 `routers/me.py` 的 `/me/stream*`、`/me/reads/mark-all` 呼叫：
+目前文章列表／閱讀流／收藏／文章搜尋使用 `list_feed_publications`、`list_reading_publications`、`list_bookmark_publications`、`search_publications`；個人消費出口使用 `list_personal_publications`。排序為 `timeline_at,id`，搜尋加上 rank，cursor 綁定 endpoint／user／query。舊 `list_reading_stream`、`list_feed_articles`、`search_articles` 保持原 return contract 作為相容 wrapper，不代表可以繞過 publication。未讀數與範圍已讀同樣依 projection 與本人未靜音訂閱決定；詳見 [PUBLICATION.md](PUBLICATION.md)。
 
-- `list_reading_stream(p_user_id, p_feed_id, p_unread_only, p_cursor_sort_at, p_cursor_id, p_limit)`——
-  跨 `user_feeds` 聚合每個已訂閱來源的 `articles`，LEFT JOIN `user_article_reads` 帶出 `is_read`／
-  `read_at`，keyset （非 offset）分頁。排序鍵是 `COALESCE(published_at, fetched_at) DESC, id DESC`：
-  未解析出 `published_at` 的文章改用 `fetched_at` 排序，避免落在 Postgres `DESC` 預設的
-  `NULLS FIRST` 而使未定期文章卡在最前面、也讓 cursor 比較不必特別處理 NULL。022 加上
-  `uf.muted_at IS NULL`：已靜音的訂閱不出現在這條時間流。
-- `reading_stream_unread_counts(p_user_id)`——每個已訂閱來源的未讀數（含 0），LEFT JOIN 而非
-  anti-join，所以「已讀完」的來源仍會出現、只是計數是 0；已靜音的來源則整列排除（022，同
-  `list_reading_stream`），不會以 0 未讀出現在來源篩選清單裡；`GET /me/stream/unread-counts` 加總即為
-  總未讀數。
-- `mark_reading_stream_read(p_user_id, p_feed_id, p_before)`——伺服器端一次性 `INSERT ... SELECT ...
-  ON CONFLICT DO NOTHING`，供「明確範圍全部標已讀」用（單一來源／指定時間之前／兩者皆空即整個
-  閱讀流），不必先把符合的 article id 全部撈回 Python 再逐筆 upsert。
-
-三者都是 `SECURITY INVOKER`（沿用本專案「不使用 SECURITY DEFINER」的既有原則），EXECUTE 只授權
-`service_role`，與 `sample_feed_candidates`／`list_feed_categories` 同一套鎖法——後端一律經
-`service_role` client 呼叫並顯式帶入 `user_id`，隔離仍在應用層，不是 RLS + user-scoped JWT
-（Phase 0 尚待完成項）。
-
-Migration 016（Feed 完整文章列表，不建新表）定義 `list_feed_articles(p_feed_id, p_user_id,
-p_cursor_sort_at, p_cursor_id, p_limit)`，供 `GET /feeds/{feed_id}/articles` 呼叫：單一 feed 的
-文章，keyset 分頁、排序鍵與 cursor 形狀與 `list_reading_stream` 完全相同，直接沿用它索引的
-`articles_feed_id_sort_at_idx`（migration 015）不需要新索引。`p_user_id` 可為 NULL——這個
-function 服務公開端點，未登入呼叫時兩個 LEFT JOIN（`user_article_reads`／`user_bookmarks`，後者
-固定 `bookmark_type = 'favorite'`）的條件都不成立，`is_read`／`is_bookmarked` 自然是 false。同
-`SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。
+這些 RPC 都是 service-only `SECURITY INVOKER`，後端顯式帶 user_id；RLS 是縱深防禦而非 service-role 查詢隔離本身。同步 trigger 的窄範圍 DEFINER 例外見 [SECURITY.md](SECURITY.md#32-非-ai-消費出口共用權限與持久化狀態issue-63)。
 
 Migration 020（全文搜尋）為 `articles`／`feeds` 各加一個 `search_vector`
 `GENERATED ALWAYS AS ... STORED` tsvector 欄位（固定用 `simple` config，不對任何語言做
@@ -493,24 +505,10 @@ quote-aware 的——同 `frontend/src/app/shared/html.ts` 的 `ATTRS`／`TAG_RE
 理由同 `frontend/src/app/shared/html.ts::decodeEntities()` 的既有教訓，見該處註解）
 （PR #59 review，第八輪 P2）。並定義兩個 DB function：
 
-- `search_articles(p_query, p_user_id, p_language, p_cursor_rank, p_cursor_sort_at, p_cursor_id, p_limit)`——
-  供 `GET /search/articles`。`websearch_to_tsquery` 比對 `search_vector`，`ts_rank_cd` 算相關度，
-  排序鍵 `(rank, COALESCE(published_at, fetched_at), id)` 三欄 keyset 分頁（相關度同分時退回既有
-  的日期／id 決勝規則）。`ts_headline` 只對已經分頁過的那一頁（≤100 列）呼叫，不是對每一筆命中都算，
-  避免熱門關鍵字讓一次查詢跑成千上萬次 headline 運算；命中摘要片段從 summary／content 兩者中
-  實際命中查詢的那一個取（各自檢查 `to_tsvector(...) @@ tsq`），不是不論命中位置固定取 summary
-  ——否則命中只落在 content 時，摘要片段會顯示一段完全沒有標記到關鍵字的 summary（PR #59
-  review，P2）。排除已封存來源的文章，同 `search_feeds`（PR #59 review，P2——封存承諾操作者
-  「不再出現在前台」）。`content` 去 HTML 的計算（`strip_html_for_search`）多一層 CTE
-  （`paged` 之後、最外層 SELECT 之前）只算一次、WHEN／THEN 共用，且先界限原始長度再處理，
-  不是處理完才界限——`content` 沒有欄位層級長度上限，先界限能讓這段 regex 處理的成本不隨
-  來源大小而無上限成長（PR #59 review，第九輪 P2）。
-- `search_feeds(p_query, p_language, p_cursor_rank, p_cursor_created_at, p_cursor_id, p_limit)`——
-  供 `GET /search/feeds`，比對 `feeds.search_vector`（名稱／描述），排除已封存來源，其餘同上。
+- `search_publications` 使用原始 GIN 索引篩選候選，再以許可內容的向量重新檢查命中、rank 與片段，杜絕禁止正文洩漏；`search_articles` 只保留舊 return contract 的 wrapper。
+- `search_feeds` 搜尋名稱／描述，排除封存及非 normal 來源；兩種搜尋都保持既有 rate limit 與至多 100 列的分頁限制。
 
-同 `SECURITY INVOKER`，EXECUTE 只授權 `service_role`，同一套鎖法。`GET /search/articles`／
-`GET /search/feeds` 各自掛 `rate_limit(...)`（同 `/recommendations` 的理由：每次呼叫都是
-排序＋分頁結果算 headline 的真實 DB 工作），見第 3 節。
+詳細權限、keyset 與 query-bound cursor 契約見 [PUBLICATION.md](PUBLICATION.md)。
 
 `services/feed_refresh.py::refresh_one()` 的三處 `feeds.update(...)`（抓取失敗／304 not
 modified／成功更新）都只依賴 side effect、不讀取回應內容，改用
@@ -520,7 +518,7 @@ PostgREST 序列化回傳一次（PR #59 review，第十輪 P2）。
 
 RLS：五張 `user_*` 表為 permanent-user owner-only policy（002 的四張＋019 的
 `user_feed_feedback`；同時檢查 `auth.uid()` 與 JWT `is_anonymous = false`）；
-`feeds` / `articles` 開 RLS 並給 public read policy（004）。
+`feeds` 的 public read policy 限 normal 角色（來源 migration）；原始 `articles` 的 anon／authenticated SELECT 已撤銷，所有文章出口使用僅 service_role 可讀的 `article_publications` projection，見 [PUBLICATION.md](PUBLICATION.md)。
 **四張 `discovery_*` 表開 RLS 但刻意不建任何 policy（006）** —— 連 SELECT 都沒有，所以 anon 與
 authenticated 看不到任何列也寫不進去，只有 service_role 能繞過。這與 004 對公開 catalog 開 public
 read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key 洩漏不該能列舉待探測佇列。

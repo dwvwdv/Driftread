@@ -46,6 +46,27 @@
         觀測時間：{{ ops.observed_at | date: 'yyyy/MM/dd HH:mm:ss' }}。超過
         {{ ops.stale_after_seconds }} 秒未收到心跳會標示過期。
       </p>
+      @if (ops.queue; as queue) {
+        <div class="stats">
+          <ob-stat label="待執行工作" [value]="queue.queued" />
+          <ob-stat label="執行中工作" [value]="queue.running" tone="accent" />
+          <ob-stat label="重試耗盡" [value]="queue.dead" tone="warning" />
+        </div>
+        @if (queue.next_available_at) {
+          <p class="hint">下一筆可執行時間：{{ queue.next_available_at | date: 'yyyy/MM/dd HH:mm:ss' }}</p>
+        }
+      }
+      @if (ops.alerts?.length) {
+        <ul class="operation-list" aria-label="排程器失聯紀錄">
+          @for (alert of ops.alerts; track alert.id) {
+            <li>
+              <strong>{{ alert.worker_id }}</strong>
+              <span [class.warning]="!alert.resolved_at">{{ alert.resolved_at ? '已恢復' : '排程器失聯' }}</span>
+              <span class="hint">{{ alert.created_at | date: 'yyyy/MM/dd HH:mm:ss' }}</span>
+            </li>
+          }
+        </ul>
+      }
       @if (ops.workers.length === 0) {
         <ob-empty message="狀態未知：尚無排程器心跳，請確認 worker 與監測設定。" />
       } @else {

@@ -63,6 +63,10 @@ class Signals:
     the first place (negative-only signals should never pull a category
     *into* the preferred pool)."""
 
+    preferred_categories: set[str] = field(default_factory=set)
+    preferred_languages: set[str] = field(default_factory=set)
+    read_categories: set[str] = field(default_factory=set)
+    read_tags: set[str] = field(default_factory=set)
     subscribed_categories: set[str] = field(default_factory=set)
     subscribed_tags: set[str] = field(default_factory=set)
     subscribed_languages: set[str] = field(default_factory=set)
@@ -132,6 +136,11 @@ class Signals:
         return {c for c, w in self.category_weight.items() if w > 0}
 
 
+def _boundary_score(row: dict, signals: Signals) -> float:
+    """Prefer nearby topic boundaries over unrelated random exploration."""
+    return sum(max(0.0, signals.tag_weight.get(tag, 0.0)) for tag in set(row.get("tags") or [])) + max(0.0, signals.language_weight.get(row.get("language"), 0.0))
+
+
 def _score(row: dict, signals: Signals) -> float:
     score = 0.0
     category = row.get("category")
@@ -142,7 +151,10 @@ def _score(row: dict, signals: Signals) -> float:
     language = row.get("language")
     if language:
         score += signals.language_weight.get(language, 0.0)
-    return score
+    # Read history contributes at most 0.5 per candidate, even when a source
+    # has many tags. Passive article opens cannot overwhelm explicit feedback.
+    history = (0.25 if category in signals.read_categories else 0.0) + 0.1 * len(set(row.get("tags") or []) & signals.read_tags)
+    return score - history + min(history, 0.5)
 
 
 def _reason(row: dict, signals: Signals) -> str | None:
@@ -153,6 +165,12 @@ def _reason(row: dict, signals: Signals) -> str | None:
     once gets one clear reason, not a list of every contributing signal."""
     category = row.get("category")
     tags = set(row.get("tags") or [])
+
+    if category and category in signals.preferred_categories:
+        return f"因為你偏好 {category} 類別"
+    language = row.get("language")
+    if language and language in signals.preferred_languages and not (category in signals.subscribed_categories or tags & signals.subscribed_tags):
+        return f"因為你偏好 {language} 語言的來源"
 
     if category and category in signals.subscribed_categories:
         return f"因為你訂閱了 {category} 類別的來源"
@@ -172,9 +190,15 @@ def _reason(row: dict, signals: Signals) -> str | None:
     if matched:
         return f"因為你收藏過「{ '、'.join(matched[:3]) }」相關的文章"
 
+    if category and category in signals.read_categories:
+        return f"因為你近期讀過 {category} 類別的文章"
+    matched = sorted(tags & signals.read_tags)
+    if matched:
+        return f"因為你近期讀過「{ '、'.join(matched[:3]) }」相關的文章"
+
     language = row.get("language")
     if language and language in signals.subscribed_languages:
-        return f"因為你常讀 {language} 的來源"
+        return f"因為你訂閱了 {language} 語言的來源"
 
     return None
 
@@ -195,14 +219,15 @@ def _load_signals(db: Client, user_id: str, signals: Signals) -> None:
     feeds."""
     sub_rows = (
         db.table("user_feeds")
-        .select("feed_id, feeds(category, tags, language)")
+        .select("feed_id, muted_at, feeds!inner(category, tags, language, participation_mode)")
         .eq("user_id", user_id)
+        .eq("feeds.participation_mode", "normal")
         .execute()
     )
     for row in sub_rows.data:
         signals.excluded.add(row["feed_id"])
         feed = row.get("feeds") or {}
-        if feed:
+        if feed and not row.get("muted_at"):
             signals.add_subscribed(feed)
 
     prefs = db.table("user_preferences").select("*").eq("user_id", user_id).execute()
@@ -211,17 +236,18 @@ def _load_signals(db: Client, user_id: str, signals: Signals) -> None:
             signals.category_weight[c] = (
                 signals.category_weight.get(c, 0.0) + _WEIGHT_SUBSCRIBED["category"]
             )
-            signals.subscribed_categories.add(c)
+            signals.preferred_categories.add(c)
         for lang in prefs.data[0].get("preferred_languages") or []:
             signals.language_weight[lang] = (
                 signals.language_weight.get(lang, 0.0) + _WEIGHT_SUBSCRIBED["language"]
             )
-            signals.subscribed_languages.add(lang)
+            signals.preferred_languages.add(lang)
 
     feedback_rows = (
         db.table("user_feed_feedback")
-        .select("feed_id, feedback_type, created_at, feeds(category, tags, language)")
+        .select("feed_id, feedback_type, created_at, feeds!inner(category, tags, language, participation_mode)")
         .eq("user_id", user_id)
+        .eq("feeds.participation_mode", "normal")
         .execute()
     )
     now = datetime.now(timezone.utc)
@@ -271,11 +297,35 @@ def _load_signals(db: Client, user_id: str, signals: Signals) -> None:
         bookmarked_feeds = (
             db.table("feeds")
             .select("category, tags, language")
+            .eq("participation_mode", "normal")
             .in_("id", list(bookmarked_feed_ids))
             .execute()
         )
         for feed in bookmarked_feeds.data:
             signals.add_bookmarked(feed)
+
+    recent_reads = (
+        db.table("user_article_reads")
+        .select("articles!inner(feed_id, feeds!inner(category, tags, language))")
+        .eq("articles.feeds.participation_mode", "normal")
+        .is_("articles.feeds.archived_at", "null")
+        .eq("user_id", user_id)
+        .gte("read_at", (now - timedelta(days=30)).isoformat())
+        .order("read_at", desc=True)
+        .limit(200)
+        .execute()
+    )
+    # Limit the aggregate history contribution, not just each row: many
+    # auto-marked sources in one category must not overwhelm an explicit like.
+    for row in recent_reads.data:
+        feed = (row.get("articles") or {}).get("feeds") or {}
+        category = feed.get("category")
+        if category and category not in signals.read_categories:
+            signals.category_weight[category] = signals.category_weight.get(category, 0.0) + 0.25
+            signals.read_categories.add(category)
+        for tag in set(feed.get("tags") or []) - signals.read_tags:
+            signals.tag_weight[tag] = signals.tag_weight.get(tag, 0.0) + 0.1
+            signals.read_tags.add(tag)
 
 
 def _sample_feeds(
@@ -308,7 +358,7 @@ def _sample_feeds(
 
 
 def _fetch_candidate_pool(
-    db: Client, excluded: set[str], categories: set[str], pool_size: int
+    db: Client, excluded: set[str], categories: set[str], pool_size: int, signals: Signals | None = None
 ) -> tuple[list[dict], list[dict]]:
     """Return (preferred, exploratory) candidate rows as separate lists —
     kept apart (rather than merged here) so the caller can enforce the
@@ -353,6 +403,8 @@ def _fetch_candidate_pool(
     # query happened to list it first.
     combined = other_category + uncategorized
     random.shuffle(combined)
+    if signals is not None:
+        combined.sort(key=lambda row: _boundary_score(row, signals), reverse=True)
     return preferred, combined[:exploration_n]
 
 
@@ -401,6 +453,7 @@ async def get_recommendations(
         liked_rows = (
             db.table("feeds")
             .select("category, tags, language")
+            .eq("participation_mode", "normal")
             .in_("id", [str(u) for u in liked])
             .execute()
         )
@@ -409,7 +462,7 @@ async def get_recommendations(
 
     categories = signals.positive_categories
     preferred_rows, exploratory_rows = _fetch_candidate_pool(
-        db, signals.excluded, categories, limit * 5
+        db, signals.excluded, categories, limit * 5, signals
     )
     candidates = preferred_rows + exploratory_rows
 
@@ -447,5 +500,5 @@ async def get_recommendations(
         top = candidates[:limit]
 
     return [
-        RecommendedFeed(feed=Feed(**row), reason=_reason(row, signals)) for row in top
+        RecommendedFeed(feed=Feed(**row), reason=_reason(row, signals) or ("小比例探索：試試不同類別的來源" if categories and row.get("category") not in categories else None)) for row in top
     ]

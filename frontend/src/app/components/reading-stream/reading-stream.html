@@ -16,6 +16,13 @@
   </div>
 
   <div class="controls">
+    <label class="source">
+      <span class="ob-visually-hidden">閱讀排序</span>
+      <select class="ob-select" [value]="mode()" (change)="onMode($any($event.target).value)">
+        <option value="timeline">文章時間</option>
+        <option value="heat">我的近期熱度</option>
+      </select>
+    </label>
     <div class="toggles">
       <label class="ob-checkbox">
         <input
@@ -64,6 +71,15 @@
     </div>
   </div>
 
+  @if (mode() === 'heat' && stream.heatSnapshot(); as snapshot) {
+    <p>
+      近期文章依你的偏好排序，並參考獨立來源的討論與時間。
+      @if (!snapshot.complete) {
+        部分來源更新落後，目前熱度資料不完整。
+      }
+    </p>
+  }
+
   @if (stream.loading()) {
     <ob-loading label="讀取閱讀流中" />
   } @else if (error()) {
@@ -97,6 +113,9 @@
             </span>
             @if (row.preview) {
               <span class="summary">{{ row.preview }}</span>
+            }
+            @if (mode() === 'heat' && row.article.why) {
+              <span>{{ row.article.why }}</span>
             }
           </div>
           <div rowMeta>

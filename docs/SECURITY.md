@@ -323,6 +323,20 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
   fastapi 替身模組，直接呼叫 `auth._verify_token()` 手動重現全部案例並逐一斷言，交給 CI 的
   `backend.yml` 跑完整測試套件與 FastAPI 接線。
 
+## 32. 非 AI 消費出口共用權限與持久化狀態（issue #63）
+
+來源角色與正文政策集中在 `article_publications`：所有 reader、搜尋、閱讀流、收藏、日報、RSS、MCP 與同步出口沿用同一 projection。原始 `articles` 撤銷 anon／authenticated SELECT，避免從 Data API 繞過限制；搜尋命中、rank 與片段也按許可內容重查。所有 service-role 個人查詢仍顯式帶呼叫者 user_id，cursor 的帳號／查詢 fingerprint 不取代授權。詳細契約與 archived 行為見 [PUBLICATION.md](PUBLICATION.md)。
+
+佇列、告警、版本證據、人工事件與同步 ledger 均開 RLS、零公開 policy、撤銷 PUBLIC／anon／authenticated 權限。RPC 為 service-only `SECURITY INVOKER`。同步 invalidation trigger 是窄範圍 `SECURITY DEFINER` 例外：鎖定 `search_path=pg_catalog`、使用 schema-qualified objects、撤銷直接 EXECUTE；讓正常 owner RLS 允許的 Data API 寫入可同交易通知私有 ledger，不讓 owner 呼叫任意 user 的 snapshot。交易、正常 authenticated owner 寫入與 rollback 由真 PostgreSQL 驗證，詳見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。
+
+MCP 在既有 API 程序使用官方 SDK，逐請求驗證永久使用者 JWT，唯讀工具由 server 認證決定 user_id，檢查 Origin；RSS 使用 Bearer header 且不接受 URL token。離線擴充採 session token、帳號／連線 generation，排除跨帳號在途回應與 pending replay；快取／連線寫入統一由 service worker 協調，只接受本擴充 popup／options 頁面的 mutation message，避免網站 content script 修改私人資料。本地只保存有期限的摘要與原文連結，斷線或切帳號後不能由舊頁面的延遲寫入復活快取；連線契約與測試見 [extension README](../extension/README.md)。正文與來源撤權後依 authoritative snapshot 清掉 cache。安裝瀏覽器的真實 lifecycle 仍須部署走查。
+
+MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool 執行，冷 JWKS 或金鑰輪替的 HTTPS 不阻塞事件迴圈。每次請求仍獨立驗證、通過後才設定該 request 的身份及資料庫 client；認證失敗維持 401／403 與 Bearer challenge，不會進入 MCP 工具或資料庫。
+
+工作 lease token 與續租／完成檢查防止舊 attempt 覆寫新佇列狀態；交付為 at-least-once，不宣稱可撤回已提交的業務 side effects，見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)。人工事件公開結果仍重新經 projection；任何集合 membership 都不能擴張出版或使用者權限。
+
+離線 preflight 不授權後續寫入；專用 replay RPC 鎖定来源、本人訂閱與文章，同交易檢查 publication／mute 後寫狀態。撤權拒絕、鎖繁忙完整回滾且保留 pending，由真 PostgreSQL 的撤權先後順序及批次抓取競態驗證，契約見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
@@ -338,7 +352,7 @@ RFC 9309 語義：4xx ⇒ 全允許、5xx ⇒ 全拒絕、不可達 ⇒ 拒絕�
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter；id 類參數一律宣告 `UUID` 型別，格式錯誤在進 DB 呼叫前就回 422（見 #28） | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
 | 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
 | 認證 | Supabase JWT，依 token `alg` 分流：`HS256` 用 `SUPABASE_JWT_SECRET`、`ES256`／`RS256` 用 JWKS（`jwt.PyJWKClient`，見 #31）；永久帳號必須帶 `is_anonymous=false`；admin 用 `X-API-Key` | `auth.py`、`routers/admin.py` |
-| 資料存取 | 專屬 `driftread` schema + scoped client；四張 `user_*` 表 RLS permanent-user owner-only；`feeds` / `articles` RLS + public read；四張 `discovery_*` 與 `_migrations` RLS + **零 policy**（僅 service_role） | `database.py`、`migrations/002`、`004`、`006`、`010` |
+| 資料存取 | 專屬 `driftread` schema + scoped client；五張使用者資料表 RLS permanent-user owner-only；公開 feeds 僅 normal、raw articles 禁止 anon/authenticated SELECT，backend 共用 publication；系統狀態表 RLS 零公開 policy | `database.py`、`migrations/002`、`010`、`019`、`20261009*`，見 #32 |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 
 ## 改動時要注意的事

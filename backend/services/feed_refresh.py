@@ -119,6 +119,10 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
     current_failures: int = feed.get("consecutive_failures") or 0
     current_interval: int = feed.get("fetch_interval_minutes") or DEFAULT_INTERVAL_MINUTES
 
+    # Persist the attempt before external I/O; a killed worker still leaves
+    # evidence that an attempt started. Only successful fetch/parse advances ok.
+    started = datetime.now(timezone.utc).isoformat()
+    db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": started, "p_ok": False}).execute()
     try:
         safe_url = await validate_fetch_url(feed_url)
         fetched = await fetch_and_parse_conditional(
@@ -151,6 +155,7 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         )
 
     now = datetime.now(timezone.utc)
+    db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": now.isoformat(), "p_ok": True}).execute()
     if fetched.not_modified:
         interval = next_interval(current_interval, "unchanged")
         db.table("feeds").update({
@@ -168,7 +173,11 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
     before = count_articles(db, feed_id)
     # Batch ingestion includes synchronous PostgREST calls and HTML parsing.
     # Keep worker heartbeat and other async refreshes responsive during it.
-    upserted = await asyncio.to_thread(upsert_articles, db, feed_id, fetched.parsed.articles)
+    upserted = await asyncio.to_thread(
+        upsert_articles, db, feed_id, fetched.parsed.articles,
+        backfill=not feed.get("last_fetched_at"),
+        backfill_reason="initial_fetch" if not feed.get("last_fetched_at") else None,
+    )
     total = count_articles(db, feed_id)
     new_articles = max(0, total - before)
     interval = next_interval(current_interval, "new" if new_articles else "unchanged")
