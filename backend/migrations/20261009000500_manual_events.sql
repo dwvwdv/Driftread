@@ -40,8 +40,12 @@ CREATE OR REPLACE FUNCTION driftread.mutate_manual_event(
  p_id uuid, p_expected_version bigint, p_title text, p_members jsonb DEFAULT NULL,
  p_relation_target uuid DEFAULT NULL, p_relation text DEFAULT NULL
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE e driftread.event_objects; m jsonb; target_kind text;
+DECLARE e driftread.event_objects; m jsonb; target_kind text; relation_target_id uuid;
 BEGIN
+ IF p_relation_target IS NOT NULL THEN
+   -- Relation writers and merges share this lock before any event row lock.
+   PERFORM pg_advisory_xact_lock(hashtextextended('driftread.manual_event_relations',0));
+ END IF;
  SELECT * INTO e FROM driftread.event_objects WHERE id=p_id FOR UPDATE;
  IF NOT FOUND OR e.merged_into IS NOT NULL THEN RAISE EXCEPTION 'event not editable' USING ERRCODE='P0002'; END IF;
  IF e.version<>p_expected_version THEN RAISE EXCEPTION 'version conflict' USING ERRCODE='40001'; END IF;
@@ -66,9 +70,11 @@ BEGIN
    END LOOP;
  END IF;
  IF p_relation_target IS NOT NULL THEN
-   IF p_relation_target=p_id THEN RAISE EXCEPTION 'self relation' USING ERRCODE='22023'; END IF;
+   SELECT coalesce(merged_into,id) INTO relation_target_id FROM driftread.event_objects WHERE id=p_relation_target;
+   IF relation_target_id IS NULL THEN RAISE EXCEPTION 'invalid relation target' USING ERRCODE='22023'; END IF;
+   IF relation_target_id=p_id THEN RAISE EXCEPTION 'self relation' USING ERRCODE='22023'; END IF;
    INSERT INTO driftread.event_relations(left_id,right_id,relation)
-   VALUES(least(p_id,p_relation_target),greatest(p_id,p_relation_target),p_relation)
+   VALUES(least(p_id,relation_target_id),greatest(p_id,relation_target_id),p_relation)
    ON CONFLICT(left_id,right_id) DO UPDATE SET relation=excluded.relation;
  END IF;
  UPDATE driftread.event_objects SET title=coalesce(p_title,title),version=version+1,updated_at=now()
@@ -79,9 +85,10 @@ END $$;
 CREATE OR REPLACE FUNCTION driftread.merge_manual_stories(
  p_source uuid,p_target uuid,p_source_version bigint,p_target_version bigint
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE s driftread.event_objects; t driftread.event_objects;
+DECLARE s driftread.event_objects; t driftread.event_objects; merged_ids uuid[]; relations jsonb;
 BEGIN
  IF p_source=p_target THEN RAISE EXCEPTION 'self merge' USING ERRCODE='22023'; END IF;
+ PERFORM pg_advisory_xact_lock(hashtextextended('driftread.manual_event_relations',0));
  -- Fixed lock order prevents A→B vs B→A deadlocks. Merged rows cannot be
  -- merged again; flatten older aliases so resolution is always one hop.
  PERFORM id FROM driftread.event_objects WHERE id IN(p_source,p_target) ORDER BY id FOR UPDATE;
@@ -91,6 +98,28 @@ BEGIN
    RAISE EXCEPTION 'invalid merge' USING ERRCODE='22023';
  END IF;
  IF s.version<>p_source_version OR t.version<>p_target_version THEN RAISE EXCEPTION 'version conflict' USING ERRCODE='40001'; END IF;
+ -- Include both sets of older aliases; all their edges now name the target.
+ SELECT array_agg(id) INTO merged_ids FROM driftread.event_objects
+ WHERE id IN(p_source,p_target) OR merged_into IN(p_source,p_target);
+ WITH removed AS (
+   DELETE FROM driftread.event_relations WHERE left_id=ANY(merged_ids) OR right_id=ANY(merged_ids)
+   RETURNING left_id,right_id,relation
+ ), mapped AS (
+   SELECT CASE WHEN left_id=ANY(merged_ids) THEN p_target ELSE left_id END l,
+          CASE WHEN right_id=ANY(merged_ids) THEN p_target ELSE right_id END r,relation
+   FROM removed
+ )
+ SELECT coalesce(jsonb_agg(jsonb_build_object('left_id',least(l,r),'right_id',greatest(l,r),'relation',relation)),'[]'::jsonb)
+ INTO relations FROM mapped WHERE l<>r;
+ -- A pair has one authored relation: identical duplicates collapse, while
+ -- conflicting declarations require an explicit decision, never silent loss.
+ IF EXISTS(SELECT 1 FROM jsonb_to_recordset(relations) AS x(left_id uuid,right_id uuid,relation text)
+           GROUP BY left_id,right_id HAVING count(DISTINCT relation)>1) THEN
+   RAISE EXCEPTION 'conflicting relations; resolve before merging' USING ERRCODE='22023';
+ END IF;
+ INSERT INTO driftread.event_relations(left_id,right_id,relation)
+ SELECT DISTINCT left_id,right_id,relation
+ FROM jsonb_to_recordset(relations) AS x(left_id uuid,right_id uuid,relation text);
  INSERT INTO driftread.story_facts(story_id,fact_id,excluded)
  SELECT p_target,fact_id,excluded FROM driftread.story_facts WHERE story_id=p_source
  ON CONFLICT(story_id,fact_id) DO UPDATE SET excluded=driftread.story_facts.excluded OR excluded.excluded;

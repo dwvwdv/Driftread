@@ -60,6 +60,20 @@ def test_version_conflict_is_reviewable_409(client):
     assert "sensitive" not in response.text
 
 
+def test_conflicting_story_relations_return_safe_400(client):
+    c, db = client
+    db.rpc.return_value.execute.side_effect = APIError(
+        {"code": "22023", "message": "conflicting relations; sensitive detail", "details": None, "hint": None}
+    )
+    response = c.post(
+        f"/api/admin/stories/{ID}/merge", headers=AUTH,
+        json={"target_id": TARGET, "source_version": 1, "target_version": 1},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid event change"}
+    assert "sensitive" not in response.text
+
+
 def test_public_read_never_requests_admin_projection(client):
     c, db = client
     db.rpc.return_value = SimpleNamespace(execute=lambda: SimpleNamespace(data=None))

@@ -6,9 +6,10 @@ async function clearConnection() {
   await chrome.storage.session.clear();
   await chrome.storage.local.remove('readingCache');
 }
-async function personalRequest(path, options = {}, expected = null) {
+async function personalRequest(path, options = {}, expected = null, { candidate = false } = {}) {
   const cfg = expected || await connection();
-  if (expected && (await connection()).connectionId !== expected.connectionId) throw new Error('帳號已切換');
+  // Candidate credentials are checked without replacing or clearing the active account.
+  if (expected && !candidate && (await connection()).connectionId !== expected.connectionId) throw new Error('帳號已切換');
   if (!cfg.accessToken) throw new Error('請先連線帳號');
   const response = await fetch(cfg.apiUrl.replace(/\/$/, '') + path, {
     ...options, headers: { 'Content-Type': 'application/json',
@@ -16,7 +17,7 @@ async function personalRequest(path, options = {}, expected = null) {
   });
   if (response.status === 401 || response.status === 403) {
     // Only erase the failing account; a new account may have connected in flight.
-    if ((await connection()).connectionId === cfg.connectionId) await clearConnection();
+    if (!candidate && (await connection()).connectionId === cfg.connectionId) await clearConnection();
     throw new Error('登入已失效，請重新連線');
   }
   if (!response.ok) { const error = new Error(`請求失敗 (${response.status})`); error.status = response.status; throw error; }

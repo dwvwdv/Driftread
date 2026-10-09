@@ -33,7 +33,7 @@
 | 文章版本、來源證據、發佈／發現／backfill | [CONTENT_MODEL.md](CONTENT_MODEL.md) |
 | normal／signal_only／private 來源與正文政策 | 管理來源表單；[SOURCE_MODEL.md](SOURCE_MODEL.md) |
 | 全出口共用 publication 與 query-bound cursor | [PUBLICATION.md](PUBLICATION.md) |
-| 人工 Fact／Story、永久排除、別名及個人熱度 | 管理 API、閱讀流時間／熱度選擇；[NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
+| 人工 Fact／Story、永久排除、別名及個人熱度 | 管理 API、保留人工關係的原子合併、閱讀流時間／熱度選擇；[NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
 | 確定性日報、私人 RSS、官方 SDK 唯讀 MCP、離線同步 | [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)、[擴充說明](../extension/README.md) |
 
 以上描述程式實作；正式部署驗證另見 [RUNBOOK.md](RUNBOOK.md)，不代表已上線。AI analysis、embedding、自動語意聚合未啟用。

@@ -21,6 +21,10 @@ Fact 是操作者明確挑選的文章集合；Story 是操作者明確挑選的
 
 relation taxonomy：`SAME_OCCURRENCE`、`SAME_STORY`、`UNRELATED`、`ROUNDUP`，以及保留的擴展 `SAME_EVENT`、`FOLLOW_UP`、`REACTION`、`CONTEXT`、`SAME_TOPIC`。這只是操作者聲明，不會觸發自動判斷或傳遞閉包。合併只允許未合併的 Story，依 id 順序鎖住兩列；遇到相同 Fact，任一方的排除保留。舊別名直接壓平到新 Story，拒絕自合併、再合併已被合併的 id 及循環。
 
+合併會在同一交易把來源、目標與兩者既有別名的人工 relation 重掛到目標，並重新排列 endpoint id。同一對 endpoint 的相同聲明只保留一筆，合併後變成自關係的聲明移除；若同一對 endpoint 出現不同 relation，整筆合併回 400 `Invalid event change`，membership、排除、關係、別名與版本皆不改變。操作者須先用 PATCH 統一衝突的關係，再依重新取得的版本合併，不會默默選擇或覆蓋其中一個聲明。
+
+帶 relation 的 PATCH 與 merge 在鎖住 event rows 前共用交易 advisory lock，避免並發寫入留下指向被合併來源的關係。PATCH 的 relation_target 會解析既有別名；解析後等同自己也拒絕。純 membership PATCH 不取得此共用鎖。這些交易只修改人工事件表，不會取得同步 ledger 的 `sync_clock` 鎖。
+
 範例（id 由建立回應取得）：
 
 ```json
@@ -71,4 +75,4 @@ repair 對原來 cohort、鏡像 participant 身份與候選 group 補進晚到�
 
 ## 驗證
 
-`test_heat_history_postgres.py`／`sql/test_heat_history.sql` 驗證持久 producer／consumer、晚到證據、凍結健康、owner 隔離、private／rights 撤權、retention／repair 上限與 expected relation names。`test_personal_heat.py` 提供固定時間的參與者、半衰期、個人偏好主導、lag/catch-up、同 Story 去重、future/unknown/old evidence fixture，並檢查 API scope／limits、歷史 API 認證、顯式 owner 參數與固定過去時間。`test_manual_events.py` 守住管理認證與 safe 409／public projection。`test_manual_events_postgres.py` 在臨時 PostgreSQL 資料庫驗證原子 membership、永久排除、合併／別名、角色隔離、無訂閱的 signal-only 貢獻、backfill 排除與兩個連線同時改版的一成功一衝突。
+`test_heat_history_postgres.py`／`sql/test_heat_history.sql` 驗證持久 producer／consumer、晚到證據、凍結健康、owner 隔離、private／rights 撤權、retention／repair 上限與 expected relation names。`test_personal_heat.py` 提供固定時間的參與者、半衰期、個人偏好主導、lag/catch-up、同 Story 去重、future/unknown/old evidence fixture，並檢查 API scope／limits、歷史 API 認證、顯式 owner 參數與固定過去時間。`test_manual_events.py` 守住管理認證與 safe 400／409／public projection。`test_manual_events_postgres.py` 在臨時 PostgreSQL 資料庫驗證原子 membership、永久排除、合併／別名、角色隔離、無訂閱的 signal-only 貢獻、backfill 排除與兩個連線同時改版的一成功一衝突。`test_story_merge_relations_postgres.py`／`sql/test_story_merge_relations.sql` 驗證關係與別名重掛、相同聲明去重、自關係移除、衝突完整 rollback、migration 重跑，以及兩個交易依不同先後順序並發 PATCH／merge。

@@ -1391,4 +1391,6 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - 擴充 options 的訊息原本仍被 display:none 隱藏；改為每次 feedback 解開 hidden，保留 account generation guards，測試實際 HTML 初始隱藏及成功／API錯誤／權限拒絕／disconnect 可見性。
 - 日報／RSS／MCP 的列表原 RPC 傳回正文／search_vector，事後才 excerpt，造成不必要的大 payload。列表與個人搜尋改 SQL metadata projection；1.95 MB 正文的回傳小於 2 KB，許可全文仍能搜尋、summary_only 禁止正文命中、單篇 reader 保留正文。未合併 RPC 以 DROP／重建處理 return type 改變與重跑。
 - 人工事件公开支路直接使用 publication，archived normal 成員保留閱讀能力，private／signal-only／exclusions 仍隱藏；success-only 的重新匯入會以 GREATEST 同時推進 last_fetch_at，舊完成時間不能倒退觀測。
-- 本輪 backend 986 tests（含新增授權／批次競態真 PostgreSQL fixtures）、extension 20 tests 通過；前端未更動，沿用 289 tests／build 驗證。文件檢查與 diff check 通過。GitHub CI 結果以 PR 最新 commit 的 checks 為準；正式部署未執行。
+- 後續 review 發現候選連線尚未驗證就清掉舊快取，錯誤 token／網路失敗會遺失 pending。改為先以候選設定取得 snapshot，成功後才提交連線；失敗保留舊資料，同帳號／API 更新 token 保留 queue，切換帳號或 API 不帶入舊 queue。
+- Story 合併原本僅搬 membership，原人工 relation 留在 alias 而消失。合併在同交易重掛來源及既有 aliases 的兩端關係，正規化端點、合併相同聲明並刪除等效自關係；不同聲明衝突拒絕整筆合併並回滾，讓操作者先明確處理。relation PATCH 與 merge 共用先於 row locks 的交易鎖，避免並發寫回 alias；這個鎖僅限小型人工管理操作。
+- 本輪 backend 991 tests（含授權／批次競態／Story relations 真 PostgreSQL fixtures）、extension 32 tests（含候選連線與在途儲存競態）通過；前端未更動，沿用 289 tests／build 驗證。文件檢查與 diff check 通過。GitHub CI 結果以 PR 最新 commit 的 checks 為準；正式部署未執行。
