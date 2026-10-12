@@ -419,7 +419,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/manage/auth/verify` | 同帳號／同 Supabase session 的 challenge + 6 位 ASCII 數字；成功消耗 OTP，回傳 8 小時有效的管理 token |
 | POST | `/manage/auth/logout` | 帶登入 token 與 `X-Manage-Session`，撤銷管理 session |
 
-OTP 有效 5 分鐘，重送間隔 60 秒；每個 challenge 最多錯 5 次，之後同管理員鎖 15 分鐘，重新登入不能解除。
+OTP 有效 5 分鐘，重送間隔 60 秒；同一管理員累計錯 5 次就鎖 15 分鐘，重送新驗證碼不會把錯誤次數歸零，只有驗證成功或鎖定期滿才重新計算，重新登入也不能解除。
 發送／驗證另外每 IP 每 60 秒限 5／10 次。Telegram 以 pg_net 非同步送出；只有確認 HTTP 200 與 `ok=true` 才能完成驗證。
 資料庫／Vault／Telegram 缺設定或失敗一律拒絕管理登入，不授予降級 session。
 

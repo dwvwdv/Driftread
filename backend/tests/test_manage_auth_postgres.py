@@ -74,6 +74,50 @@ def test_wrong_attempts_commit_and_lock_survives_resend(setup):
         manage.verify(setup, cid, code)
 
 
+def _wrong(code):
+    return '000001' if code == '000000' else '000000'
+
+
+def _skip_cooldown(user):
+    query("UPDATE driftread.manage_login_state SET last_sent_at=now()-interval '2 minutes' WHERE user_id=%s", (user.id,))
+
+
+def test_resend_does_not_reset_wrong_attempts(setup):
+    # 4 guesses per code + resend must not bypass the 5-attempt lockout.
+    cid, code = challenge(setup)
+    for _ in range(4):
+        with pytest.raises(HTTPException):
+            manage.verify(setup, cid, _wrong(code))
+    _skip_cooldown(setup)
+    cid, code = challenge(setup)
+    with pytest.raises(HTTPException) as exc:
+        manage.verify(setup, cid, _wrong(code))
+    assert exc.value.status_code == 403
+    state = query("SELECT attempts, locked_until > now() AS locked FROM driftread.manage_login_state WHERE user_id=%s", (setup.id,))[0]
+    assert state["attempts"] == 5 and state["locked"]
+    with pytest.raises(HTTPException):
+        manage.verify(setup, cid, code)
+    _skip_cooldown(setup)
+    with pytest.raises(HTTPException) as exc:
+        manage.issue(setup)
+    assert exc.value.status_code == 429
+
+
+def test_success_and_expired_lock_reset_wrong_attempts(setup):
+    cid, code = challenge(setup)
+    for _ in range(4):
+        with pytest.raises(HTTPException):
+            manage.verify(setup, cid, _wrong(code))
+    assert manage.verify(setup, cid, code)["token"]
+    assert query("SELECT attempts FROM driftread.manage_login_state WHERE user_id=%s", (setup.id,))[0]["attempts"] == 0
+    # After a lock expires, the next code starts a fresh allowance.
+    query("""UPDATE driftread.manage_login_state SET attempts=5, locked_until=now()-interval '1 second',
+             last_sent_at=now()-interval '2 minutes' WHERE user_id=%s""", (setup.id,))
+    cid, code = challenge(setup)
+    assert query("SELECT attempts, locked_until FROM driftread.manage_login_state WHERE user_id=%s", (setup.id,))[0] == {"attempts": 0, "locked_until": None}
+    assert manage.verify(setup, cid, code)["token"]
+
+
 def test_resend_cooldown_and_invalidates_previous_code(setup):
     cid, code = challenge(setup)
     with pytest.raises(HTTPException) as exc:

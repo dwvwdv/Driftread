@@ -342,7 +342,7 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 - 後台移至 `/manage`，不再接受、保存或顯示 Admin API Key；Driftread 自助註冊入口／呼叫一併移除。共用 Supabase 專案的全域註冊功能維持原設定。
 - `MANAGE_OWNER_USER_ID` 限定唯一永久帳號。發送 OTP 必須是驗證過的 JWT，`amr` 中含 5 分鐘內的 password 登入，且 `session_id` 仍在 `auth.sessions`、帳號未被停用。權限不讀 user_metadata。
 - 固定讀 Vault 的 `telegram_bot_token` / `telegram_chat_id`，只接受正整數私人收件人，拒絕 group chat；不接受 client 指定 bot／收件人。密鑰不離開 PostgreSQL。SQL 使用參數綁定，DB 例外不記錄原始參數或 Vault 資料。
-- bcrypt 保存 OTP，SHA-256 保存 256-bit 隨機管理 token。OTP 5 分鐘、重送 60 秒、錯 5 次鎖 15 分鐘；owner row lock 序列化重送／猜碼與一次性消耗。錯誤嘗試先 commit 再回 403，不會因 exception rollback 取消累計。
+- bcrypt 保存 OTP，SHA-256 保存 256-bit 隨機管理 token。OTP 5 分鐘、重送 60 秒、錯 5 次鎖 15 分鐘；錯誤次數跨重送累計，只有驗證成功或鎖定期滿才歸零，避免「每組猜 4 次再重送」繞過鎖定；owner row lock 序列化重送／猜碼與一次性消耗。錯誤嘗試先 commit 再回 403，不會因 exception rollback 取消累計。
 - 只有 pg_net 回應 HTTP 200 且 Telegram `ok=true` 才發管理 session；驗證碼過期、舊 challenge、換 Supabase session、重用 OTP 均拒絕。管理 session 8 小時，登出後台刪除；每次管理 API 驗有效 Supabase session，因此登出／撤銷／停用帳號後，即使原 JWT 尚未過期也拒絕。
 - 新表 RLS 無公開 policy，顯式移除 migration 010 預設授予 service_role 的 ALL。只由已有的 privileged DATABASE_URL 使用，不增 SECURITY DEFINER function，不把 Vault 開放給 Data API。
 - **既有機器 API Key 路徑仍是獨立管理授權**，持有 `ADMIN_API_KEY` 的腳本／擴充不需 OTP。帶 Authorization 或 X-Manage-Session 時不得回退到 key；若需要所有接口都強制 OTP，須另處理機器／擴充認證。舊分頁的 key 會移除，但既有 key 本身不因此撤銷；部署可旋轉並同步更新整合設定。

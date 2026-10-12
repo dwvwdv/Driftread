@@ -107,9 +107,14 @@ def issue(user: AuthUser):
         request = cur.fetchone()
         if not request or request["request_id"] is None:
             raise HTTPException(503, "Telegram 驗證服務尚未設定")
+        # Wrong attempts carry over to the new code; only an expired lock (the
+        # check above already rejected an active one) or a success resets them.
+        # Resetting here would let 4 guesses per resend bypass the lockout.
         cur.execute("""UPDATE driftread.manage_login_state SET challenge_id=%s,auth_session_id=%s,
             code_hash=extensions.crypt(%s,extensions.gen_salt('bf',8)),
-            expires_at=%s,last_sent_at=%s,attempts=0,locked_until=NULL,telegram_request_id=%s
+            expires_at=%s,last_sent_at=%s,
+            attempts=CASE WHEN locked_until IS NULL THEN attempts ELSE 0 END,
+            locked_until=NULL,telegram_request_id=%s
             WHERE user_id=%s""", (challenge, sid, code, now+timedelta(seconds=OTP_SECONDS), now, request["request_id"], uid))
         cur.execute("DELETE FROM driftread.manage_sessions WHERE expires_at <= now()")
     return {"challenge_id": challenge, "expires_in": OTP_SECONDS, "retry_after": 60}
@@ -147,7 +152,7 @@ def verify(user: AuthUser, challenge: UUID, code: str):
             if not delivered:
                 raise HTTPException(503, "Telegram 驗證碼尚未送達，請稍後再試或重送")
             # Consume under the same row lock as issuing the elevated session.
-            cur.execute("UPDATE driftread.manage_login_state SET code_hash=NULL WHERE user_id=%s", (uid,))
+            cur.execute("UPDATE driftread.manage_login_state SET code_hash=NULL,attempts=0 WHERE user_id=%s", (uid,))
             cur.execute("""INSERT INTO driftread.manage_sessions(token_hash,user_id,auth_session_id,expires_at)
                 VALUES(%s,%s,%s,%s)""", (hashlib.sha256(token.encode()).hexdigest(), uid, sid, expires))
     if failure:

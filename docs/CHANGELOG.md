@@ -985,3 +985,8 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 文件檢查與 `git diff --check` 通過。唯讀查詢確認正式 Supabase 指定帳號為永久帳號且已有密碼、Vault 收件為私人 chat、pg_net／pgcrypto 既有設定；未部署正式 schema／API／frontend，未以本人帳密走查、未發送正式 Telegram 測試 OTP。真 PG 測試使用假的 Vault／pg_net 送信端，不能當成已驗證實際 Telegram 收件。
 - 整合 master 已合併的 PR #93（文章版本保存上限），保留最新 migration reload 測試，真 PG 全套重跑通過；階段編號接續為四十一，依專案規則原文歸檔二十一～三十（僅相對連結調整）。
 - Review 事件 hook 工具不可用；沒有建立替代輪詢排程。
+
+### Review 過程中修掉的問題
+
+- 原本只有同一組驗證碼錯滿 5 次才上鎖，`issue()` 每次發新碼都把 `attempts` 歸零：知道密碼的人每組只猜 4 次、等 60 秒重送，就能無限猜下去（本機真 PostgreSQL 重現：錯 12 次仍未鎖定，下一組照樣登入成功）。改為錯誤次數跨重送累計，只在上一輪鎖定期滿時歸零，驗證成功時清零。新增 `test_resend_does_not_reset_wrong_attempts`（錯 4 次 → 重送 → 再錯 1 次即鎖定）與 `test_success_and_expired_lock_reset_wrong_attempts`；原程式碼下兩項都會失敗。
+- 已知取捨：錯誤次數沒有隨時間衰減，本人隔天再打錯也會延續計數，達 5 次仍會鎖 15 分鐘；成功登入一次即歸零，不另加衰減邏輯。
