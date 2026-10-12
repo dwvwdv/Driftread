@@ -19,7 +19,8 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [x] [#73](https://github.com/dwvwdv/Driftread/issues/73) 共用閱讀權限與 [#74](https://github.com/dwvwdv/Driftread/issues/74) query/user-bound cursor：`backend/services/publications.py`、`backend/utils.py`；[閱讀契約](docs/PUBLICATION.md)。
 - [x] [#75](https://github.com/dwvwdv/Driftread/issues/75) 人工集合／排除／別名、[#76](https://github.com/dwvwdv/Driftread/issues/76) 個人熱度／歷史修復、[#77](https://github.com/dwvwdv/Driftread/issues/77) 個人偏好／探索／理由：`backend/routers/personal_heat.py`、閱讀流熱度模式；[設計](docs/NON_AI_INTELLIGENCE.md)。
 - [x] [#78](https://github.com/dwvwdv/Driftread/issues/78) 確定性日報／私人 RSS、[#79](https://github.com/dwvwdv/Driftread/issues/79) 唯讀 MCP、[#80](https://github.com/dwvwdv/Driftread/issues/80) sync ledger／離線擴充：[消費出口](docs/CONSUMPTION_SURFACES.md)。
-- [ ] 整合 PR 合併與正式環境部署验證；順序見 [RUNBOOK](docs/RUNBOOK.md#issue-63-非-ai-功能升級)。
+- [x] [#82](https://github.com/dwvwdv/Driftread/issues/82) 文章版本歷史上限（每篇 10 版）：`backend/migrations/20261012000000_article_revision_retention.sql`；[內容模型](docs/CONTENT_MODEL.md)。
+- [ ] 整合 PR 合併與正式環境部署验證（[#83](https://github.com/dwvwdv/Driftread/issues/83)）；順序見 [RUNBOOK](docs/RUNBOOK.md#issue-63-非-ai-功能升級)。
 - [ ] 正式瀏覽器的登入→訂閱→閱讀→回饋與擴充離線／account switch 走查。
 
 本輪排除所有 AI 功能（模型、embedding、自動語意事件判斷及 AI 摘要）；MCP 為讀取協定，日報由規則產生。既有 Phase 0 的 Dashboard 與 production 查核仍依下列清單追蹤。

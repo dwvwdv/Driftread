@@ -1400,3 +1400,25 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - MCP 自訂 async 認證 wrapper 曾同步驗證 JWT，冷 JWKS 或金鑰輪替的 HTTPS 會阻塞 FastAPI 事件迴圈。改將同步驗證移至 threadpool，維持每次請求的永久帳號驗證、原錯誤回應與請求身份隔離，補等待驗證時其他 task 能進展的回歸。
 - popup 同步寫入只在呼叫 storage 前檢查 connectionId，與 options 分頁的斷線／切帳號清除沒有共用順序；延遲寫入會復活舊帳號的摘要與 pending。連線與快取變更由擴充 service worker 單一佇列協調，佇列內確認 connectionId、等待已接受寫入完成再清除或替換；連線 intent 保存在 session 以跨 worker idle 重啟。message 限本擴充 popup／options 頁面，儲存錯誤安全回報，保留重啟後 queue 與候選連線契約。獨立三個 VM context 驗證延遲 pull／replay ack／離線按鈕對斷線及切帳號、過期 auth／cleanup、worker 重啟、儲存拒絕與 sender 限制。
 - 本輪 extension 48 tests、文件檢查與 diff check 通過；backend／前端未更動，前一 head 的 backend 1000 tests（含真 PostgreSQL）、前端 289 tests 及 build 為歷史驗證。GitHub CI 結果另確認 PR 最新 commit 的 checks；正式 Supabase、Chrome 實際 lifecycle 與正式部署未執行。
+
+## 階段四十：文章版本歷史加上每篇 10 版的上限（PR #93，issue #82，2026-10-12）
+
+PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、發布日期或正文 hash 變動時新增一列，但沒有任何保存期：只在刪除文章／來源時 cascade 清除，#64 的 retention 也只縮減 `articles.content`。摘要帶動態數字的 feed（例如 hnrss 的 `Points`／`# Comments`）或每次輸出都改 `pubDate` 的 generator，每次 refresh 都會新增一個版本。PR #81 之前這類變動是原地 UPDATE，現在則只增不減，等於在 #64 處理 DB 容量的同時又開了一條沒有上限的成長路徑。這是 PR #81 合併後 review 時發現的。正式環境（2026-10-12 唯讀查詢）：PR #81 的 migration 還沒套用，DB 269 MB；最近 24 小時至少 336 篇文章在首次抓取後內容又變動過。
+
+- 新增 migration `20261012000000_article_revision_retention.sql`：`article_revisions` 加上 AFTER INSERT trigger，在寫入版本的同一 transaction 內刪掉同一篇文章 `revision_number <= 新版本 - 10` 的列。每篇保留最近 10 版（含 current），其他文章不受影響。
+- 清理放在 trigger，不放在 worker 的 retention 週期：retention 預設關閉（`ARTICLE_RETENTION_ENABLED`），放在那裡的話，大多數部署仍會持續成長；trigger 也不需要額外排程或批次狀態。
+- trigger 函式是窄範圍的 `SECURITY DEFINER`：service_role 對版本表仍只有 SELECT／INSERT（append-only 權限不變），函式回傳 trigger、沒有參數、撤銷所有角色的 EXECUTE。SECURITY.md 在同步 invalidation trigger 那段旁邊記下這個例外。
+- 已套用 20261009 系列的資料庫，migration 會一次刪掉既有的超量舊版本；重跑時沒有可刪的列，trigger 也有存在性檢查。
+- 這支 migration 成為新的最後一支，結尾同樣送出 `NOTIFY pgrst, 'reload schema'`。`tests/test_schema_reload_postgres.py` 原本寫死 `20261009000700_incremental_sync.sql` 為最後一支，改成檢查「目前最新的一支」都要帶 reload 通知；runner 測試改為只清掉最新一支的 ledger 後重跑。AGENTS.md 的 migration 規則補上這條慣例。
+
+### 沒做什麼
+
+- 保留數 10 是寫死的產品限制，沒有開放環境變數或全域設定。日後的分析只需要比對 current revision，需要更長歷史時再新增 migration 調整。這和 #82 原本寫的「可設定 N、由 retention 週期執行」不同，已同步更新 issue。
+- 沒有減少版本的產生條件（例如忽略只有 `published_at` 變動的情況）：哪些變動算新版本屬於 #70 的語義，不在此 PR 範圍。
+- `sync_changes` 會因內部欄位更新產生全域 invalidation，這是 PR #81 review 的非阻擋觀察，未處理。
+
+### 驗證
+
+- 新增 `backend/tests/test_article_revision_retention.py`（真 PostgreSQL，實際 migration chain）：同一篇經 `ingest_article_batch` 改 15 次摘要後只剩第 6～15 版、current 的摘要正確、同 feed 其他文章不受影響；anon／authenticated／service_role 都沒有清理函式的 EXECUTE，service_role 仍無法直接 DELETE；拿掉 trigger 後累積 14 版，套用 migration 後剩 10 版，重跑兩次結果相同。暫時移除新 migration 時第一項測試如預期失敗。
+- 本機 PostgreSQL 16（CI 為 17）上，後端全套 1003 passed（含 `DRIFTREAD_TEST_DATABASE_URL` 的真 PostgreSQL 測試）；`scripts/check_docs.py` 通過。
+- 沒有前端或擴充變更。正式 Supabase 套用與部署未驗證，跟 PR #81 一起由 #83 追蹤。

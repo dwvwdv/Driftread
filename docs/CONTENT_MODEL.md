@@ -12,6 +12,8 @@
 
 `article_revisions` 開 RLS，anon／authenticated 無權限，service_role 只有 SELECT／INSERT，且 UPDATE trigger 拒绝原地修改。刪除原文章／來源會透過 FK cascade 清除其歷史，因此 append-only 指存續文章的版本記錄，不是永久保存已刪除來源。
 
+**歷史有上限：每篇文章只保留最近 10 個版本（含 current）**（#82，migration `20261012000000_article_revision_retention.sql`）。摘要帶動態數字的 feed（例如 hnrss 的 points／comments）或每次輸出都改 `pubDate` 的 generator，每次 refresh 都會產生新版本；不設上限時這張表只增不減，跟 #64 控制 DB 容量的目標衝突。清理由 `article_revisions` 的 AFTER INSERT trigger 在寫入版本的同一 transaction 內完成，只刪同一篇文章 `revision_number <= 新版本 - 10` 的列，所以不依賴預設關閉的 `ARTICLE_RETENTION_ENABLED`，也不需要另外排程。trigger 函式是窄範圍的 `SECURITY DEFINER` 例外：service_role 仍沒有 DELETE 權限，函式回傳 trigger、沒有參數、撤銷所有角色的 EXECUTE。上限寫死為產品限制，沒有開放設定：日後的分析只需要比對 current revision；需要更長歷史時再新增 migration 調整。
+
 ## Discovery provenance
 
 私有 `article_discoveries` 保存 `article_id`、`feed_id`、`canonical_url`、入口 `origin`、來源 feed URL、首次／最近看見時間，以及最近觀測 hash。`(article_id,origin,source_url)` 冪等去重；相同入口重抓只更新最近時間與觀測 hash。兩個 feed 指向同一 URL 時，可依 canonical URL 找到兩個獨立來源；同一 feed 經 RSS 與登入使用者 discover/import 進入時，兩個入口都留下證據。文章寫入與證據保存同 transaction，失敗一起 rollback。
@@ -31,4 +33,4 @@
 
 ## 驗證
 
-`backend/tests/test_article_revisions.py` 與 SQL fixture 使用實際 migration chain、隔離 PostgreSQL 17 資料庫，驗證版本、不同入口、不同 feed rendering、rollback、legacy baseline、migration 重跑、權限、相同版本縮減與並發 ingestion。Python ingestion 測試驗證 context 與輸入限制。測試只使用 localhost 的 `*_test` 入口，從不使用正式資料庫。
+`backend/tests/test_article_revisions.py` 與 SQL fixture 使用實際 migration chain、隔離 PostgreSQL 17 資料庫，驗證版本、不同入口、不同 feed rendering、rollback、legacy baseline、migration 重跑、權限、相同版本縮減與並發 ingestion；`backend/tests/test_article_revision_retention.py` 驗證版本上限、其他文章不受影響、清理函式不可呼叫，以及既有超量版本在 migration 時一次清掉、重跑安全。Python ingestion 測試驗證 context 與輸入限制。測試只使用 localhost 的 `*_test` 入口，從不使用正式資料庫。

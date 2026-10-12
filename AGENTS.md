@@ -158,6 +158,7 @@ python3 scripts/check_docs.py
 - migration 要能在「ledger 被清空後重跑」時不炸：`CREATE ... IF NOT EXISTS`，`CREATE TRIGGER`／`CREATE POLICY`／`ADD CONSTRAINT` 用存在性檢查的 `DO` 區塊包住。
 - 新表一律建在 `driftread` schema、開 RLS，並明確決定 policy（使用者資料 owner-only，系統表零 policy 僅 service_role）；function 預設 `SECURITY INVOKER`。
 - `supabase/` 的三支分層原稿（`supabase/1_create_schema.sql`～`3_rls_policies`）與 `backend/migrations/010_schema_access.sql` 必須逐字一致（`tests/test_migrations.py` 守住），改一邊就要改另一邊。
+- 最新的一支 migration 結尾要有 `NOTIFY pgrst, 'reload schema';`（放在所有 DDL／grant 之後），讓 PostgREST 重新載入 schema（`backend/tests/test_schema_reload_postgres.py` 守住）。
 - 動到 SQL 函式、RPC 或鎖語意時，在 `backend/tests/sql/` 補真 PostgreSQL 的 fixture——mock 的 client 驗不到 SQL 本身。
 - 會動到 Supabase Dashboard 設定（Exposed Schemas、grant）的變更，照 [docs/RUNBOOK.md](docs/RUNBOOK.md) 的對應段落寫部署順序。
 
