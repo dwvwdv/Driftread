@@ -466,7 +466,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 | `background_job_kinds` / `background_jobs` / `worker_alerts` | 20261009000000 / 20261009000100 | service-only 的佇列與 watchdog；見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |
-| `article_revisions` / `article_discoveries` | 20261009000100 | service-only 版本 metadata／hash 與多入口證據；`articles` 同時新增 canonical_url、discovered_at、timeline_at、backfill；見 [CONTENT_MODEL.md](CONTENT_MODEL.md) |
+| `article_revisions` / `article_discoveries` | 20261009000100、20261012000000 | service-only 版本 metadata／hash 與多入口證據，每篇最多保留 10 個版本；`articles` 同時新增 canonical_url、discovered_at、timeline_at、backfill；見 [CONTENT_MODEL.md](CONTENT_MODEL.md) |
 | `article_publications`（view） | 20261009000300 | security_invoker、service-only 的閱讀 projection；見 [PUBLICATION.md](PUBLICATION.md) |
 | `event_objects` / `fact_articles` / `story_facts` / `event_relations` | 20261009000500 | service-only 人工集合、永久排除、關係與別名；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
 | `user_heat_snapshots` | 20261009000650 | RLS 零 policy、service-only、沒有全文的本人熱度證據；最多 100 筆、30 日讀取／修復範圍，過期實體於本人下次 capture 清除；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
@@ -588,6 +588,7 @@ DELETE FROM discovery_targets
 | 對外抓取 User-Agent | `DISCOVERY_USER_AGENT`，預設 `Driftread/1.0` | `services/feed_discovery.py::user_agent()` |
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
+| 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
 | **主動發現總開關** | **關**（`FEED_DISCOVERY_ENABLED`）| `services/discovery_config.py` |
 | 發現週期間隔 | 900 秒（`FEED_DISCOVERY_TICK_SECONDS`）| `discovery_config.py::tick_seconds()` |
 | 單輪收割 feed 數 | 10（`..._HARVEST_BATCH_SIZE`）| `discovery_config.py` |

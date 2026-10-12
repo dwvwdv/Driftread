@@ -1,4 +1,8 @@
-"""The final release migration notifies PostgREST only after successful commit."""
+"""The latest migration notifies PostgREST only after successful commit.
+
+Every new migration becomes the latest one, so each must end with
+`NOTIFY pgrst, 'reload schema'` after all of its DDL and grants.
+"""
 
 from pathlib import Path
 import select
@@ -10,7 +14,7 @@ from tests.test_postgres_lifecycle import connection, pg_database
 
 
 MIGRATIONS = Path(__file__).parents[1] / "migrations"
-FINAL = "20261009000700_incremental_sync.sql"
+FINAL = sorted(MIGRATIONS.glob("*.sql"))[-1].name
 FIXTURE = Path(__file__).parent / "sql/test_schema_reload.sql"
 
 
@@ -33,7 +37,7 @@ def assert_reload(conn):
 
 @pytest.mark.parametrize("commit", [False, True])
 def test_final_migration_reload_waits_for_commit(pg_database, commit):
-    assert (MIGRATIONS / FINAL).is_file()
+    assert "NOTIFY pgrst, 'reload schema';" in (MIGRATIONS / FINAL).read_text()
     with connection(pg_database) as listener, connection(pg_database) as writer:
         listen(listener)
         with writer.cursor() as cur:
@@ -54,10 +58,9 @@ def test_real_migration_runner_reloads_after_final_ddl_and_is_idempotent(pg_data
     monkeypatch.setenv("DATABASE_URL", pg_database)
     with connection(pg_database) as listener, connection(pg_database) as setup:
         listen(listener)
-        # Keep historical ledgers; recreate only this unmerged release tail.
+        # Keep historical ledgers; replay only the latest (idempotent) migration.
         with setup.cursor() as cur:
             cur.execute("DELETE FROM driftread._migrations WHERE filename=%s", (FINAL,))
-            cur.execute("DROP FUNCTION driftread.replay_personal_article_state(uuid,uuid,text,boolean)")
         setup.commit()
         migrate.run_migrations()
         assert_reload(listener)

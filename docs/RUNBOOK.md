@@ -71,6 +71,8 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 本批最後一支 `20261009000700_incremental_sync.sql` 在所有 DDL／grants 之後送出 `NOTIFY pgrst, 'reload schema'`；通知在 migration 交易成功提交後才送達，讓 PostgREST 更新 publication／事件／熱度／sync 物件快取，不依賴額外的 DDL event trigger。部署驗收仍須實際呼叫新增 RPC／API，不能只以 `/api/health` 判定 Data API 已完成非同步 reload。
 
+#82 的 `20261012000000_article_revision_retention.sql` 排在這批之後、同一次部署一起套用：它為 `article_revisions` 加上「每篇最多 10 版」的清理 trigger，結尾同樣送出 schema reload。正式環境若在套用 20261009 系列之後才套用它，migration 會一次刪掉既有的超量舊版本（只動版本歷史，不碰文章與使用者資料）。部署後 24 小時觀察 `article_revisions` 的列數，每篇應不超過 10 列。
+
 1. 備份資料庫並保留 `driftread._migrations` ledger，記下目前三個 image SHA。
 2. `docker compose stop worker`，等待正常停機；不要混跑舊記憶體排程 worker 與新佇列 worker。
 3. 取得同一版本 api／worker 與 frontend image，先更新 `api`，等 migration／backfill 完成與 `/api/health` healthy。

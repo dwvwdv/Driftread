@@ -6,7 +6,8 @@ BEGIN
     OR to_regclass('driftread.user_heat_snapshots') IS NULL
     OR to_regprocedure('driftread.personal_sync_snapshot(uuid,bigint,uuid[])') IS NULL
     OR to_regprocedure('driftread.personal_publication_search(uuid,text,integer)') IS NULL
-    OR to_regprocedure('driftread.replay_personal_article_state(uuid,uuid,text,boolean)') IS NULL THEN
+    OR to_regprocedure('driftread.replay_personal_article_state(uuid,uuid,text,boolean)') IS NULL
+    OR to_regprocedure('driftread.prune_article_revisions()') IS NULL THEN
    RAISE EXCEPTION 'Schema reload arrived before all release objects were committed';
  END IF;
  IF NOT has_function_privilege('service_role',
