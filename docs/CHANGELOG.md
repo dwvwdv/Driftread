@@ -1408,7 +1408,7 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - 移除 Driftread 註冊切換與 `AuthService.signUp`；依使用者確認不關閉共用 Supabase Auth 的全域註冊。
 - 前端 `/admin` 入口移除，後台改 `/manage`，登入 `/manage/login`。OTP 5 分鐘、重送 60 秒、最多錯 5 次後鎖 15 分鐘；管理 session 8 小時，綁帳號與 Supabase session，每次後台呼叫驗證、登出撤銷。API Key 不再提供給瀏覽器。
 - owner row lock 原子消耗 OTP／建立 session，錯誤嘗試先提交再回錯誤。OTP bcrypt、管理 token SHA-256；新表 RLS 並撤銷所有 Data API roles（含 service_role）存取。既有 privileged DATABASE_URL 執行驗證，Vault 密鑰留在 SQL，pg_net 非同步送信並確認 Telegram 成功回應。
-- 新增 `MANAGE_OWNER_USER_ID`，同步 `.env.example`、compose api、gen_env missing 檢查。部署者需填指定帳號 UUID；空白時拒絕管理登入。正式部署與验收順序見 [RUNBOOK](RUNBOOK.md#後台-telegram-兩步驟驗證)。
+- 新增 `MANAGE_OWNER_USER_ID`，同步 `.env.example`、compose api、gen_env missing 檢查。部署者需填指定帳號 UUID；空白時拒絕管理登入。正式部署與驗收順序見 [RUNBOOK](RUNBOOK.md#後台-telegram-兩步驟驗證)。
 - 既有 `/api/admin/*` 機器 API Key 接口保留供腳本／擴充使用；它仍是獨立授權，不經 OTP。帶管理登入 header 時不回退到 key。若要所有機器接口也強制 OTP，需另設整合認證；本次未變更該契約，也未旋轉既有 key。
 
 ### 驗證與部署界限
