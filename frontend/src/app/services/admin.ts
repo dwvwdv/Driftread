@@ -23,7 +23,7 @@ import {
 } from '../models';
 import { ToastService } from '../ui/toast/toast';
 import { apiMessage, isMissingApiKeyHeader, validationMessage } from '../shared/http-errors';
-import { AdminKeyStore } from './admin-key';
+import { ManageSessionService } from './manage-session';
 
 /** Body accepted by POST /admin/discovery/candidates/{id}/approve. */
 export interface ApproveCandidateBody {
@@ -47,44 +47,11 @@ export interface DiscoverySourceInput {
   label?: string | null;
 }
 
-/**
- * Every admin API call.
- *
- * Replaces roughly a dozen hand-built `new HttpHeaders({'x-api-key': ...})` sites
- * and the direct HttpClient use in the old single-page admin component. Two things
- * are centralised here:
- *
- * 1. The key header, sourced from AdminKeyStore, so it exists in one place.
- *
- * 2. Error interpretation. The old code funnelled everything through one `fail()`
- *    that printed `失敗：<detail>`, which flattened several very different
- *    situations into the same unhelpful sentence. Each status now says what
- *    actually happened:
- *
- *      0    the request never reached the backend
- *      403  the key is wrong — clear it and send the operator back to unlock
- *      422  the header was missing entirely (FastAPI's Header(...) is required),
- *           which means the key went empty, e.g. cleared in another tab. Same
- *           recovery as 403.
- *      409  scoped to `approveCandidate`'s own context ("核准失敗"): approving a
- *           candidate that was already rejected — a state conflict, not a
- *           failure; the caller reloads so the stale row disappears. Since
- *           backend/errors.py started mapping unique_violation (23505) to 409
- *           too — reachable from unrelated writes like `seedTargets` racing on
- *           `discovery_targets.url` — any other context gets a generic conflict
- *           message instead of this candidate-specific one.
- *      502  the remote feed could not be fetched. Warning, not danger: nothing on
- *           our side is broken.
- *      503  autonomous discovery is switched off (FEED_DISCOVERY_ENABLED=false).
- *           A configuration state, so it is reported as information.
- *
- * Callers get the error rethrown after it has been reported, so they only need to
- * reset their own loading flags — they do not message the user themselves.
- */
+/** Management calls carry both the Supabase login and the verified Telegram session. */
 @Injectable({ providedIn: 'root' })
 export class AdminService {
   private http = inject(HttpClient);
-  private keys = inject(AdminKeyStore);
+  private keys = inject(ManageSessionService);
   private toast = inject(ToastService);
   private router = inject(Router);
   private base = environment.apiUrl;
@@ -127,12 +94,15 @@ export class AdminService {
     return this.post<RefreshFeedResult>(`/admin/feeds/${id}/refresh`, {}, '更新文章失敗');
   }
 
-  updateSourceMetadata(id: string, body: {
-    participation_mode: 'normal' | 'signal_only' | 'private';
-    fulltext_policy: 'rss' | 'summary_only';
-    signal_group: string | null;
-    first_party: boolean;
-  }): Observable<Feed> {
+  updateSourceMetadata(
+    id: string,
+    body: {
+      participation_mode: 'normal' | 'signal_only' | 'private';
+      fulltext_policy: 'rss' | 'summary_only';
+      signal_group: string | null;
+      first_party: boolean;
+    },
+  ): Observable<Feed> {
     return this.patch<Feed>(`/admin/feeds/${id}/source`, body, '儲存來源設定失敗');
   }
 
@@ -288,7 +258,7 @@ export class AdminService {
   }
 
   private headers(): Record<string, string> {
-    return { 'x-api-key': this.keys.key() };
+    return this.keys.headers();
   }
 
   private report(error: unknown, context: string): Observable<never> {
@@ -299,8 +269,8 @@ export class AdminService {
         this.toast.danger('無法連線到後端服務');
         break;
 
-      // Wrong key. This tab can no longer talk to the admin API, so drop it and
-      // go re-enter rather than leaving every panel to fail one at a time.
+      // Expired login / Telegram session: return to the login flow.
+      case 401:
       case 403:
         this.lockOut();
         break;
@@ -337,8 +307,8 @@ export class AdminService {
         break;
 
       case 503:
-        // Not an error — the kill switch is simply off.
-        this.toast.info('自主發現目前為停用狀態（FEED_DISCOVERY_ENABLED=false）');
+        // The discovery switch or management verification service can be unavailable.
+        this.toast.info(apiMessage(error, '服務暫時無法使用'));
         break;
 
       default:
@@ -348,10 +318,10 @@ export class AdminService {
     return throwError(() => error);
   }
 
-  /** Drops the key for this tab and sends the operator back to re-enter it. */
+  /** Clear local management credentials after a server rejection. */
   private lockOut(): void {
     this.keys.clear();
-    this.toast.danger('Admin API Key 無效，請重新輸入');
-    void this.router.navigate(['/admin/unlock']);
+    this.toast.danger('後台驗證已失效，請重新登入');
+    void this.router.navigate(['/manage/login']);
   }
 }

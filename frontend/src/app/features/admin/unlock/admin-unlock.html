@@ -2,39 +2,78 @@
   <form class="panel" (ngSubmit)="submit()">
     <div class="head">
       <ob-icon name="lock" [size]="16" />
-      <span class="ob-label">DRIFTREAD ADMIN</span>
+      <span class="ob-label">DRIFTREAD MANAGE</span>
     </div>
-
     <div class="body">
       <h1>後台管理</h1>
-      <p class="lede">請輸入 Admin API Key 以進入後台。金鑰只會保存在這個分頁，關閉後即失效。</p>
-
-      <label class="field">
-        <span class="ob-label">Admin API Key</span>
-        <input
-          class="ob-input"
-          type="password"
-          name="apiKey"
-          autocomplete="off"
-          autocapitalize="off"
-          spellcheck="false"
-          [(ngModel)]="apiKey"
-        />
-      </label>
-
+      @if (challenge()) {
+        <p class="lede">請輸入 Telegram 收到的 6 位數驗證碼，5 分鐘內有效。</p>
+        <label class="field">
+          <span class="ob-label">Telegram 驗證碼</span>
+          <input
+            class="ob-input"
+            type="text"
+            name="code"
+            autocomplete="one-time-code"
+            inputmode="numeric"
+            pattern="[0-9]{6}"
+            maxlength="6"
+            [disabled]="busy()"
+            [(ngModel)]="code"
+          />
+        </label>
+        <button
+          type="button"
+          class="ob-btn ob-btn--ghost"
+          [disabled]="busy() || cooldown() > 0"
+          (click)="resend()"
+        >
+          {{ cooldown() > 0 ? cooldown() + ' 秒後可重送' : '重送驗證碼' }}
+        </button>
+        <button type="button" class="ob-btn ob-btn--ghost" [disabled]="busy()" (click)="restart()">
+          重新登入
+        </button>
+      } @else {
+        <p class="lede">請使用管理員帳號登入，接著完成 Telegram 兩步驟驗證。</p>
+        <label class="field">
+          <span class="ob-label">Email</span>
+          <input
+            class="ob-input"
+            type="email"
+            name="email"
+            autocomplete="username"
+            [disabled]="busy() || !auth.isConfigured()"
+            [(ngModel)]="email"
+          />
+        </label>
+        <label class="field">
+          <span class="ob-label">密碼</span>
+          <input
+            class="ob-input"
+            type="password"
+            name="password"
+            autocomplete="current-password"
+            [disabled]="busy() || !auth.isConfigured()"
+            [(ngModel)]="password"
+          />
+        </label>
+      }
       @if (error()) {
         <p class="err" role="alert">{{ error() }}</p>
       }
-
-      <ob-callout tone="info">
-        這道關卡只檢查金鑰是否存在，真正的驗證在後端。金鑰錯誤時第一個請求會回
-        403，屆時會自動清除並回到這個畫面。
-      </ob-callout>
+      @if (!auth.isConfigured()) {
+        <p class="err" role="alert">登入服務尚未設定，請聯絡管理員。</p>
+      }
     </div>
-
     <div class="actions">
       <a class="ob-btn ob-btn--ghost" routerLink="/">回前台</a>
-      <button type="submit" class="ob-btn ob-btn--primary">進入後台</button>
+      <button
+        type="submit"
+        class="ob-btn ob-btn--primary"
+        [disabled]="busy() || !auth.isConfigured()"
+      >
+        {{ busy() ? '處理中…' : challenge() ? '驗證並進入後台' : '登入並傳送驗證碼' }}
+      </button>
     </div>
   </form>
 </div>

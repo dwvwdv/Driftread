@@ -257,7 +257,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 ## 3. API 端點
 
-所有端點前綴 `/api`。認證欄位：**公開** = 無需認證；**用戶** = 需 `Authorization: Bearer <Supabase JWT>`；**Admin** = 需 `X-API-Key`。
+所有端點前綴 `/api`。認證欄位：**公開** = 無需認證；**用戶** = 需 `Authorization: Bearer <Supabase JWT>`；**Admin** = 瀏覽器需 Supabase Bearer token + `X-Manage-Session`（Telegram OTP 驗證後取得），外部腳本／擴充仍可單獨使用 `X-API-Key`。帶任一管理登入 header 時絕不回退到 API Key。
 
 ### Feeds / Articles（公開）
 
@@ -330,7 +330,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 日報、RSS、同步契約及同 FastAPI 程序的 `/api/mcp/` 唯讀 MCP 工具見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。MCP 使用官方 SDK；提供讀取工具不需要啟用任何 AI 功能。
 
-### Admin（需 `X-API-Key`）
+### Admin（管理 session 或機器 API Key）
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
@@ -348,7 +348,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 人工 `/admin/events*`、Story merge 與公開 `/events/{id}` 的契約見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md)。`GET /admin/operations` 的佇列、近期工作與失聯／恢復事件見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)。
 
-### Admin — 主動發現（需 `X-API-Key`）
+### Admin — 主動發現（管理 session 或機器 API Key）
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
@@ -373,7 +373,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 ## 4. 前端路由
 
 前後台是兩棵獨立的路由樹，掛在兩個不同的 layout 下。前台完全不知道後台存在——
-公開導覽列沒有任何通往 `/admin` 的連結。
+公開導覽列沒有任何通往 `/manage` 的連結。
 
 ### 前台（`PublicLayout`）
 
@@ -397,22 +397,31 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 | 路徑 | 元件 | 內容 |
 |------|------|------|
-| `/admin/unlock` | `admin-unlock` | 輸入 API Key。**必須排在 `/admin` 之前**——一旦有金鑰 guard 就會通過，`admin` 會吃掉 `admin/**` 前綴，`unlock` 會被當成未知的 admin 子路由 |
-| `/admin` | → `/admin/dashboard` | |
-| `/admin/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示 |
-| `/admin/candidates` | `admin-candidates` | 候選審核 |
-| `/admin/feeds` | `admin-feeds` | 使用中 / 已封存 / 健康度偏低 |
-| `/admin/frontier` | `admin-frontier` | 種子網址、待探測佇列與封鎖、目錄來源 |
-| `/admin/import` | `admin-import` | 單一網址匯入、JSON 批次匯入 |
+| `/manage/login` | `admin-unlock` | 管理員 Email／密碼登入後輸入 Telegram OTP；獨立於後台 guard |
+| `/manage` | → `/manage/dashboard` | |
+| `/manage/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示 |
+| `/manage/candidates` | `admin-candidates` | 候選審核 |
+| `/manage/feeds` | `admin-feeds` | 使用中 / 已封存 / 健康度偏低 |
+| `/manage/frontier` | `admin-frontier` | 種子網址、待探測佇列與封鎖、目錄來源 |
+| `/manage/import` | `admin-import` | 單一網址匯入、JSON 批次匯入 |
 
-⚠ `adminGuard`（`frontend/src/app/guards/admin.guard.ts`）**只檢查這個分頁有沒有輸入過
-金鑰，不是認證**。它無法驗證金鑰——能驗的只有後端的 `_require_api_key`。後台身分是一把
-獨立的共用密鑰，無法由 Supabase 登入推導。guard 買到的是 UX（不會整頁面板一起 403），
-不是安全邊界。
+`adminGuard` 等待 Supabase session 還原，再檢查目前帳號／登入 session 綁定的 OTP session。
+真正授權仍在後端：只允許設定的管理員 UUID、有效 Supabase session 與未過期的 OTP session。
+`/admin` 前端入口已移除，不設舊入口轉址。管理 token 只存該分頁的 sessionStorage；登出後台會撤銷伺服器 session。
 
-金鑰存在 `sessionStorage['driftread_admin_key']`：分頁關閉即失效，但撐得過重新整理，
-所以各子頁可以直接在 `ngOnInit` 載入，不需要每個面板一顆「載入」按鈕。金鑰不會出現在
-網址、不會被記錄、也不會被畫回畫面上（側欄只顯示「已解鎖」狀態點）。
+註冊頁與 `AuthService.signUp` 已移除，Driftread 只提供既有帳號帳密登入。Supabase Auth 由其他應用共用，未修改專案全域註冊設定。
+
+### 後台 OTP API
+
+| Method | Path（`/api` 前綴） | 說明 |
+|--------|---------------------|------|
+| POST | `/manage/auth/request` | 唯一管理員 5 分鐘內的帳密登入 JWT 才可發送；固定 Vault 私人 Telegram 收件人；回傳 challenge，非管理 session |
+| POST | `/manage/auth/verify` | 同帳號／同 Supabase session 的 challenge + 6 位 ASCII 數字；成功消耗 OTP，回傳 8 小時有效的管理 token |
+| POST | `/manage/auth/logout` | 帶登入 token 與 `X-Manage-Session`，撤銷管理 session |
+
+OTP 有效 5 分鐘，重送間隔 60 秒；每個 challenge 最多錯 5 次，之後同管理員鎖 15 分鐘，重新登入不能解除。
+發送／驗證另外每 IP 每 60 秒限 5／10 次。Telegram 以 pg_net 非同步送出；只有確認 HTTP 200 與 `ok=true` 才能完成驗證。
+資料庫／Vault／Telegram 缺設定或失敗一律拒絕管理登入，不授予降級 session。
 
 ### 佈景主題
 
@@ -443,6 +452,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
+| `manage_login_state` / `manage_sessions` | 20261012020000 | OTP bcrypt hash、嘗試／冷卻與管理 token SHA-256 hash；RLS 無 policy，所有 Data API roles（含 service_role）均撤銷存取，只由 backend 直連 PostgreSQL 使用 |
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `user_feeds` | 002 + 021 + 022 | 訂閱關係＋`custom_title`（021，該使用者對這個訂閱的自訂顯示名稱，NULL 代表沿用 feed 原本的 title；只在這段 (user, feed) 關係內生效，不寫回 `feeds.title`）＋`muted_at`（022，靜音時間戳，NULL 代表未靜音；`list_reading_stream`／`reading_stream_unread_counts` 排除已靜音的訂閱，`GET /me/feeds` 與取消訂閱不受影響） |
@@ -522,7 +532,7 @@ RLS：五張 `user_*` 表為 permanent-user owner-only policy（002 的四張＋
 **四張 `discovery_*` 表開 RLS 但刻意不建任何 policy（006）** —— 連 SELECT 都沒有，所以 anon 與
 authenticated 看不到任何列也寫不進去，只有 service_role 能繞過。這與 004 對公開 catalog 開 public
 read 是相反的刻意選擇：誰連到誰是 scraping 敏感資料，anon key 洩漏不該能列舉待探測佇列。
-後端使用 **service_role key** 繞過 RLS 進行寫入，權限改由 JWT 驗證與 `ADMIN_API_KEY` 控管。
+後端使用 **service_role key** 繞過 RLS 進行寫入，權限改由 JWT 與管理 session 驗證控管；外部腳本／擴充仍有 `ADMIN_API_KEY` 路徑。OTP 狀態使用直連 PostgreSQL，service_role 不可讀寫。
 
 索引：`feeds(category)`、`feeds(archived_at)`、`feeds(health_score)`、
 `feeds(next_fetch_at) WHERE archived_at IS NULL`（partial，供到期佇列）、

@@ -1,43 +1,51 @@
 import { TestBed } from '@angular/core/testing';
 import { Router, UrlSegment, UrlTree, provideRouter } from '@angular/router';
 import { adminGuard } from './admin.guard';
-import { AdminKeyStore } from '../services/admin-key';
+import { ManageSessionService } from '../services/manage-session';
+import { AuthService } from '../services/auth';
 
-function segments(...paths: string[]): UrlSegment[] {
-  return paths.map((p) => new UrlSegment(p, {}));
-}
-
-function run(...paths: string[]): boolean | UrlTree {
+function run(...paths: string[]): Promise<boolean | UrlTree> {
   return TestBed.runInInjectionContext(
-    () => adminGuard({}, segments(...paths)) as boolean | UrlTree,
+    () =>
+      adminGuard(
+        {},
+        paths.map((p) => new UrlSegment(p, {})),
+      ) as Promise<boolean | UrlTree>,
   );
 }
 
 describe('adminGuard', () => {
+  let token: string | null;
   beforeEach(() => {
-    sessionStorage.clear();
+    token = null;
     TestBed.resetTestingModule();
-    TestBed.configureTestingModule({ providers: [provideRouter([])] });
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        { provide: AuthService, useValue: { ready: Promise.resolve() } },
+        { provide: ManageSessionService, useValue: { token: () => token } },
+      ],
+    });
   });
-
-  it('lets the operator through once a key is present', () => {
-    TestBed.inject(AdminKeyStore).set('secret-key');
-    expect(run('admin', 'dashboard')).toBe(true);
+  it('allows the console after Telegram verification', async () => {
+    token = 'verified';
+    expect(await run('manage', 'dashboard')).toBe(true);
   });
-
-  it('redirects to unlock rather than returning false', () => {
-    // Returning false would fall through to the '**' route and dump the operator
-    // on the public home page with no explanation.
-    const result = run('admin', 'dashboard');
+  it('redirects to the management login and remembers the destination', async () => {
+    const result = await run('manage', 'candidates');
     expect(result).toBeInstanceOf(UrlTree);
-    expect(TestBed.inject(Router).serializeUrl(result as UrlTree)).toContain('/admin/unlock');
+    const url = TestBed.inject(Router).serializeUrl(result as UrlTree);
+    expect(url).toContain('/manage/login');
+    expect(decodeURIComponent(url)).toContain('/manage/candidates');
   });
-
-  it('remembers where the operator was heading', () => {
-    const result = run('admin', 'candidates') as UrlTree;
-    const url = TestBed.inject(Router).serializeUrl(result);
-
-    expect(url).toContain('redirect=');
-    expect(decodeURIComponent(url)).toContain('/admin/candidates');
+  it('waits for Supabase session restoration before testing the OTP session', async () => {
+    let restore!: () => void;
+    TestBed.inject(AuthService).ready = new Promise<void>((resolve) => {
+      restore = resolve;
+    });
+    const pending = run('manage');
+    token = 'restored';
+    restore();
+    expect(await pending).toBe(true);
   });
 });

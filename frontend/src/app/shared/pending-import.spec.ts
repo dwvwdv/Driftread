@@ -38,8 +38,8 @@ describe('pending-import', () => {
   it('still returns a usable nonce when sessionStorage.setItem throws', () => {
     // Private browsing / disabled storage (third-round Codex review on PR
     // #52) must not stop Discover.importFeed()'s redirect to /login — it
-    // just means there's nothing to resume afterward, same as AdminKeyStore's
-    // handling of the same failure mode (services/admin-key.ts).
+    // just means there's nothing to resume afterward, same as ManageSessionService's
+    // handling of the same failure mode (services/manage-session.ts).
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('storage disabled');
     });

@@ -12,8 +12,8 @@ import { AuthService } from '../services/auth';
  *    no business being attached to a request to some third-party host just
  *    because it went through HttpClient.
  *
- *  - Not /admin/*. Those endpoints authenticate with the X-API-Key header and
- *    ignore Authorization entirely, so sending it is pure exposure for no effect.
+ *  - AdminService supplies both Authorization and X-Manage-Session itself.
+ *    Do not replace those credentials from an interceptor.
  */
 export const authInterceptor: HttpInterceptorFn = (req, next) => {
   const auth = inject(AuthService);

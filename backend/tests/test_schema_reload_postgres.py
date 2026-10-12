@@ -33,7 +33,7 @@ def assert_reload(conn):
 
 @pytest.mark.parametrize("commit", [False, True])
 def test_final_migration_reload_waits_for_commit(pg_database, commit):
-    assert sorted(MIGRATIONS.glob("*.sql"))[-1].name == FINAL
+    assert (MIGRATIONS / FINAL).is_file()
     with connection(pg_database) as listener, connection(pg_database) as writer:
         listen(listener)
         with writer.cursor() as cur:

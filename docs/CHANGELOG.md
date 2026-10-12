@@ -1400,3 +1400,20 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - MCP 自訂 async 認證 wrapper 曾同步驗證 JWT，冷 JWKS 或金鑰輪替的 HTTPS 會阻塞 FastAPI 事件迴圈。改將同步驗證移至 threadpool，維持每次請求的永久帳號驗證、原錯誤回應與請求身份隔離，補等待驗證時其他 task 能進展的回歸。
 - popup 同步寫入只在呼叫 storage 前檢查 connectionId，與 options 分頁的斷線／切帳號清除沒有共用順序；延遲寫入會復活舊帳號的摘要與 pending。連線與快取變更由擴充 service worker 單一佇列協調，佇列內確認 connectionId、等待已接受寫入完成再清除或替換；連線 intent 保存在 session 以跨 worker idle 重啟。message 限本擴充 popup／options 頁面，儲存錯誤安全回報，保留重啟後 queue 與候選連線契約。獨立三個 VM context 驗證延遲 pull／replay ack／離線按鈕對斷線及切帳號、過期 auth／cleanup、worker 重啟、儲存拒絕與 sender 限制。
 - 本輪 extension 48 tests、文件檢查與 diff check 通過；backend／前端未更動，前一 head 的 backend 1000 tests（含真 PostgreSQL）、前端 289 tests 及 build 為歷史驗證。GitHub CI 結果另確認 PR 最新 commit 的 checks；正式 Supabase、Chrome 實際 lifecycle 與正式部署未執行。
+
+## 階段四十：關閉 Driftread 自助註冊，後台移至 /manage 並加入 Telegram OTP（PR 待定，2026-10-12）
+
+原後台以共享 API Key 解鎖分頁，沒有帳號綁定與第二因素。依使用者指定，改為既有 Supabase 帳密登入 + 本人 Telegram OTP，限定唯一管理員 UUID，沿用 seamless_track 的 Vault 固定私人收件人，reference schema 未修改。
+
+- 移除 Driftread 註冊切換與 `AuthService.signUp`；依使用者確認不關閉共用 Supabase Auth 的全域註冊。
+- 前端 `/admin` 入口移除，後台改 `/manage`，登入 `/manage/login`。OTP 5 分鐘、重送 60 秒、最多錯 5 次後鎖 15 分鐘；管理 session 8 小時，綁帳號與 Supabase session，每次後台呼叫驗證、登出撤銷。API Key 不再提供給瀏覽器。
+- owner row lock 原子消耗 OTP／建立 session，錯誤嘗試先提交再回錯誤。OTP bcrypt、管理 token SHA-256；新表 RLS 並撤銷所有 Data API roles（含 service_role）存取。既有 privileged DATABASE_URL 執行驗證，Vault 密鑰留在 SQL，pg_net 非同步送信並確認 Telegram 成功回應。
+- 新增 `MANAGE_OWNER_USER_ID`，同步 `.env.example`、compose api、gen_env missing 檢查。部署者需填指定帳號 UUID；空白時拒絕管理登入。正式部署與验收順序見 [RUNBOOK](RUNBOOK.md#後台-telegram-兩步驟驗證)。
+- 既有 `/api/admin/*` 機器 API Key 接口保留供腳本／擴充使用；它仍是獨立授權，不經 OTP。帶管理登入 header 時不回退到 key。若要所有機器接口也強制 OTP，需另設整合認證；本次未變更該契約，也未旋轉既有 key。
+
+### 驗證與部署界限
+
+- 完整 backend：1023 tests 通過，包含隔離 PostgreSQL 17 的真 bcrypt、並發 OTP 一次消耗、重送冷卻、錯誤次數提交／鎖定、過期／換 session／撤銷與 Data API grants；migration runner 與新增檔重跑通過。
+- Frontend：34 files、296 tests 通過；production build 通過，initial 507.91 kB 相對既有 500 kB warning budget 超出 7.91 kB，未修改預算。覆蓋無註冊入口、兩階段登入、錯碼與 cooldown、redirect、reload 還原、帳號／session 切換與登出。
+- 文件檢查與 `git diff --check` 通過。唯讀查詢確認正式 Supabase 指定帳號為永久帳號且已有密碼、Vault 收件為私人 chat、pg_net／pgcrypto 既有設定；未部署正式 schema／API／frontend，未以本人帳密走查、未發送正式 Telegram 測試 OTP。真 PG 測試使用假的 Vault／pg_net 送信端，不能當成已驗證實際 Telegram 收件。
+- Review 事件 hook 工具不可用；沒有建立替代輪詢排程。

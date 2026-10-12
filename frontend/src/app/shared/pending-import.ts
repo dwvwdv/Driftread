@@ -20,8 +20,8 @@
  * never made (second-round Codex review on PR #52). The nonce ties resumption
  * to the exact redirect Discover generated, not to login as a generic event.
  *
- * sessionStorage access is wrapped in try/catch, same as AdminKeyStore
- * (services/admin-key.ts): it can throw (private browsing, disabled storage —
+ * sessionStorage access is wrapped in try/catch, same as ManageSessionService
+ * (services/manage-session.ts): it can throw (private browsing, disabled storage —
  * third-round Codex review on PR #52). Failing here must not stop the click
  * itself from reaching /login — it just means the import can't be resumed
  * automatically, same as if the reader had never clicked at all. Nonce
