@@ -1401,7 +1401,7 @@ issue #63 原 roadmap 同時涵蓋採集、內容身份、來源政策、個人�
 - popup 同步寫入只在呼叫 storage 前檢查 connectionId，與 options 分頁的斷線／切帳號清除沒有共用順序；延遲寫入會復活舊帳號的摘要與 pending。連線與快取變更由擴充 service worker 單一佇列協調，佇列內確認 connectionId、等待已接受寫入完成再清除或替換；連線 intent 保存在 session 以跨 worker idle 重啟。message 限本擴充 popup／options 頁面，儲存錯誤安全回報，保留重啟後 queue 與候選連線契約。獨立三個 VM context 驗證延遲 pull／replay ack／離線按鈕對斷線及切帳號、過期 auth／cleanup、worker 重啟、儲存拒絕與 sender 限制。
 - 本輪 extension 48 tests、文件檢查與 diff check 通過；backend／前端未更動，前一 head 的 backend 1000 tests（含真 PostgreSQL）、前端 289 tests 及 build 為歷史驗證。GitHub CI 結果另確認 PR 最新 commit 的 checks；正式 Supabase、Chrome 實際 lifecycle 與正式部署未執行。
 
-## 階段四十：文章版本歷史加上每篇 10 版的上限（PR 待定，issue #82，2026-10-12）
+## 階段四十：文章版本歷史加上每篇 10 版的上限（PR #93，issue #82，2026-10-12）
 
 PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、發布日期或正文 hash 變動時新增一列，但沒有任何保存期：只在刪除文章／來源時 cascade 清除，#64 的 retention 也只縮減 `articles.content`。摘要帶動態數字的 feed（例如 hnrss 的 `Points`／`# Comments`）或每次輸出都改 `pubDate` 的 generator，每次 refresh 都會新增一個版本。PR #81 之前這類變動是原地 UPDATE，現在則只增不減，等於在 #64 處理 DB 容量的同時又開了一條沒有上限的成長路徑。這是 PR #81 合併後 review 時發現的。正式環境（2026-10-12 唯讀查詢）：PR #81 的 migration 還沒套用，DB 269 MB；最近 24 小時至少 336 篇文章在首次抓取後內容又變動過。
 
