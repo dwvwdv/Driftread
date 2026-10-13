@@ -81,7 +81,8 @@ BEGIN
  RETURN jsonb_build_object('action','send','receipt_id',r.id,'token',t,'attempts',r.attempts);
 END $$;
 
--- An explicit admin retry may renew only a known terminal provider failure.
+-- An explicit admin retry may renew only a known terminal provider failure
+-- or a completed result whose cached payload has been pruned.
 -- The durable task retry key deduplicates queue retries; unknowns retain the
 -- original receipt's two-send bound. Keep all earlier attempts/costs for billing.
 CREATE OR REPLACE FUNCTION driftread.reserve_ai_retry(
@@ -104,8 +105,10 @@ BEGIN
    WHERE logical_key=p_logical_key OR retry_parent_key=p_logical_key
    ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE;
   IF NOT FOUND THEN v_key:=p_logical_key;
-  ELSIF r.status='failed' AND (r.error_code IN('provider_http_error','provider_invalid_response')
-   OR (r.error_code='provider_http_retryable' AND r.attempts>=2)) THEN
+  ELSIF (r.status='failed' AND (r.error_code IN('provider_http_error','provider_invalid_response')
+   OR (r.error_code='provider_http_retryable' AND r.attempts>=2)))
+   -- A completed result pruned after 90 days is only repurchased on explicit retry.
+   OR (r.status='completed' AND r.result IS NULL) THEN
    -- v_key remains the new explicit generation.
    NULL;
   ELSE v_key:=r.logical_key;

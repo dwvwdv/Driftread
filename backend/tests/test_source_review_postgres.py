@@ -400,3 +400,43 @@ def test_policy_hot_reload_requeues_unfinished_stale_but_keeps_human_results(pg_
         assert scalar(conn, 'SELECT count(*) FROM driftread.source_reviews WHERE candidate_id=%s', (human_id,)) == 1
         assert scalar(conn, 'SELECT count(*) FROM driftread.source_reviews WHERE candidate_id=%s', (rejected_id,)) == 1
         conn.rollback()
+
+
+def test_scheduled_requests_never_mint_paid_retry_keys(pg_database):
+    with connection(pg_database, 'service_role') as conn:
+        candidate(conn)
+        assert scalar(conn, 'SELECT driftread.request_due_source_reviews(10)')['requested'] >= 1
+        scalar(conn, "UPDATE driftread.source_reviews SET status='stale' RETURNING id")
+        assert scalar(conn, 'SELECT driftread.request_due_source_reviews(10)')['requested'] >= 1
+        assert scalar(conn, 'SELECT count(*) FROM driftread.source_reviews') >= 2
+        assert scalar(conn, 'SELECT count(*) FROM driftread.source_reviews WHERE paid_retry_key IS NOT NULL') == 0
+        conn.rollback()
+
+
+@pytest.mark.parametrize('skip_human', [True, False])
+def test_model_labels_only_reuse_catalog_vocabulary(pg_database, skip_human):
+    word = uuid4().hex[:8]
+    with connection(pg_database, 'service_role') as conn:
+        if not skip_human:
+            scalar(conn, "UPDATE driftread.app_settings SET value=jsonb_set(value,'{skip_human_review}','false') WHERE key='source.review' RETURNING version")
+        scalar(conn, "INSERT INTO driftread.feeds(title,url,category,tags) VALUES('known',%s,%s,ARRAY[%s]) RETURNING id",
+               (f'https://{uuid4().hex}.example/feed', f'cat-{word}', f'tag-{word}'))
+        admitted = []
+        for category in (f'cat-{word}', f'invented-{word}'):
+            cid = candidate(conn)
+            review = submit(conn, ready(conn, cid), category=category, tags=[f'tag-{word}', f'invented-{word}'])
+            if not skip_human:
+                assert review['status'] == 'awaiting_human'
+                review = scalar(conn, "SELECT driftread.resolve_source_review(%s,'accept')", (review['id'],))
+            assert review['status'] == 'accepted'
+            admitted.append(scalar(conn, "SELECT jsonb_build_object('category',f.category,'tags',f.tags) FROM driftread.feeds f JOIN driftread.discovery_candidates c ON c.feed_id=f.id WHERE c.id=%s", (cid,)))
+        assert admitted == [{'category': f'cat-{word}', 'tags': [f'tag-{word}']},
+                            {'category': None, 'tags': [f'tag-{word}']}]
+        # Discovery profile categories are also part of the vocabulary.
+        scalar(conn, """INSERT INTO driftread.app_settings(key,value) VALUES('discovery.profiles',jsonb_build_object('profiles',jsonb_build_array(jsonb_build_object('category',%s))))
+                        ON CONFLICT(key) DO UPDATE SET value=jsonb_set(driftread.app_settings.value,'{profiles}',
+                        coalesce(driftread.app_settings.value->'profiles','[]')||jsonb_build_array(jsonb_build_object('category',%s))) RETURNING key""",
+               (f'profile-{word}', f'profile-{word}'))
+        assert scalar(conn, 'SELECT driftread.source_review_known_category(%s)', (f'profile-{word}',)) == f'profile-{word}'
+        assert scalar(conn, 'SELECT driftread.source_review_known_tags(%s::jsonb)', ('"not-an-array"',)) == []
+        conn.rollback()

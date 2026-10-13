@@ -191,3 +191,25 @@ def test_explicit_retry_cannot_release_unknown_or_repeat_its_own_terminal_failur
         assert explicit_retry(conn, 'new', key)['action'] == 'cached'
         assert explicit_retry(conn, 'new', uuid4())['action'] == 'send'
         conn.commit()
+
+
+def test_explicit_retry_repurchases_only_a_pruned_completed_result(pg_database):
+    with connection(pg_database, 'service_role') as conn:
+        first = reserve(conn, 'pruned')
+        scalar(conn, 'SELECT driftread.receive_ai_response(%s,%s,%s,200,1)', (first['receipt_id'], first['token'], '{}'))
+        scalar(conn, """SELECT driftread.finish_ai_request(%s,%s,'completed','{"decision":"reject"}')""", (first['receipt_id'], first['token']))
+        assert explicit_retry(conn, 'pruned', uuid4())['receipt']['id'] == first['receipt_id']
+        scalar(conn, 'UPDATE driftread.ai_request_receipts SET result=NULL WHERE id=%s RETURNING id', (first['receipt_id'],))
+        # Background work keeps the compact identity and never silently repurchases.
+        cached = reserve(conn, 'pruned')
+        assert cached['action'] == 'cached' and cached['receipt']['result'] is None
+        retry_key = uuid4()
+        fresh = explicit_retry(conn, 'pruned', retry_key)
+        assert fresh['action'] == 'send' and fresh['receipt_id'] != first['receipt_id']
+        assert explicit_retry(conn, 'pruned', retry_key)['code'] == 'request_in_progress'
+        scalar(conn, 'SELECT driftread.receive_ai_response(%s,%s,%s,200,1)', (fresh['receipt_id'], fresh['token'], '{}'))
+        scalar(conn, """SELECT driftread.finish_ai_request(%s,%s,'completed','{"decision":"accept"}')""", (fresh['receipt_id'], fresh['token']))
+        assert reserve(conn, 'pruned')['receipt']['id'] == fresh['receipt_id']
+        assert explicit_retry(conn, 'pruned', uuid4())['receipt']['id'] == fresh['receipt_id']
+        assert scalar(conn, 'SELECT count(*) FROM driftread.ai_request_attempts') == 2
+        conn.commit()
