@@ -68,7 +68,7 @@ def test_fixture_migration_replay_and_no_public_access(pg_database):
                 scalar(conn, "SELECT driftread.claim_source_review('external_agent')")
         with connection(pg_database, role) as conn:
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
-                scalar(conn, "SELECT driftread.decide_discovery_candidate(%s,'held',1)", (uuid4(),))
+                scalar(conn, "SELECT driftread.decide_discovery_candidate(%s,'held',1)", (str(uuid4()),))
 
 
 def test_atomic_admission_is_idempotent_and_keeps_curated_metadata(pg_database):
