@@ -61,7 +61,30 @@ $$;
 REVOKE ALL ON FUNCTION driftread.source_review_candidate_blocked(uuid) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION driftread.source_review_candidate_blocked(uuid) TO service_role;
 
-CREATE OR REPLACE FUNCTION driftread.request_source_review(p_candidate_id uuid,p_retry boolean DEFAULT false)
+-- Model-suggested labels never invent catalog vocabulary: a category must
+-- already be used by a feed or a discovery profile, and tags by a feed.
+CREATE OR REPLACE FUNCTION driftread.source_review_known_category(p_category text)
+ RETURNS text LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT p_category WHERE p_category IS NOT NULL AND (
+  EXISTS(SELECT 1 FROM driftread.feeds f WHERE f.category=p_category)
+  OR EXISTS(SELECT 1 FROM driftread.app_settings s
+   CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(s.value->'profiles')='array' THEN s.value->'profiles' ELSE '[]'::jsonb END) p
+   WHERE s.key='discovery.profiles' AND p->>'category'=p_category));
+$$;
+CREATE OR REPLACE FUNCTION driftread.source_review_known_tags(p_tags jsonb)
+ RETURNS text[] LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT coalesce(array_agg(DISTINCT t.value ORDER BY t.value),'{}')
+ FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(p_tags)='array' THEN p_tags ELSE '[]'::jsonb END) t
+ WHERE EXISTS(SELECT 1 FROM driftread.feeds f WHERE t.value=ANY(f.tags));
+$$;
+REVOKE ALL ON FUNCTION driftread.source_review_known_category(text),driftread.source_review_known_tags(jsonb) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION driftread.source_review_known_category(text),driftread.source_review_known_tags(jsonb) TO service_role;
+
+-- p_retry replaces a terminal/stale task. Only an explicit human retry
+-- (p_paid_retry defaults to p_retry) may renew a terminal paid failure;
+-- scheduled requeues pass false so they reuse the existing paid receipt.
+DROP FUNCTION IF EXISTS driftread.request_source_review(uuid,boolean);
+CREATE OR REPLACE FUNCTION driftread.request_source_review(p_candidate_id uuid,p_retry boolean DEFAULT false,p_paid_retry boolean DEFAULT NULL)
  RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE c driftread.discovery_candidates; s driftread.app_settings; r driftread.source_reviews;
 BEGIN
@@ -80,7 +103,7 @@ BEGIN
  END IF;
  INSERT INTO driftread.source_reviews(candidate_id,engine,model,policy_version,policy,candidate_version,paid_retry_key)
  VALUES(c.id,s.value->>'engine',CASE WHEN s.value->>'engine'='external_agent' THEN 'external-agent' ELSE s.value->>'model' END,s.version,s.value,c.review_version,
-  CASE WHEN p_retry THEN gen_random_uuid() ELSE NULL END) RETURNING * INTO r;
+  CASE WHEN coalesce(p_paid_retry,p_retry) THEN gen_random_uuid() ELSE NULL END) RETURNING * INTO r;
  RETURN to_jsonb(r);
 END $$;
 
@@ -176,7 +199,7 @@ END $$;
 
 CREATE OR REPLACE FUNCTION driftread.submit_source_review(p_review_id uuid,p_reviewer_id text,p_token uuid,p_hash text,p_result jsonb)
  RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE r driftread.source_reviews; c driftread.discovery_candidates; s driftread.app_settings; outcome text; tag_array text[];
+DECLARE r driftread.source_reviews; c driftread.discovery_candidates; s driftread.app_settings; outcome text;
 BEGIN
  SELECT * INTO s FROM driftread.app_settings WHERE key='source.review' FOR SHARE;
  SELECT candidate_id INTO r.candidate_id FROM driftread.source_reviews WHERE id=p_review_id;
@@ -216,8 +239,8 @@ BEGIN
  IF outcome IN('accepted','rejected') AND NOT coalesce((s.value->>'skip_human_review')::boolean,false) THEN outcome:='awaiting_human'; END IF;
  PERFORM set_config('driftread.review_internal','1',true);
  IF outcome='accepted' THEN
-  SELECT coalesce(array_agg(value),'{}') INTO tag_array FROM jsonb_array_elements_text(coalesce(p_result->'tags','[]'));
-  PERFORM driftread.admit_source_review(c.id,p_result->>'category',tag_array);
+  PERFORM driftread.admit_source_review(c.id,driftread.source_review_known_category(p_result->>'category'),
+   driftread.source_review_known_tags(p_result->'tags'));
  END IF;
  PERFORM set_config('driftread.review_internal','',true);
  -- Model rejects remain reviewable pending candidates; never block a host.
@@ -229,7 +252,7 @@ END $$;
 
 CREATE OR REPLACE FUNCTION driftread.resolve_source_review(p_review_id uuid,p_decision text)
  RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE r driftread.source_reviews; c driftread.discovery_candidates; tag_array text[];
+DECLARE r driftread.source_reviews; c driftread.discovery_candidates;
 BEGIN
  IF p_decision NOT IN('accept','reject','defer') THEN RAISE EXCEPTION 'invalid decision'; END IF;
  SELECT candidate_id INTO r.candidate_id FROM driftread.source_reviews WHERE id=p_review_id;
@@ -238,8 +261,8 @@ BEGIN
  IF NOT FOUND THEN RETURN jsonb_build_object('error','not_found'); END IF;
  IF c.manual_override IS NOT NULL OR c.status<>'pending' OR driftread.source_review_candidate_blocked(c.id) THEN RETURN jsonb_build_object('error','manual_decision'); END IF;
  IF p_decision='accept' THEN
-  SELECT coalesce(array_agg(value),'{}') INTO tag_array FROM jsonb_array_elements_text(coalesce(r.result->'tags','[]'));
-  PERFORM driftread.admit_source_review(c.id,r.result->>'category',tag_array);
+  PERFORM driftread.admit_source_review(c.id,driftread.source_review_known_category(r.result->>'category'),
+   driftread.source_review_known_tags(r.result->'tags'));
  ELSIF p_decision='reject' THEN
   UPDATE driftread.discovery_candidates SET status='rejected',reviewed_at=now() WHERE id=c.id;
  ELSE
@@ -281,7 +304,7 @@ BEGIN
  WHERE c.status='pending' AND c.manual_override IS NULL AND NOT driftread.source_review_candidate_blocked(c.id)
  AND (latest.status IS NULL OR latest.status='stale')
  ORDER BY c.discovered_at,c.id LIMIT greatest(0,least(p_limit,10)) FOR UPDATE OF c SKIP LOCKED LOOP
-  result:=driftread.request_source_review(cid,true);
+  result:=driftread.request_source_review(cid,true,false);
   IF result->>'error' IS NULL THEN n:=n+1; END IF;
  END LOOP;
  RETURN jsonb_build_object('requested',n);
@@ -366,11 +389,11 @@ REVOKE ALL ON FUNCTION driftread.decide_discovery_candidate(uuid,text,bigint,tex
 GRANT EXECUTE ON FUNCTION driftread.decide_discovery_candidate(uuid,text,bigint,text,boolean) TO service_role;
 
 -- Explicit zero-policy service-only execution; no SECURITY DEFINER application RPC.
-REVOKE ALL ON FUNCTION driftread.source_review_candidate_fence(),driftread.request_source_review(uuid,boolean),
+REVOKE ALL ON FUNCTION driftread.source_review_candidate_fence(),driftread.request_source_review(uuid,boolean,boolean),
  driftread.claim_source_review(text,boolean,uuid),driftread.prepare_source_review(uuid,uuid,jsonb,text,text),
  driftread.admit_source_review(uuid,text,text[]),driftread.submit_source_review(uuid,text,uuid,text,jsonb),
  driftread.resolve_source_review(uuid,text),driftread.prune_source_reviews() FROM PUBLIC,anon,authenticated;
-GRANT EXECUTE ON FUNCTION driftread.source_review_candidate_fence(),driftread.request_source_review(uuid,boolean),
+GRANT EXECUTE ON FUNCTION driftread.source_review_candidate_fence(),driftread.request_source_review(uuid,boolean,boolean),
  driftread.claim_source_review(text,boolean,uuid),driftread.prepare_source_review(uuid,uuid,jsonb,text,text),
  driftread.admit_source_review(uuid,text,text[]),driftread.submit_source_review(uuid,text,uuid,text,jsonb),
  driftread.resolve_source_review(uuid,text),driftread.prune_source_reviews() TO service_role;

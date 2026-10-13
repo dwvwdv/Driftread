@@ -1019,3 +1019,10 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 人工保留／拒絕原本是無條件 PostgREST 更新，可能在模型已收錄後顯示拒絕成功。改為候選鎖與版本檢查的原子 RPC；已收錄時回 409，前端提示前往來源管理並重讀，不動既有 feed。補上真 PostgreSQL 兩種順序的鎖等待、rollback、版本與 alias 測試。
 - Jev 認證錯誤或無效回應原本永久命中 failed receipt，修正 key 後也無法明確重試。新增 server-only 任務 retry key、已知終態失敗的新 generation 及 durable receipt binding；保留舊費用與回應，預算照常生效，背景重跑與 unknown 不解除原重試上限。
 - Review 修正後本機 backend 1024 passed／142 skipped、前端 323 tests／production build 通過；最新 head PostgreSQL CI 結果由 PR 追蹤。
+
+### 後續 review 修正
+
+- 模型建議的分類與標籤原本原樣寫進新來源；開啟跳過人工覆核時，外部 agent 自創的分類（例如 `Technology` 對上既有 `科技`）會直接進公開目錄與推薦分類。新增 `source_review_known_category()`／`source_review_known_tags()`：分類必須已被某個來源或探測方向使用、標籤必須已被某個來源使用，否則捨棄。自動收錄與「覆核通過」都套用；人工「核准」時指定的分類不受限。沒有改為讓模型從清單中選擇，也沒有在 MCP 暴露分類清單（不在此 PR 範圍）。
+- `request_due_source_reviews` 原本以 `request_source_review(cid,true)` 重新排入，連帶替每個排程任務產生 `paid_retry_key`，與「只有明確重試才有 retry key」的契約不符。`request_source_review` 新增 `p_paid_retry`（預設沿用 `p_retry`），排程傳 `false`；同一支未合併的 migration 內先 `DROP` 舊的兩參數版本，避免重載歧義。
+- 結果快取 90 天後清空 `result` 但保留 identity，同輸入的明確重試會一直拿到 `receipt_cache_expired`。`reserve_ai_retry` 對「完成但 result 已清除」的 receipt 也建立新 generation；背景工作仍不靜默重新付費。候選頁提示改為說明重試會重新付費。
+- 驗證：本機 PostgreSQL 16 執行 `test_source_review_postgres.py`、`test_ai_runtime_postgres.py` 共 51 passed；四個新測試在修正前皆失敗。PostgreSQL 17 交 CI。

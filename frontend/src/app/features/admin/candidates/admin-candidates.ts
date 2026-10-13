@@ -239,7 +239,7 @@ export class AdminCandidates implements OnInit {
       provider_response_too_large: '模型回應超出大小上限，請檢查評審服務。',
       request_in_progress: '同一模型請求仍在處理，請稍後重新整理。',
       request_fenced: '評審請求版本已變更，請重新整理後再試。',
-      receipt_cache_expired: '已保存的模型結果已過期，請檢查請求紀錄後處理。',
+      receipt_cache_expired: '已保存的模型結果已過期；按「重試 AI 評審」會重新付費評審。',
       receipt_response_missing: '模型回應紀錄暫時無法取得，請檢查後台服務。',
     };
     if (review.error_code)

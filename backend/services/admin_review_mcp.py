@@ -117,6 +117,7 @@ async def submit_source_review(ctx: Context, review_id: UUID, submission: Review
     """Submit a leased decision; server policy and human overrides remain authoritative.
 
     May automatically collect the source when policy skips human review.
+    A suggested category or tag is kept only if the catalog already uses it.
     Repeating an identical valid submission is idempotent. Never changes
     source roles, fulltext policies or global settings.
     """
