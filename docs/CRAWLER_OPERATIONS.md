@@ -42,7 +42,7 @@ frontier 預算在同一個共享索引內扣除。現有 Compose 使用單一 w
 
 ## 預覽與縮減正文
 
-`GET /api/admin/retention/stats` 回傳目前文章、完整正文、僅摘要、待抽取、已縮減數量，以及文章表、索引、合計與整個資料庫的 bytes。它是快照，沒有歷史成長率。管理首頁顯示相同資料。
+`GET /api/admin/retention/stats` 回傳目前文章、完整正文、僅摘要、待抽取、已縮減數量，以及文章表、索引、合計與整個資料庫的 bytes。它是即時快照。管理首頁同時顯示每日歷史與成長率（見下節）。
 
 預覽預設為 `dry_run=true`：
 
@@ -65,6 +65,18 @@ X-API-Key: <admin key>
 | `ARTICLE_RETENTION_DAYS` | `30` | 7–3650 天 |
 | `ARTICLE_RETENTION_BATCH_SIZE` | `200` | 每輪 1–1000 篇 |
 | `ARTICLE_RETENTION_INTERVAL_MINUTES` | `1440` | 最多 10080 分鐘；每次只做一批 |
+
+## 每日容量歷史
+
+任一 refresh／discovery／retention 排程啟用時，worker 另跑 `storage` 佇列工作，每小時檢查一次；資料庫只保存 UTC 每天第一筆成功的採樣。三種排程全部關閉時仍維持 worker 直接退出，不另建 Supabase client。沒有新增開關或環境變數，也不會因此啟用正文縮減。
+
+`record_article_storage_snapshot` 在交易 advisory lock 下去重，當天已有採樣就不再掃描文章。成功採樣與去重都是安全可重跑；資料庫故障沿用 queue 的三次重試／退避，失敗不停止採集。`article_storage_snapshots` 僅保存日期、採樣時間與既有即時快照的九項 aggregate，不留正文、URL 或使用者資料。保留最近 90 個 UTC 日，每次檢查刪除更早紀錄；停機不補造歷史。
+
+`GET /api/admin/retention/history?days=30` 僅讀已保存紀錄，`days` 範圍 1–90；與其他管理端點共用管理 session／機器 API Key 驗證。回傳 `observed_at`、`retention_days`、按日期升序的 `points` 與 `growth`。不在 GET 中採樣、不因開管理頁增加掃描成本。
+
+至少兩次採樣、跨滿 24 小時才有 `growth`；否則為 null。成長率是查詢視窗內最早與最新採樣的差，除以實際 elapsed days，包含文章數、table／index／total／database bytes。缺日使用實際間隔，負增量保留，不視為錯誤。它是期間平均淨變化，不是新增文章吞吐量、清理回收量或 quota 預測；database bytes 也包含其他 schema。即時快照與最近 30 天歷史各自載入，後台標示最近採樣時間與計算區間，無紀錄、資料不足與載入失敗分開呈現。
+
+部署需新增容量歷史 migration，順序見 [RUNBOOK](RUNBOOK.md#每日容量歷史)。只有 service_role 可讀寫私有 RLS 表並呼叫 INVOKER RPC，PUBLIC／anon／authenticated 無權限。
 
 ## Worker 監控
 

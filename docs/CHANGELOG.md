@@ -990,3 +990,20 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 - 原本只有同一組驗證碼錯滿 5 次才上鎖，`issue()` 每次發新碼都把 `attempts` 歸零：知道密碼的人每組只猜 4 次、等 60 秒重送，就能無限猜下去（本機真 PostgreSQL 重現：錯 12 次仍未鎖定，下一組照樣登入成功）。改為錯誤次數跨重送累計，只在上一輪鎖定期滿時歸零，驗證成功時清零。新增 `test_resend_does_not_reset_wrong_attempts`（錯 4 次 → 重送 → 再錯 1 次即鎖定）與 `test_success_and_expired_lock_reset_wrong_attempts`；原程式碼下兩項都會失敗。
 - 已知取捨：錯誤次數沒有隨時間衰減，本人隔天再打錯也會延續計數，達 5 次仍會鎖 15 分鐘；成功登入一次即歸零，不另加衰減邏輯。
+
+## 階段四十二：每日文章容量歷史與平均成長率（PR 待定，2026-10-13）
+
+#64 的正文縮減與即時容量統計已由 PR #65 完成，但即時快照無法回答文章數與 DB 用量每天增加多少。本次補上獨立 `storage` queue 工作、每日持久化採樣與管理首頁歷史顯示。
+
+- 任一既有 scheduler 啟用時，每小時檢查並保存 UTC 每天第一筆成功的 aggregate；交易 advisory lock 防止並行採樣／重試覆寫，同日已有紀錄不再掃描文章。保留最近 90 個 UTC 日，不補造停機期間的資料；沒有新增環境變數、不啟用正文縮減，全部 scheduler 關閉仍正常退出。
+- `GET /api/admin/retention/history?days=30` 只讀已存紀錄，最多 90 天；兩筆採樣跨滿 24 小時才提供平均每日淨增量，按實際時間計算，保留負增量。後台顯示文章數、table／index／total／database bytes、採樣區間與最近 30 天表格；紀錄不足、沒有紀錄與載入失敗各自呈現，舊請求不得蓋掉重新整理的結果。
+- 新表 RLS 零 policy、僅 service_role 存取，RPC 使用 INVOKER 與固定 search_path；新 migration 由 Supabase CLI 2.81.3 產生時間戳後移到既有 backend runner 目錄。既有 migration 不修改。
+- 依使用者指示關閉 #68–#80，結案附註明確將正式部署驗收留在 #83；文件同步結案狀態。
+
+### 驗證與部署界限
+
+- PostgreSQL 17.10 的完整 backend：1046 tests 通過；新 SQL fixture 驗證每日去重、同日不重掃、90 天保存邊界、RLS／role grants、migration 重跑與兩個獨立連線的採樣競跑；最新 migration 的 schema reload 測試通過。
+- Frontend：34 files、300 tests 通過，production build 成功。initial bundle 511.70 kB，超出既有 500 kB warning budget 11.70 kB，未修改預算；沒有 component style budget 警告。
+- Chromium：以假的 Supabase／管理 session 與 API aggregate 走查 1280px／390px 的歷史表格、負增量與展開操作，無 JavaScript 錯誤；修正表格的 intrinsic width 撐大手機 grid，表格可水平捲動而整頁不溢出。這不表示已驗證正式認證或資料庫。
+- 文件檢查與 `git diff --check` 通過；未部署正式 Supabase／Docker，正式跨日採樣與備份／dry-run 仍由 #83 追蹤。沒有修改既有 retention eligibility、刪文章 row、quota 預測或外部通知。
+- Review 事件 hook 工具不可用，沒有建立替代輪詢排程。

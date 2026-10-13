@@ -114,3 +114,40 @@ code {
 .warning {
   color: var(--caution-ink);
 }
+
+.storage-history {
+  margin-top: var(--sp-4);
+  summary {
+    cursor: pointer;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+  caption {
+    text-align: left;
+    padding: var(--sp-2);
+  }
+  th,
+  td {
+    padding: var(--sp-2);
+    text-align: right;
+    white-space: nowrap;
+    border-bottom: var(--border-width-thin) solid var(--border);
+  }
+  th:first-child {
+    text-align: left;
+  }
+}
+
+.storage-table {
+  overflow-x: auto;
+  contain: inline-size;
+  margin-top: var(--sp-2);
+}
+.storage-table:focus-visible,
+.storage-history summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

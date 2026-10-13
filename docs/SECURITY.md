@@ -348,6 +348,10 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 - **既有機器 API Key 路徑仍是獨立管理授權**，持有 `ADMIN_API_KEY` 的腳本／擴充不需 OTP。帶 Authorization 或 X-Manage-Session 時不得回退到 key；若需要所有接口都強制 OTP，須另處理機器／擴充認證。舊分頁的 key 會移除，但既有 key 本身不因此撤銷；部署可旋轉並同步更新整合設定。
 - `pg_net` 佇列與 Telegram 回應可能短暫保留 OTP 文字，屬既有 Vault／PostgreSQL 管理員信任範圍；不記錄 OTP 與管理 token。瀏覽器管理 token 使用 sessionStorage，仍受同源 script 信任限制。
 
+## 每日容量歷史權限（#64）
+
+`article_storage_snapshots` 只留日期與 aggregate，不含正文、URL、使用者身份；RLS 零 policy，PUBLIC／anon／authenticated 撤銷表與採樣 RPC 權限，僅 backend service_role 存取。採樣 RPC 為 `SECURITY INVOKER`、固定 `pg_catalog` search_path；歷史 API 沿用後台管理 session／機器 API Key 驗證，查詢視窗最多 90 天。GET 僅讀歷史，不觸發採樣或縮減。真 PostgreSQL fixture 覆蓋權限拒絕、同日去重與保存期邊界。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |

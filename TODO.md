@@ -16,6 +16,10 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 ## issue #63：非 AI 導入
 
+#68–#80 已於 2026-10-13 依使用者指示結案；正式 migration／部署／瀏覽器驗收集中在 [#83](https://github.com/dwvwdv/Driftread/issues/83)，結案不表示已上線。
+
+- [x] [#64](https://github.com/dwvwdv/Driftread/issues/64) 每日文章／容量歷史與成長率：`backend/services/storage_history.py` 與管理首頁；[設計與界限](docs/CRAWLER_OPERATIONS.md#每日容量歷史)。正式採樣與部署驗收仍待 #83。
+
 以下勾選表示程式與自動化驗證完成；合併、正式 Supabase／Docker 部署與瀏覽器走查另列，不以程式完成代替上線。
 
 - [x] [#68](https://github.com/dwvwdv/Driftread/issues/68) 持久化佇列與 [#69](https://github.com/dwvwdv/Driftread/issues/69) graceful shutdown／watchdog：`backend/services/job_queue.py`、`backend/worker.py`；[操作文件](docs/BACKGROUND_JOBS.md)。

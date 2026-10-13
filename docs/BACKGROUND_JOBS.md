@@ -18,6 +18,8 @@ claim 在交易內序列化該 kind 的容量判斷，再以 `FOR UPDATE SKIP LO
 
 ## 停機與部署
 
+`storage` 是第四種週期工作（全域並發上限 1、timeout 300 秒、每小時檢查），僅在任一既有 scheduler 啟用時啟動。沿用相同 singleton、租約、重试、heartbeat 與停機規則；每日去重和 90 天保存期見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史)。沒有新增開關，也不改變 refresh／discovery／retention 的 enable flag。
+
 SIGTERM／SIGINT 立即停止新 enqueue／claim；若 signal 與已提交 claim 競跑，亦不啟動新 action。正在執行的 cycle 最多排空 20 秒，之後取消 coroutine；最終 heartbeat 最多等五秒。未完成工作不立即釋放，讓租約到期後回收，避免仍在執行的資料庫 thread 與新 attempt 過早重疊。Compose `stop_grace_period: 30s` 為容器程序提供停止期限；同步執行緒／無法即時取消的既有同步 I/O 仍可能需要容器最終終止。沒有新增環境變數。
 
 新增 migration：

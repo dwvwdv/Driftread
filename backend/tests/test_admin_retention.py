@@ -87,3 +87,27 @@ def test_stats_returns_current_snapshot_without_article_content(retention_client
     assert response.json() == snapshot
     db.rpc.assert_called_once_with("article_storage_stats")
     db.table.assert_not_called()
+
+
+@pytest.mark.parametrize('headers,status', [({}, 422), ({'x-api-key': 'bad'}, 403)])
+def test_history_rejects_unauthorized_request(retention_client, headers, status):
+    client, db = retention_client
+    assert client.get('/admin/retention/history', headers=headers).status_code == status
+    db.table.assert_not_called()
+
+
+@pytest.mark.parametrize('days', [0, 91])
+def test_history_rejects_unbounded_window(retention_client, days):
+    client, db = retention_client
+    assert client.get(f'/admin/retention/history?days={days}', headers=KEY).status_code == 422
+    db.table.assert_not_called()
+
+
+def test_history_get_reads_only_saved_aggregates(retention_client):
+    client, db = retention_client
+    db.table.return_value.select.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+    response = client.get('/admin/retention/history', headers=KEY)
+    assert response.status_code == 200
+    assert response.json()['points'] == []
+    assert response.json()['growth'] is None
+    db.rpc.assert_not_called()
