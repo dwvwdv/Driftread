@@ -47,6 +47,8 @@ def test_mirror_needs_overlap_in_both_directions():
     # main feed's newest items are not in it.
     assert find_mirror_source(_db([{**row, "recent_overlap": 3}]), _urls(10)) is None
     assert find_mirror_source(_db([{**row, "overlap": 5}]), _urls(10)) is None
+    # A category that dominates the main feed is still not a mirror of it.
+    assert find_mirror_source(_db([{**row, "recent_overlap": 7}]), _urls(10)) is None
 
 
 def test_mirror_check_skips_tiny_feeds_and_fails_open():

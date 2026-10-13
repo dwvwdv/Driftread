@@ -28,7 +28,7 @@
 URL 規則（`services/source_identity.py` 的 `is_comment_feed()`、`feed_url_aliases()`）只認得明確的留言端點與結尾斜線別名，看不出同站 `/feed` 與 `/rss`、或 FeedBurner 代理其實是同一份內容。2026-10 的正式資料裡，Ars Technica、TIME 各被收了三個別名，留言 feed 每則留言各存一篇（`#comment-N`），合計約 4,800 篇重複或非文章資料。因此新來源在**存入第一批文章之前**，會先用它解析出的項目再檢查一次：
 
 - **留言 feed**：至少 3 個項目，且 80% 以上的連結 fragment 是 `comment-<數字>`。`#comments`、標題關鍵字都不算。
-- **鏡像來源**：取前 100 個項目的 canonical URL（去掉 fragment，與文章 trigger 相同），至少 5 個才判斷。service-only RPC `find_mirror_sources` 找出共用這些 URL 的**啟用中 normal** 來源；必須雙向重疊都達 60%：新 feed 的項目大多已存在於該來源，且該來源最新的同數量文章大多也在新 feed 裡。第二個條件讓分類 feed（主 feed 的子集）不會被當成主 feed 的鏡像。不以 host 合併來源。
+- **鏡像來源**：取前 100 個項目的 canonical URL（去掉 fragment，與文章 trigger 相同），至少 5 個才判斷。service-only RPC `find_mirror_sources` 找出共用這些 URL 的**啟用中 normal** 來源；必須雙向重疊都達 80%：新 feed 的項目大多已存在於該來源，且該來源最新的同數量文章（依 `timeline_at`，沒有日期或日期在未來的文章用首次發現時間）大多也在新 feed 裡。第二個條件讓分類 feed（主 feed 的子集）不會被當成主 feed 的鏡像，反方向也不會把主 feed 對應到分類 feed；門檻設 80% 是為了連「占主 feed 七成的分類」都不會誤判。不以 host 合併來源。
 
 套用位置：
 
@@ -37,9 +37,9 @@ URL 規則（`services/source_identity.py` 的 `is_comment_feed()`、`feed_url_a
 | `POST /discover/import` | 422 | 不建立新來源，改為訂閱既有來源並回傳它 |
 | `POST /me/import/opml` | 列入 `failed` | 訂閱既有來源，計入 imported |
 | `POST /admin/feeds/from-url` | 422 | 409，訊息帶既有來源 id |
-| 首次排程抓取（`last_fetched_at` 為空） | 封存，不寫入文章 | 封存，不寫入文章 |
+| 排程抓取，直到來源存了 5 篇以上 | 封存，不寫入文章 | 封存，不寫入文章 |
 
-候選收錄、自動收錄與管理 JSON 匯入不抓取，所以由首次排程抓取把關；`last_failure_reason` 記錄原因，管理者若判斷誤擋，解除封存後下一次抓取不再檢查。已經有人訂閱的來源在首次抓取時不封存，避免使用者的訂閱被靜默清空；會建立訂閱的路徑在建立來源前已檢查過。URL 已在目錄中的再匯入維持原行為。查詢失敗時放行（記 warning），重複資料可事後清理，但不能讓匯入或排程因此中斷。
+候選收錄、自動收錄與管理 JSON 匯入不抓取，所以由排程抓取把關。第一次抓取時項目太少、無法判斷的來源，之後每次抓取都再檢查，直到存了 5 篇以上。同一個 worker 內，檢查與寫入文章由同一把 process 內的鎖序列化，一起收錄的別名在同一輪並行抓取時，後檢查的一方一定看得到前一方已寫入的文章；跨 process（例如另一個 worker 或管理端手動 refresh）不在保護範圍，現行 Compose 只有一個 worker。`last_failure_reason` 記錄原因，管理者若判斷誤擋，解除封存即可；該來源若已存 5 篇以上就不再檢查。已經有人訂閱的來源不封存，避免使用者的訂閱被靜默清空；會建立訂閱的路徑在建立來源前已檢查過。候選收錄或 JSON 匯入建立的來源，若在第一次排程抓取前（預設最多一個 tick，5 分鐘）就被訂閱，會因此略過檢查；這段時間很短，沒有為它另外搬移訂閱。URL 已在目錄中的再匯入維持原行為。查詢失敗時放行（記 warning），重複資料可事後清理，但不能讓匯入或排程因此中斷。
 
 ## 可見性
 

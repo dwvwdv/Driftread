@@ -33,7 +33,7 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
       SELECT a.canonical_url
       FROM driftread.articles a
       WHERE a.feed_id = r.id
-      ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+      ORDER BY a.timeline_at DESC, a.id DESC
       LIMIT (SELECT count(*) FROM sample)
     ) recent
     JOIN sample s ON s.u = recent.canonical_url

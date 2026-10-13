@@ -522,7 +522,7 @@ async def test_first_fetch_archives_comment_feed_without_storing_items():
     assert result.status == "failed" and result.archived is True
     update = db.feed_updates[-1]
     assert update["archived_at"] and update["last_fetched_at"]
-    assert update["last_failure_reason"] == "Excluded at first fetch: comment feed"
+    assert update["last_failure_reason"] == "Excluded before admission: comment feed"
     assert "consecutive_failures" not in update
 
 
@@ -543,7 +543,7 @@ async def test_first_fetch_archives_mirror_of_existing_source():
     assert gate.call_args.kwargs["exclude_feed_id"] == feed["id"]
     assert result.archived is True
     assert db.feed_updates[-1]["last_failure_reason"] == (
-        "Excluded at first fetch: duplicates existing source existing-id"
+        "Excluded before admission: duplicates existing source existing-id"
     )
 
 
@@ -566,15 +566,66 @@ async def test_first_fetch_keeps_a_source_someone_already_subscribed_to():
 
 @pytest.mark.asyncio
 async def test_later_fetches_skip_the_admission_gate():
-    db = _FakeDB(articles_counts=[4, 4])
+    db = _FakeDB(articles_counts=[6, 6])
     feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00")
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
         patch("services.feed_refresh.new_source_rejection") as gate,
-        patch("services.feed_refresh.upsert_articles", return_value=4),
+        patch("services.feed_refresh.upsert_articles", return_value=0),
     ):
         result = await refresh_one(db, feed)
 
     gate.assert_not_called()
     assert result.status == "updated"
+
+
+@pytest.mark.asyncio
+async def test_sources_too_small_to_judge_are_checked_again_later():
+    # Two items stored at the first fetch; the source now shows enough
+    # comment items to be judged even though last_fetched_at is set.
+    db = _FakeDB(articles_counts=[2, 2])
+    feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00")
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
+        patch("services.feed_refresh.upsert_articles") as upsert,
+    ):
+        result = await refresh_one(db, feed)
+
+    upsert.assert_not_called()
+    assert result.archived is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_new_sources_check_and_store_one_at_a_time():
+    """Aliases promoted together land in the same refresh batch; the second
+    check must see the first one's stored items."""
+    import time
+
+    events: list[str] = []
+
+    def gate(db, urls, exclude_feed_id=None):
+        events.append(f"check:{exclude_feed_id}")
+        return None
+
+    def ingest(db, feed_id, articles, **kwargs):
+        events.append(f"start:{feed_id}")
+        time.sleep(0.05)
+        events.append(f"end:{feed_id}")
+        return len(articles)
+
+    db = _FakeDB()
+    feeds = [_feed_row(last_fetched_at=None), _feed_row(last_fetched_at=None)]
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
+        patch("services.feed_refresh.new_source_rejection", side_effect=gate),
+        patch("services.feed_refresh.upsert_articles", side_effect=ingest),
+    ):
+        await asyncio.gather(*(refresh_one(db, feed) for feed in feeds))
+
+    first, second = (events.index(f"check:{f['id']}") for f in feeds)
+    later_check = max(first, second)
+    earlier_id = feeds[0]["id"] if first < second else feeds[1]["id"]
+    assert events.index(f"end:{earlier_id}") < later_check

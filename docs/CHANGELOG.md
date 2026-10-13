@@ -1061,9 +1061,9 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 ### 入口守門
 
-- 新增 `items_look_like_comments()` 與 `find_mirror_source()`（`services/source_identity.py`），以及 service-only RPC `find_mirror_sources`（migration `20261013142256_source_mirror_gate.sql`）。鏡像判斷看新 feed 項目的 canonical URL 和既有來源文章的**雙向**重疊（各 60%），分類 feed 才不會被當成主 feed 的鏡像；不以 host 合併。設計與套用範圍見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
+- 新增 `items_look_like_comments()` 與 `find_mirror_source()`（`services/source_identity.py`），以及 service-only RPC `find_mirror_sources`（migration `20261013142256_source_mirror_gate.sql`）。鏡像判斷看新 feed 項目的 canonical URL 和既有來源文章的**雙向**重疊（各 80%），分類 feed 才不會被當成主 feed 的鏡像；不以 host 合併。設計與套用範圍見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
 - `/discover/import`、`/me/import/opml`、`/admin/feeds/from-url` 原本完全沒有留言 feed 或別名檢查。現在建立來源前都會檢查：留言 feed 拒絕；鏡像來源在使用者路徑改為訂閱既有來源，在管理 API 回 409。前端沿用回傳 feed 的 id 標記訂閱，不需要修改。
-- 候選收錄與管理 JSON 匯入不抓取，因此在首次排程抓取（`last_fetched_at` 為空）存入文章前檢查，命中就封存並記錄 `last_failure_reason`。已經有人訂閱的來源不封存。
+- 候選收錄與管理 JSON 匯入不抓取，因此在排程抓取存入文章前檢查（直到來源存了 5 篇），命中就封存並記錄 `last_failure_reason`。已經有人訂閱的來源不封存。
 - 查詢失敗時放行並記 warning，避免 worker 早於 migration 啟動時排程中斷。
 
 ### 沒做的事
@@ -1078,3 +1078,15 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 本機 PostgreSQL 16 的完整 backend：1205 passed、0 skipped。新增的真 PostgreSQL fixture 驗證鏡像、fragment 正規化、分類 feed 子集不命中、封存與 private 來源排除，以及 anon／authenticated 無法執行；單元測試涵蓋門檻、fail-open、首次抓取封存、已訂閱不封存，以及三條匯入路徑。PostgreSQL 17 交給 CI。
 - 用正式資料唯讀驗證：拿每個啟用中來源最新 50 篇比對其他來源，清理後沒有任何重疊，現有來源不會被誤判。
 - 未部署；正式環境套用 migration 後的實際攔截，要等下一次有人匯入別名或留言 feed 才看得到。
+
+### Review 過程中修掉的問題
+
+- **並行競跑**：同一批收錄的別名（正式資料裡 Ars 三個別名在同一秒建立）會在同一輪 `refresh_due()` 並行抓取，兩邊都在對方寫入前完成檢查而一起放行。改為檢查與寫入文章共用一把 process 內的 `asyncio.Lock`；新增的測試在拿掉鎖時會失敗。沒有改成資料庫鎖：文章寫入是多次 PostgREST 呼叫，無法放進同一個交易；跨 process 的情況寫進 SOURCE_MODEL 的限制。
+- **門檻太寬**：兩個方向都以新 feed 的樣本數當分母，60% 門檻下，占主 feed 六成以上的分類 feed 會被對應到主 feed；反過來，匯入主 feed 時也可能被對應到既有的分類 feed，使用者會漏掉其他分類的文章。門檻提高到 80%；真鏡像在兩邊都正常抓取時接近 100%。
+- **「最新文章」的定義**：原本用 `published_at DESC NULLS LAST`，最近沒有日期的文章會排在有舊日期的文章後面，內容相同的新別名因此被放行。改用專案既有的 `timeline_at` 排序與索引，並補真 PostgreSQL 測試。
+- **證據不足就永遠不再檢查**：第一次抓取時項目少於門檻的來源會正常寫入並設定 `last_fetched_at`，之後就不再檢查。改為來源存滿 5 篇之前，每次排程抓取都重新檢查。
+
+### 討論後不修
+
+- **先訂閱就略過檢查**：候選收錄或 JSON 匯入建立的來源，若在第一次排程抓取前就被使用者訂閱，會略過檢查。新來源一建立就排定立即抓取，這段時間最多一個 tick（預設 5 分鐘）。要涵蓋這種情況，得在封存時把訂閱搬到鏡像來源，而這會批次改動使用者資料，代價和它防止的情況不成比例。
+- 修正後本機 PostgreSQL 16 完整 backend：1208 passed、0 skipped。

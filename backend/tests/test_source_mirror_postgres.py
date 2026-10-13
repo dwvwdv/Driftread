@@ -64,6 +64,26 @@ def test_mirror_sources_measure_both_directions(pg_database):
         assert _sources(conn, [f"{site}/unknown"]) == []
 
 
+def test_recent_window_follows_timeline_not_claimed_dates(pg_database):
+    """Undated recent items fall back to their discovery time, so they are
+    the newest; an old claimed date cannot push them out of the window."""
+    site = f"https://{uuid4().hex}.example"
+    recent = [f"{site}/new/{i}" for i in range(10)]
+    with connection(pg_database) as conn:
+        with conn.cursor() as cur:
+            feed = _feed(cur)
+            for i in range(10):
+                cur.execute(
+                    "INSERT INTO driftread.articles(feed_id,title,url,published_at) VALUES(%s,'old',%s,'2020-01-01')",
+                    (feed, f"{site}/old/{i}"),
+                )
+            for url in recent:
+                cur.execute("INSERT INTO driftread.articles(feed_id,title,url) VALUES(%s,'new',%s)", (feed, url))
+        conn.commit()
+    with connection(pg_database, "service_role") as conn:
+        assert _sources(conn, recent) == [(str(feed), 10, 10)]
+
+
 def test_mirror_sources_are_service_only(pg_database):
     for role in ("anon", "authenticated"):
         with connection(pg_database, role) as conn:

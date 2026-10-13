@@ -593,7 +593,7 @@ DELETE FROM discovery_targets
 | 單輪並發抓取上限 | 5（`FEED_REFRESH_CONCURRENCY`，端點可指定 1–20）| `services/feed_refresh.py::concurrency()` |
 | 個別 feed 抓取間隔 | 15 分 ~ 1440 分，起始 60 分 | `services/feed_refresh.py::next_interval()` |
 | 留言 feed 判斷 | 至少 3 個項目、80% 以上連結為 `#comment-N` | `services/source_identity.py::items_look_like_comments()` |
-| 鏡像來源判斷 | 至少 5 個項目（取前 100），雙向重疊各 60% | `services/source_identity.py::find_mirror_source()` |
+| 鏡像來源判斷 | 至少 5 個項目（取前 100），雙向重疊各 80%；來源存滿 5 篇前每次排程抓取都檢查 | `services/source_identity.py::find_mirror_source()` |
 | Admin feed 列表 `page_size` | 預設 50、上限 200 | `routers/admin.py::list_all_feeds` |
 | URL 欄位長度 | 2048 | `models.py`（discover 請求） |
 | `search` 長度 | 200 | `routers/feeds.py` |

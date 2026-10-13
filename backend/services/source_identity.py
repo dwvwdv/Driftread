@@ -45,7 +45,7 @@ def is_comment_feed(url: str) -> bool:
 COMMENT_ITEM_MIN_ITEMS = 3
 COMMENT_ITEM_RATIO = 0.8
 MIRROR_MIN_ITEMS = 5
-MIRROR_MIN_RATIO = 0.6
+MIRROR_MIN_RATIO = 0.8
 MIRROR_SAMPLE_LIMIT = 100
 _COMMENT_FRAGMENT = re.compile(r"^comment-\d+$", re.IGNORECASE)
 
