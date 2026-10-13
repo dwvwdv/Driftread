@@ -12,6 +12,7 @@ from tests.worker_fakes import MemoryQueue
 @pytest.fixture(autouse=True)
 def _durable_queue(monkeypatch):
     monkeypatch.setattr(worker, "JobQueue", MemoryQueue)
+    monkeypatch.setattr(worker, "run_storage_forever", AsyncMock())
     # These lifecycle tests isolate the pre-existing refresh/discovery loops.
     # Dedicated review-loop hot reload is covered in test_source_review_workflow.
     monkeypatch.setattr(worker, "run_source_review_forever", AsyncMock())

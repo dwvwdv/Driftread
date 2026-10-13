@@ -5,7 +5,7 @@ service in docker-compose.yml). Keeping it out of the API process means its work
 doesn't compete with request handling and the API can be scaled to multiple
 replicas without every replica re-fetching the same feeds.
 
-Four scheduler loops share one event loop and one stop signal:
+Scheduler loops share one event loop and one stop signal:
 
 - **refresh** polls the due queue so imported feeds keep getting new articles;
 - **discovery** mines the article corpus for outbound links, probes the resulting
@@ -14,6 +14,7 @@ Four scheduler loops share one event loop and one stop signal:
   review engine; it stays idle until the hot-reloaded review setting is enabled,
   and is bounded by discovery's deployment master switch;
 - **retention**, opt-in only, compacts a bounded batch of eligible old bodies.
+- **storage** records daily aggregate history while any scheduler is enabled.
 
 Network waits yield to other loops and a separate heartbeat task. Synchronous
 ingestion database calls and bounded HTML parsing can still briefly block this
@@ -37,6 +38,7 @@ from services.discovery_config import discovery_enabled
 from services.discovery_config import tick_seconds as discovery_tick_seconds
 from services.feed_refresh import refresh_due, refresh_enabled, summarize, tick_seconds
 from services.operations import OperationsRecorder
+from services.storage_history import record_storage_snapshot, SAMPLE_CHECK_SECONDS
 from services.job_queue import JobQueue, POLL_SECONDS, RENEW_SECONDS
 from services.settings import load_source_review_settings
 from services.retention import (
@@ -153,7 +155,7 @@ async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summa
                 elif kind == "source_review":
                     failed = summary.get("failed", 0)
                     errors = summary.get("errors", [])
-                else:  # Retention RPC errors raise; successful bounded writes have no stages.
+                else:  # Retention and storage RPC errors raise; there are no stages.
                     failed = 0
                     errors = []
                 await recorder.finish(run_id, "partial" if failed or errors else "succeeded",
@@ -208,6 +210,11 @@ async def run_retention_forever(stop: asyncio.Event | None = None) -> None:
     )
 
 
+async def run_storage_forever(stop: asyncio.Event) -> None:
+    """Hourly durable checks capture only the first sample of each UTC day."""
+    await _run_loop(stop, "storage", SAMPLE_CHECK_SECONDS, record_storage_snapshot, lambda result: result)
+
+
 async def _source_review_enabled(db) -> bool:
     if not discovery_enabled():
         return False
@@ -244,9 +251,9 @@ async def main() -> int:
     _install_signal_handlers(stop)
 
     # get_client() is called inside each loop, not here, so the fully-disabled
-    # path above still constructs no Supabase client — which is why a deployment
-    # with both schedulers off doesn't need SUPABASE_* set at all.
-    loops = []
+    # path above still constructs no Supabase client. Storage telemetry follows
+    # enabled schedulers, so a fully-disabled worker still needs no credentials.
+    loops = [run_storage_forever(stop)]
     if refresh_enabled():
         loops.append(run_forever(stop))
     if discovery_enabled():

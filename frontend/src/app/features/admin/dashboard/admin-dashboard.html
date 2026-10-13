@@ -53,7 +53,9 @@
           <ob-stat label="重試耗盡" [value]="queue.dead" tone="warning" />
         </div>
         @if (queue.next_available_at) {
-          <p class="hint">下一筆可執行時間：{{ queue.next_available_at | date: 'yyyy/MM/dd HH:mm:ss' }}</p>
+          <p class="hint">
+            下一筆可執行時間：{{ queue.next_available_at | date: 'yyyy/MM/dd HH:mm:ss' }}
+          </p>
         }
       }
       @if (ops.alerts?.length) {
@@ -61,7 +63,9 @@
           @for (alert of ops.alerts; track alert.id) {
             <li>
               <strong>{{ alert.worker_id }}</strong>
-              <span [class.warning]="!alert.resolved_at">{{ alert.resolved_at ? '已恢復' : '排程器失聯' }}</span>
+              <span [class.warning]="!alert.resolved_at">{{
+                alert.resolved_at ? '已恢復' : '排程器失聯'
+              }}</span>
               <span class="hint">{{ alert.created_at | date: 'yyyy/MM/dd HH:mm:ss' }}</span>
             </li>
           }
@@ -149,6 +153,91 @@
       </p>
     } @else {
       <ob-empty message="儲存量未知：目前無法取得統計資料。" />
+    }
+  </ob-card>
+</section>
+
+<section class="block">
+  <ob-card heading="容量成長趨勢" meta="DAILY STORAGE">
+    @if (historyLoading()) {
+      <ob-loading label="讀取容量歷史中" />
+    } @else if (history(); as h) {
+      @if (h.points.length === 0) {
+        <ob-empty message="尚無每日容量紀錄；worker 啟動後會自動採樣。" />
+      } @else {
+        <p class="hint">
+          最近採樣：{{ h.points[h.points.length - 1].observed_at | date: 'yyyy/MM/dd HH:mm:ss' }}。
+        </p>
+        @if (h.growth; as g) {
+          <p class="hint">
+            {{ g.start_at | date: 'yyyy/MM/dd HH:mm' }} 至
+            {{ g.end_at | date: 'yyyy/MM/dd HH:mm' }}， 跨
+            {{ g.elapsed_days | number: '1.1-1' }} 天的平均淨增量。
+          </p>
+          <div class="stats">
+            <ob-stat
+              label="文章平均增量／日"
+              [value]="(g.article_count_per_day | number: '1.0-1') ?? ''"
+            />
+            <ob-stat label="文章資料增量／日" [value]="dailyBytes(g.table_bytes_per_day)" />
+            <ob-stat label="文章索引增量／日" [value]="dailyBytes(g.index_bytes_per_day)" />
+            <ob-stat
+              label="文章合計增量／日"
+              [value]="dailyBytes(g.total_bytes_per_day)"
+              tone="accent"
+            />
+            <ob-stat label="資料庫增量／日" [value]="dailyBytes(g.database_bytes_per_day)" />
+          </div>
+        } @else {
+          <p class="hint">資料不足：至少需要兩筆跨 24 小時的採樣，才能計算成長率。</p>
+        }
+        <details class="storage-history">
+          <summary>最近 30 天容量歷史（{{ h.points.length }} 筆）</summary>
+          <div
+            class="storage-table"
+            tabindex="0"
+            role="region"
+            aria-label="每日容量歷史，可水平捲動"
+          >
+            <table>
+              <caption>
+                每日容量採樣
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">採樣時間</th>
+                  <th scope="col">文章數</th>
+                  <th scope="col">文章資料</th>
+                  <th scope="col">索引</th>
+                  <th scope="col">文章合計</th>
+                  <th scope="col">資料庫</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (point of h.points; track point.snapshot_date) {
+                  <tr>
+                    <th scope="row">{{ point.observed_at | date: 'yyyy/MM/dd HH:mm' }}</th>
+                    <td>{{ point.article_count | number }}</td>
+                    <td>{{ bytes(point.table_bytes) }}</td>
+                    <td>{{ bytes(point.index_bytes) }}</td>
+                    <td>{{ bytes(point.total_bytes) }}</td>
+                    <td>{{ bytes(point.database_bytes) }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </details>
+      }
+      <p class="hint">
+        每日保留一筆，最多保存
+        {{
+          h.retention_days
+        }}
+        天；停機期間不補造紀錄。容量包含資料庫其他資料，不能用來推算清理後可回收空間。
+      </p>
+    } @else {
+      <ob-empty message="容量歷史未知：目前無法取得歷史資料。" />
     }
   </ob-card>
 </section>

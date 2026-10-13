@@ -8,6 +8,7 @@ import {
   GlobalSetting,
   GlobalSettingsResponse,
   ArticleStorageStats,
+  StorageHistory,
   OperationsStatus,
   DiscoveryCycleSummary,
   DiscoverySource,
@@ -231,6 +232,14 @@ export class AdminService {
         { headers: this.headers() },
       )
       .pipe(catchError((error) => this.report(error, '儲存全域設定失敗')));
+  }
+
+  storageHistory(): Observable<StorageHistory> {
+    return this.get(
+      '/admin/retention/history',
+      '讀取容量歷史失敗',
+      new HttpParams().set('days', 30),
+    );
   }
 
   listSourceReviews(candidateId: string): Observable<{ items: SourceReview[] }> {

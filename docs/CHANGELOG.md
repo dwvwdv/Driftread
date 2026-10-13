@@ -1026,3 +1026,25 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - `request_due_source_reviews` 原本以 `request_source_review(cid,true)` 重新排入，連帶替每個排程任務產生 `paid_retry_key`，與「只有明確重試才有 retry key」的契約不符。`request_source_review` 新增 `p_paid_retry`（預設沿用 `p_retry`），排程傳 `false`；同一支未合併的 migration 內先 `DROP` 舊的兩參數版本，避免重載歧義。
 - 結果快取 90 天後清空 `result` 但保留 identity，同輸入的明確重試會一直拿到 `receipt_cache_expired`。`reserve_ai_retry` 對「完成但 result 已清除」的 receipt 也建立新 generation；背景工作仍不靜默重新付費。候選頁提示改為說明重試會重新付費。
 - 驗證：本機 PostgreSQL 16 執行 `test_source_review_postgres.py`、`test_ai_runtime_postgres.py` 共 51 passed；四個新測試在修正前皆失敗。PostgreSQL 17 交 CI。
+
+## 階段四十三：每日文章容量歷史與平均成長率（PR #95，2026-10-13）
+
+#64 的正文縮減與即時容量統計已由 PR #65 完成，但即時快照無法回答文章數與 DB 用量每天增加多少。本次補上獨立 `storage` queue 工作、每日持久化採樣與管理首頁歷史顯示。
+
+- 任一既有 scheduler 啟用時，每小時檢查並保存 UTC 每天第一筆成功的 aggregate；交易 advisory lock 防止並行採樣／重試覆寫，同日已有紀錄不再掃描文章。保留最近 90 個 UTC 日，不補造停機期間的資料；沒有新增環境變數、不啟用正文縮減，全部 scheduler 關閉仍正常退出。
+- `GET /api/admin/retention/history?days=30` 只讀已存紀錄，最多 90 天；兩筆採樣跨滿 24 小時才提供平均每日淨增量，按實際時間計算，保留負增量。後台顯示文章數、table／index／total／database bytes、採樣區間與最近 30 天表格；紀錄不足、沒有紀錄與載入失敗各自呈現，舊請求不得蓋掉重新整理的結果。
+- 新表 RLS 零 policy、僅 service_role 存取，RPC 使用 INVOKER 與固定 search_path；新 migration 由 Supabase CLI 2.81.3 產生時間戳後移到既有 backend runner 目錄。既有 migration 不修改。
+- 依使用者指示關閉 #68–#80，結案附註明確將正式部署驗收留在 #83；文件同步結案狀態。
+
+### 驗證與部署界限
+
+- PostgreSQL 17.10 的完整 backend：1188 tests 通過；新 SQL fixture 驗證每日去重、同日不重掃、90 天保存邊界、RLS／role grants、migration 重跑與兩個獨立連線的採樣競跑；最新 migration 的 schema reload 測試通過。
+- Frontend：34 files、327 tests 通過，production build 成功。initial bundle 511.70 kB，超出既有 500 kB warning budget 11.70 kB，未修改預算；沒有 component style budget 警告。
+- Chromium：以假的 Supabase／管理 session 與 API aggregate 走查 1280px／390px 的歷史表格、負增量與展開操作，無 JavaScript 錯誤；修正表格的 intrinsic width 撐大手機 grid，表格可水平捲動而整頁不溢出。這不表示已驗證正式認證或資料庫。
+- 文件檢查與 `git diff --check` 通過；未部署正式 Supabase／Docker，正式跨日採樣與備份／dry-run 仍由 #83 追蹤。沒有修改既有 retention eligibility、刪文章 row、quota 預測或外部通知。
+- Review 事件 hook 工具不可用，沒有建立替代輪詢排程。
+
+### Review 過程中修掉的問題
+
+- `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind、最新 master 的 source_review，並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證五種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。
+- 整合已合併 PR #97：保留來源評審與 storage 的 timeout、loop、前端服務與型別，合併衝突已解；將本 PR 未合併的 migration 重命名為 `20261013115249_article_storage_history.sql`（由 CLI 產生），排在來源評審三支 migration 之後，避免後者重新設定 kind whitelist 時移除 storage。完整 migration chain 的 fixture 同時驗證 source_review 與 storage；本 PR 階段順延至四十三。

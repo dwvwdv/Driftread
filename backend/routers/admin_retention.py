@@ -5,6 +5,7 @@ from supabase import Client
 
 from database import get_client
 from routers.admin import require_api_key
+from services.storage_history import StorageHistory, storage_history
 from services.retention import (
     ArticleStorageStats,
     RetentionSummary,
@@ -13,6 +14,15 @@ from services.retention import (
 )
 
 router = APIRouter(prefix="/admin/retention", tags=["admin", "retention"])
+
+
+@router.get("/history", response_model=StorageHistory, dependencies=[Depends(require_api_key)])
+async def retention_history(
+    days: int = Query(30, ge=1, le=90),
+    db: Client = Depends(get_client),
+) -> StorageHistory:
+    """Read saved daily aggregates and elapsed-time growth; never sample on GET."""
+    return await storage_history(db, days)
 
 
 @router.get(

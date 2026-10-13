@@ -416,6 +416,27 @@ export interface ArticleStorageStats {
   database_bytes: number;
 }
 
+export interface StoragePoint extends ArticleStorageStats {
+  snapshot_date: string;
+  observed_at: string;
+}
+
+export interface StorageHistory {
+  observed_at: string;
+  retention_days: number;
+  points: StoragePoint[];
+  growth: {
+    start_at: string;
+    end_at: string;
+    elapsed_days: number;
+    article_count_per_day: number;
+    table_bytes_per_day: number;
+    index_bytes_per_day: number;
+    total_bytes_per_day: number;
+    database_bytes_per_day: number;
+  } | null;
+}
+
 export interface DiscoveryProfile {
   id: string;
   name: string;

@@ -1,9 +1,10 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
-import { DatePipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { AdminService } from '../../../services/admin';
 import {
   ArticleStorageStats,
+  StorageHistory,
   OperationsStatus,
   DiscoveryStats,
   FeedHealthSummary,
@@ -28,7 +29,17 @@ import { ToastService } from '../../../ui/toast/toast';
 @Component({
   selector: 'app-admin-dashboard',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DatePipe, RouterLink, ObCard, ObIcon, ObLoading, ObEmpty, ObPageHeader, ObStat],
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    RouterLink,
+    ObCard,
+    ObIcon,
+    ObLoading,
+    ObEmpty,
+    ObPageHeader,
+    ObStat,
+  ],
   templateUrl: './admin-dashboard.html',
   styleUrl: './admin-dashboard.scss',
 })
@@ -45,10 +56,16 @@ export class AdminDashboard implements OnInit {
   protected storage = signal<ArticleStorageStats | null>(null);
   protected operationsLoading = signal(true);
   protected storageLoading = signal(true);
+  protected history = signal<StorageHistory | null>(null);
+  protected historyLoading = signal(true);
   private snapshotRequest = 0;
 
   protected bytes(value: number): string {
     return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+  }
+
+  protected dailyBytes(value: number): string {
+    return `${value > 0 ? '+' : ''}${this.bytes(value)}`;
   }
 
   protected runStatus(status: string): string {
@@ -76,6 +93,19 @@ export class AdminDashboard implements OnInit {
     const request = ++this.snapshotRequest;
     this.operationsLoading.set(true);
     this.storageLoading.set(true);
+    this.historyLoading.set(true);
+    this.admin.storageHistory().subscribe({
+      next: (history) => {
+        if (request !== this.snapshotRequest) return;
+        this.history.set(history);
+        this.historyLoading.set(false);
+      },
+      error: () => {
+        if (request !== this.snapshotRequest) return;
+        this.history.set(null);
+        this.historyLoading.set(false);
+      },
+    });
     this.admin.operations().subscribe({
       next: (snapshot) => {
         if (request !== this.snapshotRequest) return;

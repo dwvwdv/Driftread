@@ -375,6 +375,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 管理評審 MCP `/api/admin/mcp/` 使用獨立專用機器 key；工具與權限見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#管理-mcp-與權限)。
 | GET | `/admin/retention/stats` | 文章分類計數、表／索引／資料庫 bytes 快照 |
+| GET | `/admin/retention/history` | 每日容量歷史與實際時間平均成長率；`days` 1–90、預設 30；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史) |
 | POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
 | GET | `/admin/discovery/stats` | 各狀態的計數 |
 
@@ -476,6 +477,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 | `background_job_kinds` / `background_jobs` / `worker_alerts` | 20261009000000 / 20261009000100 | service-only 的佇列與 watchdog；見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |
+| `article_storage_snapshots` | 20261013115249 | UTC 每日第一筆 aggregate，保留 90 天；RLS 零 policy、service-only；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史) |
 | `article_revisions` / `article_discoveries` | 20261009000100、20261012000000 | service-only 版本 metadata／hash 與多入口證據，每篇最多保留 10 個版本；`articles` 同時新增 canonical_url、discovered_at、timeline_at、backfill；見 [CONTENT_MODEL.md](CONTENT_MODEL.md) |
 | `article_publications`（view） | 20261009000300 | security_invoker、service-only 的閱讀 projection；見 [PUBLICATION.md](PUBLICATION.md) |
 | `event_objects` / `fact_articles` / `story_facts` / `event_relations` | 20261009000500 | service-only 人工集合、永久排除、關係與別名；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |

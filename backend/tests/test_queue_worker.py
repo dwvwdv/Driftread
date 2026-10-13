@@ -113,9 +113,41 @@ async def test_sigterm_drains_then_cancels_within_bound(monkeypatch):
             await asyncio.Event().wait()
         finally:
             stopped.append(True)
-    with patch.object(worker,'_install_signal_handlers',install), patch.object(worker,'run_forever',stuck):
+    from unittest.mock import AsyncMock
+    with patch.object(worker,'_install_signal_handlers',install), patch.object(worker,'run_forever',stuck), \
+         patch.object(worker,'run_storage_forever',AsyncMock()):
         assert await asyncio.wait_for(worker.main(),1) == 0
     assert stopped == [True]
+
+
+@pytest.mark.asyncio
+async def test_storage_loop_uses_queue_even_when_retention_disabled(monkeypatch):
+    from unittest.mock import AsyncMock
+    from services.operations import OperationsRecorder
+    monkeypatch.setenv('ARTICLE_RETENTION_ENABLED', 'false')
+    stop = asyncio.Event()
+    async def sample(db):
+        stop.set()
+        return {'recorded': True}
+    with patch.object(worker, 'JobQueue', MemoryQueue), patch.object(worker, 'get_client', return_value=None), \
+         patch.object(worker, 'record_storage_snapshot', sample), \
+         patch.object(OperationsRecorder, 'pulse', AsyncMock()), \
+         patch.object(OperationsRecorder, 'begin', AsyncMock(return_value='run')), \
+         patch.object(OperationsRecorder, 'finish', AsyncMock()) as finish:
+        await asyncio.wait_for(worker.run_storage_forever(stop), 1)
+    finish.assert_awaited_once_with('run', 'succeeded', {'recorded': True}, None)
+
+
+@pytest.mark.asyncio
+async def test_main_starts_storage_with_refresh_and_shares_stop_signal(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setenv('FEED_REFRESH_ENABLED', 'true')
+    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', 'false')
+    monkeypatch.setenv('ARTICLE_RETENTION_ENABLED', 'false')
+    with patch.object(worker, 'run_forever', AsyncMock()) as refresh, \
+         patch.object(worker, 'run_storage_forever', AsyncMock()) as storage:
+        assert await worker.main() == 0
+    assert refresh.call_args.args[0] is storage.call_args.args[0]
 
 
 @pytest.mark.asyncio

@@ -143,7 +143,12 @@ describe('AdminService 409 handling', () => {
     const service = TestBed.inject(AdminService);
     service.operations().subscribe();
     service.storageStats().subscribe();
-    for (const path of ['/admin/operations', '/admin/retention/stats']) {
+    service.storageHistory().subscribe();
+    for (const path of [
+      '/admin/operations',
+      '/admin/retention/stats',
+      '/admin/retention/history',
+    ]) {
       const request = httpMock.expectOne((req) => req.url.endsWith(path));
       expect(request.request.method).toBe('GET');
       expect(request.request.headers.get('x-manage-session')).toBe('otp-token');

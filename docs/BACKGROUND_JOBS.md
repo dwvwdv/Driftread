@@ -6,7 +6,7 @@
 
 `source_review` 新增獨立週期（預設每 60 秒、單輪最多 10 個候選、900 秒 timeout、並發上限 1），在 discovery 主開關啟用時監看後台 `source.review`。評審停用時不 enqueue／claim、不抓取或付費；重新啟用不需重啟。來源評審另有資料包／模型租約與版本 fencing，不以背景 queue ack 代替業務交易保護；詳見 [來源評審](SOURCE_REVIEW.md)。
 
-`background_jobs` 保存 payload、到期時間、attempt、worker ID、lease token 與結果；`background_job_kinds` 保存每種工作的全域並發上限，四種 cycle 預設各一。部分唯一索引確保相同 kind／singleton key 最多一個 queued 或 running 工作。每輪以 `scheduler` singleton enqueue；重啟會沿用既有待辦與排程時間。成功或耗盡重試時，終態與下一輪入列在同一個交易提交。未捕捉例外重試最多三次，以 15、30 秒退避；通用 RPC 的最大重試次數為 20，退避上限一小時。已回傳 partial 的 cycle 沿用其 feed／target 退避，不再次重跑整輪增加失敗計數。
+`background_jobs` 保存 payload、到期時間、attempt、worker ID、lease token 與結果；`background_job_kinds` 保存每種工作的全域並發上限，五種 cycle 預設各一。部分唯一索引確保相同 kind／singleton key 最多一個 queued 或 running 工作。每輪以 `scheduler` singleton enqueue；重啟會沿用既有待辦與排程時間。成功或耗盡重試時，終態與下一輪入列在同一個交易提交。未捕捉例外重試最多三次，以 15、30 秒退避；通用 RPC 的最大重試次數為 20，退避上限一小時。已回傳 partial 的 cycle 沿用其 feed／target 退避，不再次重跑整輪增加失敗計數。
 
 需要在業務寫入時建立工作，應在同一個 SQL transaction 內呼叫 `enqueue_background_job`。兩次 HTTP 呼叫不具有交易原子性。目前這些週期不修改業務資料後再入列，週期結果與下一輪則由單一 `finish_background_job` RPC 處理。
 
@@ -19,6 +19,8 @@ claim 在交易內序列化該 kind 的容量判斷，再以 `FOR UPDATE SKIP LO
 每次 worker polling 及 API watchdog 以 bounded reconciliation 回收過期租約；每次最多 100 筆。退回 queued 並持久化退避，達到 max attempts 則 dead。dead 保留供管理者檢查；重複排程仍建立下一輪，不會永久停止採集。poll 最多每五秒一次，不改變實際 cycle tick。停用的 kind 不再 claim；其既有 queued 工作保留，重新啟用時接續。重啟後明確提供的新 tick／timeout 會更新 active singleton 設定；已排定的 available_at 保留，下一輪使用新間隔。未提供的 recurrence／priority／timeout 不覆寫既有設定。
 
 ## 停機與部署
+
+`storage` 是第五種週期工作（全域並發上限 1、timeout 300 秒、每小時檢查），僅在任一既有 scheduler 啟用時啟動。沿用相同 singleton、租約、重试、heartbeat 與停機規則；每日去重和 90 天保存期見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史)。沒有新增開關，也不改變 refresh／discovery／retention 的 enable flag。
 
 SIGTERM／SIGINT 立即停止新 enqueue／claim；若 signal 與已提交 claim 競跑，亦不啟動新 action。正在執行的 cycle 最多排空 20 秒，之後取消 coroutine；最終 heartbeat 最多等五秒。未完成工作不立即釋放，讓租約到期後回收，避免仍在執行的資料庫 thread 與新 attempt 過早重疊。Compose `stop_grace_period: 30s` 為容器程序提供停止期限；同步執行緒／無法即時取消的既有同步 I/O 仍可能需要容器最終終止。沒有新增環境變數。
 

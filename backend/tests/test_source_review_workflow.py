@@ -187,8 +187,11 @@ async def test_main_starts_review_monitor_while_master_on(monkeypatch):
     monkeypatch.setenv('FEED_REFRESH_ENABLED', 'false')
     monkeypatch.setenv('ARTICLE_RETENTION_ENABLED', 'false')
     with patch.object(worker, 'run_discovery_forever', AsyncMock()) as discovery, \
-         patch.object(worker, 'run_source_review_forever', AsyncMock()) as review:
+         patch.object(worker, 'run_source_review_forever', AsyncMock()) as review, \
+         patch.object(worker, 'run_storage_forever', AsyncMock()) as storage:
         assert await worker.main() == 0
     discovery.assert_awaited_once()
     review.assert_awaited_once()
+    storage.assert_awaited_once()
     assert discovery.call_args.args[0] is review.call_args.args[0]
+    assert discovery.call_args.args[0] is storage.call_args.args[0]

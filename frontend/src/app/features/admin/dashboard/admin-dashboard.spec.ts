@@ -4,7 +4,7 @@ import { Subject, of, throwError } from 'rxjs';
 import { AdminDashboard } from './admin-dashboard';
 import { AdminService } from '../../../services/admin';
 import { ToastService } from '../../../ui/toast/toast';
-import { ArticleStorageStats, OperationsStatus } from '../../../models';
+import { ArticleStorageStats, OperationsStatus, StorageHistory } from '../../../models';
 
 const storage: ArticleStorageStats = {
   article_count: 100,
@@ -38,6 +38,13 @@ function dashboard(overrides: Record<string, unknown> = {}) {
           listUnhealthy: () => of([]),
           operations: () => of(operations),
           storageStats: () => of(storage),
+          storageHistory: () =>
+            of({
+              observed_at: operations.observed_at,
+              retention_days: 90,
+              points: [],
+              growth: null,
+            }),
           ...overrides,
         },
       },
@@ -50,15 +57,109 @@ function dashboard(overrides: Record<string, unknown> = {}) {
 }
 
 describe('AdminDashboard operational snapshots', () => {
+  it('shows known empty history and distinguishes insufficient samples', () => {
+    const fixture = dashboard();
+    expect(fixture.nativeElement.textContent).toContain('尚無每日容量紀錄');
+    const component = fixture.componentInstance as unknown as {
+      history: { set: (h: StorageHistory) => void };
+    };
+    component.history.set({
+      observed_at: operations.observed_at,
+      retention_days: 90,
+      points: [{ ...storage, snapshot_date: '2026-10-08', observed_at: operations.observed_at }],
+      growth: null,
+    });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('至少需要兩筆跨 24 小時');
+    expect(fixture.nativeElement.querySelector('table').textContent).toContain('100');
+  });
+
+  it('shows signed growth and its actual observation period', () => {
+    const fixture = dashboard({
+      storageHistory: () =>
+        of({
+          observed_at: operations.observed_at,
+          retention_days: 90,
+          points: [
+            { ...storage, snapshot_date: '2026-10-08', observed_at: operations.observed_at },
+          ],
+          growth: {
+            start_at: '2026-10-04T00:00:00Z',
+            end_at: operations.observed_at,
+            elapsed_days: 4,
+            article_count_per_day: 25,
+            table_bytes_per_day: -1048576,
+            index_bytes_per_day: 0,
+            total_bytes_per_day: -1048576,
+            database_bytes_per_day: 2097152,
+          },
+        }),
+    });
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('跨 4.0 天');
+    expect(text).toContain('-1.0 MiB');
+    expect(text).toContain('+2.0 MiB');
+  });
+
+  it('keeps current storage usable if history cannot be loaded', () => {
+    const fixture = dashboard({
+      storageHistory: () => throwError(() => new Error('missing migration')),
+    });
+    expect(fixture.nativeElement.textContent).toContain('容量歷史未知');
+    expect(fixture.nativeElement.textContent).toContain('2.0 MiB');
+  });
+
+  it('ignores stale history success and error after a reload', () => {
+    const responses: Subject<StorageHistory>[] = [];
+    const fixture = dashboard({
+      storageHistory: () => {
+        const response = new Subject<StorageHistory>();
+        responses.push(response);
+        return response;
+      },
+    });
+    (fixture.componentInstance as unknown as { load: () => void }).load();
+    responses[1].next({
+      observed_at: operations.observed_at,
+      retention_days: 90,
+      points: [{ ...storage, snapshot_date: '2026-10-08', observed_at: operations.observed_at }],
+      growth: null,
+    });
+    responses[0].error(new Error('old request'));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('至少需要兩筆');
+    expect(fixture.nativeElement.textContent).not.toContain('容量歷史未知');
+  });
   it('shows durable queue backlog and distinguishes unresolved watchdog incidents', () => {
-    const fixture = dashboard({ operations: () => of({
-      ...operations,
-      queue: { queued: 3, running: 1, dead: 2, succeeded: 5, next_available_at: operations.observed_at },
-      alerts: [
-        { id: 'a1', worker_id: 'worker-1', kind: 'worker_stale', created_at: operations.observed_at, resolved_at: null },
-        { id: 'a2', worker_id: 'worker-2', kind: 'worker_stale', created_at: operations.observed_at, resolved_at: operations.observed_at },
-      ],
-    }) });
+    const fixture = dashboard({
+      operations: () =>
+        of({
+          ...operations,
+          queue: {
+            queued: 3,
+            running: 1,
+            dead: 2,
+            succeeded: 5,
+            next_available_at: operations.observed_at,
+          },
+          alerts: [
+            {
+              id: 'a1',
+              worker_id: 'worker-1',
+              kind: 'worker_stale',
+              created_at: operations.observed_at,
+              resolved_at: null,
+            },
+            {
+              id: 'a2',
+              worker_id: 'worker-2',
+              kind: 'worker_stale',
+              created_at: operations.observed_at,
+              resolved_at: operations.observed_at,
+            },
+          ],
+        }),
+    });
     const text = fixture.nativeElement.textContent;
     expect(text).toContain('待執行工作');
     expect(text).toContain('重試耗盡');
