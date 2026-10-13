@@ -1,3 +1,11 @@
+-- A source stays under the admission gate until it is admitted: enough
+-- stored items to have been judged, or an administrator unarchived it after
+-- the gate excluded it. Sources already fetched before the gate existed are
+-- admitted. See docs/SOURCE_MODEL.md "收錄前的來源身分檢查".
+ALTER TABLE driftread.feeds ADD COLUMN IF NOT EXISTS admitted_at timestamptz;
+UPDATE driftread.feeds SET admitted_at = coalesce(last_fetched_at, created_at)
+WHERE admitted_at IS NULL AND last_fetched_at IS NOT NULL;
+
 -- Content-based source identity used before a new feed stores articles.
 -- Candidates are active readable sources sharing canonical item URLs with the
 -- new feed; recent_overlap counts how many of the candidate's newest articles

@@ -98,6 +98,14 @@ def find_mirror_source(db, item_urls: list[str], exclude_feed_id: str | None = N
     return None
 
 
+def same_items(a: set[str], b: set[str]) -> bool:
+    """Two parsed feeds carry the same items: both judged, overlap both ways."""
+    if len(a) < MIRROR_MIN_ITEMS or len(b) < MIRROR_MIN_ITEMS:
+        return False
+    shared = len(a & b)
+    return shared >= MIRROR_MIN_RATIO * len(a) and shared >= MIRROR_MIN_RATIO * len(b)
+
+
 def new_source_rejection(db, item_urls: list[str], exclude_feed_id: str | None = None) -> tuple[str, dict | None] | None:
     """Shared admission gate for a feed whose items were just parsed.
 

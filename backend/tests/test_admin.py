@@ -310,3 +310,20 @@ def test_admin_import_from_url_refuses_mirror_and_comment_feeds(client, screened
         )
     assert resp.status_code == status
     mock_db.table.return_value.upsert.assert_not_called()
+
+
+@pytest.mark.parametrize("reason,admitted", [
+    ("Excluded before admission: duplicates existing source x", True),
+    ("Connection refused", False),
+])
+def test_unarchive_overrides_only_admission_exclusions(client, reason, admitted):
+    c, mock_db = client
+    row = {"id": str(uuid4()), "title": "T", "url": "https://example.com/rss", "last_failure_reason": reason,
+           "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+    mock_db.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(data=row)
+    mock_db.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[row])
+    resp = c.patch(f"/api/admin/feeds/{row['id']}/unarchive", headers={"x-api-key": os.environ["ADMIN_API_KEY"]})
+    assert resp.status_code == 200
+    changes = mock_db.table.return_value.update.call_args.args[0]
+    assert changes["archived_at"] is None
+    assert ("admitted_at" in changes) is admitted

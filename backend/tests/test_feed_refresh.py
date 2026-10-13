@@ -510,7 +510,7 @@ def _comment_items(n=4):
 @pytest.mark.asyncio
 async def test_first_fetch_archives_comment_feed_without_storing_items():
     db = _FakeDB(articles_counts=[0, 0])
-    feed = _feed_row(last_fetched_at=None)
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
@@ -529,7 +529,7 @@ async def test_first_fetch_archives_comment_feed_without_storing_items():
 @pytest.mark.asyncio
 async def test_first_fetch_archives_mirror_of_existing_source():
     db = _FakeDB(articles_counts=[0, 0])
-    feed = _feed_row(last_fetched_at=None)
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
     mirror = ("mirror", {"feed_id": "existing-id", "feed_url": "https://example.com/feed/"})
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
@@ -551,7 +551,7 @@ async def test_first_fetch_archives_mirror_of_existing_source():
 async def test_first_fetch_keeps_a_source_someone_already_subscribed_to():
     db = _FakeDB(articles_counts=[0, 4])
     db.subscribers = 1
-    feed = _feed_row(last_fetched_at=None)
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
@@ -565,9 +565,9 @@ async def test_first_fetch_keeps_a_source_someone_already_subscribed_to():
 
 
 @pytest.mark.asyncio
-async def test_later_fetches_skip_the_admission_gate():
-    db = _FakeDB(articles_counts=[6, 6])
-    feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00")
+async def test_admitted_sources_skip_the_admission_gate():
+    db = _FakeDB(articles_counts=[2, 2])
+    feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00", admitted_at="2026-10-01T00:00:00+00:00")
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
@@ -585,7 +585,7 @@ async def test_sources_too_small_to_judge_are_checked_again_later():
     # Two items stored at the first fetch; the source now shows enough
     # comment items to be judged even though last_fetched_at is set.
     db = _FakeDB(articles_counts=[2, 2])
-    feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00")
+    feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00", admitted_at=None)
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
@@ -616,7 +616,7 @@ async def test_concurrent_new_sources_check_and_store_one_at_a_time():
         return len(articles)
 
     db = _FakeDB()
-    feeds = [_feed_row(last_fetched_at=None), _feed_row(last_fetched_at=None)]
+    feeds = [_feed_row(last_fetched_at=None, admitted_at=None) for _ in range(2)]
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
@@ -629,3 +629,56 @@ async def test_concurrent_new_sources_check_and_store_one_at_a_time():
     later_check = max(first, second)
     earlier_id = feeds[0]["id"] if first < second else feeds[1]["id"]
     assert events.index(f"end:{earlier_id}") < later_check
+
+
+@pytest.mark.asyncio
+async def test_source_is_admitted_once_enough_items_are_stored():
+    db = _FakeDB(articles_counts=[0, 6])
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
+        patch("services.feed_refresh.upsert_articles", return_value=6),
+    ):
+        await refresh_one(db, feed)
+    assert db.feed_updates[-1]["admitted_at"]
+
+    # Too few items to judge: stays under admission.
+    db = _FakeDB(articles_counts=[0, 3])
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(3).articles)),
+        patch("services.feed_refresh.upsert_articles", return_value=3),
+    ):
+        await refresh_one(db, _feed_row(last_fetched_at=None, admitted_at=None))
+    assert "admitted_at" not in db.feed_updates[-1]
+
+
+@pytest.mark.asyncio
+async def test_gate_applies_the_comment_url_rule_to_metadata_only_imports():
+    db = _FakeDB(articles_counts=[0, 0])
+    feed = _feed_row(url="https://example.com/comments/feed/", last_fetched_at=None, admitted_at=None)
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
+        patch("services.feed_refresh.upsert_articles") as upsert,
+    ):
+        result = await refresh_one(db, feed)
+    upsert.assert_not_called()
+    assert result.archived is True
+
+
+@pytest.mark.asyncio
+async def test_rows_without_the_admission_column_keep_the_old_behavior():
+    db = _FakeDB(articles_counts=[0, 4])
+    feed = _feed_row(last_fetched_at=None)  # migration not applied yet
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
+        patch("services.feed_refresh.new_source_rejection") as gate,
+        patch("services.feed_refresh.upsert_articles", return_value=4),
+    ):
+        result = await refresh_one(db, feed)
+    gate.assert_not_called()
+    assert result.status == "updated"
+    assert "admitted_at" not in db.feed_updates[-1]

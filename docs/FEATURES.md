@@ -484,7 +484,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `user_heat_snapshots` | 20261009000650 | RLS 零 policy、service-only、沒有全文的本人熱度證據；最多 100 筆、30 日讀取／修復範圍，過期實體於本人下次 capture 清除；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
 | `sync_clock` / `sync_changes` | 20261009000700 | service-only 序列與不含正文的 invalidation ledger；見 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md) |
 
-來源 migration `20261009000200` 為 `feeds` 新增角色、鏡像群、first_party、正文政策及抓取／成功時間；設計與權限見 [SOURCE_MODEL.md](SOURCE_MODEL.md)。
+來源 migration `20261009000200` 為 `feeds` 新增角色、鏡像群、first_party、正文政策及抓取／成功時間；設計與權限見 [SOURCE_MODEL.md](SOURCE_MODEL.md)。`20261013142256` 新增 `feeds.admitted_at`（收錄檢查完成時間）與 service-only RPC `find_mirror_sources`；見 [收錄前的來源身分檢查](SOURCE_MODEL.md#收錄前的來源身分檢查)。
 
 Migration 007 額外定義 DB function `sample_feed_candidates(p_excluded_ids, p_categories, p_mode, p_limit)`
 （不建新表）：供 `routers/recommendations.py` 抽樣候選池，見上方第 2 節。migration 018 為
@@ -593,7 +593,7 @@ DELETE FROM discovery_targets
 | 單輪並發抓取上限 | 5（`FEED_REFRESH_CONCURRENCY`，端點可指定 1–20）| `services/feed_refresh.py::concurrency()` |
 | 個別 feed 抓取間隔 | 15 分 ~ 1440 分，起始 60 分 | `services/feed_refresh.py::next_interval()` |
 | 留言 feed 判斷 | 至少 3 個項目、80% 以上連結為 `#comment-N` | `services/source_identity.py::items_look_like_comments()` |
-| 鏡像來源判斷 | 至少 5 個項目（取前 100），雙向重疊各 80%；來源存滿 5 篇前每次排程抓取都檢查 | `services/source_identity.py::find_mirror_source()` |
+| 鏡像來源判斷 | 至少 5 個項目（取前 100），雙向重疊各 80%；`admitted_at` 寫入前（存滿 5 篇或管理者解除封存）每次排程抓取都檢查 | `services/source_identity.py::find_mirror_source()` |
 | Admin feed 列表 `page_size` | 預設 50、上限 200 | `routers/admin.py::list_all_feeds` |
 | URL 欄位長度 | 2048 | `models.py`（discover 請求） |
 | `search` 長度 | 200 | `routers/feeds.py` |

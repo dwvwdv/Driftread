@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 from services.source_identity import (
     canonical_item_urls,
+    same_items,
     find_mirror_source,
     items_look_like_comments,
     new_source_rejection,
@@ -85,3 +86,11 @@ def test_screen_new_source_leaves_known_urls_and_vanished_mirrors_alone():
     (fresh.table.return_value.select.return_value.eq.return_value.eq.return_value
      .is_.return_value.maybe_single.return_value.execute.return_value) = MagicMock(data=None)
     assert screen_new_source(fresh, "https://example.com/rss", parsed) is None
+
+
+def test_same_items_needs_both_feeds_judged_and_overlapping():
+    a = set(_urls(10))
+    assert same_items(a, set(_urls(10)))
+    assert not same_items(a, set(_urls(4)))  # too few to judge
+    # A category feed: all of its items are in the main feed, but not the reverse.
+    assert not same_items(set(_urls(6)), set(_urls(10)))

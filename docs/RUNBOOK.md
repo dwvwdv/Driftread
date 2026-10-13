@@ -73,7 +73,7 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 ## 收錄前來源身分檢查
 
-`20261013142256_source_mirror_gate.sql` 只新增 service-only RPC `find_mirror_sources`，由 API 啟動時的 runner 套用；沒有 Dashboard 設定或環境變數。照一般順序先更新 API、確認 ledger 後再更新 worker。worker 先於 migration 啟動時，查詢失敗會放行並記 warning，不會中斷排程。行為見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
+`20261013142256_source_mirror_gate.sql` 新增 `feeds.admitted_at`（已抓取過的既有來源回填為已收錄）與 service-only RPC `find_mirror_sources`，由 API 啟動時的 runner 套用；沒有 Dashboard 設定或環境變數。照一般順序先更新 API、確認 ledger 後再更新 worker。worker 先於 migration 啟動時，讀到的來源沒有 `admitted_at` 欄位，排程維持原本行為、不做檢查，也不會寫入不存在的欄位。行為見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
 
 ## 資料庫接近 Supabase 容量上限
 

@@ -23,6 +23,7 @@ from rss_parser import fetch_and_parse
 from services.feed_discovery import DiscoveryError, validate_fetch_url
 from services.source_visibility import screen_new_source
 from services.feed_refresh import (
+    ADMISSION_EXCLUSION_PREFIX,
     AUTO_ARCHIVE_FAILURE_THRESHOLD,  # noqa: F401  (re-exported for existing importers)
     batch_size,
     concurrency,
@@ -153,9 +154,14 @@ async def unarchive_feed(
     if not result or not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
+    changes: dict = {"archived_at": None}
+    if (result.data.get("last_failure_reason") or "").startswith(ADMISSION_EXCLUSION_PREFIX):
+        # Unarchiving a source the admission gate excluded overrides it;
+        # without this the next fetch would exclude it again.
+        changes["admitted_at"] = datetime.now(timezone.utc).isoformat()
     updated = (
         db.table("feeds")
-        .update({"archived_at": None})
+        .update(changes)
         .eq("id", str(feed_id))
         .execute()
     )

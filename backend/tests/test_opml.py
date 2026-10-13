@@ -149,3 +149,41 @@ def test_import_opml_maps_mirror_and_skips_comment_feed(client):
     mock_db.table.return_value.upsert.assert_called_once_with(
         {"user_id": "user-abc", "feed_id": "existing-feed"}, on_conflict="user_id,feed_id",
     )
+
+
+def test_import_opml_subscribes_once_to_aliases_in_the_same_file(client):
+    from unittest.mock import patch
+
+    c, mock_db = client
+    opml = b"""<opml version="2.0"><body>
+      <outline text="feed" xmlUrl="https://a.example/feed"/>
+      <outline text="rss" xmlUrl="https://a.example/rss"/>
+    </body></opml>"""
+    items = [MagicMock(url=f"https://a.example/post/{i}") for i in range(6)]
+
+    async def fake_validate(url):
+        return url
+
+    async def fake_fetch(url):
+        return MagicMock(title="T", description=None, website_url=None, language=None, articles=items)
+
+    mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[{"feed_id": "new-feed"}])
+    with (
+        patch("routers.opml.validate_fetch_url", new=fake_validate),
+        patch("routers.opml.fetch_and_parse", new=fake_fetch),
+        patch("routers.opml.screen_new_source", return_value=None),
+        patch("routers.opml.import_readable_source", return_value={"id": "new-feed"}) as create,
+    ):
+        resp = c.post(
+            "/api/me/import/opml",
+            headers={"Authorization": f"Bearer {_token()}"},
+            files={"file": ("feeds.opml", opml, "text/x-opml")},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["imported"] == 1
+    assert body["failed"] == [
+        "https://a.example/rss: same items as https://a.example/feed; subscribed to that feed only"
+    ]
+    create.assert_called_once()
