@@ -20,6 +20,7 @@ def _db(**extra):
         "discovery_target_referrers": [],
         "discovery_candidates": [],
         "discovery_sources": [],
+        "app_settings": [],
     }
     tables.update(extra)
     return FakeDB(**tables)

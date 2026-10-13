@@ -990,3 +990,23 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 - 原本只有同一組驗證碼錯滿 5 次才上鎖，`issue()` 每次發新碼都把 `attempts` 歸零：知道密碼的人每組只猜 4 次、等 60 秒重送，就能無限猜下去（本機真 PostgreSQL 重現：錯 12 次仍未鎖定，下一組照樣登入成功）。改為錯誤次數跨重送累計，只在上一輪鎖定期滿時歸零，驗證成功時清零。新增 `test_resend_does_not_reset_wrong_attempts`（錯 4 次 → 重送 → 再錯 1 次即鎖定）與 `test_success_and_expired_lock_reset_wrong_attempts`；原程式碼下兩項都會失敗。
 - 已知取捨：錯誤次數沒有隨時間衰減，本人隔天再打錯也會延續計數，達 5 次仍會鎖 15 分鐘；成功登入一次即歸零，不另加衰減邏輯。
+
+## 階段四十二：可替換來源收錄評審、管理 MCP 與可選人工覆核（PR 待定，#96，2026-10-13）
+
+原主動發現只提供人工候選審核及 referrer 數達標直接入庫，無法用內容樣本判斷來源價值。依使用者批准新增來源評審，作為 #84–#87 共用 AI 基礎的第一個用途，後續分類、事件與摘要可以沿用版本與付費請求語義。
+
+- 在 `/manage/settings` 設定外部 agent／Jev 引擎、政策與門檻，人工覆核可關閉；新有效通過結果直接入庫，既有待人工結果不批次放行。人工 hold／reject／approve 與來源 metadata 始終優先。
+- 專用 `/api/admin/mcp/` 使用獨立機器 key，提供 policy／request／claim／packet／submit；個人 MCP 保持原唯讀權限。官方 SDK protocol tests 驗證完整流程、strict inputs、結構化結果及無參數工具相容性。
+- 候選樣本走有界 SSRF／robots／DB host-block gate，不公開 preview articles。以快照、policy／candidate version、lease token 和同交易入庫保護並發。原人工批准改為原子 RPC，不再把新核准留在半提交 approved；舊 approved recovery 保留。重複 URL 只連結，不覆寫人工整理來源。
+- `source_review` queue 隨 discovery 主開關啟用，後台設定熱更新；啟用評審時阻止 referrer 自動入庫繞過。樣本／provider 工作有界退避，預算等待不發送付費請求，人工封鎖與逾期結果無法寫入。
+- Jev 固定官方 endpoint／版本，以獨立品質、相關性與垃圾訊號評分，不生成文字理由。receipt 保存回應後才解析，並發安全預留滾動 minute/hour/day 預算；unknown／429／5xx 額外發送最多一次。分析結果連結 receipt、provider input／prompt／rubric hash 與 adapter version。
+- 新增離線 development／holdout 比較工具；隨附資料是合成測試，不冒稱已校準的正式 gold set。快照／原始回應／快取有保存期，API watchdog 在停用評審後仍清理有限 payload。
+- 新增 `SOURCE_REVIEW_MCP_KEY`、`JEV_API_KEY`，同步 `.env.example`／compose／gen_env；新增三支 service-only、RLS 零 policy、SECURITY INVOKER migration，最後一支送 schema reload。操作與回滾見 [來源評審](SOURCE_REVIEW.md) 與 [RUNBOOK](RUNBOOK.md#來源收錄評審升級96)。
+
+### 驗證與範圍
+
+- 本機 backend 1014 passed／130 skipped；前端 318 tests 通過，production build 通過並保留既有 initial bundle warning（507.91 kB／500 kB），沒有放寬預算。文件檢查、diff check、環境 key 產生冪等性及離線示例 CLI 通過；PR 最新 head CI 另追蹤。
+- 本機沒有 PostgreSQL 測試資料庫，真 SQL fixture／角色／交易／migration 重跑未在本機執行，交 GitHub CI 的 PostgreSQL 17 service 驗證。普通沙箱的 asyncio 跨執行緒喚醒限制，以 repo 外的 selector bounded polling runner 完成測試，不修改產品 async 邏輯。
+- 正式 Supabase、Docker、實際瀏覽器／Jev key、付費 API 與中文評審品質未驗證；正式部署銜接 #83。未發送通知或使用正式資料庫。
+- 本批只提供來源評審需要的 #84–#87 部分：文章／Story 模型 analysis publication 合成、其他模型能力／付費服務、分類／事件／推薦 gold sets 與 #88–#91 的 embedding／事件／生成摘要仍待後續實作。來源評審不取代個人推薦，不將外部 agent 的模型／prompt／成本冒稱已由本後台驗證。
+- Review 事件 hook 工具不可用，沒有建立替代輪詢排程。

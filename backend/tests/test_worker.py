@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,9 @@ from tests.worker_fakes import MemoryQueue
 @pytest.fixture(autouse=True)
 def _durable_queue(monkeypatch):
     monkeypatch.setattr(worker, "JobQueue", MemoryQueue)
+    # These lifecycle tests isolate the pre-existing refresh/discovery loops.
+    # Dedicated review-loop hot reload is covered in test_source_review_workflow.
+    monkeypatch.setattr(worker, "run_source_review_forever", AsyncMock())
 
 from services.feed_refresh import RefreshResult
 

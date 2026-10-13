@@ -22,6 +22,7 @@ from services.discovery_config import directory_enabled
 from services.discovery_probe import probe_due, summarize_probes
 from services.feed_discovery import user_agent
 from services.link_harvest import build_host_index, harvest_due, summarize_harvest
+from services.settings import load_source_review_settings
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -128,7 +129,12 @@ async def run_cycle(
         logger.exception("Probe stage failed")
 
     try:
-        auto_promoted = len(auto_promote_due(db))
+        # Model review owns automated admission while enabled. Human approvals
+        # and their import recovery remain independent below. Corrupt settings
+        # fail closed rather than restoring the legacy bypass.
+        review_settings = await asyncio.to_thread(load_source_review_settings, db)
+        if not review_settings.enabled:
+            auto_promoted = len(auto_promote_due(db))
     except Exception:
         errors.append("auto_promote")
         logger.exception("Auto-promote stage failed")

@@ -23,6 +23,8 @@
 
 全部工具標註 readOnlyHint；沒有寫入、feed 抓取或 AI 工具。CLI SDK client 可無 Origin；瀏覽器 Origin 必須與 Host 相同。部署時 reverse proxy 必須限制可信 Host。
 
+來源收錄評審另設獨立授權的 `/api/admin/mcp/`，不改此個人唯讀介面；管理工具、專用 key 與可選人工覆核見 [來源評審](SOURCE_REVIEW.md)。
+
 個人搜尋的一般正詞 AND／OR 查詢先使用原始 `articles.search_vector` 與許可摘要 expression 的兩個 GIN 索引聯集篩選候選 ID，再以 publication 的許可向量確認命中及排序。摘要索引使用與 summary-only projection 完全相同的表達式，保留摘要 500 字元裁切產生的詞；禁止正文不會影響結果相關度，也不回傳正文或向量。負詞／片語查詢刻意退回本人未靜音訂閱的許可向量比對，避免原始正文的負詞或政策裁切後的詞位置排除可見結果；此類查詢仍可能掃描訂閱歷史。摘要 expression 索引增加一份摘要／metadata 的索引儲存與文章寫入成本。
 
 ## 同步與離線快取的限制

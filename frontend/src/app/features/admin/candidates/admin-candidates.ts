@@ -1,15 +1,17 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   OnInit,
   computed,
   inject,
   signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { Observable } from 'rxjs';
 import { AdminService } from '../../../services/admin';
-import { FeedCandidate } from '../../../models';
+import { FeedCandidate, SourceReview } from '../../../models';
 import { ObCard } from '../../../ui/card/card';
 import { ObIcon } from '../../../ui/icon/icon';
 import { ObListRow } from '../../../ui/list-row/list-row';
@@ -34,6 +36,11 @@ import { clampPage } from '../../../shared/paging';
   styleUrl: './admin-candidates.scss',
 })
 export class AdminCandidates implements OnInit {
+  private destroyRef = inject(DestroyRef);
+  private reviewSeq = new Map<string, number>();
+  protected sourceReviews = signal<Record<string, SourceReview | null>>({});
+  protected reviewErrors = signal<Set<string>>(new Set());
+  protected reviewBusy = signal<Set<string>>(new Set());
   private admin = inject(AdminService);
   private toast = inject(ToastService);
   private confirm = inject(ConfirmService);
@@ -85,19 +92,172 @@ export class AdminCandidates implements OnInit {
     const seq = ++this.loadSeq;
     if (!quiet) this.loading.set(true);
 
-    this.admin.listCandidates(this.page(), this.pageSize(), this.status()).subscribe({
-      next: (result) => {
-        if (seq !== this.loadSeq) return;
-        this.candidates.set(result.items);
-        this.selected.set(new Set());
-        this.total.set(result.total);
-        this.loading.set(false);
+    this.admin
+      .listCandidates(this.page(), this.pageSize(), this.status())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          if (seq !== this.loadSeq) return;
+          this.candidates.set(result.items);
+          this.selected.set(new Set());
+          this.total.set(result.total);
+          this.loading.set(false);
+          for (const candidate of result.items) this.loadSourceReview(candidate.id);
+        },
+        error: () => {
+          if (seq !== this.loadSeq) return;
+          this.loading.set(false);
+        },
+      });
+  }
+
+  private nextReviewSeq(id: string): number {
+    const seq = (this.reviewSeq.get(id) ?? 0) + 1;
+    this.reviewSeq.set(id, seq);
+    return seq;
+  }
+
+  private loadSourceReview(id: string): void {
+    if (this.reviewBusy().has(id)) return;
+    const seq = this.nextReviewSeq(id);
+    this.admin
+      .listSourceReviews(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: ({ items }) => {
+          if (seq !== this.reviewSeq.get(id)) return;
+          this.sourceReviews.update((current) => ({ ...current, [id]: items[0] ?? null }));
+          this.reviewErrors.update((current) => {
+            const next = new Set(current);
+            next.delete(id);
+            return next;
+          });
+        },
+        error: () => {
+          if (seq !== this.reviewSeq.get(id)) return;
+          this.reviewErrors.update((current) => new Set(current).add(id));
+        },
+      });
+  }
+
+  protected requestReview(candidate: FeedCandidate, retry = false): void {
+    if (this.reviewBusy().has(candidate.id) || this.reviewing()) return;
+    const review = this.sourceReviews()[candidate.id];
+    if (candidate.manual_override || review?.manual_override) {
+      this.toast.warning('此候選已有人工決定，不能由模型覆寫');
+      return;
+    }
+    if (
+      !retry &&
+      (review ||
+        this.sourceReviews()[candidate.id] !== null ||
+        this.reviewErrors().has(candidate.id))
+    )
+      return;
+    if (retry && (!review || !this.canRetry(review))) return;
+    const request = retry
+      ? this.admin.retrySourceReview(review!.id)
+      : this.admin.requestSourceReview(candidate.id);
+    this.runReviewAction(candidate.id, request);
+  }
+
+  protected resolveReview(candidate: FeedCandidate, decision: 'accept' | 'reject' | 'defer'): void {
+    const review = this.sourceReviews()[candidate.id];
+    if (
+      !review ||
+      review.status !== 'awaiting_human' ||
+      this.reviewBusy().has(candidate.id) ||
+      this.reviewing() ||
+      candidate.manual_override ||
+      review.manual_override
+    )
+      return;
+    this.runReviewAction(candidate.id, this.admin.resolveSourceReview(review.id, decision));
+  }
+
+  private runReviewAction(id: string, request: Observable<SourceReview>): void {
+    this.nextReviewSeq(id);
+    ++this.loadSeq;
+    this.reviewBusy.update((current) => new Set(current).add(id));
+    const finished = () =>
+      this.reviewBusy.update((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (review) => {
+        this.sourceReviews.update((current) => ({ ...current, [id]: review }));
+        finished();
+        this.toast.info('來源評審作業已更新');
+        this.load(true);
       },
       error: () => {
-        if (seq !== this.loadSeq) return;
-        this.loading.set(false);
+        finished();
+        this.load(true);
       },
     });
+  }
+
+  protected canRetry(review: SourceReview): boolean {
+    return (
+      ['rejected', 'deferred', 'failed', 'stale'].includes(review.status) && !review.manual_override
+    );
+  }
+
+  protected reviewStatus(review: SourceReview): string {
+    const labels: Record<SourceReview['status'], string> = {
+      requested: '已排入評審',
+      preparing: '準備樣本中',
+      ready: '等待評審領取',
+      leased: '評審中',
+      awaiting_human: '等待人工覆核',
+      accepted: '已收錄',
+      rejected: '未通過',
+      deferred: '暫緩',
+      failed: '服務失敗',
+      stale: '資料已變更',
+      overridden: '人工決定優先',
+    };
+    return labels[review.status];
+  }
+
+  protected reviewProblem(review: SourceReview): string {
+    if (!['failed', 'deferred', 'stale'].includes(review.status)) return '';
+    const messages: Record<string, string> = {
+      provider_key_missing: '尚未設定 Jev 金鑰，請由部署管理者設定後重試。',
+      budget_exceeded: '模型預算已達上限，請等待額度恢復或調整預算後重試。',
+      provider_outcome_unknown: '請求逾時或中斷，付費結果尚未確認；重試受後台次數限制。',
+      request_unknown_paused: '付費請求結果持續不明，已暫停；請檢查請求紀錄後處理。',
+      provider_disabled: '評審引擎目前未啟用，請檢查來源評審設定。',
+      provider_model_unsupported: '模型版本尚未支援，請選擇目前支援的 Jev 版本。',
+      provider_context_limit: '評審資料超出模型上限，請縮減樣本數或規準後重試。',
+      sample_fetch_failed: '無法取得來源樣本，請檢查 feed 是否可讀後重試。',
+      lease_exhausted: '評審領取後未完成，已達重試上限；請檢查評審服務後重試。',
+      provider_http_error: '模型服務未成功回應，請檢查服務與金鑰狀態。',
+      provider_invalid_response: '模型回應格式不符合評審規格，請檢查評審服務。',
+      provider_response_too_large: '模型回應超出大小上限，請檢查評審服務。',
+      request_in_progress: '同一模型請求仍在處理，請稍後重新整理。',
+      request_fenced: '評審請求版本已變更，請重新整理後再試。',
+      receipt_cache_expired: '已保存的模型結果已過期，請檢查請求紀錄後處理。',
+      receipt_response_missing: '模型回應紀錄暫時無法取得，請檢查後台服務。',
+    };
+    if (review.error_code)
+      return messages[review.error_code] ?? '評審服務未完成，請檢查服務狀態後重試。';
+    if (review.status === 'stale') return '來源或評審設定已變更，請重新評審。';
+    if (review.status === 'deferred') {
+      if (review.result?.reason_codes.includes('low_confidence'))
+        return '評審信心不足，請補充樣本或檢查收錄規準後重試。';
+      return '樣本或評審結果未達收錄門檻，請檢查來源內容與評審設定後重試。';
+    }
+    return '評審服務未完成，請檢查服務狀態後重試。';
+  }
+
+  protected reviewDecision(review: SourceReview): string {
+    const result = review.result;
+    if (!result) return '';
+    const label = { accept: '通過', reject: '不通過', abstain: '無法判定' }[result.decision];
+    return `${label} · 信心 ${Math.round(result.confidence * 100)}% · 品質 ${Math.round(result.dimensions.quality * 100)}% · 垃圾機率 ${Math.round(result.dimensions.spam_probability * 100)}%`;
   }
 
   protected changeStatus(status: 'pending' | 'held'): void {
@@ -138,7 +298,7 @@ export class AdminCandidates implements OnInit {
         confirmLabel: '批量拒絕並封鎖',
         danger: true,
       });
-      if (!ok) return;
+      if (!ok || this.destroyRef.destroyed) return;
     }
 
     const tags = this.parsedTags();
@@ -168,7 +328,9 @@ export class AdminCandidates implements OnInit {
       this.load();
     };
     for (const request of requests) {
-      request.subscribe({ next: () => completeOne(true), error: () => completeOne(false) });
+      request
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({ next: () => completeOne(true), error: () => completeOne(false) });
     }
   }
 
@@ -205,6 +367,7 @@ export class AdminCandidates implements OnInit {
 
     this.admin
       .approveCandidate(candidate.id, { category: this.category.trim() || null, tags })
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (feed) => {
           this.toast.success(`已入庫：${feed.title}`);
@@ -217,13 +380,16 @@ export class AdminCandidates implements OnInit {
   }
 
   protected hold(candidate: FeedCandidate): void {
-    this.admin.holdCandidate(candidate.id, { note: null }).subscribe({
-      next: () => {
-        this.toast.info('已保留為備用 RSS 節點');
-        this.remove(candidate.id);
-      },
-      error: () => this.load(),
-    });
+    this.admin
+      .holdCandidate(candidate.id, { note: null })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.toast.info('已保留為備用 RSS 節點');
+          this.remove(candidate.id);
+        },
+        error: () => this.load(),
+      });
   }
 
   private parsedTags(): string[] {
@@ -242,11 +408,12 @@ export class AdminCandidates implements OnInit {
         confirmLabel: '拒絕並封鎖',
         danger: true,
       });
-      if (!ok) return;
+      if (!ok || this.destroyRef.destroyed) return;
     }
 
     this.admin
       .rejectCandidate(candidate.id, { note: null, block_host: this.blockHostOnReject })
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
           this.toast.info(this.blockHostOnReject ? '已拒絕並封鎖該網域' : '已拒絕');

@@ -324,6 +324,51 @@ class FakeDB:
             raise AssertionError(f"unexpected table {name!r}")
         return FakeQuery(self, name)
 
+    def rpc(self, name: str, params: dict):
+        if name != 'promote_discovery_candidate':
+            raise AssertionError(f'unexpected RPC {name!r}')
+        self.ops.append(('_rpc', name, (params,)))
+        db = self
+
+        class Promotion:
+            def execute(self):
+                from services.source_identity import feed_url_aliases
+                candidate = next((row for row in db.rows('discovery_candidates')
+                                  if row['id'] == params['p_candidate_id']), None)
+                if not candidate:
+                    return FakeResult({'error': 'not_found'})
+                if candidate['status'] == 'rejected':
+                    return FakeResult({'error': 'already_rejected'})
+                if candidate['status'] == 'held' and not params['p_manual']:
+                    return FakeResult()
+                setting = next((row for row in db._tables.get('app_settings', [])
+                                if row['key'] == 'source.review'), {})
+                if (not params['p_manual'] and candidate['status'] != 'approved'
+                        and setting.get('value', {}).get('enabled')):
+                    return FakeResult()
+                if params['p_manual']:
+                    payload = {'status': 'approved', 'approved_category': params['p_category'],
+                               'approved_tags': params['p_tags'] or [], 'manual_override': 'approve'}
+                    candidate.update(payload)
+                    db.updates.append(('discovery_candidates', payload))
+                aliases = feed_url_aliases(candidate['feed_url'])
+                feed = next((row for row in db.rows('feeds') if row['url'] in aliases), None)
+                if feed is None:
+                    feed = db.new_row('feeds', {
+                        'title': candidate.get('title') or candidate.get('source_host') or candidate['feed_url'],
+                        'url': candidate['feed_url'], 'website_url': candidate.get('website_url'),
+                        'category': params['p_category'] if params['p_category'] is not None else candidate.get('approved_category'),
+                        'tags': params['p_tags'] if params['p_tags'] is not None else candidate.get('approved_tags', []),
+                        'next_fetch_at': '2026-10-13T00:00:00+00:00',
+                    })
+                    db.rows('feeds').append(feed)
+                payload = {'status': 'imported', 'feed_id': feed['id'], 'reviewed_at': '2026-10-13T00:00:00+00:00'}
+                candidate.update(payload)
+                db.updates.append(('discovery_candidates', payload))
+                return FakeResult(feed)
+
+        return Promotion()
+
     def rows(self, name: str) -> list[dict]:
         return self._tables[name]
 

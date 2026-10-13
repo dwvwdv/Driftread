@@ -4,9 +4,11 @@
 
 `backend/services/job_queue.py` 使用 scoped Supabase client 呼叫 PostgreSQL RPC。佇列失敗時不退回記憶體執行。`refresh`、`discovery`、`retention` 以完整 cycle 為工作單位，沿用各自 enable flag、tick、抓取限制與內部並發。discovery／retention 的預設關閉狀態不變。
 
-`background_jobs` 保存 payload、到期時間、attempt、worker ID、lease token 與結果；`background_job_kinds` 保存每種工作的全域並發上限，三種 cycle 預設各一。部分唯一索引確保相同 kind／singleton key 最多一個 queued 或 running 工作。每輪以 `scheduler` singleton enqueue；重啟會沿用既有待辦與排程時間。成功或耗盡重試時，終態與下一輪入列在同一個交易提交。未捕捉例外重試最多三次，以 15、30 秒退避；通用 RPC 的最大重試次數為 20，退避上限一小時。已回傳 partial 的 cycle 沿用其 feed／target 退避，不再次重跑整輪增加失敗計數。
+`source_review` 新增獨立週期（預設每 60 秒、單輪最多 10 個候選、900 秒 timeout、並發上限 1），在 discovery 主開關啟用時監看後台 `source.review`。評審停用時不 enqueue／claim、不抓取或付費；重新啟用不需重啟。來源評審另有資料包／模型租約與版本 fencing，不以背景 queue ack 代替業務交易保護；詳見 [來源評審](SOURCE_REVIEW.md)。
 
-需要在業務寫入時建立工作，應在同一個 SQL transaction 內呼叫 `enqueue_background_job`。兩次 HTTP 呼叫不具有交易原子性。目前三種週期不修改業務資料後再入列，週期結果與下一輪則由單一 `finish_background_job` RPC 處理。
+`background_jobs` 保存 payload、到期時間、attempt、worker ID、lease token 與結果；`background_job_kinds` 保存每種工作的全域並發上限，四種 cycle 預設各一。部分唯一索引確保相同 kind／singleton key 最多一個 queued 或 running 工作。每輪以 `scheduler` singleton enqueue；重啟會沿用既有待辦與排程時間。成功或耗盡重試時，終態與下一輪入列在同一個交易提交。未捕捉例外重試最多三次，以 15、30 秒退避；通用 RPC 的最大重試次數為 20，退避上限一小時。已回傳 partial 的 cycle 沿用其 feed／target 退避，不再次重跑整輪增加失敗計數。
+
+需要在業務寫入時建立工作，應在同一個 SQL transaction 內呼叫 `enqueue_background_job`。兩次 HTTP 呼叫不具有交易原子性。目前這些週期不修改業務資料後再入列，週期結果與下一輪則由單一 `finish_background_job` RPC 處理。
 
 priority 範圍 −100～100，預設 0；到期工作先按 priority 由高到低，再按 available_at、created_at、id 排序。job timeout 存在每一筆 job，refresh／retention 為 900 秒，discovery 為 1800 秒；達到整輪期限時取消 action、停止續租，以 TimeoutError 記錄並沿用 bounded retry。下一輪保留 priority／timeout。
 
@@ -40,6 +42,8 @@ API lifespan 啟動獨立 coroutine，每 30 秒透過 RPC 檢查 worker heartbe
 - `alerts`：最近 `limit` 個事件，含建立與解決時間。
 
 原有 heartbeat、recent_runs 與近期失敗統計保留。所有新系統表開啟 RLS，零公開 policy，表與 RPC 明確撤銷 PUBLIC／anon／authenticated 權限，僅 service_role 存取。API watchdog 每 tick 最多刪除 1000 個超過 30 天的 succeeded 工作及 1000 個已 resolved 事件；queued、running、dead、未解決事件不刪除。原有 heartbeat/run 的 30 天有界清理繼續由 recorder 執行。
+
+API watchdog 每輪另各清理最多 100 個過期評審快照／付費回應，停用評審仍繼續本地清理，不觸發外連。清理失敗僅記錄例外類型，兩種 payload 各自嘗試，避免一項故障阻止另一項清理。
 
 ## 驗證
 

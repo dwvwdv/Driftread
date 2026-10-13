@@ -9,6 +9,16 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [~] 進行中
 - [x] 已完成
 
+## issue #96：來源收錄評審
+
+使用者已批准此 AI 範圍；其餘 #88–#91 的 embedding、事件模型與生成摘要沿原 roadmap 排程。
+
+- [x] 候選資料包、租約與版本保護、人工覆寫優先／可選人工覆核、自動入庫：`backend/services/source_review.py`。
+- [x] 管理 MCP 與 `/manage` 設定／候選介面、Jev adapter、付費請求／預算與離線評測：[設計與操作](docs/SOURCE_REVIEW.md)。
+- [ ] PR 合併與 #83 正式 migration／部署驗收；正式 Jev 中文評測、專用 key 連線及付費行為驗證。
+
+#84–#87 本批提供來源評審需要的共用部分，文章／Story 分析、其他模型能力、其他付費服務及分類／事件／推薦的 gold sets 仍待後續實作。
+
 ## 後台存取與註冊
 
 - [x] 移除 Driftread 自助註冊，後台改 `/manage` 帳密 + 本人 Telegram OTP：`backend/services/manage_auth.py`、`frontend/src/app/services/manage-session.ts`。

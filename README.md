@@ -21,6 +21,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 - **用戶系統**：Supabase Auth 註冊 / 登入；訂閱、已讀、收藏、稍後讀
 - **Auto-discover**：貼任意網址，自動找出 RSS / Atom feed
 - **主動發現新的 RSS 源**：平台自己從文章外連、blogroll 與目錄頁挖出候選源，探測驗證後進後台審核佇列，核准即入庫。**預設關閉**，啟用前請先讀 [`docs/SECURITY.md`](docs/SECURITY.md)
+- **來源收錄評審**：外部 agent 管理 MCP 或 Jev 審核候選樣本，後台可開啟「跳過人工覆核」自動收錄；預設關閉，詳見 [`docs/SOURCE_REVIEW.md`](docs/SOURCE_REVIEW.md)
 - **OPML 匯入 / 匯出**：與 Feedly / Inoreader 互通
 - **自動定期抓取**：獨立 `worker` 容器輪詢到期佇列，抓取間隔依實際更新狀況自適應（有新文章就縮短、沒動靜就拉長），並以 ETag / Last-Modified 避免重複下載
 - **Feed 健康度監測**：連續失敗計數與原因，達 10 次自動封存
@@ -39,6 +40,7 @@ RSS 推薦平台 — 挖掘你心儀的資訊源。
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | 部署與回滾操作順序 |
 | [`docs/CRAWLER_OPERATIONS.md`](docs/CRAWLER_OPERATIONS.md) | 增量抽取、中文種子、資料量監控與正文保存操作 |
 | [`docs/GLOBAL_SETTINGS.md`](docs/GLOBAL_SETTINGS.md) | 共用設定表、語言／分類探測方向與版本管理 |
+| [`docs/SOURCE_REVIEW.md`](docs/SOURCE_REVIEW.md) | 來源評審、管理 MCP、可選人工覆核與 Jev 付費請求 |
 | [`docs/BACKGROUND_JOBS.md`](docs/BACKGROUND_JOBS.md) | 持久化佇列、租約、重試、停機與 API watchdog |
 | [`docs/CONTENT_MODEL.md`](docs/CONTENT_MODEL.md) | 文章版本、來源證據與 backfill 時間語義 |
 | [`docs/SOURCE_MODEL.md`](docs/SOURCE_MODEL.md) | 來源角色、正文政策與來源健康度 |
@@ -123,6 +125,8 @@ docker compose down
 | `SUPABASE_JWT_SECRET` | ✅ | 驗證用戶 `Authorization: Bearer` token（Dashboard → Settings → API → JWT Settings）。仍為必填：專案尚未輪替到 JWT signing key 時送來的 HS256 token 靠它驗證 |
 | `SUPABASE_JWKS_URL` | | 覆寫預設的 JWKS 端點（`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`）。多數部署不需要設定；用 ES256／RS256 JWT signing key 的專案送來的 token 會自動走這條路徑驗證，見 `docs/SECURITY.md` |
 | `ADMIN_API_KEY` | ✅ | 外部腳本／擴充的管理 API 金鑰，由 `gen_env.py` 自動產生；瀏覽器後台不再使用 |
+| `SOURCE_REVIEW_MCP_KEY` | 評審 MCP 必填 | 獨立機器評審 key，由 `gen_env.py` 產生；不能與 `ADMIN_API_KEY` 相同，空白拒絕管理 MCP |
+| `JEV_API_KEY` | Jev 引擎必填 | 只在 backend api／worker 使用；外部 agent 模式不需要 |
 | `MANAGE_OWNER_USER_ID` | 後台必填 | 唯一管理員的 Supabase `auth.users.id`；空白拒絕後台登入。部署順序見 [RUNBOOK](docs/RUNBOOK.md#後台-telegram-兩步驟驗證) |
 | `CORS_ORIGINS` | | 逗號分隔的允許來源，預設 `*` |
 | `DISCOVERY_USER_AGENT` | | 所有對外抓取（discover 與 feed 匯入 / refresh）的 User-Agent，預設 `Driftread/1.0` |

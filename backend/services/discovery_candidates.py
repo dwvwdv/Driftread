@@ -333,46 +333,16 @@ def promote_candidate(
     if not feed_url or is_comment_feed(feed_url):
         return None
 
-    # A feed on this URL may already exist — imported by hand, by the extension,
-    # or by OPML while this candidate sat in the queue. Link to it and stop.
-    # Upserting instead would overwrite a curated title, website, category and
-    # tags with scraped values and this call's (probably empty) defaults, so an
-    # otherwise harmless duplicate approval would quietly damage the catalog.
-    existing = _find_feed_alias(db, "feeds", "url", feed_url)
-    if existing:
-        _mark_imported(db, candidate["id"], existing["id"])
-        return existing
-
-    # Fall back to the choices stored at approval time, so a retry from
-    # promote_approved() reproduces what the reviewer actually picked.
-    if category is None:
-        category = candidate.get("approved_category")
-    if tags is None:
-        tags = candidate.get("approved_tags")
-
-    feed_data = {
-        # feeds.title is NOT NULL, and a discovered candidate's title can be None
-        # (an Atom feed with an empty <title>), so fall back to something we
-        # computed ourselves rather than to the remote text.
-        "title": candidate.get("title") or candidate.get("source_host") or feed_url,
-        "url": feed_url,
-        "website_url": sanitize_http_url(candidate.get("website_url")),
-        "category": category,
-        "tags": tags or [],
-        # Metadata only. The existing refresh worker picks this up immediately and
-        # does the first article fetch — promotion must never fetch inline.
-        "next_fetch_at": _now(),
-    }
-    # Still an upsert rather than an insert: two cycles could race on the same
-    # URL, and losing that race should link rather than raise. The pre-check
-    # above is what protects an already-curated row.
-    result = db.table("feeds").upsert(feed_data, on_conflict="url").execute()
-    if not result.data:
-        return None
-    feed = result.data[0]
-
-    _mark_imported(db, candidate["id"], feed["id"])
-    return feed
+    result = db.rpc("promote_discovery_candidate", {
+        "p_candidate_id": str(candidate["id"]),
+        "p_category": sanitize_text(category, 100) if category is not None else None,
+        "p_tags": [text for item in tags if (text := sanitize_text(item, 100))] if tags is not None else None,
+        "p_manual": False,
+    }).execute()
+    row = getattr(result, "data", None)
+    if isinstance(row, list):
+        row = row[0] if row else None
+    return row if row and not row.get("error") else None
 
 
 def approve_candidate(
@@ -400,20 +370,19 @@ def approve_candidate(
     if _blocked_candidate_alias(db, candidate):
         return (None, "alias_blocked")
 
-    # Record the approval — including what the reviewer chose — before writing
-    # feeds. If the feeds write fails, the whole decision survives and
-    # promote_approved() reproduces it next cycle rather than importing the feed
-    # uncategorised.
-    db.table("discovery_candidates").update({
-        "status": "approved",
-        "reviewed_at": _now(),
-        "approved_category": category,
-        "approved_tags": tags or [],
-    }).eq("id", str(candidate_id)).execute()
-
-    candidate["approved_category"] = category
-    candidate["approved_tags"] = tags or []
-    feed = promote_candidate(db, candidate, category, tags)
+    # One transaction records the human override and imports. Candidate row
+    # locking prevents a concurrent hold/reject or model result overwriting it.
+    result = db.rpc("promote_discovery_candidate", {
+        "p_candidate_id": str(candidate_id),
+        "p_category": sanitize_text(category, 100),
+        "p_tags": [text for item in (tags or []) if (text := sanitize_text(item, 100))],
+        "p_manual": True,
+    }).execute()
+    feed = getattr(result, "data", None)
+    if isinstance(feed, list):
+        feed = feed[0] if feed else None
+    if feed and feed.get("error"):
+        return (None, feed["error"])
     return (feed, "imported" if feed else "failed")
 
 

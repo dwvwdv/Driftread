@@ -1,0 +1,207 @@
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
+
+from services.review_models import ReviewSubmission
+from services.source_review import ReviewError, _fetch_snapshot, _rpc, get_review_packet, submit_review
+
+
+def body(**changes):
+    value = {'lease_token': str(uuid4()), 'snapshot_hash': 'a'*64, 'decision': 'accept',
+             'confidence': .99, 'dimensions': {'quality': .9, 'spam_probability': .01, 'relevance': .9},
+             'reason_codes': [], 'tags': []}
+    value.update(changes)
+    return value
+
+
+@pytest.mark.parametrize('changes', [
+    {'confidence': float('nan')}, {'confidence': float('inf')}, {'confidence': -1},
+    {'tags': ['x'*101]}, {'reason_codes': ['x'*101]}, {'tags': ['x']*21},
+    {'rationale': 'x'*2001}, {'engine': 'trusted_agent'}, {'snapshot_hash': 'wrong'},
+])
+def test_submission_bounds(changes):
+    with pytest.raises(ValidationError):
+        ReviewSubmission.model_validate(body(**changes))
+
+
+class RPCDB:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def rpc(self, name, params):
+        self.calls.append((name, params))
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.response))
+
+
+@pytest.mark.parametrize('error,status', [('disabled',503), ('not_found',404), ('lease',409), ('manual_decision',409)])
+def test_rpc_error_mapping(error, status):
+    with pytest.raises(ReviewError) as caught:
+        _rpc(RPCDB({'error':error}), 'submit_source_review', {})
+    assert caught.value.status_code == status
+
+
+def test_prune_integer_rpc_response_is_supported():
+    assert _rpc(RPCDB(5), 'prune_source_reviews', {}) == 5
+
+
+def test_model_cannot_assign_provider_identity_or_use_unknown_reviewer():
+    db = RPCDB(None)
+    with pytest.raises(ReviewError) as caught:
+        submit_review(db, str(uuid4()), body(engine='jev'))
+    assert caught.value.status_code == 422 and not db.calls
+    with pytest.raises(ReviewError) as caught:
+        submit_review(db, str(uuid4()), body(), reviewer_id='admin')
+    assert caught.value.status_code == 403 and not db.calls
+
+
+@pytest.mark.asyncio
+async def test_private_rss_preview_is_bounded_and_uses_each_hop_robots_policy(monkeypatch):
+    import services.source_review as service
+    captured = {}
+
+    @asynccontextmanager
+    async def client(**kwargs):
+        captured['client'] = kwargs
+        yield object()
+
+    async def fetch(_client, url, cap, *, allow_url):
+        captured['cap'] = cap
+        assert await allow_url(url)
+        # Redirects to a denied publisher are refused by the same gate.
+        assert not await allow_url('https://facebook.com/feed')
+        return '<rss version="2.0"><channel><title>Feed</title>' + ''.join(
+            f'<item><title>A</title><link>https://publisher.org/{i}</link><description>{"Useful "*1000}</description></item>'
+            for i in range(15)) + '</channel></rss>', 'application/rss+xml'
+
+    async def robots(url, ua):
+        captured.setdefault('robots', []).append(url)
+        return SimpleNamespace(allowed=True, crawl_delay=0)
+
+    async def sleep(delay):
+        captured.setdefault('delays', []).append(delay)
+
+    monkeypatch.setattr(service, 'ssrf_safe_client', client)
+    monkeypatch.setattr(service, 'fetch_with_cap', fetch)
+    monkeypatch.setattr(service.robots, 'check', robots)
+    monkeypatch.setattr(service.asyncio, 'sleep', sleep)
+    packet = await _fetch_snapshot({'id':str(uuid4()), 'feed_url':'https://publisher.org/feed'}, 5)
+    assert len(packet['samples']) == 5
+    assert all(len(sample['text']) <= 2000 for sample in packet['samples'])
+    assert captured['client']['follow_redirects'] is False
+    assert captured['robots'] == ['https://publisher.org/feed']
+    assert len(captured['delays']) == 1
+
+
+def test_external_agent_cannot_read_jev_packet():
+    class Query:
+        def select(self, value): return self
+        def eq(self, key, value): return self
+        def maybe_single(self): return self
+        def execute(self): return SimpleNamespace(data={'engine':'jev','reviewer_id':'jev'})
+    class DB:
+        def table(self, name):
+            assert name == 'source_reviews'
+            return Query()
+    with pytest.raises(ReviewError) as caught:
+        get_review_packet(DB(), str(uuid4()), reviewer_id='external_agent')
+    assert caught.value.status_code == 403
+
+
+def test_server_analysis_metadata_is_receipt_linked_and_not_part_of_machine_dto():
+    from services.source_review import _rubric_hash
+    policy = {'policy_text': 'Useful content', 'min_quality': .7, 'min_confidence': .9,
+              'max_spam_probability': .2, 'sample_size': 5}
+    review_id, candidate_id, receipt_id = str(uuid4()), str(uuid4()), str(uuid4())
+
+    class DB(RPCDB):
+        def table(self, table_name):
+            assert table_name in {'source_reviews', 'discovery_candidates'}
+            class Query:
+                def select(self, fields): return self
+                def eq(self, key, value): return self
+                def maybe_single(self): return self
+                def execute(self):
+                    return SimpleNamespace(data={'policy': policy} if table_name == 'source_reviews' else None)
+            return Query()
+
+    db = DB({'id': review_id, 'candidate_id': candidate_id, 'status': 'accepted'})
+    submit_review(db, review_id, body(), 'jev', analysis_metadata={
+        'receipt_id': receipt_id, 'provider_prompt_hash': 'b'*64, 'provider_input_hash': 'c'*64,
+        'adapter_version': 'source-review-v1', 'secret': 'must-not-save',
+    })
+    payload = db.calls[0][1]['p_result']
+    assert payload['analysis_metadata'] == {
+        'receipt_id': receipt_id, 'provider_prompt_hash': 'b'*64, 'provider_input_hash': 'c'*64,
+        'rubric_hash': _rubric_hash(policy), 'adapter_version': 'source-review-v1',
+    }
+    assert 'secret' not in str(payload)
+    with pytest.raises(ReviewError) as caught:
+        submit_review(db, review_id, body(analysis_metadata={'receipt_id': receipt_id}))
+    assert caught.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_database_host_policy_rechecked_before_redirect_fetch(monkeypatch):
+    import services.source_review as service
+    seen, robot_hosts = [], []
+
+    @asynccontextmanager
+    async def client(**kwargs):
+        yield object()
+
+    async def fetch(_client, url, cap, *, allow_url):
+        assert await allow_url(url)
+        assert not await allow_url('https://blocked.publisher.org/feed')
+        return '<rss version="2.0"><channel><title>Safe</title></channel></rss>', 'application/rss+xml'
+
+    def database_gate(db, candidate, host, review):
+        seen.append(host)
+        return host != 'blocked.publisher.org'
+
+    async def robots_check(url, ua):
+        robot_hosts.append(url)
+        return SimpleNamespace(allowed=True, crawl_delay=0)
+
+    async def sleep(delay): pass
+
+    monkeypatch.setattr(service, 'ssrf_safe_client', client)
+    monkeypatch.setattr(service, 'fetch_with_cap', fetch)
+    monkeypatch.setattr(service, '_crawl_database_allowed', database_gate)
+    monkeypatch.setattr(service.robots, 'check', robots_check)
+    monkeypatch.setattr(service.asyncio, 'sleep', sleep)
+    await _fetch_snapshot({'id':str(uuid4()), 'feed_url':'https://publisher.org/feed'}, 5, db=object(), review={})
+    assert seen == ['publisher.org', 'blocked.publisher.org']
+    assert robot_hosts == ['https://publisher.org/feed']
+
+
+@pytest.mark.asyncio
+async def test_jev_adapter_metadata_is_removed_before_submission_validation(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock, Mock
+    import services.source_review as service
+    import services.review_provider as provider
+    import services.settings as settings
+
+    row = {'id':str(uuid4()), 'candidate_id':str(uuid4()), 'status':'leased', 'engine':'jev',
+           'policy':{}, 'snapshot':{'source':{}, 'samples':[]}, 'snapshot_hash':'a'*64,
+           'lease_token':str(uuid4()), 'lease_expires_at':(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat()}
+    metadata = {'receipt_id': str(uuid4()), 'provider_input_hash': 'b'*64}
+    result = body()
+    result.pop('lease_token')
+    result.pop('snapshot_hash')
+    result['_analysis_metadata'] = metadata
+    monkeypatch.setattr(service, '_rpc', lambda db, name, params: row)
+    monkeypatch.setattr(service, 'get_candidate', lambda db, candidate_id: {})
+    monkeypatch.setattr(settings, 'load_source_review_settings', lambda db: {})
+    monkeypatch.setattr(provider, 'evaluate_jev', AsyncMock(return_value=result))
+    submit = Mock(return_value={'status':'accepted'})
+    monkeypatch.setattr(service, 'submit_review', submit)
+    counts = {'submitted':0, 'failed':0}
+    assert await service._run_jev_review(object(), row['id'], counts)
+    assert '_analysis_metadata' not in submit.call_args.args[2]
+    assert submit.call_args.kwargs['analysis_metadata'] == metadata
+    assert counts == {'submitted':1, 'failed':0}

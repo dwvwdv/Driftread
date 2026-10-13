@@ -125,3 +125,50 @@ describe('AdminService 409 handling', () => {
     });
   });
 });
+
+describe('AdminService source review API', () => {
+  let mock: HttpTestingController;
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        AdminService,
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ManageSessionService,
+          useValue: {
+            headers: () => ({ Authorization: 'Bearer user', 'x-manage-session': 'session' }),
+          },
+        },
+        { provide: Router, useValue: {} },
+        { provide: ToastService, useValue: {} },
+      ],
+    });
+    mock = TestBed.inject(HttpTestingController);
+  });
+  afterEach(() => mock.verify());
+  it('filters reviews by candidate and submits request, retry and human resolution with management authentication', () => {
+    const service = TestBed.inject(AdminService);
+    service.listSourceReviews('c1').subscribe();
+    const read = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews'));
+    expect(read.request.params.get('candidate_id')).toBe('c1');
+    expect(read.request.params.get('limit')).toBe('1');
+    expect(read.request.headers.get('x-manage-session')).toBe('session');
+    read.flush({ items: [] });
+    service.requestSourceReview('c1').subscribe();
+    service.retrySourceReview('r1').subscribe();
+    service.resolveSourceReview('r1', 'defer').subscribe();
+    for (const [path, body] of [
+      ['/candidates/c1/request', {}],
+      ['/r1/retry', {}],
+      ['/r1/resolve', { decision: 'defer' }],
+    ] as const) {
+      const write = mock.expectOne((r) => r.url.endsWith(`/admin/source-reviews${path}`));
+      expect(write.request.method).toBe('POST');
+      expect(write.request.body).toEqual(body);
+      expect(write.request.headers.get('Authorization')).toBe('Bearer user');
+      expect(write.request.headers.has('x-api-key')).toBe(false);
+      write.flush({});
+    }
+  });
+});

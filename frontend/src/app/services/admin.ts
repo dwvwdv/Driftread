@@ -4,6 +4,7 @@ import { Router } from '@angular/router';
 import { Observable, catchError, throwError } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
+  SourceReview,
   GlobalSetting,
   GlobalSettingsResponse,
   ArticleStorageStats,
@@ -230,6 +231,41 @@ export class AdminService {
         { headers: this.headers() },
       )
       .pipe(catchError((error) => this.report(error, '儲存全域設定失敗')));
+  }
+
+  listSourceReviews(candidateId: string): Observable<{ items: SourceReview[] }> {
+    return this.get<{ items: SourceReview[] }>(
+      '/admin/source-reviews',
+      '讀取來源評審失敗',
+      new HttpParams().set('candidate_id', candidateId).set('limit', 1),
+    );
+  }
+
+  requestSourceReview(candidateId: string): Observable<SourceReview> {
+    return this.post<SourceReview>(
+      `/admin/source-reviews/candidates/${candidateId}/request`,
+      {},
+      '請求來源評審失敗',
+    );
+  }
+
+  retrySourceReview(reviewId: string): Observable<SourceReview> {
+    return this.post<SourceReview>(
+      `/admin/source-reviews/${reviewId}/retry`,
+      {},
+      '重試來源評審失敗',
+    );
+  }
+
+  resolveSourceReview(
+    reviewId: string,
+    decision: 'accept' | 'reject' | 'defer',
+  ): Observable<SourceReview> {
+    return this.post<SourceReview>(
+      `/admin/source-reviews/${reviewId}/resolve`,
+      { decision },
+      '人工覆核失敗',
+    );
   }
 
   // ── Plumbing ──────────────────────────────────────────────────────────────

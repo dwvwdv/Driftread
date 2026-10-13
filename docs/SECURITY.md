@@ -348,6 +348,14 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 - **既有機器 API Key 路徑仍是獨立管理授權**，持有 `ADMIN_API_KEY` 的腳本／擴充不需 OTP。帶 Authorization 或 X-Manage-Session 時不得回退到 key；若需要所有接口都強制 OTP，須另處理機器／擴充認證。舊分頁的 key 會移除，但既有 key 本身不因此撤銷；部署可旋轉並同步更新整合設定。
 - `pg_net` 佇列與 Telegram 回應可能短暫保留 OTP 文字，屬既有 Vault／PostgreSQL 管理員信任範圍；不記錄 OTP 與管理 token。瀏覽器管理 token 使用 sessionStorage，仍受同源 script 信任限制。
 
+## 33. 來源評審管理 MCP 與付費請求（#96）
+
+來源評審是獨立管理入口，不擴張個人唯讀 MCP 的權限。`/api/admin/mcp/` 逐請求驗證獨立 `SOURCE_REVIEW_MCP_KEY`，不接受使用者 Bearer／管理 session，也不接受與全站 `ADMIN_API_KEY` 相同的設定。機器身分由伺服器指定；工具禁止額外引擎、任意 URL、人工 resolve 或修改全域政策的參數，Origin 檢查及 request body 上限沿用 API 防線。
+
+候選樣本視為不可信資料：只抓已入列候選 feed URL，強制 robots、denylist、每 hop SSRF 及大小上限，不將未通過的樣本插入公開文章。有限 snippet 與版本／快照 hash 綁定租約；接受模型結果仍由 SQL 驗證有效樣本、政策門檻、候選版本與人工覆寫。人工決定不能被遲到模型覆蓋；來源角色及正文權限不由評審工具修改，原閱讀 publication 契約保留。
+
+新增表開 RLS 並撤銷 PUBLIC／anon／authenticated 權限，業務 RPC 為 service-only `SECURITY INVOKER`。入庫在交易內 `INSERT ON CONFLICT DO NOTHING`，既有來源 metadata 不被重複核准覆寫。Jev 固定官方 endpoint、禁止 redirects，key 只在 backend；付費預算原子預留，回應先 durable 再解析，unknown 額外發送有界。保存期與停用後本地清理、線上成本邊界見 [來源評審](SOURCE_REVIEW.md)。正式 Jev 呼叫與部署仍需另行驗收。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |

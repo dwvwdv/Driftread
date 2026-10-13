@@ -59,7 +59,7 @@
     <button
       type="button"
       class="ob-btn ob-btn--primary ob-btn--sm"
-      [disabled]="!selected().size || reviewing()"
+      [disabled]="!selected().size || reviewing() || reviewBusy().size > 0"
       (click)="bulk('approve')"
     >
       批量核准
@@ -68,7 +68,7 @@
       <button
         type="button"
         class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="!selected().size || reviewing()"
+        [disabled]="!selected().size || reviewing() || reviewBusy().size > 0"
         (click)="bulk('hold')"
       >
         批量保留
@@ -77,7 +77,7 @@
     <button
       type="button"
       class="ob-btn ob-btn--ghost ob-btn--sm"
-      [disabled]="!selected().size || reviewing()"
+      [disabled]="!selected().size || reviewing() || reviewBusy().size > 0"
       (click)="bulk('reject')"
     >
       批量拒絕
@@ -120,11 +120,96 @@
             <div rowLines>
               <span>{{ candidate.feed_url }}</span
               ><span>{{ candidate.referring_feed_count }} 個既有來源連到這裡</span>
+              @if (candidate.manual_override || sourceReviews()[candidate.id]?.manual_override) {
+                <span class="ob-chip"
+                  >已有人工決定（{{
+                    candidate.manual_override || sourceReviews()[candidate.id]?.manual_override
+                  }}）</span
+                >
+              }
+              @if (sourceReviews()[candidate.id]; as review) {
+                <span class="ob-chip"
+                  >{{ reviewStatus(review) }} · {{ review.engine === 'jev' ? 'Jev' : '外部 Agent'
+                  }}{{ review.model ? ' · ' + review.model : '' }}</span
+                >
+                @if (reviewProblem(review); as problem) {
+                  <span role="status">{{ problem }}</span>
+                }
+                @if (review.result) {
+                  <span>{{ reviewDecision(review) }}</span>
+                  <span>{{ review.result.reason_codes.join('、') }}</span>
+                  @if (review.result.rationale) {
+                    <span>{{ review.result.rationale }}</span>
+                  }
+                }
+              } @else if (reviewErrors().has(candidate.id)) {
+                <span role="status">無法讀取評審狀態，請重新整理後再試。</span>
+              } @else if (sourceReviews()[candidate.id] === null) {
+                <span>尚未請求 AI 評審</span>
+              } @else {
+                <span>讀取評審狀態中…</span>
+              }
             </div>
             <div rowMeta>
+              @if (sourceReviews()[candidate.id]; as review) {
+                @if (canRetry(review) && !candidate.manual_override) {
+                  <button
+                    type="button"
+                    class="ob-btn ob-btn--ghost ob-btn--sm"
+                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    (click)="requestReview(candidate, true)"
+                  >
+                    重試 AI 評審
+                  </button>
+                }
+                @if (
+                  review.status === 'awaiting_human' &&
+                  !candidate.manual_override &&
+                  !review.manual_override
+                ) {
+                  <button
+                    type="button"
+                    class="ob-btn ob-btn--primary ob-btn--sm"
+                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    (click)="resolveReview(candidate, 'accept')"
+                  >
+                    覆核通過
+                  </button>
+                  <button
+                    type="button"
+                    class="ob-btn ob-btn--ghost ob-btn--sm"
+                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    (click)="resolveReview(candidate, 'reject')"
+                  >
+                    覆核不通過
+                  </button>
+                  <button
+                    type="button"
+                    class="ob-btn ob-btn--ghost ob-btn--sm"
+                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    (click)="resolveReview(candidate, 'defer')"
+                  >
+                    暫緩評審
+                  </button>
+                }
+              } @else if (
+                sourceReviews()[candidate.id] === null &&
+                !reviewErrors().has(candidate.id) &&
+                !candidate.manual_override
+              ) {
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                  (click)="requestReview(candidate)"
+                >
+                  {{ reviewBusy().has(candidate.id) ? '請求中…' : '請求 AI 評審' }}
+                </button>
+              }
               <button
                 type="button"
                 class="ob-btn ob-btn--primary ob-btn--sm"
+                [disabled]="reviewBusy().has(candidate.id) || reviewing()"
                 (click)="approve(candidate)"
               >
                 核准
@@ -133,6 +218,7 @@
                 <button
                   type="button"
                   class="ob-btn ob-btn--ghost ob-btn--sm"
+                  [disabled]="reviewBusy().has(candidate.id) || reviewing()"
                   (click)="hold(candidate)"
                 >
                   保留
@@ -141,6 +227,7 @@
               <button
                 type="button"
                 class="ob-btn ob-btn--ghost ob-btn--sm"
+                [disabled]="reviewBusy().has(candidate.id) || reviewing()"
                 (click)="reject(candidate)"
               >
                 拒絕

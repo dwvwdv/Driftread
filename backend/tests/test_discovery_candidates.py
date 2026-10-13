@@ -253,8 +253,8 @@ def test_promote_candidate_writes_feeds_with_next_fetch_at():
     assert feed["category"] == "tech"
     assert feed["tags"] == ["blog"]
     assert feed["next_fetch_at"] is not None
-    _table, _rows, on_conflict = db.upserts[0]
-    assert on_conflict == "url"
+    assert not db.upserts  # Atomic RPC uses insert-on-conflict-do-nothing.
+    assert db.ops_for('_rpc')[0][0] == 'promote_discovery_candidate'
     assert row["status"] == "imported"
     assert row["feed_id"] == feed["id"]
 

@@ -5,7 +5,7 @@ import { AdminCandidates } from './admin-candidates';
 import { AdminService } from '../../../services/admin';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
-import { Feed, FeedCandidate, PaginatedFeedCandidates } from '../../../models';
+import { Feed, FeedCandidate, PaginatedFeedCandidates, SourceReview } from '../../../models';
 
 const candidate = (i: number) =>
   ({
@@ -37,6 +37,7 @@ describe('AdminCandidates queue paging', () => {
     held = null;
 
     const admin = {
+      listSourceReviews: () => of({ items: [] }),
       listCandidates: (p: number, size: number) => {
         requests.push([p, size]);
         if (held) {
@@ -175,5 +176,185 @@ describe('AdminCandidates queue paging', () => {
 
     expect(reader.page()).toBe(2);
     expect(requests.at(-1)?.[0]).toBe(2);
+  });
+});
+
+describe('AdminCandidates source review', () => {
+  const task = (status: SourceReview['status'] = 'ready'): SourceReview => ({
+    id: 'r1',
+    candidate_id: 'cand-1',
+    status,
+    engine: 'external_agent',
+  });
+  function setup(overrides: Record<string, unknown> = {}) {
+    const calls = { request: 0, retry: 0, resolve: [] as string[], read: 0 };
+    const admin = {
+      listCandidates: () => of({ items: [candidate(1)], total: 1, page: 1, page_size: 20 }),
+      listSourceReviews: () => {
+        calls.read++;
+        return of({ items: [] });
+      },
+      requestSourceReview: () => {
+        calls.request++;
+        return of(task('requested'));
+      },
+      retrySourceReview: () => {
+        calls.retry++;
+        return of(task('requested'));
+      },
+      resolveSourceReview: (_id: string, decision: string) => {
+        calls.resolve.push(decision);
+        return of(task('deferred'));
+      },
+      ...overrides,
+    };
+    TestBed.configureTestingModule({
+      imports: [AdminCandidates],
+      providers: [
+        { provide: AdminService, useValue: admin },
+        { provide: ConfirmService, useValue: { ask: () => Promise.resolve(true) } },
+        { provide: ToastService, useValue: { info: () => {}, warning: () => {} } },
+      ],
+    });
+    const fixture = TestBed.createComponent(AdminCandidates);
+    fixture.detectChanges();
+    const component = fixture.componentInstance as unknown as {
+      sourceReviews: {
+        (): Record<string, SourceReview | null>;
+        set: (v: Record<string, SourceReview | null>) => void;
+      };
+      requestReview: (c: FeedCandidate, retry?: boolean) => void;
+      resolveReview: (c: FeedCandidate, decision: 'accept' | 'reject' | 'defer') => void;
+      load: () => void;
+    };
+    return { component, fixture, calls };
+  }
+
+  it('requests one task, guards double clicks, and refreshes using reads only', () => {
+    const response = new Subject<SourceReview>();
+    let requests = 0;
+    const { component, calls } = setup({
+      requestSourceReview: () => {
+        requests++;
+        return response;
+      },
+      listSourceReviews: () => of({ items: [task('requested')] }),
+    });
+    // Start from a known empty task list, as returned by the first review read.
+    component.sourceReviews.set({ 'cand-1': null });
+    component.requestReview(candidate(1));
+    component.requestReview(candidate(1));
+    expect(requests).toBe(1);
+    response.next(task('requested'));
+    expect(component.sourceReviews()['cand-1']?.status).toBe('requested');
+    expect(requests).toBe(1);
+  });
+
+  it('shows structured results and permits explicit retry only for recoverable tasks', () => {
+    const { component, fixture, calls } = setup({
+      listSourceReviews: () =>
+        of({
+          items: [
+            {
+              ...task('failed'),
+              result: {
+                decision: 'abstain',
+                confidence: 0.5,
+                dimensions: { quality: 0.4, spam_probability: 0.1, relevance: 0.8 },
+                reason_codes: ['insufficient_sample'],
+              },
+            },
+          ],
+        }),
+    });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('服務失敗');
+    expect(fixture.nativeElement.textContent).toContain('無法判定');
+    expect(fixture.nativeElement.textContent).toContain('insufficient_sample');
+    component.requestReview(candidate(1), true);
+    expect(calls.retry).toBe(1);
+    component.sourceReviews.set({ 'cand-1': task('leased') });
+    component.requestReview(candidate(1), true);
+    expect(calls.retry).toBe(1);
+  });
+
+  it('resolves human review through its dedicated endpoint and protects manual overrides', () => {
+    const { component, calls } = setup({
+      listSourceReviews: () => of({ items: [task('awaiting_human')] }),
+    });
+    component.resolveReview(candidate(1), 'defer');
+    expect(calls.resolve).toEqual(['defer']);
+    component.sourceReviews.set({ 'cand-1': task('failed') });
+    component.requestReview({ ...candidate(1), manual_override: 'hold' }, true);
+    expect(calls.retry).toBe(0);
+  });
+
+  it('ignores old review reads that finish after a submitted request', () => {
+    const old = new Subject<{ items: SourceReview[] }>();
+    let readCount = 0;
+    const { component } = setup({
+      listSourceReviews: () => (++readCount === 1 ? old : of({ items: [task('requested')] })),
+    });
+    component.sourceReviews.set({ 'cand-1': null });
+    component.requestReview(candidate(1));
+    old.next({ items: [] });
+    expect(component.sourceReviews()['cand-1']?.status).toBe('requested');
+  });
+
+  it('does not offer a fresh task after a failed state read and cancels reads on leaving', () => {
+    const response = new Subject<{ items: SourceReview[] }>();
+    const { component, fixture } = setup({ listSourceReviews: () => response });
+    response.error(new Error('offline'));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('無法讀取評審狀態');
+    expect(fixture.nativeElement.textContent).not.toContain('請求 AI 評審');
+    const pending = new Subject<{ items: SourceReview[] }>();
+    TestBed.inject(AdminService).listSourceReviews = () => pending;
+    component.load();
+    fixture.destroy();
+    pending.next({ items: [task()] });
+    expect(component.sourceReviews()['cand-1']).toBeUndefined();
+  });
+  it.each([
+    ['provider_key_missing', '尚未設定 Jev 金鑰'],
+    ['budget_exceeded', '模型預算已達上限'],
+    ['provider_outcome_unknown', '請求逾時或中斷'],
+    ['request_unknown_paused', '已暫停'],
+    ['provider_http_error', '模型服務未成功回應'],
+    ['sample_fetch_failed', '無法取得來源樣本'],
+    ['provider_model_unsupported', '模型版本尚未支援'],
+  ])('shows an actionable safe explanation for %s', (code, message) => {
+    const { fixture } = setup({
+      listSourceReviews: () => of({ items: [{ ...task('failed'), error_code: code }] }),
+    });
+    expect(fixture.nativeElement.textContent).toContain(message);
+    expect(fixture.nativeElement.textContent).not.toContain(code);
+  });
+
+  it('keeps unknown provider error text out of the UI', () => {
+    const { fixture } = setup({
+      listSourceReviews: () =>
+        of({ items: [{ ...task('failed'), error_code: 'raw-secret-provider-error' }] }),
+    });
+    expect(fixture.nativeElement.textContent).toContain('請檢查服務狀態後重試');
+    expect(fixture.nativeElement.textContent).not.toContain('raw-secret-provider-error');
+  });
+
+  it('explains deferred review even without an operational error code', () => {
+    const { fixture } = setup({ listSourceReviews: () => of({ items: [task('deferred')] }) });
+    expect(fixture.nativeElement.textContent).toContain('樣本或評審結果未達收錄門檻');
+  });
+  it('allows retrying a model rejection after policy changes while protecting manual rejection', () => {
+    const { component, fixture, calls } = setup({
+      listSourceReviews: () => of({ items: [task('rejected')] }),
+    });
+    expect(fixture.nativeElement.textContent).toContain('重試 AI 評審');
+    component.requestReview(candidate(1), true);
+    expect(calls.retry).toBe(1);
+    component.sourceReviews.set({ 'cand-1': { ...task('rejected'), manual_override: 'reject' } });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).not.toContain('重試 AI 評審');
+    component.requestReview(candidate(1), true);
+    expect(calls.retry).toBe(1);
   });
 });
