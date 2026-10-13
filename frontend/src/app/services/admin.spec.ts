@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
@@ -87,6 +87,56 @@ describe('AdminService 409 handling', () => {
     expect(toastCalls).toEqual([
       { tone: 'danger', text: '加入待探測失敗：Resource already exists' },
     ]);
+  });
+
+  it.each(['hold', 'reject'] as const)(
+    'explains an imported-candidate conflict for %s and preserves the error for the queue reload',
+    (action) => {
+      const service = TestBed.inject(AdminService);
+      let caught: unknown;
+      const response =
+        action === 'hold'
+          ? service.holdCandidate('c1', { note: null })
+          : service.rejectCandidate('c1', { note: null, block_host: false });
+      response.subscribe({
+        error: (error) => {
+          caught = error;
+        },
+      });
+      httpMock
+        .expectOne((req) => req.url.endsWith(`/admin/discovery/candidates/c1/${action}`))
+        .flush(
+          {
+            detail: {
+              code: 'candidate_already_imported',
+              message: 'Candidate is already imported; manage it from feeds',
+            },
+          },
+          { status: 409, statusText: 'Conflict' },
+        );
+      expect(toastCalls).toEqual([
+        { tone: 'warning', text: '此來源已收錄，無法再保留或拒絕候選；請到「信息源管理」操作' },
+      ]);
+      expect(caught).toBeInstanceOf(HttpErrorResponse);
+      expect((caught as HttpErrorResponse).status).toBe(409);
+    },
+  );
+
+  it('explains a candidate version conflict without claiming it was imported', () => {
+    const service = TestBed.inject(AdminService);
+    service.holdCandidate('c1', { note: null }).subscribe({ error: () => {} });
+    httpMock
+      .expectOne((req) => req.url.endsWith('/admin/discovery/candidates/c1/hold'))
+      .flush(
+        {
+          detail: {
+            code: 'candidate_changed',
+            message: 'Candidate changed; reload before retrying',
+          },
+        },
+        { status: 409, statusText: 'Conflict' },
+      );
+    expect(toastCalls).toEqual([{ tone: 'warning', text: '候選狀態已更新，請確認最新清單後再試' }]);
   });
 
   it('fetches read-only operation and storage snapshots with the verified management session', () => {

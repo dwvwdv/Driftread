@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS driftread.source_reviews (
 );
 ALTER TABLE driftread.source_reviews ADD COLUMN IF NOT EXISTS available_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE driftread.source_reviews ADD COLUMN IF NOT EXISTS failure_count integer NOT NULL DEFAULT 0;
+ALTER TABLE driftread.source_reviews ADD COLUMN IF NOT EXISTS paid_retry_key uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS source_review_active_candidate ON driftread.source_reviews(candidate_id)
  WHERE status IN('requested','preparing','ready','leased','awaiting_human');
 CREATE INDEX IF NOT EXISTS source_review_ready ON driftread.source_reviews(status,created_at);
@@ -77,8 +78,9 @@ BEGIN
   ELSIF NOT p_retry THEN RETURN to_jsonb(r);
   END IF;
  END IF;
- INSERT INTO driftread.source_reviews(candidate_id,engine,model,policy_version,policy,candidate_version)
- VALUES(c.id,s.value->>'engine',CASE WHEN s.value->>'engine'='external_agent' THEN 'external-agent' ELSE s.value->>'model' END,s.version,s.value,c.review_version) RETURNING * INTO r;
+ INSERT INTO driftread.source_reviews(candidate_id,engine,model,policy_version,policy,candidate_version,paid_retry_key)
+ VALUES(c.id,s.value->>'engine',CASE WHEN s.value->>'engine'='external_agent' THEN 'external-agent' ELSE s.value->>'model' END,s.version,s.value,c.review_version,
+  CASE WHEN p_retry THEN gen_random_uuid() ELSE NULL END) RETURNING * INTO r;
  RETURN to_jsonb(r);
 END $$;
 
@@ -329,6 +331,39 @@ REVOKE ALL ON FUNCTION driftread.request_due_source_reviews(integer),driftread.f
  driftread.promote_discovery_candidate(uuid,text,text[],boolean) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION driftread.request_due_source_reviews(integer),driftread.fail_source_review(uuid,uuid,text),
  driftread.promote_discovery_candidate(uuid,text,text[],boolean) TO service_role;
+
+-- A manual candidate action cannot silently undo a completed admission. If
+-- admission committed first, source visibility must be managed from feeds.
+CREATE OR REPLACE FUNCTION driftread.decide_discovery_candidate(
+ p_candidate_id uuid,p_decision text,p_expected_version bigint,p_note text DEFAULT NULL,p_block_host boolean DEFAULT false)
+ RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE c driftread.discovery_candidates; source_host text; aliases text[];
+BEGIN
+ IF p_decision NOT IN('held','rejected') OR p_expected_version IS NULL OR p_expected_version<1 THEN
+  RAISE EXCEPTION 'invalid candidate decision';
+ END IF;
+ SELECT * INTO c FROM driftread.discovery_candidates WHERE id=p_candidate_id FOR UPDATE;
+ IF NOT FOUND THEN RETURN jsonb_build_object('error','not_found'); END IF;
+ aliases:=ARRAY[c.feed_url];
+ IF c.feed_url ~* '/(feed|rss|atom)/?$' THEN aliases:=ARRAY[rtrim(c.feed_url,'/'),rtrim(c.feed_url,'/')||'/']; END IF;
+ IF c.status='imported' OR c.feed_id IS NOT NULL OR EXISTS(SELECT 1 FROM driftread.feeds f WHERE f.url=ANY(aliases)) THEN
+  RETURN jsonb_build_object('error','candidate_already_imported');
+ END IF;
+ IF c.review_version<>p_expected_version THEN RETURN jsonb_build_object('error','candidate_changed'); END IF;
+ -- This is a human action: keep the override trigger enabled.
+ UPDATE driftread.discovery_candidates SET status=p_decision,review_note=left(p_note,500),reviewed_at=clock_timestamp()
+  WHERE id=c.id RETURNING * INTO c;
+ IF p_decision='rejected' AND p_block_host THEN
+  source_host:=c.source_host;
+  IF source_host IS NULL AND c.target_id IS NOT NULL THEN
+   SELECT host INTO source_host FROM driftread.discovery_targets WHERE id=c.target_id;
+  END IF;
+  IF source_host IS NOT NULL THEN UPDATE driftread.discovery_targets SET status='rejected' WHERE host=source_host; END IF;
+ END IF;
+ RETURN to_jsonb(c);
+END $$;
+REVOKE ALL ON FUNCTION driftread.decide_discovery_candidate(uuid,text,bigint,text,boolean) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION driftread.decide_discovery_candidate(uuid,text,bigint,text,boolean) TO service_role;
 
 -- Explicit zero-policy service-only execution; no SECURITY DEFINER application RPC.
 REVOKE ALL ON FUNCTION driftread.source_review_candidate_fence(),driftread.request_source_review(uuid,boolean),

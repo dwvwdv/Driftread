@@ -248,70 +248,45 @@ def block_host(db: "Client", host: str) -> int:
     return len(result.data or [])
 
 
-def hold_candidate(
-    db: "Client",
-    candidate_id: str,
-    note: str | None = None,
-) -> dict | None:
-    """Keep a viable alternate out of the catalog without discarding it.
+class CandidateConflict(Exception):
+    """An atomic human action lost to another committed decision."""
+    def __init__(self, code: str):
+        self.code = code
+        self.detail = {
+            'code': code,
+            'message': ('Candidate is already imported; manage it from feeds' if code == 'candidate_already_imported'
+                        else 'Candidate changed; reload before retrying'),
+        }
+        super().__init__(self.detail['message'])
 
-    Held candidates remain reviewable and can later be approved if the active
-    feed for their domain stops working. Unlike rejection, holding never blocks
-    the discovery target.
-    """
+
+def _decide_candidate(db: "Client", candidate_id: str, decision: str, note: str | None, block_host_too: bool) -> dict | None:
     candidate = get_candidate(db, candidate_id)
     if not candidate:
         return None
+    result = db.rpc("decide_discovery_candidate", {
+        "p_candidate_id": str(candidate_id), "p_decision": decision,
+        "p_expected_version": candidate.get("review_version", 1),
+        "p_note": sanitize_text(note, 500), "p_block_host": block_host_too,
+    }).execute()
+    row = getattr(result, "data", None)
+    if isinstance(row, list):
+        row = row[0] if row else None
+    if row and row.get("error"):
+        if row["error"] == "not_found":
+            return None
+        raise CandidateConflict(row["error"])
+    return row
 
-    updated = (
-        db.table("discovery_candidates")
-        .update({
-            "status": "held",
-            "review_note": sanitize_text(note, 500),
-            "reviewed_at": _now(),
-        })
-        .eq("id", str(candidate_id))
-        .execute()
-    )
-    return updated.data[0] if updated.data else None
+
+def hold_candidate(db: "Client", candidate_id: str, note: str | None = None) -> dict | None:
+    """Hold an uncollected endpoint; a completed admission is a conflict."""
+    return _decide_candidate(db, candidate_id, "held", note, False)
 
 
-def reject_candidate(
-    db: "Client",
-    candidate_id: str,
-    note: str | None = None,
-    block_host_too: bool = False,
-) -> dict | None:
-    candidate = get_candidate(db, candidate_id)
-    if not candidate:
-        return None
-
-    updated = (
-        db.table("discovery_candidates")
-        .update({
-            "status": "rejected",
-            "review_note": sanitize_text(note, 500),
-            "reviewed_at": _now(),
-        })
-        .eq("id", str(candidate_id))
-        .execute()
-    )
-
-    if block_host_too:
-        host = candidate.get("source_host")
-        if not host and candidate.get("target_id"):
-            target = _row_or_none(
-                db.table("discovery_targets")
-                .select("host")
-                .eq("id", str(candidate["target_id"]))
-                .maybe_single()
-                .execute()
-            )
-            host = (target or {}).get("host")
-        if host:
-            block_host(db, host)
-
-    return updated.data[0] if updated.data else None
+def reject_candidate(db: "Client", candidate_id: str, note: str | None = None, block_host_too: bool = False) -> dict | None:
+    """Reject and optionally block the host atomically, before admission."""
+    return _decide_candidate(db, candidate_id, "rejected", note, block_host_too)
 
 
 def _mark_imported(db: "Client", candidate_id: str, feed_id: str) -> None:

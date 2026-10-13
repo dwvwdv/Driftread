@@ -324,19 +324,27 @@ export class AdminService {
         }
         break;
 
-      case 409:
-        // Scoped to approveCandidate()'s own context string — a 409 from any
-        // other call (e.g. seedTargets() racing on discovery_targets.url's
-        // unique constraint, since backend/errors.py started mapping
-        // unique_violation to 409) is an unrelated conflict, not "already
-        // rejected", and showing that message for it would mislead the
-        // operator about what actually happened.
-        if (context === '核准失敗') {
+      case 409: {
+        const body =
+          error instanceof HttpErrorResponse
+            ? (error.error as { detail?: { code?: string } } | null)
+            : null;
+        const code = body && typeof body.detail === 'object' ? body.detail?.code : undefined;
+        const manualDecision = context === '保留失敗' || context === '拒絕失敗';
+        // Stable codes distinguish admission races from version conflicts.
+        // Keep candidate-specific messages scoped to their operations so an
+        // unrelated 409 still reports its actual conflict.
+        if (manualDecision && code === 'candidate_already_imported') {
+          this.toast.warning('此來源已收錄，無法再保留或拒絕候選；請到「信息源管理」操作');
+        } else if (manualDecision && code === 'candidate_changed') {
+          this.toast.warning('候選狀態已更新，請確認最新清單後再試');
+        } else if (context === '核准失敗') {
           this.toast.warning('此候選先前已被拒絕，無法核准');
         } else {
           this.toast.danger(`${context}：${apiMessage(error, '資源衝突，請重新整理後再試')}`);
         }
         break;
+      }
 
       case 502:
         this.toast.warning('來源抓取失敗：遠端沒有回應，或回傳的內容不是有效的 feed');

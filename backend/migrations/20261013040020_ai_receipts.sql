@@ -20,6 +20,15 @@ CREATE TABLE IF NOT EXISTS driftread.ai_request_attempts (
  started_at timestamptz NOT NULL DEFAULT now(), received_at timestamptz,
  UNIQUE(receipt_id,attempt)
 );
+ALTER TABLE driftread.ai_request_receipts ADD COLUMN IF NOT EXISTS retry_parent_key text;
+CREATE INDEX IF NOT EXISTS ai_receipts_retry_parent ON driftread.ai_request_receipts(retry_parent_key,created_at);
+CREATE TABLE IF NOT EXISTS driftread.ai_request_retry_bindings (
+ retry_key uuid PRIMARY KEY, logical_key text NOT NULL,
+ receipt_id uuid NOT NULL REFERENCES driftread.ai_request_receipts(id) ON DELETE CASCADE
+);
+ALTER TABLE driftread.ai_request_retry_bindings ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON driftread.ai_request_retry_bindings FROM PUBLIC,anon,authenticated;
+GRANT SELECT,INSERT,DELETE ON driftread.ai_request_retry_bindings TO service_role;
 CREATE INDEX IF NOT EXISTS ai_receipts_capability_time ON driftread.ai_request_receipts(capability,created_at);
 CREATE INDEX IF NOT EXISTS ai_attempts_time ON driftread.ai_request_attempts(started_at);
 ALTER TABLE driftread.ai_request_receipts ENABLE ROW LEVEL SECURITY;
@@ -39,7 +48,10 @@ BEGIN
  END IF;
  -- All capabilities share the deployment's provider budget; a capability cannot evade it.
  PERFORM pg_advisory_xact_lock(73692411);
- SELECT * INTO r FROM driftread.ai_request_receipts WHERE logical_key=p_logical_key FOR UPDATE;
+ -- Automatic work reuses the newest manually-created generation too.
+ SELECT * INTO r FROM driftread.ai_request_receipts
+ WHERE logical_key=p_logical_key OR retry_parent_key=p_logical_key
+ ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE;
  IF FOUND THEN
   IF r.status IN ('received','completed','failed') AND NOT (r.status='failed' AND r.error_code='provider_http_retryable' AND r.attempts<2) THEN RETURN jsonb_build_object('action','cached','receipt',to_jsonb(r)); END IF;
   IF r.status='pending' AND r.lease_expires_at>v_now THEN RETURN jsonb_build_object('action','blocked','code','request_in_progress','receipt_id',r.id); END IF;
@@ -59,8 +71,8 @@ BEGIN
  SELECT coalesce(sum(charged_usd),0) INTO v_used FROM driftread.ai_request_attempts WHERE started_at>v_now-interval '1 day';
  IF v_used+p_reserved_usd>p_day_usd THEN RETURN jsonb_build_object('action','blocked','code','budget_exceeded'); END IF;
  IF r.id IS NULL THEN
-  INSERT INTO driftread.ai_request_receipts(logical_key,capability,model,input_hash,policy_hash,config_hash)
-  VALUES(p_logical_key,p_capability,p_model,p_input_hash,p_policy_hash,p_config_hash) RETURNING * INTO r;
+  INSERT INTO driftread.ai_request_receipts(logical_key,capability,model,input_hash,policy_hash,config_hash,created_at)
+  VALUES(p_logical_key,p_capability,p_model,p_input_hash,p_policy_hash,p_config_hash,v_now) RETURNING * INTO r;
  END IF;
  t:=gen_random_uuid();
  UPDATE driftread.ai_request_receipts SET status='pending',attempts=attempts+1,active_token=t,lease_expires_at=v_now+interval '120 seconds',updated_at=v_now,error_code=NULL WHERE id=r.id RETURNING * INTO r;
@@ -68,6 +80,52 @@ BEGIN
  VALUES(r.id,r.attempts,t,'pending',p_reserved_usd,p_reserved_usd,v_now);
  RETURN jsonb_build_object('action','send','receipt_id',r.id,'token',t,'attempts',r.attempts);
 END $$;
+
+-- An explicit admin retry may renew only a known terminal provider failure.
+-- The durable task retry key deduplicates queue retries; unknowns retain the
+-- original receipt's two-send bound. Keep all earlier attempts/costs for billing.
+CREATE OR REPLACE FUNCTION driftread.reserve_ai_retry(
+ p_logical_key text,p_capability text,p_model text,p_input_hash text,p_policy_hash text,p_config_hash text,
+ p_reserved_usd numeric,p_minute_usd numeric,p_hour_usd numeric,p_day_usd numeric,p_retry_key uuid
+) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=driftread,pg_temp AS $$
+DECLARE r driftread.ai_request_receipts; v_key text; outcome jsonb; v_receipt_id uuid;
+BEGIN
+ IF p_retry_key IS NULL THEN RAISE EXCEPTION 'invalid_retry_key'; END IF;
+ PERFORM pg_advisory_xact_lock(73692411);
+ v_key:=p_logical_key||':retry:'||p_retry_key::text;
+ SELECT ar.* INTO r FROM driftread.ai_request_retry_bindings b JOIN driftread.ai_request_receipts ar ON ar.id=b.receipt_id
+  WHERE b.retry_key=p_retry_key AND b.logical_key=p_logical_key FOR UPDATE OF ar;
+ IF FOUND THEN v_key:=r.logical_key;
+ ELSE
+  SELECT * INTO r FROM driftread.ai_request_receipts WHERE logical_key=v_key FOR UPDATE;
+ END IF;
+ IF NOT FOUND THEN
+  SELECT * INTO r FROM driftread.ai_request_receipts
+   WHERE logical_key=p_logical_key OR retry_parent_key=p_logical_key
+   ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE;
+  IF NOT FOUND THEN v_key:=p_logical_key;
+  ELSIF r.status='failed' AND (r.error_code IN('provider_http_error','provider_invalid_response')
+   OR (r.error_code='provider_http_retryable' AND r.attempts>=2)) THEN
+   -- v_key remains the new explicit generation.
+   NULL;
+  ELSE v_key:=r.logical_key;
+  END IF;
+ END IF;
+ outcome:=driftread.reserve_ai_request(v_key,p_capability,p_model,p_input_hash,p_policy_hash,p_config_hash,
+  p_reserved_usd,p_minute_usd,p_hour_usd,p_day_usd);
+ IF outcome->>'action'='send' AND v_key<>p_logical_key THEN
+  UPDATE driftread.ai_request_receipts SET retry_parent_key=p_logical_key
+   WHERE id=(outcome->>'receipt_id')::uuid;
+ END IF;
+ v_receipt_id:=coalesce(outcome->>'receipt_id',outcome->'receipt'->>'id')::uuid;
+ IF v_receipt_id IS NOT NULL THEN
+  INSERT INTO driftread.ai_request_retry_bindings(retry_key,logical_key,receipt_id)
+   VALUES(p_retry_key,p_logical_key,v_receipt_id) ON CONFLICT(retry_key) DO NOTHING;
+ END IF;
+ RETURN outcome;
+END $$;
+REVOKE ALL ON FUNCTION driftread.reserve_ai_retry(text,text,text,text,text,text,numeric,numeric,numeric,numeric,uuid) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION driftread.reserve_ai_retry(text,text,text,text,text,text,numeric,numeric,numeric,numeric,uuid) TO service_role;
 
 -- Raw bytes are committed before Python attempts JSON parsing. No untrusted response text in errors.
 CREATE OR REPLACE FUNCTION driftread.receive_ai_response(p_id uuid,p_token uuid,p_raw text,p_http_status integer,p_latency_ms integer)

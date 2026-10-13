@@ -325,6 +325,42 @@ class FakeDB:
         return FakeQuery(self, name)
 
     def rpc(self, name: str, params: dict):
+        if name == 'decide_discovery_candidate':
+            self.ops.append(('_rpc', name, (params,)))
+            db = self
+
+            class Decision:
+                def execute(self):
+                    from services.source_identity import feed_url_aliases
+                    candidate = next((row for row in db.rows('discovery_candidates')
+                                      if row['id'] == params['p_candidate_id']), None)
+                    if not candidate:
+                        return FakeResult({'error': 'not_found'})
+                    aliases = feed_url_aliases(candidate['feed_url'])
+                    if (candidate['status'] == 'imported' or candidate.get('feed_id')
+                            or any(row['url'] in aliases for row in db._tables.get('feeds', []))):
+                        return FakeResult({'error': 'candidate_already_imported'})
+                    if candidate.get('review_version', 1) != params['p_expected_version']:
+                        return FakeResult({'error': 'candidate_changed'})
+                    payload = {'status': params['p_decision'], 'review_note': params['p_note'],
+                               'reviewed_at': '2026-10-13T00:00:00+00:00',
+                               'review_version': candidate.get('review_version', 1) + 1,
+                               'manual_override': 'hold' if params['p_decision'] == 'held' else 'reject'}
+                    candidate.update(payload)
+                    db.updates.append(('discovery_candidates', payload))
+                    if params['p_decision'] == 'rejected' and params['p_block_host']:
+                        host = candidate.get('source_host')
+                        targets = db._tables.get('discovery_targets', [])
+                        if not host:
+                            target = next((row for row in targets if row['id'] == candidate.get('target_id')), {})
+                            host = target.get('host')
+                        if host:
+                            for target in targets:
+                                if target['host'] == host:
+                                    target['status'] = 'rejected'
+                    return FakeResult(candidate)
+
+            return Decision()
         if name != 'promote_discovery_candidate':
             raise AssertionError(f'unexpected RPC {name!r}')
         self.ops.append(('_rpc', name, (params,)))

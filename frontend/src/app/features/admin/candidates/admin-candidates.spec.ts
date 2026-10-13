@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { Subject, of } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
 import { AdminCandidates } from './admin-candidates';
 import { AdminService } from '../../../services/admin';
 import { ConfirmService } from '../../../ui/confirm/confirm';
@@ -357,4 +358,54 @@ describe('AdminCandidates source review', () => {
     component.requestReview(candidate(1), true);
     expect(calls.retry).toBe(1);
   });
+});
+
+describe('AdminCandidates manual decision conflicts', () => {
+  it.each(['hold', 'reject'] as const)(
+    'reloads an already-imported candidate after %s conflict without reporting success',
+    async (action) => {
+      let reads = 0;
+      const notices: string[] = [];
+      const conflict = new HttpErrorResponse({ status: 409 });
+      TestBed.configureTestingModule({
+        imports: [AdminCandidates],
+        providers: [
+          {
+            provide: AdminService,
+            useValue: {
+              listCandidates: () =>
+                of({
+                  items: ++reads === 1 ? [candidate(1)] : [],
+                  total: reads === 1 ? 1 : 0,
+                  page: 1,
+                  page_size: 20,
+                }),
+              listSourceReviews: () => of({ items: [] }),
+              holdCandidate: () => throwError(() => conflict),
+              rejectCandidate: () => throwError(() => conflict),
+            },
+          },
+          {
+            provide: ToastService,
+            useValue: {
+              info: (text: string) => notices.push(text),
+              success: (text: string) => notices.push(text),
+            },
+          },
+          { provide: ConfirmService, useValue: { ask: () => Promise.resolve(true) } },
+        ],
+      });
+      const fixture = TestBed.createComponent(AdminCandidates);
+      fixture.detectChanges();
+      const component = fixture.componentInstance as unknown as {
+        hold: (c: FeedCandidate) => void;
+        reject: (c: FeedCandidate) => Promise<void>;
+        candidates: () => FeedCandidate[];
+      };
+      await component[action](candidate(1));
+      expect(reads).toBe(2);
+      expect(component.candidates()).toEqual([]);
+      expect(notices).toEqual([]);
+    },
+  );
 });

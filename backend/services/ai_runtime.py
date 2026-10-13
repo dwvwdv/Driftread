@@ -73,13 +73,13 @@ async def _rpc(db, name, params):
 async def execute_paid(db, identity: RequestIdentity, *, reserved_usd: Decimal,
                        daily_budget_usd: Decimal, send: Callable[[], Awaitable[ProviderResponse]],
                        parse: Callable[[str], ParsedResponse], return_metadata: bool = False,
-                       _retry_allowed: bool = True) -> dict:
+                       explicit_retry_key: str | None = None, _retry_allowed: bool = True) -> dict:
     """Reserve atomically, commit raw response, then parse and commit typed result.
 
     Database failure fails closed. No outbound request happens before reservation.
     Input identity must exclude leases, timestamps and secrets.
     """
-    reservation = await _rpc(db, "reserve_ai_request", {
+    params = {
         "p_logical_key": identity.key, "p_capability": identity.capability,
         "p_model": identity.model, "p_input_hash": identity.input_hash,
         "p_policy_hash": identity.policy_hash, "p_config_hash": identity.config_hash,
@@ -87,7 +87,10 @@ async def execute_paid(db, identity: RequestIdentity, *, reserved_usd: Decimal,
         "p_minute_usd": str(min(daily_budget_usd, Decimal("0.1"))),
         "p_hour_usd": str(min(daily_budget_usd, Decimal("0.5"))),
         "p_day_usd": str(daily_budget_usd),
-    })
+    }
+    if explicit_retry_key:
+        params["p_retry_key"] = explicit_retry_key
+    reservation = await _rpc(db, "reserve_ai_retry" if explicit_retry_key else "reserve_ai_request", params)
     if reservation["action"] == "blocked":
         raise RuntimeBlocked(reservation["code"], reservation.get("receipt_id"))
     if reservation["action"] == "cached":
@@ -130,7 +133,7 @@ async def execute_paid(db, identity: RequestIdentity, *, reserved_usd: Decimal,
                 await asyncio.sleep(0.5)
                 return await execute_paid(db, identity, reserved_usd=reserved_usd,
                     daily_budget_usd=daily_budget_usd, send=send, parse=parse,
-                    return_metadata=return_metadata, _retry_allowed=False)
+                    return_metadata=return_metadata, explicit_retry_key=explicit_retry_key, _retry_allowed=False)
             code = "request_unknown_paused" if reservation.get("attempts", 0) >= 2 else "provider_outcome_unknown"
             raise RuntimeBlocked(code, receipt_id) from None
         latency = response.latency_ms or round((time.monotonic() - started) * 1000)
@@ -151,7 +154,7 @@ async def execute_paid(db, identity: RequestIdentity, *, reserved_usd: Decimal,
             await asyncio.sleep(0.5)
             return await execute_paid(db, identity, reserved_usd=reserved_usd,
                 daily_budget_usd=daily_budget_usd, send=send, parse=parse,
-                    return_metadata=return_metadata, _retry_allowed=False)
+                    return_metadata=return_metadata, explicit_retry_key=explicit_retry_key, _retry_allowed=False)
         raise RuntimeBlocked(code, receipt_id)
     try:
         parsed = parse(response.raw)

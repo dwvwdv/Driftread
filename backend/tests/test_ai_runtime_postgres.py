@@ -22,6 +22,11 @@ def reserve(conn, key=None, cost='.01', minute='.1', hour='.5', day='1'):
         (key or uuid4().hex, 'source_review', 'jev-1.13.0', 'input', 'policy', 'config', cost, minute, hour, day))
 
 
+def explicit_retry(conn, key, retry_key):
+    return scalar(conn, 'SELECT driftread.reserve_ai_retry(%s,%s,%s,%s,%s,%s,.01,1,1,1,%s)',
+        (key, 'source_review', 'jev-1.13.0', 'input', 'policy', 'config', str(retry_key)))
+
+
 def test_sql_fixture_and_migration_replay(pg_database):
     with connection(pg_database) as conn:
         with conn.cursor() as cur:
@@ -89,6 +94,12 @@ def test_private_real_roles_cannot_read_or_execute(pg_database, role):
         conn.rollback()
         with pytest.raises(psycopg2.errors.InsufficientPrivilege):
             scalar(conn, 'SELECT count(*) FROM driftread.ai_request_attempts')
+        conn.rollback()
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            explicit_retry(conn, 'private', uuid4())
+        conn.rollback()
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            scalar(conn, 'SELECT count(*) FROM driftread.ai_request_retry_bindings')
 
 
 @pytest.mark.parametrize('limits', [dict(minute='1', hour='.06', day='1'), dict(minute='1', hour='1', day='.06')])
@@ -136,4 +147,47 @@ def test_http_transient_second_attempt_is_bounded_but_invalid_output_is_terminal
         assert scalar(conn, "SELECT driftread.finish_ai_request(%s,%s,'failed',NULL,'provider_invalid_response')", (bad['receipt_id'], bad['token']))
         assert reserve(conn, 'invalid')['action'] == 'cached'
         assert scalar(conn, 'SELECT count(*) FROM driftread.ai_request_attempts WHERE receipt_id=%s', (bad['receipt_id'],)) == 1
+        conn.commit()
+
+
+@pytest.mark.parametrize('http_status,error', [(401, 'provider_http_error'), (403, 'provider_http_error'), (200, 'provider_invalid_response')])
+def test_explicit_retry_recovers_known_failure_preserves_cost_and_deduplicates(pg_database, http_status, error):
+    with connection(pg_database, 'service_role') as conn:
+        first = reserve(conn, 'repair')
+        scalar(conn, 'SELECT driftread.receive_ai_response(%s,%s,%s,%s,1)',
+            (first['receipt_id'], first['token'], 'invalid', http_status))
+        scalar(conn, "SELECT driftread.finish_ai_request(%s,%s,'failed',NULL,%s)", (first['receipt_id'], first['token'], error))
+        assert reserve(conn, 'repair')['action'] == 'cached'
+        retry_key = uuid4()
+        fresh = explicit_retry(conn, 'repair', retry_key)
+        assert fresh['action'] == 'send' and fresh['receipt_id'] != first['receipt_id']
+        assert explicit_retry(conn, 'repair', retry_key)['code'] == 'request_in_progress'
+        scalar(conn, 'SELECT driftread.receive_ai_response(%s,%s,%s,200,1)', (fresh['receipt_id'], fresh['token'], '{}'))
+        scalar(conn, "SELECT driftread.finish_ai_request(%s,%s,'completed','{}')", (fresh['receipt_id'], fresh['token']))
+        assert explicit_retry(conn, 'repair', retry_key)['receipt']['id'] == fresh['receipt_id']
+        assert explicit_retry(conn, 'repair', uuid4())['action'] == 'cached'
+        assert reserve(conn, 'repair')['receipt']['id'] == fresh['receipt_id']
+        assert scalar(conn, 'SELECT count(*) FROM driftread.ai_request_attempts') == 2
+        assert scalar(conn, 'SELECT sum(charged_usd) FROM driftread.ai_request_attempts') == Decimal('.02')
+        conn.commit()
+
+
+def test_explicit_retry_cannot_release_unknown_or_repeat_its_own_terminal_failure(pg_database):
+    with connection(pg_database, 'service_role') as conn:
+        first = reserve(conn, 'uncertain')
+        scalar(conn, "SELECT driftread.finish_ai_request(%s,%s,'unknown')", (first['receipt_id'], first['token']))
+        retry_key = uuid4()
+        second = explicit_retry(conn, 'uncertain', retry_key)
+        assert second['receipt_id'] == first['receipt_id'] and second['attempts'] == 2
+        scalar(conn, "SELECT driftread.finish_ai_request(%s,%s,'unknown')", (second['receipt_id'], second['token']))
+        assert explicit_retry(conn, 'uncertain', uuid4())['code'] == 'request_unknown_paused'
+        assert scalar(conn, "SELECT count(*) FROM driftread.ai_request_receipts WHERE logical_key='uncertain' OR retry_parent_key='uncertain'") == 1
+        # No predecessor: this explicit task's initial send fails; automatic
+        # queue repeats must reuse its binding rather than create a generation.
+        key = uuid4()
+        created = explicit_retry(conn, 'new', key)
+        scalar(conn, 'SELECT driftread.receive_ai_response(%s,%s,%s,401,1)', (created['receipt_id'], created['token'], 'bad key'))
+        scalar(conn, "SELECT driftread.finish_ai_request(%s,%s,'failed',NULL,'provider_http_error')", (created['receipt_id'], created['token']))
+        assert explicit_retry(conn, 'new', key)['action'] == 'cached'
+        assert explicit_retry(conn, 'new', uuid4())['action'] == 'send'
         conn.commit()

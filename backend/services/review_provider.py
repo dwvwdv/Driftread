@@ -165,7 +165,8 @@ async def evaluate_jev(db, packet, settings):
     reserve = (Decimal(tokens_upper) * INPUT_TOKEN_PRICE).quantize(Decimal("0.0000000001"), rounding=ROUND_UP)
     response = await execute_paid(db, identity, reserved_usd=reserve,
         daily_budget_usd=Decimal(str(values.get("daily_budget_usd", 1))),
-        send=lambda: _send_request(body, key), parse=lambda raw: parse_response(raw, values), return_metadata=True)
+        send=lambda: _send_request(body, key), parse=lambda raw: parse_response(raw, values), return_metadata=True,
+        explicit_retry_key=packet.get("paid_retry_key"))
     metadata = {
         "receipt_id": response["receipt_id"],
         "provider_prompt_hash": digest({"questions": body["questions"], "policy": body["state"]["policy"]}),

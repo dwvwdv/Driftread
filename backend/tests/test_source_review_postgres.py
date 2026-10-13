@@ -8,7 +8,7 @@ from uuid import uuid4
 import psycopg2
 import pytest
 
-from tests.test_postgres_lifecycle import pg_database, connection, scalar
+from tests.test_postgres_lifecycle import pg_database, connection, scalar, assert_blocked
 
 POLICY = {'enabled': True, 'skip_human_review': True, 'engine': 'external_agent', 'model': 'test',
           'min_confidence': .9, 'min_quality': .7, 'max_spam_probability': .2,
@@ -66,6 +66,9 @@ def test_fixture_migration_replay_and_no_public_access(pg_database):
         with connection(pg_database, role) as conn:
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 scalar(conn, "SELECT driftread.claim_source_review('external_agent')")
+        with connection(pg_database, role) as conn:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                scalar(conn, "SELECT driftread.decide_discovery_candidate(%s,'held',1)", (uuid4(),))
 
 
 def test_atomic_admission_is_idempotent_and_keeps_curated_metadata(pg_database):
@@ -94,6 +97,102 @@ def test_manual_candidate_action_fences_claimed_model(pg_database, status, overr
         assert scalar(conn, 'SELECT manual_override FROM driftread.discovery_candidates WHERE id=%s', (cid,)) == override
         assert request(conn, cid)['error'] == 'manual_decision'
         assert scalar(conn, 'SELECT count(*) FROM driftread.feeds WHERE url=(SELECT feed_url FROM driftread.discovery_candidates WHERE id=%s)', (cid,)) == 0
+        conn.commit()
+
+
+@pytest.mark.parametrize('decision', ['held', 'rejected'])
+@pytest.mark.parametrize('first', ['human', 'model'])
+def test_candidate_human_action_and_model_admission_serialize(pg_database, decision, first):
+    """Both orderings wait on the same candidate lock, with no false rejection."""
+    with connection(pg_database, 'service_role') as setup:
+        cid = candidate(setup)
+        host = f'{uuid4().hex}.example'
+        tid = scalar(setup, "INSERT INTO driftread.discovery_targets(url,host,status) VALUES(%s,%s,'done') RETURNING id", (f'https://{host}/', host))
+        scalar(setup, 'UPDATE driftread.discovery_candidates SET source_host=%s,target_id=%s WHERE id=%s RETURNING id', (host, tid, cid))
+        review = ready(setup, cid)
+        version = scalar(setup, 'SELECT review_version FROM driftread.discovery_candidates WHERE id=%s', (cid,))
+        setup.commit()
+
+    def human(conn):
+        return scalar(conn, 'SELECT driftread.decide_discovery_candidate(%s,%s,%s,%s,true)', (cid, decision, version, 'human decision'))
+
+    with connection(pg_database, 'service_role') as actor, connection(pg_database, 'service_role') as contender, connection(pg_database) as observer:
+        pid = scalar(contender, 'SELECT pg_backend_pid()')
+        contender.commit()
+        initial = human(actor) if first == 'human' else submit(actor, review)
+        before_feed = scalar(actor, 'SELECT to_jsonb(f) FROM driftread.feeds f WHERE f.id=(SELECT feed_id FROM driftread.discovery_candidates WHERE id=%s)', (cid,)) if first == 'model' else None
+
+        def competing_action():
+            result = submit(contender, review) if first == 'human' else human(contender)
+            contender.commit()
+            return result
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(competing_action)
+            assert_blocked(observer, pid, future)
+            actor.commit()
+            second = future.result(timeout=5)
+
+        if first == 'human':
+            assert initial['status'] == decision
+            assert second['status'] == 'overridden'
+            assert scalar(observer, 'SELECT manual_override FROM driftread.discovery_candidates WHERE id=%s', (cid,)) == ('hold' if decision == 'held' else 'reject')
+            assert scalar(observer, 'SELECT count(*) FROM driftread.feeds WHERE url=(SELECT feed_url FROM driftread.discovery_candidates WHERE id=%s)', (cid,)) == 0
+            assert scalar(observer, 'SELECT status FROM driftread.discovery_targets WHERE id=%s', (tid,)) == ('rejected' if decision == 'rejected' else 'done')
+        else:
+            assert initial['status'] == 'accepted'
+            assert second == {'error': 'candidate_already_imported'}
+            assert scalar(observer, 'SELECT status FROM driftread.discovery_candidates WHERE id=%s', (cid,)) == 'imported'
+            assert scalar(observer, 'SELECT status FROM driftread.discovery_targets WHERE id=%s', (tid,)) == 'done'
+            assert scalar(observer, 'SELECT to_jsonb(f) FROM driftread.feeds f WHERE f.id=(SELECT feed_id FROM driftread.discovery_candidates WHERE id=%s)', (cid,)) == before_feed
+
+
+def test_candidate_human_action_checks_version_and_rolls_back_atomically(pg_database):
+    with connection(pg_database, 'service_role') as conn:
+        cid = candidate(conn)
+        host = f'{uuid4().hex}.example'
+        tid = scalar(conn, "INSERT INTO driftread.discovery_targets(url,host,status) VALUES(%s,%s,'done') RETURNING id", (f'https://{host}/', host))
+        scalar(conn, 'UPDATE driftread.discovery_candidates SET source_host=%s,target_id=%s WHERE id=%s RETURNING id', (host, tid, cid))
+        old_version = scalar(conn, 'SELECT review_version FROM driftread.discovery_candidates WHERE id=%s', (cid,))
+        scalar(conn, "UPDATE driftread.discovery_candidates SET title='new evidence' WHERE id=%s RETURNING id", (cid,))
+        version = scalar(conn, 'SELECT review_version FROM driftread.discovery_candidates WHERE id=%s', (cid,))
+        conn.commit()
+        assert scalar(conn, "SELECT driftread.decide_discovery_candidate(%s,'rejected',%s,NULL,true)", (cid, old_version)) == {'error': 'candidate_changed'}
+        assert scalar(conn, 'SELECT status FROM driftread.discovery_candidates WHERE id=%s', (cid,)) == 'pending'
+        assert scalar(conn, 'SELECT status FROM driftread.discovery_targets WHERE id=%s', (tid,)) == 'done'
+        assert scalar(conn, "SELECT driftread.decide_discovery_candidate(%s,'rejected',%s,NULL,true)", (cid, version))['status'] == 'rejected'
+        conn.rollback()
+        assert scalar(conn, 'SELECT status FROM driftread.discovery_candidates WHERE id=%s', (cid,)) == 'pending'
+        assert scalar(conn, 'SELECT manual_override FROM driftread.discovery_candidates WHERE id=%s', (cid,)) is None
+        assert scalar(conn, 'SELECT status FROM driftread.discovery_targets WHERE id=%s', (tid,)) == 'done'
+
+
+@pytest.mark.parametrize('decision', ['held', 'rejected'])
+def test_candidate_action_refuses_existing_alias_feed(pg_database, decision):
+    with connection(pg_database, 'service_role') as conn:
+        url = f'https://{uuid4().hex}.example/feed'
+        cid = candidate(conn, url)
+        fid = scalar(conn, "INSERT INTO driftread.feeds(title,url,category,tags) VALUES('curated',%s,'manual',ARRAY['saved']) RETURNING id", (url + '/',))
+        version = scalar(conn, 'SELECT review_version FROM driftread.discovery_candidates WHERE id=%s', (cid,))
+        assert scalar(conn, 'SELECT driftread.decide_discovery_candidate(%s,%s,%s)', (cid, decision, version)) == {'error': 'candidate_already_imported'}
+        assert scalar(conn, 'SELECT status FROM driftread.discovery_candidates WHERE id=%s', (cid,)) == 'pending'
+        assert scalar(conn, 'SELECT manual_override FROM driftread.discovery_candidates WHERE id=%s', (cid,)) is None
+        assert scalar(conn, 'SELECT title||category||tags[1] FROM driftread.feeds WHERE id=%s', (fid,)) == 'curatedmanualsaved'
+        conn.commit()
+
+
+def test_explicit_retry_assigns_new_paid_request_identity(pg_database):
+    with connection(pg_database, 'service_role') as conn:
+        cid = candidate(conn)
+        ordinary = request(conn, cid)
+        assert ordinary['paid_retry_key'] is None
+        assert request(conn, cid)['id'] == ordinary['id']
+        first_retry = scalar(conn, 'SELECT driftread.request_source_review(%s,true)', (cid,))
+        second_retry = scalar(conn, 'SELECT driftread.request_source_review(%s,true)', (cid,))
+        assert first_retry['paid_retry_key'] is not None
+        assert second_retry['paid_retry_key'] != first_retry['paid_retry_key']
+        assert second_retry['id'] != first_retry['id']
+        assert request(conn, cid)['paid_retry_key'] == second_retry['paid_retry_key']
         conn.commit()
 
 

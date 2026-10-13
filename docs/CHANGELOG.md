@@ -1016,3 +1016,6 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 - 真 PostgreSQL fixture 發現收錄 INSERT 指定六欄但只有五個值，補上 `next_fetch_at=now()`，確保新收錄會進抓取排程。
 - 政策熱更新測試的 helper 原本領取全域最舊準備任務，會誤取先建立的其他 review；改為指定 request 回傳 ID，並檢查 candidate ID，保留原本的過期任務重排與人工結果不自動放行 assertions。
+- 人工保留／拒絕原本是無條件 PostgREST 更新，可能在模型已收錄後顯示拒絕成功。改為候選鎖與版本檢查的原子 RPC；已收錄時回 409，前端提示前往來源管理並重讀，不動既有 feed。補上真 PostgreSQL 兩種順序的鎖等待、rollback、版本與 alias 測試。
+- Jev 認證錯誤或無效回應原本永久命中 failed receipt，修正 key 後也無法明確重試。新增 server-only 任務 retry key、已知終態失敗的新 generation 及 durable receipt binding；保留舊費用與回應，預算照常生效，背景重跑與 unknown 不解除原重試上限。
+- Review 修正後本機 backend 1024 passed／142 skipped、前端 323 tests／production build 通過；最新 head PostgreSQL CI 結果由 PR 追蹤。

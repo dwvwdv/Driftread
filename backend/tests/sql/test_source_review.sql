@@ -8,7 +8,7 @@ BEGIN
   RAISE EXCEPTION 'private analysis has no public policies';
  END IF;
  IF EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace=n.oid
-  WHERE n.nspname='driftread' AND p.proname IN('request_source_review','submit_source_review','admit_source_review','resolve_source_review') AND p.prosecdef) THEN
+  WHERE n.nspname='driftread' AND p.proname IN('request_source_review','submit_source_review','admit_source_review','resolve_source_review','decide_discovery_candidate') AND p.prosecdef) THEN
   RAISE EXCEPTION 'review RPCs must be security invoker';
  END IF;
  IF has_table_privilege('service_role','driftread.analysis_results','UPDATE') THEN

@@ -7,10 +7,12 @@ from uuid import uuid4
 import pytest
 
 from services.discovery_candidates import (
+    CandidateConflict,
     approve_candidate,
     auto_promote_due,
     block_host,
     get_candidate,
+    hold_candidate,
     list_candidates,
     promote_approved,
     promote_candidate,
@@ -230,6 +232,41 @@ def test_reject_candidate_without_block_host_leaves_the_target():
 def test_reject_unknown_candidate_returns_none():
     db = FakeDB(discovery_candidates=[], discovery_targets=[])
     assert reject_candidate(db, str(uuid4())) is None
+
+
+@pytest.mark.parametrize('action', [hold_candidate, reject_candidate])
+def test_human_decision_preserves_imported_feed_and_host(action):
+    row = _candidate_row(status='imported', feed_id='existing', review_version=2)
+    target = {'id': TARGET_ID, 'host': row['source_host'], 'status': 'done'}
+    feed = {'id': 'existing', 'url': row['feed_url'], 'title': 'curated', 'category': 'manual'}
+    db = FakeDB(discovery_candidates=[row], discovery_targets=[target], feeds=[feed])
+    with pytest.raises(CandidateConflict) as exc:
+        action(db, row['id'])
+    assert exc.value.code == 'candidate_already_imported'
+    assert row['status'] == 'imported'
+    assert target['status'] == 'done'
+    assert feed['title'] == 'curated' and feed['category'] == 'manual'
+    assert not db.updates
+
+
+@pytest.mark.parametrize('action', [hold_candidate, reject_candidate])
+def test_human_decision_detects_change_after_read(action):
+    row = _candidate_row(review_version=7)
+    db = FakeDB(discovery_candidates=[row], discovery_targets=[], feeds=[])
+    original_rpc = db.rpc
+
+    def changed_before_rpc(name, params):
+        assert name == 'decide_discovery_candidate'
+        assert params['p_expected_version'] == 7
+        row.update(title='new evidence', review_version=8)
+        return original_rpc(name, params)
+
+    with patch.object(db, 'rpc', side_effect=changed_before_rpc):
+        with pytest.raises(CandidateConflict) as exc:
+            action(db, row['id'])
+    assert exc.value.code == 'candidate_changed'
+    assert row['status'] == 'pending' and row['title'] == 'new evidence'
+    assert not db.updates
 
 
 def test_get_candidate_handles_a_bare_none_result():

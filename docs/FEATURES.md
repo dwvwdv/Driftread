@@ -472,7 +472,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `discovery_target_referrers` | 006 | `(target_id, feed_id)` 主鍵的分帳表，讓「幾個**不同**的既有源連到這裡」精確且重複收割時冪等 |
 | `discovery_candidates` | 006 + 20261013040000 | 候選審核佇列，`feed_url` 唯一；`review_version`／`manual_override` 保護人工決定，核准與入庫交易原子化 |
 | `source_reviews` / `analysis_results` | 20261013040000 | service-only 評審任務／有限快照與分析紀錄；見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md) |
-| `ai_request_receipts` / `ai_request_attempts` | 20261013040020 | service-only 邏輯付費請求、有限 raw response、並發安全預算與用量摘要 |
+| `ai_request_receipts` / `ai_request_attempts` / `ai_request_retry_bindings` | 20261013040020 | service-only 邏輯付費請求、有限 raw response、明確重試綁定、並發安全預算與用量摘要 |
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 | `background_job_kinds` / `background_jobs` / `worker_alerts` | 20261009000000 / 20261009000100 | service-only 的佇列與 watchdog；見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |

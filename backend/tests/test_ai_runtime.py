@@ -20,7 +20,7 @@ class ReceiptDB:
 
     def rpc(self, name, params):
         self.calls.append((name, params))
-        if name == 'reserve_ai_request':
+        if name in {'reserve_ai_request', 'reserve_ai_retry'}:
             if self.action == 'send':
                 self.attempts += 1
                 self.receipt['attempts'] = self.attempts
@@ -303,3 +303,34 @@ async def test_jev_analysis_links_receipt_and_actual_provider_input(monkeypatch)
     assert 'fake-never-sent' not in json.dumps(metadata)
     db.action = 'cached'
     assert (await evaluate_jev(db, packet, settings))['_analysis_metadata'] == metadata
+
+
+@pytest.mark.asyncio
+async def test_explicit_retry_key_is_preserved_across_automatic_transport_retry():
+    db, sends = ReceiptDB(), []
+    async def send():
+        sends.append(1)
+        if len(sends) == 1:
+            raise TimeoutError()
+        return ProviderResponse('good')
+    result = await execute_paid(db, IDENTITY, reserved_usd=Decimal('.001'), daily_budget_usd=Decimal('1'),
+        send=send, parse=lambda _: ParsedResponse({'decision': 'accept'}, {}, Decimal('0'), 'jev-1.13.0'),
+        explicit_retry_key='00000000-0000-0000-0000-000000000001')
+    assert result['decision'] == 'accept' and len(sends) == 2
+    reservations = [(name, params) for name, params in db.calls if name.startswith('reserve_')]
+    assert len(reservations) == 2
+    assert all(name == 'reserve_ai_retry' and params['p_retry_key'].endswith('1') for name, params in reservations)
+
+
+@pytest.mark.asyncio
+async def test_jev_uses_only_server_task_retry_key(monkeypatch):
+    from services import review_provider
+    db = ReceiptDB()
+    monkeypatch.setenv('JEV_API_KEY', 'fake')
+    async def send(body, key):
+        return ProviderResponse(jev_response())
+    monkeypatch.setattr(review_provider, '_send_request', send)
+    await evaluate_jev(db, {'paid_retry_key': '00000000-0000-0000-0000-000000000002'},
+        {'enabled': True, 'engine': 'jev', 'daily_budget_usd': 1})
+    assert db.calls[0][0] == 'reserve_ai_retry'
+    assert db.calls[0][1]['p_retry_key'].endswith('2')
