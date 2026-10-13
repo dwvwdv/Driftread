@@ -9,6 +9,11 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [~] 進行中
 - [x] 已完成
 
+## 後台存取與註冊
+
+- [x] 移除 Driftread 自助註冊，後台改 `/manage` 帳密 + 本人 Telegram OTP：`backend/services/manage_auth.py`、`frontend/src/app/services/manage-session.ts`。
+- [ ] 部署設定管理員 UUID，確認 Telegram 收件、錯誤／過期／登出驗收；見 [RUNBOOK](docs/RUNBOOK.md#後台-telegram-兩步驟驗證)。
+
 ## issue #63：非 AI 導入
 
 以下勾選表示程式與自動化驗證完成；合併、正式 Supabase／Docker 部署與瀏覽器走查另列，不以程式完成代替上線。

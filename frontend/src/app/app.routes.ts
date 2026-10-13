@@ -1,23 +1,14 @@
 import { Routes } from '@angular/router';
 import { adminGuard } from './guards/admin.guard';
 
-/**
- * Two separate trees under two separate shells.
- *
- * Previously this was nine flat routes with /admin sitting among them as just
- * another leaf, sharing the public toolbar and with no guard at all.
- */
 export const routes: Routes = [
-  // MUST stay ahead of 'admin'. Once a key exists the guard passes, 'admin'
-  // matches the 'admin/**' prefix, and 'unlock' would be resolved as an unknown
-  // admin child instead of reaching this route.
   {
-    path: 'admin/unlock',
+    path: 'manage/login',
     title: '進入後台 — Driftread',
     loadComponent: () => import('./features/admin/unlock/admin-unlock').then((m) => m.AdminUnlock),
   },
   {
-    path: 'admin',
+    path: 'manage',
     canMatch: [adminGuard],
     loadComponent: () => import('./layouts/admin-layout/admin-layout').then((m) => m.AdminLayout),
     loadChildren: () => import('./features/admin/admin.routes').then((m) => m.ADMIN_ROUTES),
@@ -47,7 +38,8 @@ export const routes: Routes = [
       {
         path: 'me/digest',
         title: '每日閱讀 — 漂流閱讀 Driftread',
-        loadComponent: () => import('./components/daily-digest/daily-digest').then((m) => m.DailyDigest),
+        loadComponent: () =>
+          import('./components/daily-digest/daily-digest').then((m) => m.DailyDigest),
       },
       {
         path: 'me/stream',

@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import { AdminService } from './admin';
-import { AdminKeyStore } from './admin-key';
+import { ManageSessionService } from './manage-session';
 import { ToastService } from '../ui/toast/toast';
 
 /**
@@ -25,7 +25,16 @@ describe('AdminService 409 handling', () => {
         AdminService,
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AdminKeyStore, useValue: { key: () => 'test-key' } },
+        {
+          provide: ManageSessionService,
+          useValue: {
+            headers: () => ({
+              Authorization: 'Bearer user-token',
+              'x-manage-session': 'otp-token',
+            }),
+            clear: () => {},
+          },
+        },
         { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
         {
           provide: ToastService,
@@ -80,14 +89,16 @@ describe('AdminService 409 handling', () => {
     ]);
   });
 
-  it('fetches read-only operation and storage snapshots with the admin key', () => {
+  it('fetches read-only operation and storage snapshots with the verified management session', () => {
     const service = TestBed.inject(AdminService);
     service.operations().subscribe();
     service.storageStats().subscribe();
     for (const path of ['/admin/operations', '/admin/retention/stats']) {
       const request = httpMock.expectOne((req) => req.url.endsWith(path));
       expect(request.request.method).toBe('GET');
-      expect(request.request.headers.get('x-api-key')).toBe('test-key');
+      expect(request.request.headers.get('x-manage-session')).toBe('otp-token');
+      expect(request.request.headers.get('Authorization')).toBe('Bearer user-token');
+      expect(request.request.headers.has('x-api-key')).toBe(false);
       request.flush({});
     }
   });
@@ -97,14 +108,14 @@ describe('AdminService 409 handling', () => {
     service.globalSettings().subscribe();
     const read = httpMock.expectOne((req) => req.url.endsWith('/admin/settings'));
     expect(read.request.method).toBe('GET');
-    expect(read.request.headers.get('x-api-key')).toBe('test-key');
+    expect(read.request.headers.get('x-manage-session')).toBe('otp-token');
     read.flush({ settings: [] });
     service.saveGlobalSetting('discovery.profiles', { profiles: [] }, 3).subscribe();
     const write = httpMock.expectOne((req) =>
       req.url.endsWith('/admin/settings/discovery.profiles'),
     );
     expect(write.request.method).toBe('PUT');
-    expect(write.request.headers.get('x-api-key')).toBe('test-key');
+    expect(write.request.headers.get('x-manage-session')).toBe('otp-token');
     expect(write.request.body).toEqual({ value: { profiles: [] }, expected_version: 3 });
     write.flush({
       key: 'discovery.profiles',

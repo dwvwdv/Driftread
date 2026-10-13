@@ -10,7 +10,7 @@ import { ObCallout } from '../../ui/callout/callout';
 import { ToastService } from '../../ui/toast/toast';
 
 /**
- * Sign in / sign up.
+ * Sign in with an existing account. Self-registration is disabled.
  *
  * Three fixes beyond the restyle:
  *
@@ -57,7 +57,6 @@ export class Login {
   private discover = inject(DiscoverService);
   private toast = inject(ToastService);
 
-  mode = signal<'login' | 'signup'>('login');
   email = '';
   password = '';
   error = signal('');
@@ -66,13 +65,6 @@ export class Login {
 
   get pendingSubscribeFeed(): string | null {
     return this.route.snapshot.queryParamMap.get('subscribeFeed');
-  }
-
-  setMode(mode: 'login' | 'signup'): void {
-    if (mode === this.mode()) return;
-    this.mode.set(mode);
-    this.error.set('');
-    this.info.set('');
   }
 
   async submit(): Promise<void> {
@@ -87,19 +79,11 @@ export class Login {
     }
 
     this.busy.set(true);
-    const result =
-      this.mode() === 'login'
-        ? await this.auth.signIn(this.email, this.password)
-        : await this.auth.signUp(this.email, this.password);
+    const result = await this.auth.signIn(this.email, this.password);
     this.busy.set(false);
 
     if (result.error) {
       this.error.set(result.error);
-      return;
-    }
-
-    if (this.mode() === 'signup') {
-      this.info.set('註冊成功，請檢查信箱完成驗證後再登入。');
       return;
     }
 

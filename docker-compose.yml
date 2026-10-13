@@ -11,6 +11,7 @@ services:
       # leave unset for a standard Supabase project.
       SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL:-}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
+      MANAGE_OWNER_USER_ID: ${MANAGE_OWNER_USER_ID:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DATABASE_URL: ${DATABASE_URL}
       DISCOVERY_USER_AGENT: ${DISCOVERY_USER_AGENT:-Driftread/1.0}

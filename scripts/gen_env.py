@@ -135,6 +135,10 @@ def main():
         print("\n⚠ 請手動填入 .env 中的：SUPABASE_JWT_SECRET")
         print("  Supabase Dashboard → Settings → API → JWT Settings → JWT Secret")
 
+    if is_unset("MANAGE_OWNER_USER_ID"):
+        print("\n⚠ 請手動填入 .env 中的：MANAGE_OWNER_USER_ID")
+        print("  後台唯一允許的 Supabase auth.users UUID；空白時拒絕後台登入。")
+
     # SUPABASE_JWKS_URL is optional — backend/auth.py derives it from
     # SUPABASE_URL when absent, so it's reported rather than required.
     if "SUPABASE_JWKS_URL" not in existing or not existing["SUPABASE_JWKS_URL"].strip():

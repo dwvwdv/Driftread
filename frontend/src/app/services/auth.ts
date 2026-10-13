@@ -6,6 +6,7 @@ import { runtimeSupabaseConfig } from './runtime-config';
 export class AuthService {
   private client: SupabaseClient | null = null;
   session = signal<Session | null>(null);
+  ready: Promise<void> = Promise.resolve();
 
   constructor() {
     const { supabaseUrl, supabaseAnonKey } = runtimeSupabaseConfig();
@@ -13,7 +14,9 @@ export class AuthService {
       this.client = createClient(supabaseUrl, supabaseAnonKey, {
         auth: { persistSession: true, autoRefreshToken: true },
       });
-      this.client.auth.getSession().then(({ data }) => this.session.set(data.session));
+      this.ready = this.client.auth.getSession().then(({ data }) => {
+        this.session.set(data.session);
+      });
       this.client.auth.onAuthStateChange((_e, session) => this.session.set(session));
     }
   }
@@ -30,16 +33,15 @@ export class AuthService {
     return this.session()?.user?.email ?? null;
   }
 
-  async signUp(email: string, password: string): Promise<{ error: string | null }> {
-    if (!this.client) return { error: 'Auth not configured' };
-    const { error } = await this.client.auth.signUp({ email, password });
-    return { error: error?.message ?? null };
-  }
-
   async signIn(email: string, password: string): Promise<{ error: string | null }> {
     if (!this.client) return { error: 'Auth not configured' };
-    const { error } = await this.client.auth.signInWithPassword({ email, password });
-    return { error: error?.message ?? null };
+    try {
+      const { data, error } = await this.client.auth.signInWithPassword({ email, password });
+      if (!error) this.session.set(data.session);
+      return { error: error?.message ?? null };
+    } catch {
+      return { error: '登入服務暫時無法使用，請稍後再試' };
+    }
   }
 
   async signOut(): Promise<void> {

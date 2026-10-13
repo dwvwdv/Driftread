@@ -49,11 +49,7 @@
   </div>
 
   <div class="foot">
-    <!--
-      Shows only that a key is present, never the key itself. It is a shared
-      operator secret and there is no reason to paint it back onto the screen.
-    -->
-    <span class="ob-dot unlocked">已解鎖</span>
+    <span class="ob-dot unlocked">已通過兩步驟驗證</span>
 
     <div class="foot-row">
       <ob-theme-toggle />
@@ -66,7 +62,7 @@
 
     <button type="button" class="quiet" (click)="lock()">
       <ob-icon name="logout" [size]="14" />
-      <span class="text">清除金鑰</span>
+      <span class="text">登出後台</span>
     </button>
   </div>
 </nav>

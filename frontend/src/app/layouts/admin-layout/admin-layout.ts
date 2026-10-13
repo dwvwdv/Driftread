@@ -3,9 +3,11 @@ import { ChangeDetectionStrategy, Component, ElementRef, inject, signal } from '
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
-import { AdminKeyStore } from '../../services/admin-key';
+import { ManageSessionService } from '../../services/manage-session';
 import { ObIcon, IconName } from '../../ui/icon/icon';
 import { ObThemeToggle } from '../../ui/theme-toggle/theme-toggle';
+import { ToastService } from '../../ui/toast/toast';
+import { apiMessage } from '../../shared/http-errors';
 
 interface AdminNavItem {
   path: string;
@@ -33,7 +35,8 @@ interface AdminNavItem {
   styleUrl: './admin-layout.scss',
 })
 export class AdminLayout {
-  private keys = inject(AdminKeyStore);
+  private keys = inject(ManageSessionService);
+  private toast = inject(ToastService);
   private router = inject(Router);
   // Typed on inject() rather than as inject(ElementRef<HTMLElement>): the latter
   // resolves to ElementRef<any>, which makes nativeElement untyped and rejects the
@@ -91,9 +94,14 @@ export class AdminLayout {
     if (event.key === 'Escape') this.closeDrawer();
   }
 
-  /** Drops the key for this tab and returns to the unlock screen. */
-  protected lock(): void {
-    this.keys.clear();
-    void this.router.navigate(['/admin/unlock']);
+  /** Revoke the elevated session before returning to the login screen. */
+  protected async lock(): Promise<void> {
+    try {
+      await this.keys.logout();
+      await this.router.navigate(['/manage/login']);
+    } catch (error) {
+      this.toast.danger(apiMessage(error, '無法撤銷後台 session，已清除本機登入'));
+      await this.router.navigate(['/manage/login']);
+    }
   }
 }

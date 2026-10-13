@@ -24,9 +24,11 @@ _jwks_client_url: Optional[str] = None
 
 
 class AuthUser:
-    def __init__(self, user_id: str, email: Optional[str] = None):
+    def __init__(self, user_id: str, email: Optional[str] = None, *, session_id: str | None = None, amr: list | None = None):
         self.id = user_id
         self.email = email
+        self.session_id = session_id
+        self.amr = amr or []
 
 
 def _jwks_url() -> Optional[str]:
@@ -147,7 +149,8 @@ def _verify_token(token: str) -> AuthUser:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="A permanent account is required",
         )
-    return AuthUser(user_id=user_id, email=payload.get("email"))
+    return AuthUser(user_id=user_id, email=payload.get("email"),
+                    session_id=payload.get("session_id"), amr=payload.get("amr"))
 
 
 def _extract_bearer(authorization):

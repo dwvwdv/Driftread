@@ -84,6 +84,18 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 回滾應先停 worker，再依下節切回同版 image；新增資料不刪除。raw articles grants／正文與來源限制屬權限收緊，不應為恢復舊匿名 client 任意放寬。舊 RPC 保持原 return contract 並轉接 publication，回滾後仍需確認舊讀取端相容；離線擴充清除 cache 後才換回舊版。
 
+## 後台 Telegram 兩步驟驗證
+
+1. 在 Supabase `auth.users` 確認指定管理員為既有永久帳號且已有密碼，把其 UUID 填入部署 `.env` 的 `MANAGE_OWNER_USER_ID`。不以 Email／user_metadata 動態授權；空白時後台拒絕登入。
+2. 確認 Vault 中既有 `telegram_bot_token` / `telegram_chat_id` 可由 `DATABASE_URL` 角色讀取，`telegram_chat_id` 為本人私人 chat（正整數）；確認 `pg_net` 已啟用、可對 Telegram 外連，`pgcrypto` 安裝於 `extensions`。本專案沿用 seamless_track 設定，不需要複製 Bot Token 到環境變數，不變更 reference schema。
+3. 先部署 API，讓 `20261012020000_manage_telegram_auth.sql` 自動建表、撤銷 Data API 存取。再部署同版 frontend；worker 不使用管理員 UUID。`DATABASE_URL` 現在同時用於每次後台驗證，不能僅在 migration 時提供。
+4. 瀏覽 `/manage` → `/manage/login`，輸入管理員帳密後確認本人 Telegram 收到 OTP，再輸入完成；確認一般帳號不能發送 OTP、錯碼／過期碼不能进入後台、重送舊碼失效、登出後台後舊管理 token 不可用。
+5. 確認 `/login` 沒有註冊入口、舊 `/admin` 前端入口不再提供後台。共用 Supabase Auth 全域註冊未關閉，其他應用不受影響。
+6. `/api/admin/*` 仍供既有腳本／擴充以 `X-API-Key` 存取，這是獨立機器授權，不宣稱它也經 Telegram OTP。需要撤銷舊瀏覽器曾使用的 key 時，在 `.env` 旋轉 `ADMIN_API_KEY` 並同步更新整合設定。
+
+本機 PostgreSQL 測試用假的 Vault／pg_net 送信端；正式 Telegram 收件、實際瀏覽器與 Docker image 部署須在上述步驟驗收。
+回滾 frontend／API 至舊版將恢復舊 API Key 後台入口；新增表可保留，管理 session 到期不會授權舊後台。
+
 ## 回滾
 
 Image 只有兩種 tag：`latest`（永遠指向最後一次成功的 push）與

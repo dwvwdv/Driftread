@@ -119,6 +119,18 @@ describe('Login redirect after sign-in', () => {
     return page;
   }
 
+  it('offers only sign-in and has no signup service entry point', () => {
+    queryParams = {};
+    setup();
+    const fixture = TestBed.createComponent(Login);
+    fixture.detectChanges();
+    const buttons = Array.from(
+      fixture.nativeElement.querySelectorAll('button'),
+    ) as HTMLButtonElement[];
+    expect(buttons.some((button) => button.textContent?.includes('註冊'))).toBe(false);
+    expect('signUp' in AuthService.prototype).toBe(false);
+  });
+
   it('completes the pending subscribe and returns to the original feed', async () => {
     queryParams = { redirect: '/feeds/feed-1', subscribeFeed: 'feed-1' };
     const page = setup();

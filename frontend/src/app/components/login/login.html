@@ -1,45 +1,19 @@
 <div class="wrap">
   <form class="panel" (ngSubmit)="submit()">
     <div class="head">
-      <span class="ob-label">{{ mode() === 'login' ? 'SIGN IN' : 'SIGN UP' }}</span>
+      <span class="ob-label">SIGN IN</span>
     </div>
 
     <div class="body">
-      <h1>{{ mode() === 'login' ? '登入' : '註冊' }}漂流閱讀</h1>
+      <h1>登入漂流閱讀</h1>
 
       @if (!auth.isConfigured()) {
-        <!--
-          The frontend's Supabase URL and anon key are baked in at build time and
-          the published image ships them empty, so every signed-in feature is
-          inert there. Said plainly here, where someone is about to hit it.
-        -->
         <ob-callout tone="warning" heading="這個部署沒有設定 Supabase">
-          登入相關功能需要在建置時填入 <code>supabaseUrl</code> 與
-          <code>supabaseAnonKey</code>。官方 GHCR image 這兩個值是空的，必須自行建置 image
-          才能使用。瀏覽信息源與「猜你喜歡」不需要登入，仍可正常使用。
+          登入功能尚未設定，請聯絡管理員。瀏覽信息源與「猜你喜歡」仍可正常使用。
         </ob-callout>
       }
 
-      <div class="segments" role="group" aria-label="登入或註冊">
-        <button
-          type="button"
-          class="segment"
-          [class.segment--active]="mode() === 'login'"
-          [attr.aria-pressed]="mode() === 'login'"
-          (click)="setMode('login')"
-        >
-          登入
-        </button>
-        <button
-          type="button"
-          class="segment"
-          [class.segment--active]="mode() === 'signup'"
-          [attr.aria-pressed]="mode() === 'signup'"
-          (click)="setMode('signup')"
-        >
-          註冊
-        </button>
-      </div>
+      <p class="lede">目前不開放註冊，請使用既有帳號登入。</p>
 
       <label class="field">
         <span class="ob-label">Email</span>
@@ -59,7 +33,7 @@
           class="ob-input"
           name="password"
           type="password"
-          [attr.autocomplete]="mode() === 'login' ? 'current-password' : 'new-password'"
+          autocomplete="current-password"
           [disabled]="!auth.isConfigured()"
           [(ngModel)]="password"
         />
@@ -82,7 +56,7 @@
         @if (busy()) {
           處理中…
         } @else {
-          {{ mode() === 'login' ? '登入' : '註冊' }}
+          登入
         }
       </button>
     </div>

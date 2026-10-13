@@ -33,7 +33,21 @@ from services.feed_refresh import (
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-def _require_api_key(x_api_key: str = Header(...)) -> None:
+def _require_api_key(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    x_manage_session: str | None = Header(default=None),
+) -> None:
+    # Browser management always uses the password + Telegram session path.
+    # Never fall back to a machine key when management credentials are supplied.
+    if authorization is not None or x_manage_session is not None:
+        from services.manage_auth import require_session
+        require_session(authorization, x_manage_session)
+        return
+    if x_api_key is None:
+        raise HTTPException(status_code=422, detail=[{
+            "type": "missing", "loc": ["header", "x-api-key"], "msg": "Field required",
+        }])
     expected = os.getenv("ADMIN_API_KEY", "")
     # compare_digest() requires ASCII-only str (raises TypeError otherwise);
     # comparing as UTF-8 bytes accepts any header value instead of 500ing.
