@@ -164,7 +164,7 @@ BEGIN
  SELECT id INTO f FROM driftread.feeds WHERE url=ANY(aliases) ORDER BY url LIMIT 1;
  IF f IS NULL THEN
   INSERT INTO driftread.feeds(title,url,website_url,category,tags,next_fetch_at)
-  VALUES(coalesce(nullif(c.title,''),c.source_host,c.feed_url),c.feed_url,c.website_url,p_category,coalesce(p_tags,'{}'))
+  VALUES(coalesce(nullif(c.title,''),c.source_host,c.feed_url),c.feed_url,c.website_url,p_category,coalesce(p_tags,'{}'),now())
   ON CONFLICT(url) DO NOTHING RETURNING id INTO f;
   IF f IS NULL THEN SELECT id INTO f FROM driftread.feeds WHERE url=c.feed_url; END IF;
  END IF;

@@ -33,8 +33,9 @@ def request(conn, cid):
 
 
 def ready(conn, cid, text='useful evidence ' * 20):
-    request(conn, cid)
-    r = scalar(conn, "SELECT driftread.claim_source_review('preparer',true)")
+    requested = request(conn, cid)
+    r = scalar(conn, "SELECT driftread.claim_source_review('preparer',true,%s)", (requested['id'],))
+    assert r['candidate_id'] == str(cid)
     packet = {'source': {'candidate_id': str(cid)}, 'samples': [{'evidence_id': 'rss:0', 'text': text}]}
     digest = 'a' * 64
     scalar(conn, 'SELECT driftread.prepare_source_review(%s,%s,%s::jsonb,%s)',
