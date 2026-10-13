@@ -71,6 +71,21 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 確認管理首頁「容量成長趨勢」收到第一筆每日紀錄、`storage` 工作與 heartbeat 正常；任一既有 scheduler 啟用才會啟動容量採樣，三者全關仍退出。`GET /api/admin/retention/history?days=30` 必須由管理 session 或既有機器 API Key 授權，不登入不能讀。觀察至少 24 小時、兩筆不同日採樣後再驗證成長率；同日重啟不得覆寫採樣，不應手動清 ledger 或補造歷史。部署驗收仍由 #83 追蹤，正文縮減繼續維持 `ARTICLE_RETENTION_ENABLED=false`，直到備份／dry-run 驗證完成。
 
+## 收錄前來源身分檢查
+
+`20261013142256_source_mirror_gate.sql` 只新增 service-only RPC `find_mirror_sources`，由 API 啟動時的 runner 套用；沒有 Dashboard 設定或環境變數。照一般順序先更新 API、確認 ledger 後再更新 worker。worker 先於 migration 啟動時，查詢失敗會放行並記 warning，不會中斷排程。行為見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
+
+## 資料庫接近 Supabase 容量上限
+
+Free plan 的資料庫上限是 500 MB，超過會被切成唯讀。`DELETE` 和正文縮減都只把列標成可重用，**資料庫大小不會變小**；要把空間還回去，得對該表跑 `VACUUM (FULL, ANALYZE)`，執行期間整張表被鎖住（2026-10-13 對 472 MB 的 `articles` 約一分多鐘），API 讀寫該表會等待。
+
+1. 用 `pg_total_relation_size` 找出最大的表，並逐來源加總 `pg_column_size(articles.*)`；先處理重複或非文章來源（別名 feed、留言 feed、套件發版通知等）。
+2. 刪除前確認該來源沒有訂閱、已讀與收藏。保留 feed 列並設 `archived_at`，只刪文章：feed 列是之後同 URL 再匯入的墓碑；刪除 feed 會讓 `discovery_candidates.feed_id` 變成 NULL。文章刪除會 cascade 清掉 revisions、discoveries、已讀與收藏。
+3. 在離峰時段依序對 `articles`、`article_revisions`、`article_discoveries` 跑 `VACUUM (FULL, ANALYZE)`。透過 Supabase MCP 執行時，客戶端 60 秒逾時不會取消伺服器上的 VACUUM，以 `pg_stat_activity`／`pg_stat_progress_cluster` 確認完成。
+4. 已進入唯讀模式時，Supabase 會設定 `default_transaction_read_only`；清理用的連線先執行 `SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE`。
+
+2026-10-13 的紀錄：資料庫 551 MB，刪除 10 個重複／留言／套件來源的 18,435 篇文章後跑 VACUUM FULL，降到 195 MB。實際刪除的資料約 60 MB，其餘約 290 MB 是更新造成的 bloat，所以空間仍會慢慢長回去；用管理首頁的容量歷史觀察，接近 400 MB 就重複步驟 3。
+
 ## issue #63 非 AI 功能升級
 
 本批新增佇列、來源／正文政策、文章版本、人工事件、個人熱度與消費出口；不新增環境變數或 exposed schema。完整模型分別見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)、[PUBLICATION.md](PUBLICATION.md) 與 [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)。

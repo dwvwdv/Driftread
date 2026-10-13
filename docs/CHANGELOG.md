@@ -1048,3 +1048,33 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 - `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind、最新 master 的 source_review，並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證五種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。
 - 整合已合併 PR #97：保留來源評審與 storage 的 timeout、loop、前端服務與型別，合併衝突已解；將本 PR 未合併的 migration 重命名為 `20261013115249_article_storage_history.sql`（由 CLI 產生），排在來源評審三支 migration 之後，避免後者重新設定 kind whitelist 時移除 storage。完整 migration chain 的 fixture 同時驗證 source_review 與 storage；本 PR 階段順延至四十三。
+
+## 階段四十四：清除重複來源並在收錄前以內容判斷鏡像與留言 feed（PR 待定，2026-10-13）
+
+正式 Supabase 用到 551 MB，超過 Free plan 的 500 MB，會被切成唯讀。唯讀查詢的結果是：跨 feed 的文章重複全部來自同站別名 feed（Ars Technica、TIME 各收了 `/feed`、`/feed/`、`/rss` 三個），同一 feed 內的重複全部來自留言 feed（truenas 一篇文章最多存成 70 列 `#comment-N`）。這幾個來源都在 2026-07-31～08-04 經由候選收錄進來，早於 10-08 加入的 URL 守門。另外 pub.dev 的套件發版通知占了 13,667 篇（33%）。
+
+### 正式資料清理（直接在 Supabase 執行，不在 diff 內）
+
+- 經使用者確認後，用單一 statement 封存 10 個 feed，並刪除它們的 18,435 篇文章：pub.dev、TIME 的 `/feed`、`/rss`（保留 `/feed/`）、Ars 的 `/feed/`、`/rss`（保留 `/feed`），以及 truenas、cyberinsider、iso20022、x402、gdpr.eu 的留言 feed。revisions 與 discoveries 透過 cascade 一起刪除。這些來源的訂閱、已讀、收藏都是 0。保留 feed 列當墓碑：直接刪除 feed 會讓 `discovery_candidates.feed_id` 變成 NULL，之後可能再被收錄。
+- 對 `articles`、`article_revisions`、`article_discoveries` 跑 `VACUUM (FULL, ANALYZE)`。資料庫從 551 MB 降到 195 MB（articles 472 → 137 MB）。實際刪除的資料只有約 60 MB，**其餘約 290 MB 是 UPDATE 造成的 bloat**，所以空間仍會長回去。處理步驟寫進 [RUNBOOK](RUNBOOK.md#資料庫接近-supabase-容量上限)。
+- 對應的 `discovery_candidates` 仍是 `imported`，沒有改。
+
+### 入口守門
+
+- 新增 `items_look_like_comments()` 與 `find_mirror_source()`（`services/source_identity.py`），以及 service-only RPC `find_mirror_sources`（migration `20261013142256_source_mirror_gate.sql`）。鏡像判斷看新 feed 項目的 canonical URL 和既有來源文章的**雙向**重疊（各 60%），分類 feed 才不會被當成主 feed 的鏡像；不以 host 合併。設計與套用範圍見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
+- `/discover/import`、`/me/import/opml`、`/admin/feeds/from-url` 原本完全沒有留言 feed 或別名檢查。現在建立來源前都會檢查：留言 feed 拒絕；鏡像來源在使用者路徑改為訂閱既有來源，在管理 API 回 409。前端沿用回傳 feed 的 id 標記訂閱，不需要修改。
+- 候選收錄與管理 JSON 匯入不抓取，因此在首次排程抓取（`last_fetched_at` 為空）存入文章前檢查，命中就封存並記錄 `last_failure_reason`。已經有人訂閱的來源不封存。
+- 查詢失敗時放行並記 warning，避免 worker 早於 migration 啟動時排程中斷。
+
+### 沒做的事
+
+- 沒有加入以標題判斷留言 feed（例如「Comments Feed」）：`is_comment_feed()` 的既有決策是不靠標題關鍵字；gdpr.eu 那種 0 篇文章的來源不會產生資料。
+- 沒有做 `TODO.md` 的「重複來源管理畫面」與後台的批次清除功能；這次清理直接在資料庫執行。
+- pub.dev 這類「不是文章」的來源沒有自動判斷規則，仍靠收錄評審。
+- 沒有處理 UPDATE 造成的 bloat 本身（例如調整 autovacuum 或減少不必要的文章 UPDATE）；先用容量歷史觀察成長速度。
+
+### 驗證
+
+- 本機 PostgreSQL 16 的完整 backend：1205 passed、0 skipped。新增的真 PostgreSQL fixture 驗證鏡像、fragment 正規化、分類 feed 子集不命中、封存與 private 來源排除，以及 anon／authenticated 無法執行；單元測試涵蓋門檻、fail-open、首次抓取封存、已訂閱不封存，以及三條匯入路徑。PostgreSQL 17 交給 CI。
+- 用正式資料唯讀驗證：拿每個啟用中來源最新 50 篇比對其他來源，清理後沒有任何重疊，現有來源不會被誤判。
+- 未部署；正式環境套用 migration 後的實際攔截，要等下一次有人匯入別名或留言 feed 才看得到。

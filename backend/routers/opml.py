@@ -12,7 +12,7 @@ from database import get_client
 from models import OpmlImportResult
 from rss_parser import fetch_and_parse
 from services.feed_discovery import DiscoveryError, validate_fetch_url
-from services.source_visibility import import_readable_source
+from services.source_visibility import import_readable_source, screen_new_source
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -78,6 +78,11 @@ async def import_opml(
             failed.append(f"{raw_url}: failed to fetch")
             continue
 
+        screened = screen_new_source(db, feed_url, parsed)
+        if screened and screened[0] == "comment_feed":
+            failed.append(f"{feed_url}: comment feeds cannot be imported")
+            continue
+
         title = outline.get("title") or outline.get("text") or parsed.title
         feed_data = {
             "title": title,
@@ -90,12 +95,16 @@ async def import_opml(
             # request. Mark each feed due so the scheduler fetches it next pass.
             "next_fetch_at": datetime.now(timezone.utc).isoformat(),
         }
-        row = import_readable_source(db, feed_data)
-        if not row:
-            failed.append(f"{feed_url}: feed not available")
-            continue
-        feed_id = row["id"]
-        db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": datetime.now(timezone.utc).isoformat(), "p_ok": True}).execute()
+        if screened:
+            # A mirror of an existing source: subscribe to that one instead.
+            feed_id = screened[1]["id"]
+        else:
+            row = import_readable_source(db, feed_data)
+            if not row:
+                failed.append(f"{feed_url}: feed not available")
+                continue
+            feed_id = row["id"]
+            db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": datetime.now(timezone.utc).isoformat(), "p_ok": True}).execute()
         imported += 1
 
         sub = db.table("user_feeds").upsert(

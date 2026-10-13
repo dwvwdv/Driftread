@@ -23,6 +23,24 @@
 
 既有管理 JSON 匯入亦可帶角色 metadata；公開 discover／OPML 匯入不能指定角色。公開匯入透過私有 RPC 插入新來源；URL 已存在時保留人工 metadata，隱藏來源回傳「不可用」，不訂閱、不曝光其 id。
 
+## 收錄前的來源身分檢查
+
+URL 規則（`services/source_identity.py` 的 `is_comment_feed()`、`feed_url_aliases()`）只認得明確的留言端點與結尾斜線別名，看不出同站 `/feed` 與 `/rss`、或 FeedBurner 代理其實是同一份內容。2026-10 的正式資料裡，Ars Technica、TIME 各被收了三個別名，留言 feed 每則留言各存一篇（`#comment-N`），合計約 4,800 篇重複或非文章資料。因此新來源在**存入第一批文章之前**，會先用它解析出的項目再檢查一次：
+
+- **留言 feed**：至少 3 個項目，且 80% 以上的連結 fragment 是 `comment-<數字>`。`#comments`、標題關鍵字都不算。
+- **鏡像來源**：取前 100 個項目的 canonical URL（去掉 fragment，與文章 trigger 相同），至少 5 個才判斷。service-only RPC `find_mirror_sources` 找出共用這些 URL 的**啟用中 normal** 來源；必須雙向重疊都達 60%：新 feed 的項目大多已存在於該來源，且該來源最新的同數量文章大多也在新 feed 裡。第二個條件讓分類 feed（主 feed 的子集）不會被當成主 feed 的鏡像。不以 host 合併來源。
+
+套用位置：
+
+| 路徑 | 留言 feed | 鏡像來源 |
+|---|---|---|
+| `POST /discover/import` | 422 | 不建立新來源，改為訂閱既有來源並回傳它 |
+| `POST /me/import/opml` | 列入 `failed` | 訂閱既有來源，計入 imported |
+| `POST /admin/feeds/from-url` | 422 | 409，訊息帶既有來源 id |
+| 首次排程抓取（`last_fetched_at` 為空） | 封存，不寫入文章 | 封存，不寫入文章 |
+
+候選收錄、自動收錄與管理 JSON 匯入不抓取，所以由首次排程抓取把關；`last_failure_reason` 記錄原因，管理者若判斷誤擋，解除封存後下一次抓取不再檢查。已經有人訂閱的來源在首次抓取時不封存，避免使用者的訂閱被靜默清空；會建立訂閱的路徑在建立來源前已檢查過。URL 已在目錄中的再匯入維持原行為。查詢失敗時放行（記 warning），重複資料可事後清理，但不能讓匯入或排程因此中斷。
+
 ## 可見性
 
 公開來源目錄、來源詳情、分類／語言清單、來源搜尋、推薦候選與原因、個人訂閱／回饋列表、OPML 匯出都只讀取 `normal`。已訂閱的來源改成隱藏角色後不再曝光；使用者仍可取消訂閱／清除自己的回饋。新訂閱、更新訂閱與新增回饋須先檢查來源可閱讀性。

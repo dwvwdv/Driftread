@@ -18,6 +18,7 @@ from rss_parser import fetch_and_parse_conditional
 from services.articles import upsert_articles
 from services.feed_discovery import validate_fetch_url
 from services.language import resolve_feed_language
+from services.source_identity import new_source_rejection
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -170,6 +171,17 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         return RefreshResult(feed_id=feed_id, status="not_modified")
 
     assert fetched.parsed is not None
+    if not feed.get("last_fetched_at"):
+        rejection = await asyncio.to_thread(_first_fetch_rejection, db, feed_id, fetched.parsed)
+        if rejection:
+            db.table("feeds").update({
+                "archived_at": now.isoformat(),
+                "last_fetched_at": now.isoformat(),
+                "last_failure_reason": rejection,
+            }, returning="minimal").eq("id", feed_id).execute()
+            logger.info("Archived %s at first fetch: %s", feed_url, rejection)
+            return RefreshResult(feed_id=feed_id, status="failed", error=rejection, archived=True)
+
     before = count_articles(db, feed_id)
     # Batch ingestion includes synchronous PostgREST calls and HTML parsing.
     # Keep worker heartbeat and other async refreshes responsive during it.
@@ -209,6 +221,32 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         upserted=upserted,
         total_articles=total,
     )
+
+
+def _first_fetch_rejection(db: "Client", feed_id: str, parsed) -> str | None:
+    """Keep comment feeds and mirrors out before their items are stored.
+
+    Candidate promotion and bulk JSON import never fetch, so the first
+    scheduled fetch is the only point that sees their items. A source someone
+    already subscribed to is left alone: archiving it would silently empty
+    that reader's subscription, and every subscribing path already ran this
+    gate before creating the row.
+    """
+    rejection = new_source_rejection(
+        db, [article.url for article in parsed.articles], exclude_feed_id=feed_id,
+    )
+    if not rejection:
+        return None
+    subscribers = (
+        db.table("user_feeds").select("feed_id", count="exact", head=True)
+        .eq("feed_id", feed_id).execute()
+    )
+    if getattr(subscribers, "count", None):
+        return None
+    kind, mirror = rejection
+    if kind == "comment_feed":
+        return "Excluded at first fetch: comment feed"
+    return f"Excluded at first fetch: duplicates existing source {mirror['feed_id']}"
 
 
 async def refresh_due(

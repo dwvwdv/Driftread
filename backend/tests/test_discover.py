@@ -75,6 +75,7 @@ def test_discover_import_succeeds_for_authenticated_user(client):
     with (
         patch("routers.discover.validate_fetch_url", new=fake_validate),
         patch("routers.discover.fetch_and_parse", new=fake_fetch),
+        patch("routers.discover.screen_new_source", return_value=None),
         patch("routers.discover.upsert_articles", return_value=0),
     ):
         resp = c.post(
@@ -226,3 +227,52 @@ def test_discover_checks_existing_feeds_without_bulk_in_filter(client):
     assert by_url[known_url]["existing_feed_id"] == "11111111-1111-1111-1111-111111111111"
     assert by_url[new_url]["already_exists"] is False
     mock_db.table.return_value.select.return_value.in_.assert_not_called()
+
+
+def _import_with_screen(c, screened):
+    async def fake_validate(url):
+        return url
+
+    async def fake_fetch(url):
+        return MagicMock(title="Example", description=None, website_url=None, language=None, articles=[])
+
+    with (
+        patch("routers.discover.validate_fetch_url", new=fake_validate),
+        patch("routers.discover.fetch_and_parse", new=fake_fetch),
+        patch("routers.discover.screen_new_source", return_value=screened),
+        patch("routers.discover.import_readable_source") as create,
+        patch("routers.discover.upsert_articles") as upsert,
+    ):
+        resp = c.post(
+            "/api/discover/import",
+            json={"feed_url": "https://example.com/rss"},
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+    return resp, create, upsert
+
+
+def test_discover_import_subscribes_to_existing_mirror_instead_of_copying(client):
+    c, mock_db = client
+    existing = {
+        "id": "22222222-2222-2222-2222-222222222222", "title": "Example", "url": "https://example.com/feed",
+        "description": None, "website_url": None, "language": None, "category": None, "tags": [],
+        "article_count": 40, "last_fetched_at": None, "archived_at": None,
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+    }
+    resp, create, upsert = _import_with_screen(c, ("mirror", existing))
+
+    assert resp.status_code == 200
+    assert resp.json()["id"] == existing["id"]
+    create.assert_not_called()
+    upsert.assert_not_called()
+    mock_db.table.return_value.upsert.assert_called_once_with(
+        {"user_id": "user-abc", "feed_id": existing["id"]}, on_conflict="user_id,feed_id",
+    )
+
+
+def test_discover_import_rejects_comment_feed(client):
+    c, _ = client
+    resp, create, upsert = _import_with_screen(c, ("comment_feed", None))
+    assert resp.status_code == 422
+    create.assert_not_called()
+    upsert.assert_not_called()

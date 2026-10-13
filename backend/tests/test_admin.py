@@ -283,3 +283,30 @@ def test_list_all_feeds_includes_archived_by_default(client):
     chain.is_.assert_not_called()
     chain.not_.is_.assert_not_called()
     chain.range.assert_called_once_with(10, 19)
+
+
+@pytest.mark.parametrize("screened,status", [
+    (("mirror", {"id": "existing-feed"}), 409),
+    (("comment_feed", None), 422),
+])
+def test_admin_import_from_url_refuses_mirror_and_comment_feeds(client, screened, status):
+    c, mock_db = client
+
+    async def fake_validate(url):
+        return url
+
+    async def fake_fetch(url):
+        return MagicMock(title="T", description=None, website_url=None, language=None, articles=[])
+
+    with (
+        patch("routers.admin.validate_fetch_url", new=fake_validate),
+        patch("routers.admin.fetch_and_parse", new=fake_fetch),
+        patch("routers.admin.screen_new_source", return_value=screened),
+    ):
+        resp = c.post(
+            "/api/admin/feeds/from-url",
+            json={"feed_url": "https://example.com/rss"},
+            headers={"x-api-key": os.environ["ADMIN_API_KEY"]},
+        )
+    assert resp.status_code == status
+    mock_db.table.return_value.upsert.assert_not_called()

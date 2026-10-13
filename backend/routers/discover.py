@@ -17,7 +17,7 @@ from models import (
 from rate_limit import rate_limit
 from rss_parser import fetch_and_parse
 from services.articles import upsert_articles
-from services.source_visibility import import_readable_source
+from services.source_visibility import import_readable_source, screen_new_source
 from services.feed_discovery import DiscoveryError, discover_feeds, validate_fetch_url
 
 router = APIRouter(prefix="/discover", tags=["discover"])
@@ -92,6 +92,19 @@ async def discover_and_import(
         parsed = await fetch_and_parse(safe_url)
     except Exception:
         raise HTTPException(status_code=400, detail="Failed to fetch feed")
+
+    screened = screen_new_source(db, safe_url, parsed)
+    if screened and screened[0] == "comment_feed":
+        raise HTTPException(status_code=422, detail="Comment feeds cannot be imported")
+    if screened:
+        # Same items as a source already in the catalog (e.g. /feed vs /rss):
+        # subscribe the reader to that source instead of storing a copy.
+        existing = Feed(**screened[1])
+        db.table("user_feeds").upsert(
+            {"user_id": user.id, "feed_id": str(existing.id)},
+            on_conflict="user_id,feed_id",
+        ).execute()
+        return existing
 
     feed_data = {
         "title": parsed.title,

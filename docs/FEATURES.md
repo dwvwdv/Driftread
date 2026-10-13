@@ -290,7 +290,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | Method | 路徑 | 說明 |
 |--------|------|------|
 | POST | `/discover` | 從網址找出候選 feed（不落庫） |
-| POST | `/discover/import` | 抓取並匯入指定 feed URL |
+| POST | `/discover/import` | 抓取並匯入指定 feed URL；留言 feed 回 422，與既有來源內容相同時改訂閱既有來源（見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)） |
 
 兩者各自獨立配額：**每個 client IP 每端點 20 requests / 60 秒**，超過回 `429` 並帶 `Retry-After`。
 `url` / `feed_url` 上限 2048 字。
@@ -317,7 +317,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | DELETE | `/me/feed-feedback/{feed_id}` | 清除對該 feed 的回饋（204） |
 | GET | `/me/preferences` | 取得偏好 |
 | PUT | `/me/preferences` | 更新偏好（`preferred_categories` / `preferred_languages` 各上限 50 筆） |
-| POST | `/me/import/opml` | 匯入 OPML（檔案上限 5 MiB、單檔最多處理 200 個 outline） |
+| POST | `/me/import/opml` | 匯入 OPML（檔案上限 5 MiB、單檔最多處理 200 個 outline）；留言 feed 列入 failed，鏡像來源改訂閱既有來源 |
 | GET | `/me/export/opml` | 匯出 OPML |
 | GET | `/me/personal-heat` | 個人熱度 snapshot；篩選、完整度與歷史契約見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
 | GET | `/me/personal-heat/history` | 本人最近的熱度快照索引，最多 100 筆 |
@@ -336,7 +336,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 |--------|------|------|
 | GET | `/admin/feeds` | 分頁列出**全部** feed（含已封存），依 `next_fetch_at` 排序。`archived` 可選 true / false 過濾；`page_size` 預設 50、上限 200 |
 | POST | `/admin/feeds` | 批次匯入 feed（JSON）。只寫 metadata 並設 `next_fetch_at = now()` |
-| POST | `/admin/feeds/from-url` | 從網址匯入單一 feed（開放 API 入口）。同上，文章交給排程器 |
+| POST | `/admin/feeds/from-url` | 從網址匯入單一 feed（開放 API 入口）。同上，文章交給排程器；留言 feed 回 422，與既有來源內容相同回 409 |
 | POST | `/admin/feeds/{feed_id}/refresh` | 重抓該 feed，更新文章、健康度與排程 |
 | POST | `/admin/feeds/refresh-due` | 手動跑一輪到期佇列。`limit` 1–500、`max_concurrency` 1–20，未指定時吃 env 預設 |
 | PATCH | `/admin/feeds/{feed_id}/archive` | 封存 |
@@ -592,6 +592,8 @@ DELETE FROM discovery_targets
 | 單輪處理上限 | 50 個 feed（`FEED_REFRESH_BATCH_SIZE`，端點可指定 1–500）| `services/feed_refresh.py::batch_size()` |
 | 單輪並發抓取上限 | 5（`FEED_REFRESH_CONCURRENCY`，端點可指定 1–20）| `services/feed_refresh.py::concurrency()` |
 | 個別 feed 抓取間隔 | 15 分 ~ 1440 分，起始 60 分 | `services/feed_refresh.py::next_interval()` |
+| 留言 feed 判斷 | 至少 3 個項目、80% 以上連結為 `#comment-N` | `services/source_identity.py::items_look_like_comments()` |
+| 鏡像來源判斷 | 至少 5 個項目（取前 100），雙向重疊各 60% | `services/source_identity.py::find_mirror_source()` |
 | Admin feed 列表 `page_size` | 預設 50、上限 200 | `routers/admin.py::list_all_feeds` |
 | URL 欄位長度 | 2048 | `models.py`（discover 請求） |
 | `search` 長度 | 200 | `routers/feeds.py` |
