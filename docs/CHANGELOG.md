@@ -1049,7 +1049,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind、最新 master 的 source_review，並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證五種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。
 - 整合已合併 PR #97：保留來源評審與 storage 的 timeout、loop、前端服務與型別，合併衝突已解；將本 PR 未合併的 migration 重命名為 `20261013115249_article_storage_history.sql`（由 CLI 產生），排在來源評審三支 migration 之後，避免後者重新設定 kind whitelist 時移除 storage。完整 migration chain 的 fixture 同時驗證 source_review 與 storage；本 PR 階段順延至四十三。
 
-## 階段四十四：清除重複來源並在收錄前以內容判斷鏡像與留言 feed（PR 待定，2026-10-13）
+## 階段四十四：清除重複來源並在收錄前以內容判斷鏡像與留言 feed（PR #99，2026-10-13）
 
 正式 Supabase 用到 551 MB，超過 Free plan 的 500 MB，會被切成唯讀。唯讀查詢的結果是：跨 feed 的文章重複全部來自同站別名 feed（Ars Technica、TIME 各收了 `/feed`、`/feed/`、`/rss` 三個），同一 feed 內的重複全部來自留言 feed（truenas 一篇文章最多存成 70 列 `#comment-N`）。這幾個來源都在 2026-07-31～08-04 經由候選收錄進來，早於 10-08 加入的 URL 守門。另外 pub.dev 的套件發版通知占了 13,667 篇（33%）。
 
