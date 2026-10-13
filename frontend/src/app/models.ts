@@ -279,6 +279,7 @@ export interface FeedCandidate {
   status: 'pending' | 'held' | 'approved' | 'rejected' | 'imported';
   feed_id: string | null;
   review_note: string | null;
+  manual_override?: 'approve' | 'reject' | 'hold' | null;
   discovered_at: string;
   last_seen_at: string | null;
   reviewed_at: string | null;
@@ -459,4 +460,50 @@ export interface GlobalSetting<T = unknown> {
 
 export interface GlobalSettingsResponse {
   settings: GlobalSetting[];
+}
+
+export interface SourceReviewSettings {
+  enabled: boolean;
+  skip_human_review: boolean;
+  engine: 'external_agent' | 'jev';
+  model: string;
+  min_confidence: number;
+  min_quality: number;
+  max_spam_probability: number;
+  policy_text: string;
+  daily_budget_usd: number;
+  sample_size: number;
+}
+
+export interface SourceReviewResult {
+  decision: 'accept' | 'reject' | 'abstain';
+  confidence: number;
+  dimensions: { quality: number; spam_probability: number; relevance: number };
+  reason_codes: string[];
+  rationale?: string | null;
+}
+
+export interface SourceReview {
+  id: string;
+  candidate_id: string;
+  status:
+    | 'requested'
+    | 'preparing'
+    | 'ready'
+    | 'leased'
+    | 'awaiting_human'
+    | 'accepted'
+    | 'rejected'
+    | 'deferred'
+    | 'failed'
+    | 'stale'
+    | 'overridden';
+  engine: 'external_agent' | 'jev';
+  model?: string;
+  policy_version?: number;
+  error_code?: string | null;
+  result?: SourceReviewResult | null;
+  manual_override?: 'approve' | 'reject' | 'hold' | null;
+  created_at?: string;
+  updated_at?: string;
 }

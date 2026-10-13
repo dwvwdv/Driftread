@@ -12,3 +12,4 @@ Thumbs.db
 
 # Local orchestration, test runtimes and temporary artifacts
 work/
+__pycache__/

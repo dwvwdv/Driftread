@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
@@ -89,6 +89,56 @@ describe('AdminService 409 handling', () => {
     ]);
   });
 
+  it.each(['hold', 'reject'] as const)(
+    'explains an imported-candidate conflict for %s and preserves the error for the queue reload',
+    (action) => {
+      const service = TestBed.inject(AdminService);
+      let caught: unknown;
+      const response =
+        action === 'hold'
+          ? service.holdCandidate('c1', { note: null })
+          : service.rejectCandidate('c1', { note: null, block_host: false });
+      response.subscribe({
+        error: (error) => {
+          caught = error;
+        },
+      });
+      httpMock
+        .expectOne((req) => req.url.endsWith(`/admin/discovery/candidates/c1/${action}`))
+        .flush(
+          {
+            detail: {
+              code: 'candidate_already_imported',
+              message: 'Candidate is already imported; manage it from feeds',
+            },
+          },
+          { status: 409, statusText: 'Conflict' },
+        );
+      expect(toastCalls).toEqual([
+        { tone: 'warning', text: '此來源已收錄，無法再保留或拒絕候選；請到「信息源管理」操作' },
+      ]);
+      expect(caught).toBeInstanceOf(HttpErrorResponse);
+      expect((caught as HttpErrorResponse).status).toBe(409);
+    },
+  );
+
+  it('explains a candidate version conflict without claiming it was imported', () => {
+    const service = TestBed.inject(AdminService);
+    service.holdCandidate('c1', { note: null }).subscribe({ error: () => {} });
+    httpMock
+      .expectOne((req) => req.url.endsWith('/admin/discovery/candidates/c1/hold'))
+      .flush(
+        {
+          detail: {
+            code: 'candidate_changed',
+            message: 'Candidate changed; reload before retrying',
+          },
+        },
+        { status: 409, statusText: 'Conflict' },
+      );
+    expect(toastCalls).toEqual([{ tone: 'warning', text: '候選狀態已更新，請確認最新清單後再試' }]);
+  });
+
   it('fetches read-only operation and storage snapshots with the verified management session', () => {
     const service = TestBed.inject(AdminService);
     service.operations().subscribe();
@@ -128,5 +178,52 @@ describe('AdminService 409 handling', () => {
       version: 4,
       updated_at: null,
     });
+  });
+});
+
+describe('AdminService source review API', () => {
+  let mock: HttpTestingController;
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        AdminService,
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ManageSessionService,
+          useValue: {
+            headers: () => ({ Authorization: 'Bearer user', 'x-manage-session': 'session' }),
+          },
+        },
+        { provide: Router, useValue: {} },
+        { provide: ToastService, useValue: {} },
+      ],
+    });
+    mock = TestBed.inject(HttpTestingController);
+  });
+  afterEach(() => mock.verify());
+  it('filters reviews by candidate and submits request, retry and human resolution with management authentication', () => {
+    const service = TestBed.inject(AdminService);
+    service.listSourceReviews('c1').subscribe();
+    const read = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews'));
+    expect(read.request.params.get('candidate_id')).toBe('c1');
+    expect(read.request.params.get('limit')).toBe('1');
+    expect(read.request.headers.get('x-manage-session')).toBe('session');
+    read.flush({ items: [] });
+    service.requestSourceReview('c1').subscribe();
+    service.retrySourceReview('r1').subscribe();
+    service.resolveSourceReview('r1', 'defer').subscribe();
+    for (const [path, body] of [
+      ['/candidates/c1/request', {}],
+      ['/r1/retry', {}],
+      ['/r1/resolve', { decision: 'defer' }],
+    ] as const) {
+      const write = mock.expectOne((r) => r.url.endsWith(`/admin/source-reviews${path}`));
+      expect(write.request.method).toBe('POST');
+      expect(write.request.body).toEqual(body);
+      expect(write.request.headers.get('Authorization')).toBe('Bearer user');
+      expect(write.request.headers.has('x-api-key')).toBe(false);
+      write.flush({});
+    }
   });
 });

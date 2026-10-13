@@ -4,7 +4,7 @@ SET LOCAL ROLE service_role;
 DO $$
 DECLARE v_run uuid; v_kind text;
 BEGIN
-    FOREACH v_kind IN ARRAY ARRAY['refresh', 'discovery', 'retention', 'storage'] LOOP
+    FOREACH v_kind IN ARRAY ARRAY['refresh', 'discovery', 'retention', 'source_review', 'storage'] LOOP
         v_run := gen_random_uuid();
         INSERT INTO driftread.worker_runs(id, worker_id, kind, status, started_at)
         VALUES (v_run, 'storage-history-test', v_kind, 'running', now());

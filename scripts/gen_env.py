@@ -84,6 +84,7 @@ def main():
 
     generated = {
         "ADMIN_API_KEY": lambda: secrets.token_urlsafe(24),
+        "SOURCE_REVIEW_MCP_KEY": lambda: secrets.token_urlsafe(32),
     }
 
     lines = open(ENV_FILE).readlines()
@@ -104,6 +105,16 @@ def main():
 
     with open(ENV_FILE, "w") as f:
         f.writelines(new_lines)
+
+    # Existing deployments may predate the dedicated review key. Append its
+    # variable rather than replacing any configured value; never print secrets.
+    if "SOURCE_REVIEW_MCP_KEY" not in existing:
+        with open(ENV_FILE, "a") as f:
+            f.write("\nSOURCE_REVIEW_MCP_KEY=" + generated["SOURCE_REVIEW_MCP_KEY"]() + "\n")
+        print("  generated SOURCE_REVIEW_MCP_KEY")
+
+    if not existing.get("JEV_API_KEY", "").strip():
+        print("\nℹ JEV_API_KEY 未設定；只有啟用 Jev 來源評審時才需要，external agent 不需要此 key。")
 
     PLACEHOLDERS = {
         "SUPABASE_URL": "https://your-project-id.supabase.co",

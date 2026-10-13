@@ -18,7 +18,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint
         WHERE conrelid='driftread.worker_runs'::regclass AND conname='worker_runs_kind_check') THEN
         ALTER TABLE driftread.worker_runs ADD CONSTRAINT worker_runs_kind_check
-            CHECK (kind IN ('refresh', 'discovery', 'retention', 'storage'));
+            CHECK (kind IN ('refresh', 'discovery', 'retention', 'source_review', 'storage'));
     END IF;
 END $$;
 

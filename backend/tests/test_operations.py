@@ -150,12 +150,14 @@ def test_admin_operations_requires_admin_key_and_bounds_response():
 @pytest.mark.asyncio
 async def test_discovery_caught_exception_survives_in_ledger_summary():
     from services.discovery import run_cycle
+    from services.settings import SourceReviewValue
 
     with (
         patch("services.discovery.build_host_index", side_effect=RuntimeError("private details")),
         patch("services.discovery.probe_due", return_value=[]),
         patch("services.discovery.auto_promote_due", return_value=[]),
         patch("services.discovery.promote_approved", return_value=[]),
+        patch("services.discovery.load_source_review_settings", return_value=SourceReviewValue()),
     ):
         result = await run_cycle(MagicMock())
     assert result.errors == ["host_index"]

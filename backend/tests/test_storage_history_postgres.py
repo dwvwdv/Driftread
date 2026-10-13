@@ -7,7 +7,7 @@ from tests.test_postgres_lifecycle import pg_database, connection, scalar, asser
 def test_snapshot_sql_and_replay(pg_database):
     with connection(pg_database) as conn:
         with conn.cursor() as cur:
-            migration = Path(__file__).parents[1] / 'migrations' / '20261013020714_article_storage_history.sql'
+            migration = Path(__file__).parents[1] / 'migrations' / '20261013115249_article_storage_history.sql'
             cur.execute(migration.read_text())
             cur.execute(migration.read_text())
         conn.commit()

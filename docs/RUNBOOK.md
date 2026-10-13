@@ -67,7 +67,7 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 ## 每日容量歷史
 
-#64 新增 `20261013020714_article_storage_history.sql`，由 API 啟動時的 runner 套用；沒有新 exposed schema、Dashboard 設定或環境變數。先備份並停舊 worker，更新 API 並確認 ledger／healthy，再啟動同版 worker／frontend。
+#64 新增 `20261013115249_article_storage_history.sql`，由 API 啟動時的 runner 套用；沒有新 exposed schema、Dashboard 設定或環境變數。先備份並停舊 worker，更新 API 並確認 ledger／healthy，再啟動同版 worker／frontend。
 
 確認管理首頁「容量成長趨勢」收到第一筆每日紀錄、`storage` 工作與 heartbeat 正常；任一既有 scheduler 啟用才會啟動容量採樣，三者全關仍退出。`GET /api/admin/retention/history?days=30` 必須由管理 session 或既有機器 API Key 授權，不登入不能讀。觀察至少 24 小時、兩筆不同日採樣後再驗證成長率；同日重啟不得覆寫採樣，不應手動清 ledger 或補造歷史。部署驗收仍由 #83 追蹤，正文縮減繼續維持 `ARTICLE_RETENTION_ENABLED=false`，直到備份／dry-run 驗證完成。
 
@@ -101,6 +101,19 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 本機 PostgreSQL 測試用假的 Vault／pg_net 送信端；正式 Telegram 收件、實際瀏覽器與 Docker image 部署須在上述步驟驗收。
 回滾 frontend／API 至舊版將恢復舊 API Key 後台入口；新增表可保留，管理 session 到期不會授權舊後台。
+
+## 來源收錄評審升級（#96）
+
+此批不變更 Supabase Dashboard 的 exposed schema；新增 service-only 表、RPC 與候選版本欄位。部署仍由 #83 追蹤，先備份並停舊 worker，再升級 API 套 migration，healthy 後啟動同版 worker／frontend。
+
+1. 套用 `20261013040000_source_review.sql`、`20261013040010_source_review_queue.sql`、`20261013040020_ai_receipts.sql`，保留原 migration ledger；最後 DDL 後 reload PostgREST schema。
+2. API 設定獨立的 `SOURCE_REVIEW_MCP_KEY`（不能與 `ADMIN_API_KEY` 相同）；Jev 引擎需要 `JEV_API_KEY`，compose 只傳給 backend api／worker。前端不接收這兩個 key。
+3. 預設 `source.review.enabled=false`，升級不會自動付費或新啟動爬取。來源採樣另受 `FEED_DISCOVERY_ENABLED` 約束；確認主開關與 robots 政策後才從 `/manage/settings` 啟用評審。
+4. 先在人工覆核模式驗證候選樣本、租約、結果與人工覆寫，再依實際評測結果開啟「跳過人工覆核」。既有待覆核任務仍需明確處理。
+5. 用標準 MCP client 的專用 key 測試 request／claim／packet／submit；確認普通管理 key、個人 token 無法使用管理 MCP，原個人唯讀 MCP 仍正常。
+6. 驗證 Jev receipt／用量、未知請求暫停與預算，確認 disabled 時不再發付費請求；正式模型回應、中文品質、代理連線及成本需實際部署另驗收。
+
+回滾前先關閉 `source.review` 並停 worker；舊應用忽略新欄位，但不理解評審政策，可能重新使用原 referrer 自動入庫。因此回滾時保持 `FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS=0` 或停用 discovery，不能把舊版視為仍有模型把關。新增資料保留，不移除人工覆寫與分析歷史。
 
 ## 回滾
 

@@ -10,6 +10,9 @@ Scheduler loops share one event loop and one stop signal:
 - **refresh** polls the due queue so imported feeds keep getting new articles;
 - **discovery** mines the article corpus for outbound links, probes the resulting
   hosts for feeds, and fills the review queue;
+- **source_review** prepares bounded candidate samples and runs the selected
+  review engine; it stays idle until the hot-reloaded review setting is enabled,
+  and is bounded by discovery's deployment master switch;
 - **retention**, opt-in only, compacts a bounded batch of eligible old bodies.
 - **storage** records daily aggregate history while any scheduler is enabled.
 
@@ -37,6 +40,7 @@ from services.feed_refresh import refresh_due, refresh_enabled, summarize, tick_
 from services.operations import OperationsRecorder
 from services.storage_history import record_storage_snapshot, SAMPLE_CHECK_SECONDS
 from services.job_queue import JobQueue, POLL_SECONDS, RENEW_SECONDS
+from services.settings import load_source_review_settings
 from services.retention import (
     retention_enabled, scheduled_compaction, tick_seconds as retention_tick_seconds,
 )
@@ -47,6 +51,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("driftread.worker")
 SHUTDOWN_SECONDS = 20
+SOURCE_REVIEW_TICK_SECONDS = 60
 
 
 class LeaseLost(RuntimeError):
@@ -93,7 +98,8 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
             signal.signal(sig, lambda *_: stop.set())
 
 
-async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summary_of) -> None:
+async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summary_of,
+                    can_start=None) -> None:
     db = get_client()
     recorder = OperationsRecorder(db, kind)
     queue = JobQueue(db)
@@ -106,12 +112,24 @@ async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summa
                 await queue.reconcile()
                 if stop.is_set():
                     break
+                # A disabled hot-reloaded feature keeps its heartbeat but
+                # leaves queued/running retry state intact until re-enabled.
+                # In particular, it never starts sampling or paid requests.
+                allowed = await can_start(db) if can_start else True
+                if not allowed:
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=POLL_SECONDS)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                if stop.is_set():
+                    break
                 await queue.enqueue(kind, interval)
                 if stop.is_set():
                     break
                 job = await queue.claim(kind, recorder.worker_id)
             except Exception:
-                logger.warning("%s queue unavailable; no work started", kind)
+                logger.warning("%s queue or settings unavailable; no work started", kind)
                 job = None
             if job is None:
                 try:
@@ -133,6 +151,9 @@ async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summa
                 elif kind == "discovery":
                     failed = sum(summary.get(stage, {}).get("failed", 0)
                                  for stage in ("directory", "harvest", "probe"))
+                    errors = summary.get("errors", [])
+                elif kind == "source_review":
+                    failed = summary.get("failed", 0)
                     errors = summary.get("errors", [])
                 else:  # Retention and storage RPC errors raise; there are no stages.
                     failed = 0
@@ -194,6 +215,30 @@ async def run_storage_forever(stop: asyncio.Event) -> None:
     await _run_loop(stop, "storage", SAMPLE_CHECK_SECONDS, record_storage_snapshot, lambda result: result)
 
 
+async def _source_review_enabled(db) -> bool:
+    if not discovery_enabled():
+        return False
+    settings = await asyncio.to_thread(load_source_review_settings, db)
+    return settings.enabled
+
+
+async def _prepare_source_reviews(db):
+    # Import lazily: the worker's fully-disabled path has no database or
+    # provider initialization. The core also checks both switches per action.
+    from services.source_review import prepare_due_reviews
+    from services.ai_runtime import prune_receipts
+    await prune_receipts(db)
+    return await prepare_due_reviews(db, limit=10)
+
+
+async def run_source_review_forever(stop: asyncio.Event | None = None) -> None:
+    """Stay ready for a settings toggle, bounded by discovery's master switch."""
+    await _run_loop(
+        stop or asyncio.Event(), "source_review", SOURCE_REVIEW_TICK_SECONDS,
+        _prepare_source_reviews, lambda result: result, can_start=_source_review_enabled,
+    )
+
+
 async def main() -> int:
     if not refresh_enabled() and not discovery_enabled() and not retention_enabled():
         logger.info(
@@ -213,6 +258,7 @@ async def main() -> int:
         loops.append(run_forever(stop))
     if discovery_enabled():
         loops.append(run_discovery_forever(stop))
+        loops.append(run_source_review_forever(stop))
     if retention_enabled():
         loops.append(run_retention_forever(stop))
 

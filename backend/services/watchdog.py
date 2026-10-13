@@ -8,6 +8,16 @@ logger = logging.getLogger(__name__)
 WATCHDOG_SECONDS = 30
 
 
+async def prune_review_payloads(db) -> None:
+    """Bounded, local housekeeping continues when review/crawling is disabled."""
+    # Keep sweeps independent: one unavailable RPC must not suppress the other.
+    for name, params in (("prune_source_reviews", {}), ("prune_ai_receipts", {"p_limit": 100})):
+        try:
+            await asyncio.to_thread(lambda: db.rpc(name, params).execute())
+        except Exception as exc:
+            logger.warning('Review payload cleanup unavailable (%s)', type(exc).__name__)
+
+
 async def run_watchdog(stop: asyncio.Event) -> None:
     # Delay the first bounded sweep so API startup/health never depends on it.
     while not stop.is_set():
@@ -25,3 +35,8 @@ async def run_watchdog(stop: asyncio.Event) -> None:
                                result['new_alerts'], result['recovered'], result['interrupted'], result['reconciled'])
         except Exception as exc:
             logger.warning('Worker watchdog unavailable (%s)', type(exc).__name__)
+        if not stop.is_set():
+            try:
+                await prune_review_payloads(get_client())
+            except Exception as exc:
+                logger.warning('Review housekeeping unavailable (%s)', type(exc).__name__)

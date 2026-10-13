@@ -991,7 +991,43 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 原本只有同一組驗證碼錯滿 5 次才上鎖，`issue()` 每次發新碼都把 `attempts` 歸零：知道密碼的人每組只猜 4 次、等 60 秒重送，就能無限猜下去（本機真 PostgreSQL 重現：錯 12 次仍未鎖定，下一組照樣登入成功）。改為錯誤次數跨重送累計，只在上一輪鎖定期滿時歸零，驗證成功時清零。新增 `test_resend_does_not_reset_wrong_attempts`（錯 4 次 → 重送 → 再錯 1 次即鎖定）與 `test_success_and_expired_lock_reset_wrong_attempts`；原程式碼下兩項都會失敗。
 - 已知取捨：錯誤次數沒有隨時間衰減，本人隔天再打錯也會延續計數，達 5 次仍會鎖 15 分鐘；成功登入一次即歸零，不另加衰減邏輯。
 
-## 階段四十二：每日文章容量歷史與平均成長率（PR #95，2026-10-13）
+## 階段四十二：可替換來源收錄評審、管理 MCP 與可選人工覆核（PR #97，#96，2026-10-13）
+
+原主動發現只提供人工候選審核及 referrer 數達標直接入庫，無法用內容樣本判斷來源價值。依使用者批准新增來源評審，作為 #84–#87 共用 AI 基礎的第一個用途，後續分類、事件與摘要可以沿用版本與付費請求語義。
+
+- 在 `/manage/settings` 設定外部 agent／Jev 引擎、政策與門檻，人工覆核可關閉；新有效通過結果直接入庫，既有待人工結果不批次放行。人工 hold／reject／approve 與來源 metadata 始終優先。
+- 專用 `/api/admin/mcp/` 使用獨立機器 key，提供 policy／request／claim／packet／submit；個人 MCP 保持原唯讀權限。官方 SDK protocol tests 驗證完整流程、strict inputs、結構化結果及無參數工具相容性。
+- 候選樣本走有界 SSRF／robots／DB host-block gate，不公開 preview articles。以快照、policy／candidate version、lease token 和同交易入庫保護並發。原人工批准改為原子 RPC，不再把新核准留在半提交 approved；舊 approved recovery 保留。重複 URL 只連結，不覆寫人工整理來源。
+- `source_review` queue 隨 discovery 主開關啟用，後台設定熱更新；啟用評審時阻止 referrer 自動入庫繞過。樣本／provider 工作有界退避，預算等待不發送付費請求，人工封鎖與逾期結果無法寫入。
+- Jev 固定官方 endpoint／版本，以獨立品質、相關性與垃圾訊號評分，不生成文字理由。receipt 保存回應後才解析，並發安全預留滾動 minute/hour/day 預算；unknown／429／5xx 額外發送最多一次。分析結果連結 receipt、provider input／prompt／rubric hash 與 adapter version。
+- 新增離線 development／holdout 比較工具；隨附資料是合成測試，不冒稱已校準的正式 gold set。快照／原始回應／快取有保存期，API watchdog 在停用評審後仍清理有限 payload。
+- 新增 `SOURCE_REVIEW_MCP_KEY`、`JEV_API_KEY`，同步 `.env.example`／compose／gen_env；新增三支 service-only、RLS 零 policy、SECURITY INVOKER migration，最後一支送 schema reload。操作與回滾見 [來源評審](SOURCE_REVIEW.md) 與 [RUNBOOK](RUNBOOK.md#來源收錄評審升級96)。
+
+### 驗證與範圍
+
+- 本機 backend 1014 passed／130 skipped；前端 318 tests 通過，production build 通過並保留既有 initial bundle warning（507.91 kB／500 kB），沒有放寬預算。文件檢查、diff check、環境 key 產生冪等性及離線示例 CLI 通過。
+- 程式 commit `a547647` 的 GitHub CI 全數通過：backend 1144 passed（含 PostgreSQL 17.11 的真 SQL／角色／交易／migration 重跑）、frontend 318 tests／production build、文件與兩個 Docker image build；PR workflow 未推送正式 image。
+- 本機沒有 PostgreSQL 測試資料庫，真 SQL fixture／角色／交易／migration 重跑未在本機執行，交 GitHub CI 的 PostgreSQL 17 service 驗證。普通沙箱的 asyncio 跨執行緒喚醒限制，以 repo 外的 selector bounded polling runner 完成測試，不修改產品 async 邏輯。
+- 正式 Supabase、Docker、實際瀏覽器／Jev key、付費 API 與中文評審品質未驗證；正式部署銜接 #83。未發送通知或使用正式資料庫。
+- 本批只提供來源評審需要的 #84–#87 部分：文章／Story 模型 analysis publication 合成、其他模型能力／付費服務、分類／事件／推薦 gold sets 與 #88–#91 的 embedding／事件／生成摘要仍待後續實作。來源評審不取代個人推薦，不將外部 agent 的模型／prompt／成本冒稱已由本後台驗證。
+- Review 事件 hook 工具不可用，沒有建立替代輪詢排程。
+
+### CI 過程中修掉的問題
+
+- 真 PostgreSQL fixture 發現收錄 INSERT 指定六欄但只有五個值，補上 `next_fetch_at=now()`，確保新收錄會進抓取排程。
+- 政策熱更新測試的 helper 原本領取全域最舊準備任務，會誤取先建立的其他 review；改為指定 request 回傳 ID，並檢查 candidate ID，保留原本的過期任務重排與人工結果不自動放行 assertions。
+- 人工保留／拒絕原本是無條件 PostgREST 更新，可能在模型已收錄後顯示拒絕成功。改為候選鎖與版本檢查的原子 RPC；已收錄時回 409，前端提示前往來源管理並重讀，不動既有 feed。補上真 PostgreSQL 兩種順序的鎖等待、rollback、版本與 alias 測試。
+- Jev 認證錯誤或無效回應原本永久命中 failed receipt，修正 key 後也無法明確重試。新增 server-only 任務 retry key、已知終態失敗的新 generation 及 durable receipt binding；保留舊費用與回應，預算照常生效，背景重跑與 unknown 不解除原重試上限。
+- Review 修正後本機 backend 1024 passed／142 skipped、前端 323 tests／production build 通過；最新 head PostgreSQL CI 結果由 PR 追蹤。
+
+### 後續 review 修正
+
+- 模型建議的分類與標籤原本原樣寫進新來源；開啟跳過人工覆核時，外部 agent 自創的分類（例如 `Technology` 對上既有 `科技`）會直接進公開目錄與推薦分類。新增 `source_review_known_category()`／`source_review_known_tags()`：分類必須已被某個來源或探測方向使用、標籤必須已被某個來源使用，否則捨棄。自動收錄與「覆核通過」都套用；人工「核准」時指定的分類不受限。沒有改為讓模型從清單中選擇，也沒有在 MCP 暴露分類清單（不在此 PR 範圍）。
+- `request_due_source_reviews` 原本以 `request_source_review(cid,true)` 重新排入，連帶替每個排程任務產生 `paid_retry_key`，與「只有明確重試才有 retry key」的契約不符。`request_source_review` 新增 `p_paid_retry`（預設沿用 `p_retry`），排程傳 `false`；同一支未合併的 migration 內先 `DROP` 舊的兩參數版本，避免重載歧義。
+- 結果快取 90 天後清空 `result` 但保留 identity，同輸入的明確重試會一直拿到 `receipt_cache_expired`。`reserve_ai_retry` 對「完成但 result 已清除」的 receipt 也建立新 generation；背景工作仍不靜默重新付費。候選頁提示改為說明重試會重新付費。
+- 驗證：本機 PostgreSQL 16 執行 `test_source_review_postgres.py`、`test_ai_runtime_postgres.py` 共 51 passed；四個新測試在修正前皆失敗。PostgreSQL 17 交 CI。
+
+## 階段四十三：每日文章容量歷史與平均成長率（PR #95，2026-10-13）
 
 #64 的正文縮減與即時容量統計已由 PR #65 完成，但即時快照無法回答文章數與 DB 用量每天增加多少。本次補上獨立 `storage` queue 工作、每日持久化採樣與管理首頁歷史顯示。
 
@@ -1002,12 +1038,13 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 ### 驗證與部署界限
 
-- PostgreSQL 17.10 的完整 backend：1046 tests 通過；新 SQL fixture 驗證每日去重、同日不重掃、90 天保存邊界、RLS／role grants、migration 重跑與兩個獨立連線的採樣競跑；最新 migration 的 schema reload 測試通過。
-- Frontend：34 files、300 tests 通過，production build 成功。initial bundle 511.70 kB，超出既有 500 kB warning budget 11.70 kB，未修改預算；沒有 component style budget 警告。
+- PostgreSQL 17.10 的完整 backend：1188 tests 通過；新 SQL fixture 驗證每日去重、同日不重掃、90 天保存邊界、RLS／role grants、migration 重跑與兩個獨立連線的採樣競跑；最新 migration 的 schema reload 測試通過。
+- Frontend：34 files、327 tests 通過，production build 成功。initial bundle 511.70 kB，超出既有 500 kB warning budget 11.70 kB，未修改預算；沒有 component style budget 警告。
 - Chromium：以假的 Supabase／管理 session 與 API aggregate 走查 1280px／390px 的歷史表格、負增量與展開操作，無 JavaScript 錯誤；修正表格的 intrinsic width 撐大手機 grid，表格可水平捲動而整頁不溢出。這不表示已驗證正式認證或資料庫。
 - 文件檢查與 `git diff --check` 通過；未部署正式 Supabase／Docker，正式跨日採樣與備份／dry-run 仍由 #83 追蹤。沒有修改既有 retention eligibility、刪文章 row、quota 預測或外部通知。
 - Review 事件 hook 工具不可用，沒有建立替代輪詢排程。
 
 ### Review 過程中修掉的問題
 
-- `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind 並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證四種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。
+- `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind、最新 master 的 source_review，並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證五種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。
+- 整合已合併 PR #97：保留來源評審與 storage 的 timeout、loop、前端服務與型別，合併衝突已解；將本 PR 未合併的 migration 重命名為 `20261013115249_article_storage_history.sql`（由 CLI 產生），排在來源評審三支 migration 之後，避免後者重新設定 kind whitelist 時移除 storage。完整 migration chain 的 fixture 同時驗證 source_review 與 storage；本 PR 階段順延至四十三。
