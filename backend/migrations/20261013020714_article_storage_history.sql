@@ -11,6 +11,17 @@ GRANT ALL ON driftread.article_storage_snapshots TO service_role;
 INSERT INTO driftread.background_job_kinds(kind)
 VALUES ('storage') ON CONFLICT DO NOTHING;
 
+-- The operations ledger has its own kind whitelist, independent of the queue.
+ALTER TABLE driftread.worker_runs DROP CONSTRAINT IF EXISTS worker_runs_kind_check;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conrelid='driftread.worker_runs'::regclass AND conname='worker_runs_kind_check') THEN
+        ALTER TABLE driftread.worker_runs ADD CONSTRAINT worker_runs_kind_check
+            CHECK (kind IN ('refresh', 'discovery', 'retention', 'storage'));
+    END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION driftread.record_article_storage_snapshot()
 RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
 DECLARE

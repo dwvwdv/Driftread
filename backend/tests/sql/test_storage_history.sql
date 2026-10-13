@@ -1,4 +1,35 @@
 BEGIN;
+-- The worker's best-effort recorder must be able to persist storage outcomes.
+SET LOCAL ROLE service_role;
+DO $$
+DECLARE v_run uuid; v_kind text;
+BEGIN
+    FOREACH v_kind IN ARRAY ARRAY['refresh', 'discovery', 'retention', 'storage'] LOOP
+        v_run := gen_random_uuid();
+        INSERT INTO driftread.worker_runs(id, worker_id, kind, status, started_at)
+        VALUES (v_run, 'storage-history-test', v_kind, 'running', now());
+        UPDATE driftread.worker_runs
+        SET status='failed', finished_at=now(), error='StorageSampleError'
+        WHERE id=v_run;
+        IF NOT EXISTS (SELECT 1 FROM driftread.worker_runs
+            WHERE id=v_run AND kind=v_kind AND status='failed' AND error='StorageSampleError') THEN
+            RAISE EXCEPTION 'worker run failure not persisted';
+        END IF;
+        UPDATE driftread.worker_runs SET status='succeeded', error=NULL,
+            summary='{"recorded":true}'::jsonb WHERE id=v_run;
+        IF NOT EXISTS (SELECT 1 FROM driftread.worker_runs
+            WHERE id=v_run AND status='succeeded' AND summary='{"recorded":true}'::jsonb) THEN
+            RAISE EXCEPTION 'worker run success not persisted';
+        END IF;
+    END LOOP;
+    BEGIN
+        INSERT INTO driftread.worker_runs(id, worker_id, kind, status, started_at)
+        VALUES (gen_random_uuid(), 'storage-history-test', 'unknown-kind', 'running', now());
+        RAISE EXCEPTION 'unknown worker kind accepted';
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+END $$;
+RESET ROLE;
 DELETE FROM driftread.article_storage_snapshots;
 INSERT INTO driftread.article_storage_snapshots(snapshot_date,observed_at,stats)
 VALUES ((now() AT TIME ZONE 'UTC')::date - 90, now() - interval '90 days', '{}'),

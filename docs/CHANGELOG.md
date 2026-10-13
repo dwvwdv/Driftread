@@ -1007,3 +1007,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - Chromium：以假的 Supabase／管理 session 與 API aggregate 走查 1280px／390px 的歷史表格、負增量與展開操作，無 JavaScript 錯誤；修正表格的 intrinsic width 撐大手機 grid，表格可水平捲動而整頁不溢出。這不表示已驗證正式認證或資料庫。
 - 文件檢查與 `git diff --check` 通過；未部署正式 Supabase／Docker，正式跨日採樣與備份／dry-run 仍由 #83 追蹤。沒有修改既有 retention eligibility、刪文章 row、quota 預測或外部通知。
 - Review 事件 hook 工具不可用，沒有建立替代輪詢排程。
+
+### Review 過程中修掉的問題
+
+- `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind 並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證四種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。

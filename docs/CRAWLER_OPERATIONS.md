@@ -80,7 +80,7 @@ X-API-Key: <admin key>
 
 ## Worker 監控
 
-`GET /api/admin/operations?limit=20`（需 `X-API-Key`）提供 worker heartbeat、最近迴圈與最近失敗數。refresh、discovery、retention 分別記錄，每 30 秒更新 heartbeat；超過 90 秒視為 stale。正在執行但 heartbeat 過期的 run 在讀取時呈現 interrupted；尚無紀錄呈現未知。這是近期執行視窗，不是每日累積報表。
+`GET /api/admin/operations?limit=20`（需 `X-API-Key`）提供 worker heartbeat、最近迴圈與最近失敗數。refresh、discovery、retention、storage 分別記錄，每 30 秒更新 heartbeat；超過 90 秒視為 stale。正在執行但 heartbeat 過期的 run 在讀取時呈現 interrupted；尚無紀錄呈現未知。這是近期執行視窗，不是每日累積報表。
 
 監控寫入失敗會記錄 log，不停掉擷取。私有表不開放 anon／authenticated。run 與 heartbeat 保留 30 天，每小時最多清除 1000 筆過期紀錄。狀態查詢最多回傳 100 個 run、200 個 worker。主要文章寫入／抽取移到 thread，但其他短同步 DB 操作仍可能短暫延遲 event loop，heartbeat 並非獨立程序的存活探針。
 
