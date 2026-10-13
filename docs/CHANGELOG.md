@@ -1005,8 +1005,14 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 ### 驗證與範圍
 
-- 本機 backend 1014 passed／130 skipped；前端 318 tests 通過，production build 通過並保留既有 initial bundle warning（507.91 kB／500 kB），沒有放寬預算。文件檢查、diff check、環境 key 產生冪等性及離線示例 CLI 通過；PR 最新 head CI 另追蹤。
+- 本機 backend 1014 passed／130 skipped；前端 318 tests 通過，production build 通過並保留既有 initial bundle warning（507.91 kB／500 kB），沒有放寬預算。文件檢查、diff check、環境 key 產生冪等性及離線示例 CLI 通過。
+- 程式 commit `a547647` 的 GitHub CI 全數通過：backend 1144 passed（含 PostgreSQL 17.11 的真 SQL／角色／交易／migration 重跑）、frontend 318 tests／production build、文件與兩個 Docker image build；PR workflow 未推送正式 image。
 - 本機沒有 PostgreSQL 測試資料庫，真 SQL fixture／角色／交易／migration 重跑未在本機執行，交 GitHub CI 的 PostgreSQL 17 service 驗證。普通沙箱的 asyncio 跨執行緒喚醒限制，以 repo 外的 selector bounded polling runner 完成測試，不修改產品 async 邏輯。
 - 正式 Supabase、Docker、實際瀏覽器／Jev key、付費 API 與中文評審品質未驗證；正式部署銜接 #83。未發送通知或使用正式資料庫。
 - 本批只提供來源評審需要的 #84–#87 部分：文章／Story 模型 analysis publication 合成、其他模型能力／付費服務、分類／事件／推薦 gold sets 與 #88–#91 的 embedding／事件／生成摘要仍待後續實作。來源評審不取代個人推薦，不將外部 agent 的模型／prompt／成本冒稱已由本後台驗證。
 - Review 事件 hook 工具不可用，沒有建立替代輪詢排程。
+
+### CI 過程中修掉的問題
+
+- 真 PostgreSQL fixture 發現收錄 INSERT 指定六欄但只有五個值，補上 `next_fetch_at=now()`，確保新收錄會進抓取排程。
+- 政策熱更新測試的 helper 原本領取全域最舊準備任務，會誤取先建立的其他 review；改為指定 request 回傳 ID，並檢查 candidate ID，保留原本的過期任務重排與人工結果不自動放行 assertions。
