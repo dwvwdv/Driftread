@@ -7,7 +7,9 @@ from pydantic import BaseModel
 
 from database import get_client
 from routers.admin_settings import router
-from services.settings import DISCOVERY_PROFILES_KEY, SETTING_DEFINITIONS, SettingDefinition
+from services.settings import (
+    DISCOVERY_PROFILES_KEY, SOURCE_REVIEW_KEY, SETTING_DEFINITIONS, SettingDefinition,
+)
 
 KEY = {"x-api-key": "test-admin-key"}
 BASE = "/admin/settings"
@@ -36,6 +38,8 @@ async def test_settings_requires_admin(settings_app, headers, status):
         assert (await client.get(BASE, headers=headers)).status_code == status
         assert (await client.put(f"{BASE}/{DISCOVERY_PROFILES_KEY}", headers=headers,
                                  json={"value": {"profiles": []}, "expected_version": 0})).status_code == status
+        assert (await client.put(f"{BASE}/{SOURCE_REVIEW_KEY}", headers=headers,
+                                 json={"value": {"enabled": True}, "expected_version": 0})).status_code == status
     db.table.assert_not_called()
     db.rpc.assert_not_called()
 
@@ -49,6 +53,9 @@ async def test_list_settings_defaults(settings_app):
     setting = response.json()["settings"][0]
     assert setting["key"] == DISCOVERY_PROFILES_KEY and setting["version"] == 0
     assert len(setting["value"]["profiles"]) == 7
+    review = next(item for item in response.json()["settings"] if item["key"] == SOURCE_REVIEW_KEY)
+    assert review["value"]["enabled"] is False
+    assert review["value"]["skip_human_review"] is False
 
 
 @pytest.mark.asyncio

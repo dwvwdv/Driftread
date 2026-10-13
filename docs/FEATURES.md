@@ -17,6 +17,7 @@
 | **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/015_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
 | **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
+| **來源收錄評審** | ✅ | 外部 agent 管理 MCP 或 Jev 評審有限候選樣本；後台可開啟跳過人工覆核直接收錄，人工覆寫優先。預設關閉，見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md) | `services/source_review.py`、`review_provider.py`、`admin_review_mcp.py` |
 | OPML 匯入 / 匯出 | ✅ | 與 Feedly / Inoreader 互通 | `routers/opml.py` |
 | **自動定期抓取** | ✅ | `next_fetch_at` 驅動的到期佇列 + 自適應間隔 + conditional GET；由獨立 `worker` 容器輪詢 | `services/feed_refresh.py`、`worker.py` |
 | Feed 健康度與自動封存 | ✅ | 連續失敗計數 + 原因；達 10 次自動封存 | `services/feed_refresh.py` |
@@ -36,11 +37,11 @@
 | 人工 Fact／Story、永久排除、別名及個人熱度 | 管理 API、保留人工關係的原子合併、閱讀流時間／熱度選擇；[NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
 | 確定性日報、私人 RSS、官方 SDK 唯讀 MCP、離線同步 | [CONSUMPTION_SURFACES.md](CONSUMPTION_SURFACES.md)、[擴充說明](../extension/README.md) |
 
-以上描述程式實作；正式部署驗證另見 [RUNBOOK.md](RUNBOOK.md)，不代表已上線。AI analysis、embedding、自動語意聚合未啟用。
+以上描述程式實作；正式部署驗證另見 [RUNBOOK.md](RUNBOOK.md)，不代表已上線。來源 AI 評審預設關閉；embedding、自動語意聚合未實作。
 
 ## 2. 推薦邏輯（猜你喜歡）
 
-近期已讀弱訊號與探索邊界的最新規則另見[個人来源推薦](NON_AI_INTELLIGENCE.md#個人來源推薦)。
+近期已讀弱訊號與探索邊界的最新規則另見[個人來源推薦](NON_AI_INTELLIGENCE.md#個人來源推薦)。
 
 `GET /api/recommendations` 的評分方式（`Signals` / `_score`）分五個來源，依 TODO.md
 推薦回饋持久化訂下的強弱排序給不同權重：
@@ -222,7 +223,7 @@ robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有�
 **3. 候選審核（candidates）**——`services/discovery_candidates.py`
 
 探測到的 feed URL 進 `discovery_candidates`，帶來源 host 與「幾個不同的既有源連到這裡」。
-`status` 為 `pending` / `approved` / `rejected` / `imported`。
+`status` 為 `pending` / `held` / `approved` / `rejected` / `imported`。來源評審任務狀態另存在 `source_reviews`，不混入候選 status。
 
 **被拒的候選永不重新提議** —— 而它「本來一定會」回來，因為同一批文章每輪都還連著同一個
 feed。所以寫入路徑從不 upsert 覆蓋 `status`，而是先查再插，既有列的更新一律加上
@@ -230,13 +231,14 @@ feed。所以寫入路徑從不 upsert 覆蓋 `status`，而是先查再插，�
 待探測列以 URL 唯一，一個 host 可能有好幾列），而收割會跳過任何已存在於 `discovery_targets`
 的 host，那就是封鎖永久生效的機制，不需要第五張表。
 
-`approved` 是真實的中間態：先記審核結果再寫 `feeds`，所以 `feeds` 寫入失敗時審核決定不會
-遺失，由下一輪的 `promote_approved()` 補上。
+人工核准與入庫由 `promote_discovery_candidate` RPC 在同一交易處理；失敗一起回滾，不留下半提交的核准。舊版留下的 `approved` 仍由 `promote_approved()` 恢復。候選版本與人工覆寫保護 in-flight 模型結果，詳見 [來源評審](SOURCE_REVIEW.md)。
 
 **自動入庫**：`FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS` 設為 N 時，被 N 個以上不同既有源
 連到的候選跳過人工審核直接入庫。**預設 0 = 永不自動**。migration 006 的 trigger 會持續更新
 pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積的證據」有反應，而不是看發現
 當時的快照。
+
+後台 `source.review.enabled=true` 時，這條 referrer 自動入庫路徑停用，由來源評審政策接管；新結果是否等待人工由 `skip_human_review` 決定，既有人工待覆核不批次放行。
 
 **4. 入庫（promote）**
 
@@ -248,9 +250,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 或由 OPML 匯入。此時入庫只把候選標成 `imported` 並指向既有列，不動它的標題、網站、分類與
 標籤 —— 否則一次無害的重複核准就會用抓來的值和空白預設覆蓋掉人工整理過的資料。
 
-核准時選的分類與標籤會**一併寫進候選列**（`approved_category` / `approved_tags`），而不是只
-留在當下的請求裡。這樣萬一寫 `feeds` 失敗，下一輪的 `promote_approved()` 能重現管理員原本的
-選擇，而不是把源匿名地無分類匯入。
+核准時選的分類與標籤會一併寫進候選列（`approved_category` / `approved_tags`），與入庫同交易提交。來源 URL 衝突時使用 `INSERT ... ON CONFLICT DO NOTHING` 再讀既有列，避免並發核准覆寫人工整理資料。
 
 第三方文字（`title` / `website_url`）寫入前過 `sanitize_text()` / `sanitize_http_url()`：
 移除控制字元、零寬字元與 bidi override，並強制 http(s) scheme。詳見 SECURITY.md。
@@ -364,8 +364,16 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
 | POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
 | GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20 |
-| GET | `/admin/settings` | 共用全域設定與版本，目前包含語言／分類探測方向 |
+| GET | `/admin/settings` | 共用全域設定與版本，包含探測方向與來源評審政策 |
 | PUT | `/admin/settings/{key}` | 型別驗證與版本比對的設定儲存，衝突回 409 |
+| GET | `/admin/source-reviews` | 有界評審列表，可依 `candidate_id` 過濾 |
+| POST | `/admin/source-reviews/candidates/{id}/request` | 申請候選評審，不 inline 抓取 |
+| GET | `/admin/source-reviews/usage` | 付費請求計數、成本與未知／暫停狀態，不含原始 payload |
+| GET | `/admin/source-reviews/{id}` | 讀取有界評審資料包與結果，不簽發租約 |
+| POST | `/admin/source-reviews/{id}/resolve` | 明確人工通過／拒絕／保留 |
+| POST | `/admin/source-reviews/{id}/retry` | 明確重新評審，不解除人工覆寫 |
+
+管理評審 MCP `/api/admin/mcp/` 使用獨立專用機器 key；工具與權限見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#管理-mcp-與權限)。
 | GET | `/admin/retention/stats` | 文章分類計數、表／索引／資料庫 bytes 快照 |
 | POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
 | GET | `/admin/discovery/stats` | 各狀態的計數 |
@@ -462,7 +470,9 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `user_feed_feedback` | 019 | 猜你喜歡的持久化回饋。`PRIMARY KEY (user_id, feed_id)`——一個使用者對一個 feed 只留最新立場（`feedback_type`：`liked` / `disliked` / `skipped`），不是逐筆事件記錄 |
 | `discovery_targets` | 006 | 待探測佇列。`url` UNIQUE（不是 host —— 一個站可以有多個 feed），`host` 另建索引供去重；`status` / `attempts` / `next_probe_at` / `referring_feed_count` |
 | `discovery_target_referrers` | 006 | `(target_id, feed_id)` 主鍵的分帳表，讓「幾個**不同**的既有源連到這裡」精確且重複收割時冪等 |
-| `discovery_candidates` | 006 | 候選審核佇列。`feed_url` UNIQUE 就是「被拒的永不重新提議」的機制；`approved_category` / `approved_tags` 讓核准決定在寫 `feeds` 失敗時不會遺失 |
+| `discovery_candidates` | 006 + 20261013040000 | 候選審核佇列，`feed_url` 唯一；`review_version`／`manual_override` 保護人工決定，核准與入庫交易原子化 |
+| `source_reviews` / `analysis_results` | 20261013040000 | service-only 評審任務／有限快照與分析紀錄；見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md) |
+| `ai_request_receipts` / `ai_request_attempts` / `ai_request_retry_bindings` | 20261013040020 | service-only 邏輯付費請求、有限 raw response、明確重試綁定、並發安全預算與用量摘要 |
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 | `background_job_kinds` / `background_jobs` / `worker_alerts` | 20261009000000 / 20261009000100 | service-only 的佇列與 watchdog；見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |

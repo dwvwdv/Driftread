@@ -1,7 +1,20 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  OnInit,
+  inject,
+  signal,
+} from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
-import { DiscoveryProfile, DiscoveryProfilesValue, GlobalSetting } from '../../../models';
+import {
+  DiscoveryProfile,
+  DiscoveryProfilesValue,
+  GlobalSetting,
+  SourceReviewSettings,
+} from '../../../models';
 import { AdminService } from '../../../services/admin';
 import { ObCard } from '../../../ui/card/card';
 import { ObLoading, ObEmpty } from '../../../ui/state/state';
@@ -9,6 +22,7 @@ import { ObPageHeader } from '../../../ui/page-header/page-header';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
 
+const REVIEW_KEY = 'source.review';
 const PROFILE_KEY = 'discovery.profiles';
 function emptyDraft() {
   return { name: '', language: 'zh', category: '', enabled: true, quota: 1 };
@@ -22,6 +36,13 @@ function emptyDraft() {
   styleUrl: './admin-settings.scss',
 })
 export class AdminSettings implements OnInit {
+  private destroyRef = inject(DestroyRef);
+  private loadSeq = 0;
+  private reviewVersion = 0;
+  protected reviewSettings: SourceReviewSettings | null = null;
+  protected reviewDirty = signal(false);
+  protected reviewConflict = signal(false);
+  protected reviewSaving = signal(false);
   private admin = inject(AdminService);
   private toast = inject(ToastService);
   private confirm = inject(ConfirmService);
@@ -41,45 +62,59 @@ export class AdminSettings implements OnInit {
   }
 
   private fetchSettings(): void {
+    const seq = ++this.loadSeq;
     this.loading.set(true);
     this.loadFailed.set(false);
-    this.admin.globalSettings().subscribe({
-      next: (response) => {
-        const setting = response.settings.find((entry) => entry.key === PROFILE_KEY) as
-          | GlobalSetting<DiscoveryProfilesValue>
-          | undefined;
-        if (!setting || !Array.isArray(setting.value?.profiles)) {
-          this.loadFailed.set(true);
+    this.admin
+      .globalSettings()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (response) => {
+          if (seq !== this.loadSeq) return;
+          const review = response.settings.find((entry) => entry.key === REVIEW_KEY) as
+            | GlobalSetting<SourceReviewSettings>
+            | undefined;
+          this.reviewSettings = review ? { ...review.value } : null;
+          this.reviewVersion = review?.version ?? 0;
+          this.reviewDirty.set(false);
+          this.reviewConflict.set(false);
+          const setting = response.settings.find((entry) => entry.key === PROFILE_KEY) as
+            | GlobalSetting<DiscoveryProfilesValue>
+            | undefined;
+          if (!setting || !Array.isArray(setting.value?.profiles)) {
+            this.loadFailed.set(true);
+            this.loading.set(false);
+            return;
+          }
+          this.profiles.set(
+            setting.value.profiles.map((profile) => ({
+              ...profile,
+              seed_urls: [...profile.seed_urls],
+            })),
+          );
+          this.version = setting.version;
+          this.dirty.set(false);
+          this.conflict.set(false);
+          this.resetForm();
           this.loading.set(false);
-          return;
-        }
-        this.profiles.set(
-          setting.value.profiles.map((profile) => ({
-            ...profile,
-            seed_urls: [...profile.seed_urls],
-          })),
-        );
-        this.version = setting.version;
-        this.dirty.set(false);
-        this.conflict.set(false);
-        this.resetForm();
-        this.loading.set(false);
-      },
-      error: () => {
-        this.loading.set(false);
-        this.loadFailed.set(true);
-      },
-    });
+        },
+        error: () => {
+          if (seq !== this.loadSeq) return;
+          this.loading.set(false);
+          this.loadFailed.set(true);
+        },
+      });
   }
 
   protected async load(): Promise<void> {
-    if (this.dirty() || this.editingId || this.draft.name || this.seedUrls) {
+    if (this.saving() || this.reviewSaving()) return;
+    if (this.reviewDirty() || this.dirty() || this.editingId || this.draft.name || this.seedUrls) {
       const accepted = await this.confirm.ask({
         heading: '重新載入設定？',
         body: '尚未儲存的變更與表單內容將被放棄。',
         confirmLabel: '重新載入',
       });
-      if (!accepted) return;
+      if (!accepted || this.destroyRef.destroyed || this.saving() || this.reviewSaving()) return;
     }
     this.fetchSettings();
   }
@@ -183,7 +218,7 @@ export class AdminSettings implements OnInit {
       confirmLabel: '刪除方向',
       danger: true,
     });
-    if (!accepted) return;
+    if (!accepted || this.destroyRef.destroyed) return;
     this.profiles.update((profiles) => profiles.filter((entry) => entry.id !== profile.id));
     if (this.editingId === profile.id) this.resetForm();
     this.dirty.set(true);
@@ -194,10 +229,19 @@ export class AdminSettings implements OnInit {
       this.toast.warning('請先將表單變更加入清單，或取消編輯');
       return;
     }
-    if (this.saving() || this.loading() || this.loadFailed() || this.conflict()) return;
+    if (
+      this.saving() ||
+      this.reviewSaving() ||
+      this.loading() ||
+      this.loadFailed() ||
+      this.conflict()
+    )
+      return;
     this.saving.set(true);
+    ++this.loadSeq;
     this.admin
       .saveGlobalSetting(PROFILE_KEY, { profiles: this.profiles() }, this.version)
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (setting) => {
           this.profiles.set(setting.value.profiles);
@@ -210,6 +254,60 @@ export class AdminSettings implements OnInit {
         error: (error: unknown) => {
           this.saving.set(false);
           if (error instanceof HttpErrorResponse && error.status === 409) this.conflict.set(true);
+        },
+      });
+  }
+
+  protected markReviewDirty(): void {
+    this.reviewDirty.set(true);
+  }
+
+  protected saveReviewSettings(): void {
+    if (
+      !this.reviewSettings ||
+      this.reviewSaving() ||
+      this.saving() ||
+      this.loading() ||
+      this.loadFailed() ||
+      this.reviewConflict()
+    )
+      return;
+    const value = { ...this.reviewSettings };
+    const probabilities = [value.min_confidence, value.min_quality, value.max_spam_probability];
+    if (
+      probabilities.some((v) => !Number.isFinite(v) || v < 0 || v > 1) ||
+      !Number.isInteger(value.sample_size) ||
+      value.sample_size < 1 ||
+      value.sample_size > 10 ||
+      !Number.isFinite(value.daily_budget_usd) ||
+      value.daily_budget_usd < 0 ||
+      value.daily_budget_usd > 1000 ||
+      !value.policy_text.trim() ||
+      value.policy_text.length > 8000 ||
+      value.model.length > 100 ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(value.model)
+    ) {
+      this.toast.warning('請填寫有效的評審規準、模型、0–1 門檻、1–10 篇樣本與 0–1000 美元預算');
+      return;
+    }
+    this.reviewSaving.set(true);
+    ++this.loadSeq;
+    this.admin
+      .saveGlobalSetting(REVIEW_KEY, value, this.reviewVersion)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (setting) => {
+          this.reviewSettings = { ...setting.value };
+          this.reviewVersion = setting.version;
+          this.reviewDirty.set(false);
+          this.reviewConflict.set(false);
+          this.reviewSaving.set(false);
+          this.toast.success('來源評審設定已儲存');
+        },
+        error: (error: unknown) => {
+          this.reviewSaving.set(false);
+          if (error instanceof HttpErrorResponse && error.status === 409)
+            this.reviewConflict.set(true);
         },
       });
   }

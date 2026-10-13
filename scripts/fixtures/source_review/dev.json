@@ -1,0 +1,99 @@
+{
+  "synthetic": true,
+  "labels": [
+    {
+      "id": "dev_original_analysis",
+      "label": "accept"
+    },
+    {
+      "id": "dev_thin_content",
+      "label": "reject"
+    },
+    {
+      "id": "dev_spam",
+      "label": "reject"
+    },
+    {
+      "id": "dev_uncertain",
+      "label": "abstain"
+    }
+  ],
+  "synthetic_predictions": {
+    "agent_stub": [
+      {
+        "id": "dev_original_analysis",
+        "confidence": 0.96,
+        "dimensions": {
+          "quality": 0.92,
+          "relevance": 0.98,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "dev_thin_content",
+        "confidence": 0.98,
+        "dimensions": {
+          "quality": 0.25,
+          "relevance": 0.9,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "dev_spam",
+        "confidence": 0.98,
+        "dimensions": {
+          "quality": 0.8,
+          "relevance": 0.8,
+          "spam_probability": 0.97
+        }
+      },
+      {
+        "id": "dev_uncertain",
+        "confidence": 0.45,
+        "dimensions": {
+          "quality": 0.6,
+          "relevance": 0.8,
+          "spam_probability": 0.2
+        }
+      }
+    ],
+    "jev_stub": [
+      {
+        "id": "dev_original_analysis",
+        "confidence": 0.96,
+        "dimensions": {
+          "quality": 0.92,
+          "relevance": 0.98,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "dev_thin_content",
+        "confidence": 0.98,
+        "dimensions": {
+          "quality": 0.25,
+          "relevance": 0.9,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "dev_spam",
+        "confidence": 0.98,
+        "dimensions": {
+          "quality": 0.8,
+          "relevance": 0.8,
+          "spam_probability": 0.97
+        }
+      },
+      {
+        "id": "dev_uncertain",
+        "confidence": 0.45,
+        "dimensions": {
+          "quality": 0.6,
+          "relevance": 0.8,
+          "spam_probability": 0.2
+        }
+      }
+    ]
+  }
+}

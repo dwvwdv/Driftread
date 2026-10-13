@@ -1,6 +1,6 @@
 # 全域設定管理
 
-後台的 **全域設定**（`/admin/settings`）提供共用設定入口。第一個區塊是「探測方向」，可以新增、編輯、暫停與移除多組語言／分類設定，按「儲存全域設定」後下一輪探測生效，不需重啟 worker。
+後台的 **全域設定**（`/manage/settings`）提供共用設定入口。第一個區塊是「探測方向」，可以新增、編輯、暫停與移除多組語言／分類設定，按「儲存全域設定」後下一輪探測生效，不需重啟 worker。
 
 每組方向包含名稱、目標語言（例如 `zh-tw`、`en`）、分類、啟用狀態、每輪保留名額與網站種子。預設有繁體中文的科技、商業、科學、社會、文化、環境、生活七組，涵蓋九個網站；可自行新增其他語言與領域。
 
@@ -14,7 +14,7 @@
 
 ## 共用儲存與 API
 
-設定存於 `driftread.app_settings`，以 `key` 對應型別化 JSON `value`，並有 `version` 與 `updated_at`。目前註冊的 key 是 `discovery.profiles`，其 value 為 `{ "profiles": [...] }`。加入新設定類型只需擴充 `SETTING_DEFINITIONS` 與對應表單，不必新增儲存表或 CRUD API。
+設定存於 `driftread.app_settings`，以 `key` 對應型別化 JSON `value`，並有 `version` 與 `updated_at`。目前註冊 `discovery.profiles`（value 為 `{ "profiles": [...] }`）與 `source.review`（來源評審引擎、政策、門檻及可選人工覆核，見 [來源評審](SOURCE_REVIEW.md)）。兩張設定卡分別保存版本與草稿，衝突不丟棄尚未儲存的修改。加入新設定類型只需擴充 `SETTING_DEFINITIONS` 與對應表單，不必新增儲存表或 CRUD API。
 
 | API | 用途 |
 |---|---|

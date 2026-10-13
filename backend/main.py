@@ -15,12 +15,14 @@ from backfill import run_backfills
 from errors import map_postgrest_error
 from migrate import run_migrations
 from services.mcp_server import AuthenticatedMCP, reset_transport
+from services.admin_review_mcp import AuthenticatedReviewMCP, reset_review_transport
 from routers import (
     admin,
     admin_discovery,
     admin_operations,
     admin_retention,
     admin_settings,
+    admin_source_reviews,
     manage_auth,
     articles,
     consumption,
@@ -138,7 +140,7 @@ async def lifespan(app: FastAPI):
     # After the schema is in place, and separately: these need the parser's own
     # html.unescape()-backed logic, which is not expressible as SQL.
     run_backfills()
-    async with reset_transport().run():
+    async with reset_transport().run(), reset_review_transport().run():
         stop = asyncio.Event()
         watchdog = asyncio.create_task(run_watchdog(stop))
         try:
@@ -219,10 +221,12 @@ app.include_router(admin_discovery.router, prefix="/api")
 app.include_router(admin_operations.router, prefix="/api")
 app.include_router(admin_retention.router, prefix="/api")
 app.include_router(admin_settings.router, prefix="/api")
+app.include_router(admin_source_reviews.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
 app.include_router(consumption.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 app.mount("/api/mcp", AuthenticatedMCP())
+app.mount("/api/admin/mcp", AuthenticatedReviewMCP())
 app.include_router(opml.router, prefix="/api")
 app.include_router(discover.router, prefix="/api")
 app.include_router(search.router, prefix="/api")

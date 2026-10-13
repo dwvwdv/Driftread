@@ -27,6 +27,7 @@ from routers.admin import require_api_key
 from services.directory_sources import load_default_sources
 from services.discovery import run_cycle
 from services.discovery_candidates import (
+    CandidateConflict,
     approve_candidate,
     block_host,
     hold_candidate,
@@ -268,7 +269,10 @@ async def hold(
     db: Client = Depends(get_client),
 ) -> FeedCandidate:
     """Reserve a candidate as a possible replacement RSS endpoint."""
-    row = hold_candidate(db, str(candidate_id), body.note)
+    try:
+        row = hold_candidate(db, str(candidate_id), body.note)
+    except CandidateConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     if not row:
         raise HTTPException(status_code=404, detail="Candidate not found")
     return FeedCandidate(**row)
@@ -284,7 +288,10 @@ async def reject(
     body: RejectCandidateRequest,
     db: Client = Depends(get_client),
 ) -> FeedCandidate:
-    row = reject_candidate(db, str(candidate_id), body.note, body.block_host)
+    try:
+        row = reject_candidate(db, str(candidate_id), body.note, body.block_host)
+    except CandidateConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     if not row:
         raise HTTPException(status_code=404, detail="Candidate not found")
     return FeedCandidate(**row)

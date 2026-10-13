@@ -1,0 +1,99 @@
+{
+  "synthetic": true,
+  "labels": [
+    {
+      "id": "holdout_detailed_reporting",
+      "label": "accept"
+    },
+    {
+      "id": "holdout_out_of_scope",
+      "label": "reject"
+    },
+    {
+      "id": "holdout_empty_sample",
+      "label": "reject"
+    },
+    {
+      "id": "holdout_ambiguous_copy",
+      "label": "abstain"
+    }
+  ],
+  "synthetic_predictions": {
+    "agent_stub": [
+      {
+        "id": "holdout_detailed_reporting",
+        "confidence": 0.97,
+        "dimensions": {
+          "quality": 0.85,
+          "relevance": 0.9,
+          "spam_probability": 0.01
+        }
+      },
+      {
+        "id": "holdout_out_of_scope",
+        "confidence": 0.96,
+        "dimensions": {
+          "quality": 0.9,
+          "relevance": 0.15,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "holdout_empty_sample",
+        "confidence": 0.97,
+        "dimensions": {
+          "quality": 0,
+          "relevance": 0.4,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "holdout_ambiguous_copy",
+        "confidence": 0.6,
+        "dimensions": {
+          "quality": 0.68,
+          "relevance": 0.8,
+          "spam_probability": 0.25
+        }
+      }
+    ],
+    "jev_stub": [
+      {
+        "id": "holdout_detailed_reporting",
+        "confidence": 0.97,
+        "dimensions": {
+          "quality": 0.85,
+          "relevance": 0.9,
+          "spam_probability": 0.01
+        }
+      },
+      {
+        "id": "holdout_out_of_scope",
+        "confidence": 0.96,
+        "dimensions": {
+          "quality": 0.9,
+          "relevance": 0.15,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "holdout_empty_sample",
+        "confidence": 0.97,
+        "dimensions": {
+          "quality": 0,
+          "relevance": 0.4,
+          "spam_probability": 0.02
+        }
+      },
+      {
+        "id": "holdout_ambiguous_copy",
+        "confidence": 0.6,
+        "dimensions": {
+          "quality": 0.68,
+          "relevance": 0.8,
+          "spam_probability": 0.25
+        }
+      }
+    ]
+  }
+}

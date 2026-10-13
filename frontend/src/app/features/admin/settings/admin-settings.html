@@ -12,7 +12,7 @@
   <button
     type="button"
     class="ob-btn ob-btn--primary ob-btn--sm"
-    [disabled]="saving() || loading() || loadFailed() || conflict()"
+    [disabled]="saving() || reviewSaving() || loading() || loadFailed() || conflict()"
     (click)="saveSettings()"
   >
     {{ saving() ? '儲存中…' : dirty() ? '儲存全域設定' : '套用目前設定' }}
@@ -23,7 +23,7 @@
 <div class="cols">
   <ob-card [heading]="editingId ? '編輯擷取方向' : '新增擷取方向'" meta="PREFERENCES">
     <form (ngSubmit)="applyDraft()">
-      <fieldset [disabled]="saving() || loading() || loadFailed()">
+      <fieldset [disabled]="saving() || reviewSaving() || loading() || loadFailed()">
         <label class="field"
           ><span>名稱</span>
           <input
@@ -136,7 +136,7 @@
             <button
               type="button"
               class="ob-btn ob-btn--ghost ob-btn--sm"
-              [disabled]="saving() || loading()"
+              [disabled]="saving() || reviewSaving() || loading()"
               (click)="edit(profile)"
             >
               編輯
@@ -144,7 +144,7 @@
             <button
               type="button"
               class="ob-btn ob-btn--ghost ob-btn--sm"
-              [disabled]="saving() || loading()"
+              [disabled]="saving() || reviewSaving() || loading()"
               (click)="toggle(profile)"
             >
               {{ profile.enabled ? '停用' : '啟用' }}
@@ -152,7 +152,7 @@
             <button
               type="button"
               class="ob-btn ob-btn--ghost ob-btn--sm"
-              [disabled]="saving() || loading()"
+              [disabled]="saving() || reviewSaving() || loading()"
               (click)="remove(profile)"
             >
               刪除
@@ -165,7 +165,7 @@
       <button
         type="button"
         class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="loading() || saving()"
+        [disabled]="loading() || saving() || reviewSaving()"
         (click)="load()"
       >
         重新整理
@@ -173,3 +173,169 @@
     </div>
   </ob-card>
 </div>
+
+<section class="review-settings">
+  <ob-card heading="AI 來源評審" meta="SOURCE REVIEW">
+    <p class="hint">
+      啟用後，候選先經評審再決定收錄。背景準備與執行仍受服務的 FEED_DISCOVERY_ENABLED
+      主開關約束；此處啟用不會開啟主動發現。
+    </p>
+    @if (reviewConflict()) {
+      <p class="conflict" role="alert">
+        評審設定已被其他管理者修改。你的變更已保留，請先複製需要保留的內容，再重新載入最新設定。
+      </p>
+    }
+    @if (reviewSettings; as review) {
+      <form (ngSubmit)="saveReviewSettings()">
+        <fieldset [disabled]="loading() || saving() || reviewSaving() || loadFailed()">
+          <label class="ob-checkbox field"
+            ><span
+              ><input
+                name="reviewEnabled"
+                type="checkbox"
+                [(ngModel)]="review.enabled"
+                (ngModelChange)="markReviewDirty()"
+              />
+              啟用 AI 來源評審</span
+            ></label
+          >
+          <label class="ob-checkbox field"
+            ><span
+              ><input
+                name="skipHuman"
+                type="checkbox"
+                [(ngModel)]="review.skip_human_review"
+                (ngModelChange)="markReviewDirty()"
+              />
+              跳過人工覆核</span
+            ></label
+          >
+          <p class="hint">
+            開啟後，新通過的評審結果直接收錄；既有待人工覆核的結果不會批次放行。人工核准、拒絕與保留仍優先；無法判定或服務失敗會暫緩或重試。
+          </p>
+          <div class="cols">
+            <label class="field"
+              ><span>評審引擎</span
+              ><select
+                class="ob-select"
+                name="engine"
+                [(ngModel)]="review.engine"
+                (ngModelChange)="markReviewDirty()"
+              >
+                <option value="external_agent">外部 Agent（管理 MCP）</option>
+                <option value="jev">Jev</option>
+              </select></label
+            >
+            @if (review.engine === 'jev') {
+              <label class="field"
+                ><span>Jev 模型版本</span>
+                <select
+                  class="ob-select"
+                  name="model"
+                  required
+                  [(ngModel)]="review.model"
+                  (ngModelChange)="markReviewDirty()"
+                >
+                  <option value="jev-1.13.0">jev-1.13.0</option>
+                </select>
+                <span class="hint">目前支援 jev-1.13.0；後續可透過評審 adapter 擴充。</span>
+              </label>
+            } @else {
+              <p class="hint">外部 Agent 自行選擇模型；此處無法指定外部模型版本。</p>
+            }
+            <label class="field"
+              ><span>最低信心門檻（0–1）</span
+              ><input
+                class="ob-input"
+                name="confidence"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                required
+                [(ngModel)]="review.min_confidence"
+                (ngModelChange)="markReviewDirty()"
+            /></label>
+            <label class="field"
+              ><span>最低品質門檻（0–1）</span
+              ><input
+                class="ob-input"
+                name="quality"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                required
+                [(ngModel)]="review.min_quality"
+                (ngModelChange)="markReviewDirty()"
+            /></label>
+            <label class="field"
+              ><span>最高垃圾內容機率（0–1）</span
+              ><input
+                class="ob-input"
+                name="spam"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                required
+                [(ngModel)]="review.max_spam_probability"
+                (ngModelChange)="markReviewDirty()"
+            /></label>
+            <label class="field"
+              ><span>每日後台模型預算（美元）</span
+              ><input
+                class="ob-input"
+                name="budget"
+                type="number"
+                min="0"
+                max="1000"
+                step="0.01"
+                required
+                [(ngModel)]="review.daily_budget_usd"
+                (ngModelChange)="markReviewDirty()"
+              /><span class="hint">外部 Agent 自付的模型費用不計入此預算。</span></label
+            >
+            <label class="field"
+              ><span>每個來源的樣本數</span
+              ><input
+                class="ob-input"
+                name="sampleSize"
+                type="number"
+                min="1"
+                max="10"
+                step="1"
+                required
+                [(ngModel)]="review.sample_size"
+                (ngModelChange)="markReviewDirty()"
+            /></label>
+          </div>
+          <label class="field"
+            ><span>收錄評審規準</span
+            ><textarea
+              class="ob-textarea"
+              name="reviewPolicy"
+              rows="6"
+              required
+              maxlength="8000"
+              [(ngModel)]="review.policy_text"
+              (ngModelChange)="markReviewDirty()"
+            ></textarea>
+          </label>
+          <button
+            type="submit"
+            class="ob-btn ob-btn--primary ob-btn--sm"
+            [disabled]="reviewConflict()"
+          >
+            {{ reviewSaving() ? '儲存中…' : '儲存來源評審設定' }}
+          </button>
+          <span class="hint">{{
+            reviewDirty() ? '有尚未儲存的變更' : '目前沒有待儲存的變更'
+          }}</span>
+        </fieldset>
+      </form>
+    } @else if (!loading()) {
+      <ob-empty message="無法讀取來源評審設定，請重新整理再試。" />
+    }
+  </ob-card>
+</section>

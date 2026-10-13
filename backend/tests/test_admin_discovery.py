@@ -308,6 +308,22 @@ def test_reject_unknown_candidate_is_404(client):
                   headers=KEY).status_code == 404
 
 
+@pytest.mark.parametrize('action', ['hold', 'reject'])
+@pytest.mark.parametrize('conflict', ['candidate_already_imported', 'candidate_changed'])
+def test_candidate_human_action_returns_structured_conflict(client, action, conflict):
+    from services.discovery_candidates import CandidateConflict
+
+    c, _mock = client
+    row = _candidate()
+    _fake_db_client(c, FakeDB(discovery_candidates=[row], discovery_targets=[], feeds=[]))
+    function = 'hold_candidate' if action == 'hold' else 'reject_candidate'
+    with patch(f'routers.admin_discovery.{function}', side_effect=CandidateConflict(conflict)):
+        response = c.post(f"{BASE}/candidates/{row['id']}/{action}", json={}, headers=KEY)
+    assert response.status_code == 409
+    assert response.json()['detail']['code'] == conflict
+    assert row['status'] == 'pending'
+
+
 def test_block_target(client):
     c, _mock = client
     target = {"id": str(uuid4()), "host": "bad.example.org",

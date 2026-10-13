@@ -79,6 +79,7 @@ driftread/
 | 主動發現（外連採集、blogroll、目錄頁、探測、候選審核） | [docs/FEATURES.md](docs/FEATURES.md) 的「主動發現管道」、[docs/SECURITY.md](docs/SECURITY.md) #24 |
 | 文章寫入、增量抽取、正文保存／縮減、worker heartbeat、中文種子 | [docs/CRAWLER_OPERATIONS.md](docs/CRAWLER_OPERATIONS.md) |
 | `app_settings` 全域設定、探測方向與名額、設定版本衝突 | [docs/GLOBAL_SETTINGS.md](docs/GLOBAL_SETTINGS.md) |
+| 來源收錄評審、管理 MCP、Jev、付費請求與離線評測 | [docs/SOURCE_REVIEW.md](docs/SOURCE_REVIEW.md) |
 | 工作佇列、租約、重試、停機與 watchdog | [docs/BACKGROUND_JOBS.md](docs/BACKGROUND_JOBS.md) |
 | 文章版本、來源證據與 backfill | [docs/CONTENT_MODEL.md](docs/CONTENT_MODEL.md) |
 | 來源角色、正文政策與健康度 | [docs/SOURCE_MODEL.md](docs/SOURCE_MODEL.md) |
