@@ -118,6 +118,7 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 ## ChatGPT Web 來源評審 OAuth（#100）
 
 1. 備份並停舊 worker，升級 API，開機套用 `20261014010000_source_review_oauth.sql`；保留 ledger，healthy 後啟動同版 worker／frontend。新表撤銷所有 Data API roles（含 service_role），沿用既有 privileged `DATABASE_URL`，不需要修改 Supabase Dashboard 的 OAuth server／Exposed Schemas。
+   OAuth 啟用後，資料庫備份／還原必須包含私有 `driftread.review_oauth_registration_key`：匿名 DCR 的 client ID 由此持久金鑰驗證，不能在重啟或清理時重建。已同意 client 的 metadata 保留，過期 grant／token 清理不會要求刪除並重建 ChatGPT 連線。
 2. `.env` 填 `SOURCE_REVIEW_OAUTH_BASE_URL=https://正式網域`，只填 HTTPS origin；重新建立 API 容器讓環境變數載入。此值只傳 API，worker 不用；空白停用 OAuth，原 `SOURCE_REVIEW_MCP_KEY` 保留。代理必須使用同版 nginx 的 `/.well-known/` API forwarding、no-referrer／禁止 frame headers，外層 TLS 與 public origin 一致。
 3. 用未帶 token 的 MCP request 確認 401 `WWW-Authenticate` 指向 public origin 的 resource metadata；確認 `/.well-known/oauth-authorization-server` 與 `/.well-known/oauth-protected-resource/api/admin/mcp` 回傳 JSON，不能是 Angular HTML。metadata／工具 scopes 含 `source:review`、`offline_access`。
 4. ChatGPT 自訂 MCP 填 `https://正式網域/api/admin/mcp/`，選 OAuth；Client ID／Client Secret 留白，採 DCR public client。完成管理員帳密＋Telegram OTP → 來源評審同意頁 → 回 ChatGPT 掃描五個工具。API key、普通 Supabase JWT 或「無驗證」都不能取代此流程。

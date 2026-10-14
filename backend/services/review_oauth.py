@@ -1,13 +1,16 @@
 """Narrow OAuth authorization server for ChatGPT source review.
 
-Opaque secrets are returned once; only SHA256 digests are durable. Grants are
-bound to the owner and live Supabase session that completed Telegram consent.
-All exchanges and revocations serialize on the grant row. This is deliberately
-not a general OAuth provider or a grant to the browser/admin REST interfaces.
+Bearer credentials are returned once; only their SHA256 digests are durable.
+Public client IDs contain signed metadata, using one private durable HMAC key.
+Grants bind the owner and live Supabase session completing Telegram consent;
+exchanges and revocations serialize on the grant row. This is deliberately not
+a general OAuth provider or a grant to browser/admin REST interfaces.
 """
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
+import json
 import os
 import re
 import secrets
@@ -24,7 +27,8 @@ REQUEST_SECONDS = 600
 CODE_SECONDS = 120
 ACCESS_SECONDS = 900
 GRANT_SECONDS = 30 * 86400
-CLIENT_LIMIT = 100
+CLIENT_ID_MAX = 4096
+_ISSUED_CLIENT_ID_MAX = 2048  # safely below PostgreSQL's btree entry limit
 REQUEST_LIMIT = 1000
 _TOKEN = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 _CALLBACK = re.compile(r"^/connector/oauth/[A-Za-z0-9_-]{1,128}$")
@@ -131,10 +135,73 @@ def _cleanup(cur):
       (SELECT request_hash FROM driftread.review_oauth_requests WHERE expires_at<now() LIMIT 200)""")
     cur.execute("""DELETE FROM driftread.review_oauth_grants WHERE id IN
       (SELECT id FROM driftread.review_oauth_grants WHERE expires_at<now()-interval '30 days' LIMIT 100)""")
-    cur.execute("""DELETE FROM driftread.review_oauth_clients WHERE client_id IN
-      (SELECT c.client_id FROM driftread.review_oauth_clients c WHERE c.last_used_at<now()-interval '7 days'
-       AND NOT EXISTS(SELECT 1 FROM driftread.review_oauth_grants g WHERE g.client_id=c.client_id)
-       AND NOT EXISTS(SELECT 1 FROM driftread.review_oauth_requests r WHERE r.client_id=c.client_id) LIMIT 100)""")
+    # Clients are created only after owner consent. Their compact metadata must
+    # survive expired grants: ChatGPT can cache a client ID and reauthorize it.
+
+
+def _registration_key(cur):
+    cur.execute("SELECT signing_key FROM driftread.review_oauth_registration_key WHERE singleton=true")
+    row = cur.fetchone()
+    if not row:
+        cur.execute("SELECT pg_advisory_xact_lock(7142026101401)")
+        cur.execute("""INSERT INTO driftread.review_oauth_registration_key(singleton,signing_key)
+          VALUES(true,%s) ON CONFLICT(singleton) DO NOTHING""", (secrets.token_bytes(32),))
+        cur.execute("SELECT signing_key FROM driftread.review_oauth_registration_key WHERE singleton=true")
+        row = cur.fetchone()
+    return bytes(row['signing_key'])
+
+
+def _encode_client(name, uris, key):
+    # A public registration allocates no client row. The random nonce gives
+    # independent registrations distinct IDs; the signature authenticates all
+    # metadata without trusting a caller-supplied name or callback later.
+    try:
+        raw = json.dumps({'name':name,'uris':uris,'nonce':secrets.token_urlsafe(24)},
+                        separators=(',', ':'),ensure_ascii=False).encode('utf-8')
+    except UnicodeError:
+        raise OAuthError('invalid_client_metadata') from None
+    payload = base64.urlsafe_b64encode(raw).decode().rstrip('=')
+    signed = 'drcs1_' + payload
+    signature = base64.urlsafe_b64encode(hmac.digest(key,signed.encode(),'sha256')).decode().rstrip('=')
+    result = signed+'.'+signature
+    if len(result) > _ISSUED_CLIENT_ID_MAX:
+        raise OAuthError('invalid_client_metadata')
+    return result
+
+
+def _registered_client(cur, client_id):
+    if client_id.startswith('drcs1_'):
+        parts = client_id.split('.')
+        if (len(parts) != 2 or not re.fullmatch(r'drcs1_[A-Za-z0-9_-]+',parts[0])
+                or not re.fullmatch(r'[A-Za-z0-9_-]{43}',parts[1])):
+            raise OAuthError('invalid_client')
+        expected = base64.urlsafe_b64encode(hmac.digest(
+            _registration_key(cur),parts[0].encode(),'sha256')).decode().rstrip('=')
+        if not hmac.compare_digest(expected,parts[1]):
+            raise OAuthError('invalid_client')
+        # Parse only authenticated bounded input. No registration expiry: the
+        # public client ID can be cached independently of any access grant.
+        try:
+            payload = parts[0][6:]
+            metadata = json.loads(base64.urlsafe_b64decode(payload+'='*(-len(payload)%4)))
+            if not isinstance(metadata,dict):
+                raise ValueError
+            name = _text(metadata,'name',100)
+            uris = metadata['uris']
+            if not isinstance(uris,list) or not 1 <= len(uris) <= 5:
+                raise ValueError
+            if any(not isinstance(uri,str) or len(uri)>256 for uri in uris):
+                raise ValueError
+            uris = [_redirect(uri) for uri in uris]
+        except (ValueError,TypeError,KeyError,UnicodeError):
+            raise OAuthError('invalid_client') from None
+        return {'client_name':name,'redirect_uris':uris}
+    # Preserve IDs issued by an earlier version of this unmerged feature.
+    cur.execute("SELECT client_name,redirect_uris FROM driftread.review_oauth_clients WHERE client_id=%s", (client_id,))
+    client = cur.fetchone()
+    if not client:
+        raise OAuthError('invalid_client', description='Client or callback is not registered')
+    return client
 
 
 def register_client(body: dict) -> dict:
@@ -161,16 +228,8 @@ def register_client(body: dict) -> dict:
         raise OAuthError('invalid_client_metadata', description='Invalid redirect URLs')
     uris = list(dict.fromkeys(_redirect(x) for x in uris))
     scope = _scope(_text(body, 'scope', 100, required=False) or SCOPE+' offline_access')
-    client_id = 'drc_' + secrets.token_urlsafe(24)
     with manage_auth.connection() as cur:
-        # DCR is public. Serialize the cap so parallel registration cannot exceed it.
-        cur.execute("SELECT pg_advisory_xact_lock(7142026101401)")
-        _cleanup(cur)
-        cur.execute("SELECT count(*) AS count FROM driftread.review_oauth_clients")
-        if cur.fetchone()['count'] >= CLIENT_LIMIT:
-            raise OAuthError('temporarily_unavailable', 429, 'Client registration capacity reached')
-        cur.execute("INSERT INTO driftread.review_oauth_clients(client_id,client_name,redirect_uris) VALUES(%s,%s,%s)",
-                    (client_id, name, Json(uris)))
+        client_id = _encode_client(name,uris,_registration_key(cur))
     return {'client_id':client_id,'client_name':name,'redirect_uris':uris,
             'token_endpoint_auth_method':'none','grant_types':['authorization_code','refresh_token'],
             'response_types':['code'],'scope':scope}
@@ -188,7 +247,7 @@ def begin_authorization(params: dict) -> dict:
         raise OAuthError('invalid_request', description='Invalid PKCE challenge')
     if 'prompt' in params and params['prompt'] not in ('consent', 'login'):
         raise OAuthError('invalid_request', description='Interactive consent is required')
-    client_id = _text(params, 'client_id', 100)
+    client_id = _text(params, 'client_id', CLIENT_ID_MAX)
     redirect = _redirect(_text(params, 'redirect_uri', 256))
     scope = _scope(_text(params, 'scope', 100))
     state = _text(params, 'state', 2048)
@@ -197,18 +256,16 @@ def begin_authorization(params: dict) -> dict:
     with manage_auth.connection() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(7142026101402)")
         _cleanup(cur)
-        cur.execute("SELECT redirect_uris FROM driftread.review_oauth_clients WHERE client_id=%s", (client_id,))
-        client = cur.fetchone()
-        if not client or redirect not in client['redirect_uris']:
+        client = _registered_client(cur,client_id)
+        if redirect not in client['redirect_uris']:
             raise OAuthError('invalid_client', description='Client or callback is not registered')
         cur.execute("SELECT count(*) AS count FROM driftread.review_oauth_requests")
         if cur.fetchone()['count'] >= REQUEST_LIMIT:
             raise OAuthError('temporarily_unavailable', 429, 'Authorization request capacity reached')
         cur.execute("""INSERT INTO driftread.review_oauth_requests
-          (request_hash,client_id,redirect_uri,state,scope,resource,code_challenge,expires_at)
-          VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",
-          (_digest(request_id),client_id,redirect,state,scope,resource,challenge,_now()+timedelta(seconds=REQUEST_SECONDS)))
-        cur.execute("UPDATE driftread.review_oauth_clients SET last_used_at=now() WHERE client_id=%s", (client_id,))
+          (request_hash,client_id,client_name,redirect_uris,redirect_uri,state,scope,resource,code_challenge,expires_at)
+          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+          (_digest(request_id),client_id,client['client_name'],Json(client['redirect_uris']),redirect,state,scope,resource,challenge,_now()+timedelta(seconds=REQUEST_SECONDS)))
     return {'request_id':request_id,'authorize_url':base+'/manage/mcp-authorize?'+urlencode({'request':request_id})}
 
 
@@ -227,8 +284,7 @@ def _manage(cur, user, token):
 def _request(cur, request_id, lock=False):
     if not isinstance(request_id, str) or not _TOKEN.fullmatch(request_id):
         raise OAuthError('invalid_request', description='Authorization request is invalid or expired')
-    cur.execute("""SELECT r.*,c.client_name FROM driftread.review_oauth_requests r
-      JOIN driftread.review_oauth_clients c ON c.client_id=r.client_id
+    cur.execute("""SELECT r.* FROM driftread.review_oauth_requests r
       WHERE request_hash=%s""" + (' FOR UPDATE OF r' if lock else ''), (_digest(request_id),))
     request = cur.fetchone()
     if (not request or request['expires_at'] <= _now() or request['decided_at']
@@ -256,6 +312,9 @@ def decide_authorization(request_id: str, approved: bool, user: AuthUser, manage
         cur.execute("UPDATE driftread.review_oauth_requests SET decided_at=now() WHERE request_hash=%s", (_digest(request_id),))
         response = {'state':row['state']}
         if approved:
+            cur.execute("""INSERT INTO driftread.review_oauth_clients(client_id,client_name,redirect_uris)
+              VALUES(%s,%s,%s) ON CONFLICT(client_id) DO UPDATE SET last_used_at=now()""",
+              (row['client_id'],row['client_name'],Json(row['redirect_uris'])))
             grant_id, code = str(uuid4()), secrets.token_urlsafe(32)
             cur.execute("""INSERT INTO driftread.review_oauth_grants
               (id,client_id,owner_user_id,auth_session_id,scope,resource,expires_at)
@@ -319,7 +378,7 @@ def exchange_token(params: dict) -> dict:
             raise OAuthError('invalid_grant')
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode('ascii')).digest()).decode('ascii').rstrip('=')
         redirect = _redirect(_text(params, 'redirect_uri', 256))
-        client_id = _text(params, 'client_id', 100)
+        client_id = _text(params, 'client_id', CLIENT_ID_MAX)
         _resource(params)
         with manage_auth.connection() as cur:
             cur.execute("SELECT grant_id FROM driftread.review_oauth_codes WHERE code_hash=%s", (_digest(code),))
@@ -340,7 +399,7 @@ def exchange_token(params: dict) -> dict:
         token = _text(params, 'refresh_token', 128)
         if not re.fullmatch(r'dror_[A-Za-z0-9_-]{43}', token):
             raise OAuthError('invalid_grant')
-        client_id = _text(params, 'client_id', 100)
+        client_id = _text(params, 'client_id', CLIENT_ID_MAX)
         _resource(params)
         failure = None
         with manage_auth.connection() as cur:
@@ -416,7 +475,7 @@ def revoke_token(params: dict) -> dict:
     base_url()
     _strict(params, {'token','client_id','token_type_hint'})
     token = _text(params, 'token', 128)
-    client_id = _text(params, 'client_id', 100)
+    client_id = _text(params, 'client_id', CLIENT_ID_MAX)
     if params.get('token_type_hint') not in (None,'access_token','refresh_token'):
         raise OAuthError('unsupported_token_type')
     if re.fullmatch(r'dro[ar]_[A-Za-z0-9_-]{43}', token):

@@ -12,7 +12,7 @@ from mcp.client.streamable_http import streamable_http_client
 from routers import review_oauth as routes
 from services import admin_review_mcp as transport, manage_auth
 from services.settings import AppSetting, SourceReviewValue
-from tests.test_review_oauth_postgres import setup, CALLBACK, VERIFIER, CHALLENGE
+from tests.test_review_oauth_postgres import setup, query, CALLBACK, VERIFIER, CHALLENGE
 from tests.test_postgres_lifecycle import pg_database
 
 
@@ -46,6 +46,8 @@ async def test_web_link_consent_token_tools_refresh_and_revoke(setup, monkeypatc
                 'response_types': ['code'], 'scope': 'source:review offline_access'})
             assert registered.status_code == 201
             client_id = registered.json()['client_id']
+            assert len(client_id) > 100  # the signed ID must survive every HTTP form/query hop
+            assert not query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s', (client_id,))
             resource = 'https://reader.example/api/admin/mcp/'
             begin = await browser.get(metadata['authorization_endpoint'], params={
                 'response_type': 'code', 'client_id': client_id, 'redirect_uri': CALLBACK,
@@ -56,7 +58,9 @@ async def test_web_link_consent_token_tools_refresh_and_revoke(setup, monkeypatc
             headers = {'Authorization': 'Bearer signed-browser-user', 'X-Manage-Session': setup[1]}
             consent = await browser.get('/api/review-oauth/consent/' + rid, headers=headers)
             assert consent.status_code == 200 and consent.json()['scope'] == 'source:review offline_access'
+            assert not query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s', (client_id,))
             decision = await browser.post('/api/review-oauth/consent/' + rid, headers=headers, json={'approved': True})
+            assert query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s', (client_id,))
             callback = parse_qs(urlsplit(decision.json()['redirect_url']).query)
             assert callback['state'] == ['client-state+exact']
             exchanged = await browser.post(metadata['token_endpoint'], data={

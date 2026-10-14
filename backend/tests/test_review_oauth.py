@@ -82,3 +82,31 @@ def test_token_requires_resource_and_s256():
       {'grant_type':'refresh_token','refresh_token':'dror_'+'a'*43,'client_id':'client','resource':oauth.resource_url(),'client_secret':'x'}]:
         with pytest.raises(oauth.OAuthError):
             oauth.exchange_token(params)
+
+
+def test_signed_registration_authenticates_metadata_without_client_lookup(monkeypatch):
+    key = b'k'*32
+    uris = ['https://chatgpt.com/connector/oauth/'+'a'*128]
+    client = oauth._encode_client('ChatGPT',uris,key)
+    monkeypatch.setattr(oauth,'_registration_key',lambda cur:key)
+    assert oauth._registered_client(None,client)=={'client_name':'ChatGPT','redirect_uris':uris}
+    # The payload must be authenticated before any JSON processing or DB lookup.
+    signed,signature = client.split('.')
+    for bad in (signed[:-1]+('A' if signed[-1]!='A' else 'B')+'.'+signature,
+                signed+'.'+('A' if signature[0]!='A' else 'B')+signature[1:],
+                client+'.extra','drcs1_not-json.'+'a'*43):
+        with pytest.raises(oauth.OAuthError) as exc:
+            oauth._registered_client(None,bad)
+        assert exc.value.error=='invalid_client'
+    monkeypatch.setattr(oauth,'_registration_key',lambda cur:b'w'*32)
+    with pytest.raises(oauth.OAuthError):
+        oauth._registered_client(None,client)
+
+
+def test_largest_supported_registration_fits_index_and_surrogate_is_rejected():
+    uris = ['https://chatgpt.com/connector/oauth/'+str(i)+'a'*127 for i in range(5)]
+    client = oauth._encode_client('😀'*100,uris,b'k'*32)
+    assert len(client) <= 2048
+    with pytest.raises(oauth.OAuthError) as exc:
+        oauth._encode_client('\ud800',uris,b'k'*32)
+    assert exc.value.error=='invalid_client_metadata'

@@ -65,8 +65,10 @@ def refresh(setup,token,**changes):
 
 def test_owner_telegram_and_explicit_consent(setup):
     rid=request(setup)
+    assert not query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(setup[2],))
     consent=oauth.get_consent(rid,setup[0],setup[1])
     assert consent['scope']=='source:review offline_access' and consent['redirect_host']=='chatgpt.com'
+    assert consent['client_name']=='ChatGPT test'
     with pytest.raises(HTTPException):
         oauth.get_consent(rid,AuthUser(str(uuid4()),session_id=setup[0].session_id),setup[1])
     with pytest.raises(HTTPException):
@@ -76,6 +78,7 @@ def test_owner_telegram_and_explicit_consent(setup):
     with pytest.raises(oauth.OAuthError):
         oauth.decide_authorization(rid,True,setup[0],setup[1])
     assert not query('SELECT id FROM driftread.review_oauth_grants WHERE owner_user_id=%s',(setup[0].id,))
+    assert not query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(setup[2],))
 
 
 def test_one_use_code_and_hashed_secrets(setup):
@@ -218,11 +221,7 @@ def test_concurrent_code_and_refresh(setup):
         oauth.validate_access_token(next(x for x in results if x)['access_token'])
 
 
-def test_caps(setup,monkeypatch):
-    monkeypatch.setattr(oauth,'CLIENT_LIMIT',query('SELECT count(*) AS n FROM driftread.review_oauth_clients')[0]['n'])
-    with pytest.raises(oauth.OAuthError) as exc:
-        oauth.register_client({'redirect_uris':[CALLBACK]})
-    assert exc.value.status_code==429
+def test_request_cap(setup,monkeypatch):
     monkeypatch.setattr(oauth,'REQUEST_LIMIT',0)
     with pytest.raises(oauth.OAuthError) as exc:
         request(setup)
@@ -230,7 +229,7 @@ def test_caps(setup,monkeypatch):
 
 
 def test_private_rls_migration_rerun(setup):
-    for table in ['review_oauth_clients','review_oauth_requests','review_oauth_grants','review_oauth_codes','review_oauth_tokens']:
+    for table in ['review_oauth_clients','review_oauth_requests','review_oauth_grants','review_oauth_codes','review_oauth_tokens','review_oauth_registration_key']:
         for role in ['anon','authenticated','service_role']:
             assert not query("SELECT has_table_privilege(%s,%s,'SELECT,INSERT,UPDATE,DELETE') AS allowed",(role,'driftread.'+table))[0]['allowed']
         assert query('SELECT relrowsecurity FROM pg_class WHERE oid=%s::regclass',('driftread.'+table,))[0]['relrowsecurity']
@@ -246,6 +245,84 @@ def test_cleanup_keeps_replay_fence(setup):
         oauth._cleanup(cur)
     assert not query('SELECT request_hash FROM driftread.review_oauth_requests WHERE request_hash=%s',(oauth._digest(rid),))
     assert query('SELECT consumed_at FROM driftread.review_oauth_tokens WHERE token_hash=%s',(oauth._digest(tokens['refresh_token']),))[0]['consumed_at']
+
+
+def test_anonymous_dcr_cannot_exhaust_persistent_client_capacity(setup):
+    before = query('SELECT count(*) AS n FROM driftread.review_oauth_clients')[0]['n']
+    ids = {oauth.register_client({'redirect_uris':[CALLBACK]})['client_id'] for _ in range(120)}
+    assert len(ids)==120
+    assert query('SELECT count(*) AS n FROM driftread.review_oauth_clients')[0]['n']==before
+    assert query('SELECT count(*) AS n FROM driftread.review_oauth_registration_key')[0]['n']==1
+    assert exchange(setup)['access_token']
+    assert query('SELECT count(*) AS n FROM driftread.review_oauth_clients')[0]['n']==before+1
+
+
+def test_approved_cached_client_survives_sixty_day_grant_cleanup(setup):
+    exchange(setup)
+    query("""UPDATE driftread.review_oauth_clients SET last_used_at=now()-interval '61 days'
+      WHERE client_id=%s""",(setup[2],))
+    query("""UPDATE driftread.review_oauth_grants SET created_at=now()-interval '61 days',
+      expires_at=now()-interval '31 days' WHERE client_id=%s""",(setup[2],))
+    query("UPDATE driftread.review_oauth_requests SET expires_at=now()-interval '61 days' WHERE client_id=%s",(setup[2],))
+    with manage_auth.connection() as cur:
+        oauth._cleanup(cur)
+    assert not query('SELECT id FROM driftread.review_oauth_grants WHERE client_id=%s',(setup[2],))
+    assert query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(setup[2],))
+    # The same ID cached by ChatGPT can obtain a new grant; neither the public
+    # registration nor the approved metadata expires with its old tokens.
+    assert exchange(setup)['access_token']
+    assert len(query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(setup[2],)))==1
+
+
+def test_registration_signing_key_persists_between_connections(setup,monkeypatch):
+    before = query('SELECT signing_key FROM driftread.review_oauth_registration_key')[0]['signing_key']
+    monkeypatch.setattr(oauth.secrets,'token_bytes',lambda count:pytest.fail('existing signing key was regenerated'))
+    registered = oauth.register_client({'redirect_uris':[CALLBACK]})['client_id']
+    assert oauth.get_consent(request((setup[0],setup[1],registered)),setup[0],setup[1])
+    assert oauth.get_consent(request(setup),setup[0],setup[1])
+    assert query('SELECT signing_key FROM driftread.review_oauth_registration_key')[0]['signing_key']==before
+
+
+def test_tampered_registration_cannot_begin_authorization(setup):
+    signed,signature=setup[2].split('.')
+    tampered=signed+'.'+('A' if signature[0]!='A' else 'B')+signature[1:]
+    with pytest.raises(oauth.OAuthError) as exc:
+        request((setup[0],setup[1],tampered))
+    assert exc.value.error=='invalid_client'
+    assert not query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(tampered,))
+
+
+def test_consent_materializes_once_and_replay_does_not_duplicate_client(setup):
+    rid=request(setup)
+    oauth.decide_authorization(rid,True,setup[0],setup[1])
+    with pytest.raises(oauth.OAuthError):
+        oauth.decide_authorization(rid,True,setup[0],setup[1])
+    oauth.decide_authorization(request(setup),True,setup[0],setup[1])
+    assert len(query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(setup[2],)))==1
+    assert len(query('SELECT id FROM driftread.review_oauth_grants WHERE client_id=%s',(setup[2],)))==2
+
+
+def test_maximum_registration_metadata_approves_and_exchanges(setup):
+    uris=['https://chatgpt.com/connector/oauth/'+str(i)+'a'*127 for i in range(5)]
+    registered=oauth.register_client({'client_name':'😀'*100,'redirect_uris':uris})['client_id']
+    assert len(registered)<=2048
+    other=(setup[0],setup[1],registered)
+    rid=request(other,redirect_uri=uris[-1])
+    assert oauth.get_consent(rid,setup[0],setup[1])['client_name']=='😀'*100
+    response=oauth.decide_authorization(rid,True,setup[0],setup[1])
+    code=parse_qs(urlsplit(response['redirect_url']).query)['code'][0]
+    tokens=exchange(other,code,redirect_uri=uris[-1])
+    assert oauth.validate_access_token(tokens['access_token'])
+    assert refresh(other,tokens['refresh_token'])['access_token']
+
+
+def test_existing_registered_client_remains_compatible(setup):
+    legacy='drc_'+uuid4().hex
+    query("INSERT INTO driftread.review_oauth_clients(client_id,client_name,redirect_uris) VALUES(%s,'Legacy ChatGPT',%s::jsonb)",
+          (legacy,'["'+CALLBACK+'"]'))
+    old=(setup[0],setup[1],legacy)
+    assert oauth.get_consent(request(old),setup[0],setup[1])['client_name']=='Legacy ChatGPT'
+    assert exchange(old)['access_token']
 
 
 def test_standard_registration_metadata_is_not_fetched_or_trusted(setup):

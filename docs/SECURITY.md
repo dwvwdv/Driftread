@@ -368,6 +368,8 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 
 public origin 只能來自環境設定，不能信任 Host／forwarded headers；DCR 不抓第三方 URL，只接受官方 ChatGPT HTTPS callbacks，有界 metadata／body／待授權容量與每 IP 限流。token 走 form body 與 Bearer header，不接受 URL token。OAuth credentials 表開 RLS、撤銷所有 Data API roles（含 service_role），沿用後台 privileged DATABASE_URL；不改共用 Supabase Auth 配置。nginx 將 discovery 轉 API、設定 no-referrer 與 X-Frame-Options DENY，避免 HTML fallback、授權請求洩漏與 framed consent。期限、清理及實際 Web 驗收界限見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#chatgpt-web-oauth100)。
 
+匿名 DCR 使用 HMAC 簽名的公開 client metadata，不建立持久 client 記錄，避免免認證註冊耗盡全域 client 配額。只有管理員明確同意才保存 client；其身分保留供閒置後重新授權，token／grant 仍依原期限失效。唯一簽名金鑰存在同樣封鎖 Data API 的私有表，必須持久保存與備份；它是伺服器驗證簽名所需的私密金鑰，並非可只存 hash 的 bearer 憑證。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |

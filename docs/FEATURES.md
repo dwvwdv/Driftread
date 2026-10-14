@@ -480,7 +480,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
 | `manage_login_state` / `manage_sessions` | 20261012020000 | OTP bcrypt hash、嘗試／冷卻與管理 token SHA-256 hash；RLS 無 policy，所有 Data API roles（含 service_role）均撤銷存取，只由 backend 直連 PostgreSQL 使用 |
-| `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | ChatGPT public client、待同意請求、窄權限 grant 與 token hash／重放 fencing；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
+| `review_oauth_registration_key` / `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | 持久 DCR 簽名金鑰、管理員同意後保留的 ChatGPT client、待同意請求、窄權限 grant 與 token hash／重放 fencing；匿名 DCR 不新增 client 記錄；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `user_feeds` | 002 + 021 + 022 | 訂閱關係＋`custom_title`（021，該使用者對這個訂閱的自訂顯示名稱，NULL 代表沿用 feed 原本的 title；只在這段 (user, feed) 關係內生效，不寫回 `feeds.title`）＋`muted_at`（022，靜音時間戳，NULL 代表未靜音；`list_reading_stream`／`reading_stream_unread_counts` 排除已靜音的訂閱，`GET /me/feeds` 與取消訂閱不受影響） |
