@@ -1049,7 +1049,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind、最新 master 的 source_review，並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證五種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。
 - 整合已合併 PR #97：保留來源評審與 storage 的 timeout、loop、前端服務與型別，合併衝突已解；將本 PR 未合併的 migration 重命名為 `20261013115249_article_storage_history.sql`（由 CLI 產生），排在來源評審三支 migration 之後，避免後者重新設定 kind whitelist 時移除 storage。完整 migration chain 的 fixture 同時驗證 source_review 與 storage；本 PR 階段順延至四十三。
 
-## 階段四十四：ChatGPT Web 來源評審 OAuth 與管理員授權（PR 待定，#100，2026-10-14）
+## 階段四十四：ChatGPT Web 來源評審 OAuth 與管理員授權（PR #101，#100，2026-10-14）
 
 管理 MCP 原本只接受專用 X-API-Key，ChatGPT Web 新增連線介面無法提供自訂 header，選 OAuth／混合／無驗證皆不能直接接入。依使用者指示補窄權限 OAuth，沿用單管理員帳密＋Telegram 驗證，不更換既有服務 hosting 或共用 Supabase Auth 配置。
 
@@ -1063,6 +1063,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 ### 驗證與界限
 
 - 本機 backend 1094 passed／169 skipped；OAuth HTTP 與官方 MCP SDK 的 key／OAuth、scope／metadata、錯誤與業務邊界測試通過。真 PostgreSQL 包含 code／refresh 競跑、重放撤銷、登出／同意競跑、角色／RLS、migration 重跑及 HTTP linking→工具→refresh→撤銷，交 CI PostgreSQL 17 驗證。
+- 程式 commit `873bd46` 的 GitHub CI 全部成功：backend 1263 passed（含 PostgreSQL 17 的全部 SQL／角色／競跑與 HTTP linking fixture）、frontend 364 tests／build、docs 與兩個 Docker image build。PR workflow 未推送正式 image。
 - 前端 37 files／364 tests 通過，production build 通過；initial 511.81 kB／500 kB 保留既有 warning，不放寬預算。文件與 diff 檢查通過。普通沙箱執行緒喚醒限制以 repo 外 bounded selector runner 驗證，不更改產品 async 邏輯、不新增權限要求。
 - 獨立 review 發現同意頁原本只接受 source:review，會拒絕正常 offline_access grant；改為 scope allowlist 並補測試。installed SDK 驗證 metadata、DCR、code／refresh request shape 相容。
 - 真實 ChatGPT Web、本人帳密／Telegram、正式 Supabase、TLS／nginx／Docker 部署未驗收，交 #83。隔離 HTTP 測試的 browser JWT identity 與 MCP 業務資料使用假資料，不能冒稱已接上正式 Web。ChatGPT 客戶端自己的工具批准策略不由 OAuth 同意取代；MCP 不建立常駐 agent。
