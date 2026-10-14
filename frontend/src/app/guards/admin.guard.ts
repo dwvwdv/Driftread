@@ -11,6 +11,11 @@ export const adminGuard: CanMatchFn = async (_route, segments) => {
   await auth.ready;
   if (sessions.token()) return true;
   return router.createUrlTree(['/manage/login'], {
-    queryParams: { redirect: '/' + segments.map((s) => s.path).join('/') },
+    queryParams: {
+      // Keep the opaque OAuth request through password and Telegram login.
+      redirect: router.getCurrentNavigation()?.extractedUrl
+        ? router.serializeUrl(router.getCurrentNavigation()!.extractedUrl)
+        : '/' + segments.map((s) => s.path).join('/'),
+    },
   });
 };

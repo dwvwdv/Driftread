@@ -181,3 +181,8 @@ def revoke(user: AuthUser, token: str | None):
         with connection() as cur:
             cur.execute("DELETE FROM driftread.manage_sessions WHERE token_hash=%s AND user_id=%s AND auth_session_id=%s",
                         (hashlib.sha256(token.encode()).hexdigest(), uid, sid))
+
+            # Consent and logout share the management-session lock; revoke all
+            # source-review grants issued by this Supabase login as well.
+            cur.execute("""UPDATE driftread.review_oauth_grants SET revoked_at=coalesce(revoked_at,now())
+                WHERE owner_user_id=%s AND auth_session_id=%s""", (uid, sid))

@@ -373,7 +373,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/source-reviews/{id}/resolve` | 明確人工通過／拒絕／保留 |
 | POST | `/admin/source-reviews/{id}/retry` | 明確重新評審，不解除人工覆寫 |
 
-管理評審 MCP `/api/admin/mcp/` 使用獨立專用機器 key；工具與權限見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#管理-mcp-與權限)。
+管理評審 MCP `/api/admin/mcp/` 使用獨立專用機器 key 或本服務發出的窄權限 OAuth token；普通管理 key／Supabase JWT／管理 session 不可替代。工具與 ChatGPT Web 設定見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#管理-mcp-與權限)。
 | GET | `/admin/retention/stats` | 文章分類計數、表／索引／資料庫 bytes 快照 |
 | GET | `/admin/retention/history` | 每日容量歷史與實際時間平均成長率；`days` 1–90、預設 30；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史) |
 | POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
@@ -413,6 +413,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/manage/feeds` | `admin-feeds` | 使用中 / 已封存 / 健康度偏低 |
 | `/manage/frontier` | `admin-frontier` | 種子網址、待探測佇列與封鎖、目錄來源 |
 | `/manage/import` | `admin-import` | 單一網址匯入、JSON 批次匯入 |
+| `/manage/mcp-authorize` | `admin-mcp-authorize` | 管理員確認 ChatGPT 來源評審 OAuth 授權；登入回跳保留 request |
+| `/manage/mcp-connections` | `admin-mcp-connections` | 授權期限、使用狀態與撤銷 |
 
 `adminGuard` 等待 Supabase session 還原，再檢查目前帳號／登入 session 綁定的 OTP session。
 真正授權仍在後端：只允許設定的管理員 UUID、有效 Supabase session 與未過期的 OTP session。
@@ -426,11 +428,27 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 |--------|---------------------|------|
 | POST | `/manage/auth/request` | 唯一管理員 5 分鐘內的帳密登入 JWT 才可發送；固定 Vault 私人 Telegram 收件人；回傳 challenge，非管理 session |
 | POST | `/manage/auth/verify` | 同帳號／同 Supabase session 的 challenge + 6 位 ASCII 數字；成功消耗 OTP，回傳 8 小時有效的管理 token |
-| POST | `/manage/auth/logout` | 帶登入 token 與 `X-Manage-Session`，撤銷管理 session |
+| POST | `/manage/auth/logout` | 帶登入 token 與 `X-Manage-Session`，撤銷管理 session 與同 Supabase session 的來源評審 OAuth grants |
 
 OTP 有效 5 分鐘，重送間隔 60 秒；同一管理員累計錯 5 次就鎖 15 分鐘，重送新驗證碼不會把錯誤次數歸零，只有驗證成功或鎖定期滿才重新計算，重新登入也不能解除。
 發送／驗證另外每 IP 每 60 秒限 5／10 次。Telegram 以 pg_net 非同步送出；只有確認 HTTP 200 與 `ok=true` 才能完成驗證。
 資料庫／Vault／Telegram 缺設定或失敗一律拒絕管理登入，不授予降級 session。
+
+### 來源評審 OAuth
+
+OAuth discovery 在 origin 的 `/.well-known/oauth-authorization-server` 與 `/.well-known/oauth-protected-resource/api/admin/mcp`，不在 `/api` 前綴下。以下端點仍以 `/api` 為前綴；grant 操作只接受瀏覽器管理 session，不接受普通管理機器 key。
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/review-oauth/register` | 有界 public-client DCR，只允許官方 ChatGPT callbacks |
+| GET | `/review-oauth/authorize` | 驗證 client／redirect／resource／scope／S256 後轉向後台同意頁 |
+| POST | `/review-oauth/token` | 有界 form 的 code 交換／refresh 輪替，不接受其他 grant type |
+| POST | `/review-oauth/revoke` | RFC 7009，持有本 client token 可撤銷其 grant |
+| GET／POST | `/review-oauth/consent/{request_id}` | 管理員＋Telegram session 讀取／明確同意或拒絕 |
+| GET | `/review-oauth/grants` | 管理員授權歷史、到期與撤銷狀態 |
+| DELETE | `/review-oauth/grants/{id}` | 撤銷本人來源評審 grant |
+
+權限、保存與客戶端契約集中在 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#chatgpt-web-oauth100)。
 
 ### 佈景主題
 
@@ -462,6 +480,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
 | `manage_login_state` / `manage_sessions` | 20261012020000 | OTP bcrypt hash、嘗試／冷卻與管理 token SHA-256 hash；RLS 無 policy，所有 Data API roles（含 service_role）均撤銷存取，只由 backend 直連 PostgreSQL 使用 |
+| `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | ChatGPT public client、待同意請求、窄權限 grant 與 token hash／重放 fencing；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `user_feeds` | 002 + 021 + 022 | 訂閱關係＋`custom_title`（021，該使用者對這個訂閱的自訂顯示名稱，NULL 代表沿用 feed 原本的 title；只在這段 (user, feed) 關係內生效，不寫回 `feeds.title`）＋`muted_at`（022，靜音時間戳，NULL 代表未靜音；`list_reading_stream`／`reading_stream_unread_counts` 排除已靜音的訂閱，`GET /me/feeds` 與取消訂閱不受影響） |

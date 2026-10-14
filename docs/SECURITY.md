@@ -360,6 +360,14 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 
 新增表開 RLS 並撤銷 PUBLIC／anon／authenticated 權限，業務 RPC 為 service-only `SECURITY INVOKER`。入庫在交易內 `INSERT ON CONFLICT DO NOTHING`，既有來源 metadata 不被重複核准覆寫。Jev 固定官方 endpoint、禁止 redirects，key 只在 backend；付費預算原子預留，回應先 durable 再解析，unknown 額外發送有界。保存期與停用後本地清理、線上成本邊界見 [來源評審](SOURCE_REVIEW.md)。正式 Jev 呼叫與部署仍需另行驗收。
 
+### #35 — ChatGPT Web 的窄權限來源評審 OAuth
+
+管理 MCP 除專用機器 key 外，可使用本服務獨立發出的來源評審 OAuth token；拒絕混合憑證、普通 Supabase JWT、管理 session 與一般管理 key。授權／撤銷只接受唯一管理員的有效帳密＋Telegram session，scope 不擴張到設定、人工覆寫或管理 REST。所有工具維持原有業務 fencing。
+
+授權碼、access／refresh token 與授權請求只保存 SHA-256，S256 PKCE、註冊 callback／client／resource 精確綁定；code 一次消耗，refresh 旋轉與重放撤銷以 grant row lock 序列化，撤銷先提交再回錯誤。每次請求檢查目前 owner、Supabase session、停用、到期與撤銷；後台登出撤銷同登入 session 的 grants，不把管理 session 自然到期誤作 OAuth 的續期。
+
+public origin 只能來自環境設定，不能信任 Host／forwarded headers；DCR 不抓第三方 URL，只接受官方 ChatGPT HTTPS callbacks，有界 metadata／body／待授權容量與每 IP 限流。token 走 form body 與 Bearer header，不接受 URL token。OAuth credentials 表開 RLS、撤銷所有 Data API roles（含 service_role），沿用後台 privileged DATABASE_URL；不改共用 Supabase Auth 配置。nginx 將 discovery 轉 API、設定 no-referrer 與 X-Frame-Options DENY，避免 HTML fallback、授權請求洩漏與 framed consent。期限、清理及實際 Web 驗收界限見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#chatgpt-web-oauth100)。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
@@ -374,7 +382,7 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 | XML 解析 | 全數 `defusedxml`（feed、OPML 上傳、遠端 OPML 目錄三條路徑） | `rss_parser.py`、`routers/opml.py`、`services/directory_sources.py` |
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter；id 類參數一律宣告 `UUID` 型別，格式錯誤在進 DB 呼叫前就回 422（見 #28） | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
 | 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
-| 認證 | Supabase JWT，依 token `alg` 分流：`HS256` 用 `SUPABASE_JWT_SECRET`、`ES256`／`RS256` 用 JWKS（`jwt.PyJWKClient`，見 #31）；永久帳號必須帶 `is_anonymous=false`；瀏覽器後台需管理員帳密登入 + Telegram OTP session；機器呼叫保留 `X-API-Key` | `auth.py`、`routers/admin.py`、`services/manage_auth.py` |
+| 認證 | Supabase JWT，依 token `alg` 分流：`HS256` 用 `SUPABASE_JWT_SECRET`、`ES256`／`RS256` 用 JWKS（`jwt.PyJWKClient`，見 #31）；永久帳號必須帶 `is_anonymous=false`；瀏覽器後台需管理員帳密登入 + Telegram OTP session；機器呼叫保留 `X-API-Key`；來源評審 MCP 另接受窄權限 OAuth | `auth.py`、`routers/admin.py`、`services/manage_auth.py`、`services/review_oauth.py` |
 | 資料存取 | 專屬 `driftread` schema + scoped client；五張使用者資料表 RLS permanent-user owner-only；公開 feeds 僅 normal、raw articles 禁止 anon/authenticated SELECT，backend 共用 publication；系統狀態表 RLS 零公開 policy | `database.py`、`migrations/002`、`010`、`019`、`20261009*`，見 #32 |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 

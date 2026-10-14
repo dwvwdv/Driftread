@@ -24,6 +24,7 @@ from routers import (
     admin_settings,
     admin_source_reviews,
     manage_auth,
+    review_oauth,
     articles,
     consumption,
     discover,
@@ -216,6 +217,7 @@ app.include_router(personal_heat.router, prefix="/api")
 app.include_router(articles.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
 app.include_router(manage_auth.router, prefix="/api")
+app.include_router(review_oauth.router)
 app.include_router(admin.router, prefix="/api")
 app.include_router(admin_discovery.router, prefix="/api")
 app.include_router(admin_operations.router, prefix="/api")

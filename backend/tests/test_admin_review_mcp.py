@@ -136,3 +136,49 @@ async def test_unexpected_service_error_does_not_expose_credentials():
     with pytest.raises(ValueError, match="^Source review operation failed$") as error:
         await transport._call(operation)
     assert "SECRET_PROVIDER_KEY" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_oauth_official_sdk_works_without_machine_key_and_advertises_scopes(mcp_app, monkeypatch):
+    monkeypatch.setenv('SOURCE_REVIEW_OAUTH_BASE_URL', 'https://reader.example')
+    monkeypatch.delenv('SOURCE_REVIEW_MCP_KEY')
+    token = 'droa_' + 'a' * 43
+    grant = {'owner_user_id': 'owner', 'scope': 'source:review', 'grant_id': 'grant'}
+    with patch.object(transport.review_oauth, 'validate_access_token', return_value=grant) as validate, \
+            patch.object(transport, 'get_client', return_value=Mock(spec=[])), \
+            patch.object(transport.source_review, 'claim_review', return_value=None) as claim:
+        async with mcp_app.router.lifespan_context(mcp_app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app),
+                                         headers={'Authorization': 'Bearer ' + token}) as http:
+                async with streamable_http_client('http://testserver/api/admin/mcp/', http_client=http) as (receive, send, _):
+                    async with ClientSession(receive, send) as session:
+                        await session.initialize()
+                        tools = (await session.list_tools()).tools
+                        for tool in tools:
+                            assert tool.meta['securitySchemes'] == [{'type': 'oauth2', 'scopes': ['source:review', 'offline_access']}]
+                            assert tool.model_dump()['securitySchemes'] == tool.meta['securitySchemes']
+                        result = await session.call_tool('claim_source_review')
+                        assert result.structuredContent == {'review': None}
+                        claim.assert_called_once()
+                        assert claim.call_args.kwargs == {'reviewer_id': 'external_agent'}
+        assert validate.call_count >= 3
+        assert all(call.args == (token,) for call in validate.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_oauth_challenge_revocation_and_mixed_credentials_fail_before_business(mcp_app, monkeypatch):
+    monkeypatch.setenv('SOURCE_REVIEW_OAUTH_BASE_URL', 'https://reader.example')
+    token = 'droa_' + 'a' * 43
+    with patch.object(transport, 'get_client') as db, \
+            patch.object(transport.review_oauth, 'validate_access_token',
+                         side_effect=transport.review_oauth.OAuthError('invalid_token', 401)) as validate:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), base_url='http://testserver') as http:
+            for headers in ({}, {'Authorization': 'Bearer ' + token},
+                            {'Authorization': 'Bearer ' + token, 'X-API-Key': KEY},
+                            {'Authorization': 'Bearer ' + token, 'X-Manage-Session': 'admin-session'}):
+                result = await http.post('/api/admin/mcp/', headers=headers, json={})
+                assert result.status_code == 401
+                assert 'https://reader.example/.well-known/oauth-protected-resource/api/admin/mcp' in result.headers['www-authenticate']
+                assert 'source:review offline_access' in result.headers['www-authenticate']
+            db.assert_not_called()
+            validate.assert_called_once_with(token)

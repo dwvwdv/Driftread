@@ -1,8 +1,8 @@
-"""Dedicated machine-only MCP for bounded source review tasks.
+"""Dedicated source-review MCP with scoped OAuth and machine-key access.
 
 Streamable HTTP clients send X-API-Key: SOURCE_REVIEW_MCP_KEY on every
-request. This transport does not accept personal JWTs, management sessions,
-or ADMIN_API_KEY. It neither exposes human overrides nor arbitrary URL tools.
+request. ChatGPT Web uses separately-issued OAuth access tokens. Personal JWTs,
+management sessions and ADMIN_API_KEY never authorize this transport.
 """
 import logging
 import os
@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from database import get_client
-from services import source_review
+from services import source_review, review_oauth
 from services.discovery_config import discovery_enabled
 from services.review_models import ReviewSubmission
 from services.settings import get_setting
@@ -33,6 +33,10 @@ class ReviewMCP(FastMCP):
         tools = await super().list_tools()
         for tool in tools:
             tool.inputSchema["additionalProperties"] = False
+            if os.getenv("SOURCE_REVIEW_OAUTH_BASE_URL", "").strip():
+                schemes = [{"type": "oauth2", "scopes": ["source:review", "offline_access"]}]
+                tool.securitySchemes = schemes
+                tool.meta = {**(tool.meta or {}), "securitySchemes": schemes}
         return tools
 
     async def call_tool(self, name, arguments):
@@ -154,19 +158,52 @@ class AuthenticatedReviewMCP:
             if invalid_origin:
                 await JSONResponse({"detail": "Invalid origin"}, 403)(scope, receive, send)
                 return
-        # Reject mixed browser credentials rather than silently changing scope.
+        # One explicit credential mechanism per request; browser credentials
+        # cannot be combined with a key or mistaken for a scoped OAuth token.
+        authorization = request.headers.get("authorization")
         supplied = request.headers.get("x-api-key", "")
-        if (not supplied or len(supplied) > 2048 or "authorization" in request.headers
-                or "x-manage-session" in request.headers):
-            await JSONResponse({"detail": "A dedicated source review API key is required"}, 401)(scope, receive, send)
+        if "x-manage-session" in request.headers or (authorization is not None and "x-api-key" in request.headers):
+            await self.unauthorized(scope, receive, send)
             return
-        expected = os.getenv("SOURCE_REVIEW_MCP_KEY", "")
-        if not expected or expected == os.getenv("ADMIN_API_KEY", ""):
-            await JSONResponse({"detail": "Source review MCP is not configured"}, 503)(scope, receive, send)
-            return
-        if not secrets.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
-            await JSONResponse({"detail": "Invalid source review API key"}, 403)(scope, receive, send)
-            return
+        if authorization is not None:
+            parts = authorization.split(" ")
+            if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].startswith("droa_") or len(parts[1]) > 256:
+                await self.unauthorized(scope, receive, send)
+                return
+            try:
+                grant = await run_in_threadpool(review_oauth.validate_access_token, parts[1])
+            except review_oauth.OAuthError as exc:
+                if exc.status_code == 503:
+                    await JSONResponse({"detail": "Source review OAuth is unavailable"}, 503)(scope, receive, send)
+                else:
+                    await self.unauthorized(scope, receive, send)
+                return
+            except Exception:
+                logger.error("Source review OAuth verification failed")
+                await JSONResponse({"detail": "Source review OAuth is unavailable"}, 503)(scope, receive, send)
+                return
+            request.state.source_review_oauth_grant = grant["grant_id"]
+        else:
+            if not supplied or len(supplied) > 2048:
+                await self.unauthorized(scope, receive, send)
+                return
+            expected = os.getenv("SOURCE_REVIEW_MCP_KEY", "")
+            if not expected or expected == os.getenv("ADMIN_API_KEY", ""):
+                await JSONResponse({"detail": "Source review MCP is not configured"}, 503)(scope, receive, send)
+                return
+            if not secrets.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+                await JSONResponse({"detail": "Invalid source review API key"}, 403)(scope, receive, send)
+                return
         request.state.source_review_reviewer = REVIEWER_ID
         request.state.source_review_db = await run_in_threadpool(get_client)
         await review_mcp_http(scope, receive, send)
+
+    @staticmethod
+    async def unauthorized(scope, receive, send):
+        challenge = 'Bearer'
+        try:
+            challenge += ' resource_metadata="' + review_oauth.base_url() + '/.well-known/oauth-protected-resource/api/admin/mcp", scope="source:review offline_access"'
+        except review_oauth.OAuthError:
+            pass  # Machine-key-only deployments do not advertise OAuth.
+        await JSONResponse({"detail": "Source review authorization is required"}, 401,
+                           headers={"WWW-Authenticate": challenge, "Cache-Control": "no-store"})(scope, receive, send)

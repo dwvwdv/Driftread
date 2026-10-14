@@ -30,7 +30,7 @@ Jev 使用官方固定 API endpoint，問題拆分為品質、主題相關性與
 
 ## 管理 MCP 與權限
 
-個人 `/api/mcp/` 保持原五個唯讀閱讀工具。來源評審使用獨立 `/api/admin/mcp/`，每個 HTTP request 都帶 `X-API-Key: <SOURCE_REVIEW_MCP_KEY>`；普通 `ADMIN_API_KEY`、使用者 Bearer token 與瀏覽器管理 session 不能替代這個專用 key。空白 key 拒絕呼叫；key 不進前端 runtime config。
+個人 `/api/mcp/` 保持原五個唯讀閱讀工具。來源評審使用獨立 `/api/admin/mcp/`，支援專用 `X-API-Key: <SOURCE_REVIEW_MCP_KEY>` 或由本服務發出的窄權限 OAuth `Authorization: Bearer <access_token>`；每次請求只能選一種。普通 `ADMIN_API_KEY`、Supabase JWT 與瀏覽器管理 session 都不能替代它們。空白 key 停用機器認證，空白 `SOURCE_REVIEW_OAUTH_BASE_URL` 停用 OAuth；兩個開關互相獨立，key 不進前端 runtime config。
 
 | 工具 | 用途 |
 |---|---|
@@ -41,6 +41,22 @@ Jev 使用官方固定 API endpoint，問題拆分為品質、主題相關性與
 | `submit_source_review` | 提交租約、快照 hash 與結構化結果 |
 
 評審者身分由伺服器指定，不相信模型或客戶端傳入的引擎名稱。專用 key 不能處理人工 resolve、解除人工覆寫或變更設定。Browser REST 走現有管理帳密 + Telegram session；原有腳本管理 key 的 API 契約保留，詳見 [部署手冊](RUNBOOK.md#後台-telegram-兩步驟驗證)。
+
+### ChatGPT Web OAuth（#100）
+
+ChatGPT Web 的「無驗證」不能附上自訂 `X-API-Key`。部署本版後，在 `.env` 填 `SOURCE_REVIEW_OAUTH_BASE_URL=https://你的網域`（正式 HTTPS origin，不含路徑或 query），重新建立 API 容器讓環境變數載入；同版 frontend 的 nginx 必須把 `/.well-known/` 轉給 API。部署順序與 migration 見 [RUNBOOK](RUNBOOK.md#chatgpt-web-來源評審-oauth100)。
+
+在 ChatGPT 的自訂 MCP 新增頁填 `https://你的網域/api/admin/mcp/`，選 **OAuth**。Client ID／Client Secret 留白，由 ChatGPT 經 DCR 註冊 public client；若介面要求選註冊模式，選 DCR。第一次連線跳到 Driftread 的 `/manage/mcp-authorize?request=...`：先登入唯一管理員帳密、輸入 Telegram OTP，再明確允許或拒絕來源評審權限。登入回跳保留原 request。一般帳號不能同意，既有管理 key 不能簽發 OAuth grant；客戶端可提供的名稱不是已驗證品牌。
+
+授權使用 S256 PKCE，一次性 code 綁定 client、已註冊 callback 與 MCP resource。`source:review` 只授權表中的五個工具；另以 `offline_access` 支援持續連線。請求 10 分鐘、code 2 分鐘、access token 15 分鐘、grant 最長 30 天；refresh 每次旋轉，已使用 refresh 重放會撤銷整個 grant。伺服器只保存 secret 的 SHA-256 hash，原文只回傳給 client。每次 MCP／refresh 都檢查目前管理員 UUID、Supabase session、帳號停用、resource 與到期／撤銷；不提供 client_credentials 或接受其他 JWT。
+
+`/manage/mcp-connections` 可查看授權與到期時間並撤銷。後台登出會撤銷該 Supabase 登入 session 簽發的 OAuth grants；管理 OTP session 自然到期不等於 OAuth grant 到期，Supabase session 失效仍會拒絕工具呼叫。OAuth 同意不是逐次工具批准，ChatGPT 的工具執行權限另由客戶端管理。MCP 連線也不會自行啟動常駐 agent。
+
+公開 discovery：`/.well-known/oauth-authorization-server`、`/.well-known/oauth-protected-resource/api/admin/mcp`（另提供 root 與尾斜線 alias）。HTTP 401 的 `WWW-Authenticate` 指向 resource metadata，所有工具的 `securitySchemes` 同時宣告 `source:review`／`offline_access`。授權端點為 `/api/review-oauth/{register,authorize,token,revoke}`；token／revoke 只收有界 form，不使用 query token。DCR callback 只允許官方 `https://chatgpt.com/connector_platform_oauth_redirect` 或 `https://chatgpt.com/connector/oauth/{callback_id}`，須逐字與註冊值相同，不抓取客戶端 URL。
+
+本實作是既有單管理員應用的窄用途授權服務；OAuth 表 RLS 零 policy、撤銷所有 Data API roles（含 service_role），沿用後台 privileged `DATABASE_URL`，不改共用 Supabase 的 OAuth provider／註冊設定。DCR 最多 100 clients、待授權 requests 最多 1,000，公開端點有每 IP 限流。授權請求過期有界清理，grant 到期 30 天後清除其 token／code，無 grant／request 的 client 閒置 7 天可清理；refresh replay 的 digest 保留到 grant 清理。實際 ChatGPT Web／正式 Telegram／Supabase 與代理部署必須另驗收。
+
+官方契約：[OpenAI authentication](https://developers.openai.com/plugins/build/auth)、[ChatGPT MCP setup](https://developers.openai.com/api/docs/guides/custom-mcp-server)。
 
 ## Jev 付費請求與離線評測
 

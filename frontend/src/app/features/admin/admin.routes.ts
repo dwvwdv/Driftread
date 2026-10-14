@@ -9,6 +9,18 @@ import { Routes } from '@angular/router';
 export const ADMIN_ROUTES: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
   {
+    path: 'mcp-authorize',
+    title: '授權來源評審 MCP — Driftread 後台',
+    loadComponent: () =>
+      import('./mcp-authorize/admin-mcp-authorize').then((m) => m.AdminMcpAuthorize),
+  },
+  {
+    path: 'mcp-connections',
+    title: 'MCP 連線 — Driftread 後台',
+    loadComponent: () =>
+      import('./mcp-connections/admin-mcp-connections').then((m) => m.AdminMcpConnections),
+  },
+  {
     path: 'dashboard',
     title: '總覽 — Driftread 後台',
     loadComponent: () => import('./dashboard/admin-dashboard').then((m) => m.AdminDashboard),
