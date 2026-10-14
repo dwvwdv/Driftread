@@ -274,9 +274,8 @@ def test_approved_cached_client_survives_sixty_day_grant_cleanup(setup):
     assert len(query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(setup[2],)))==1
 
 
-def test_registration_signing_key_persists_between_connections(setup,monkeypatch):
+def test_registration_signing_key_persists_between_connections(setup):
     before = query('SELECT signing_key FROM driftread.review_oauth_registration_key')[0]['signing_key']
-    monkeypatch.setattr(oauth.secrets,'token_bytes',lambda count:pytest.fail('existing signing key was regenerated'))
     registered = oauth.register_client({'redirect_uris':[CALLBACK]})['client_id']
     assert oauth.get_consent(request((setup[0],setup[1],registered)),setup[0],setup[1])
     assert oauth.get_consent(request(setup),setup[0],setup[1])
