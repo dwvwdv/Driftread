@@ -109,11 +109,15 @@ export class ReviewOAuthService {
 
   private request<T>(send: (headers: Record<string, string>) => Observable<T>): Observable<T> {
     return defer(() => {
+      const identity = this.sessions.identity();
       const headers = this.sessions.headers();
       const current = () => {
+        const currentIdentity = this.sessions.identity();
         const now = this.sessions.headers();
         return (
-          now['Authorization'] === headers['Authorization'] &&
+          identity !== null &&
+          currentIdentity?.userId === identity.userId &&
+          currentIdentity.authSessionId === identity.authSessionId &&
           now['x-manage-session'] === headers['x-manage-session']
         );
       };
@@ -122,8 +126,14 @@ export class ReviewOAuthService {
           if (!current()) throw new Error('登入帳號已變更，請重新登入');
         }),
         catchError((error: unknown) => {
-          // An old in-flight request must not clear a new account's session.
-          if (current() && error instanceof HttpErrorResponse && error.status === 401) {
+          // A refreshed JWT still belongs to the same login, but its predecessor's
+          // delayed 401 must not clear the refreshed credentials.
+          if (
+            current() &&
+            this.sessions.headers()['Authorization'] === headers['Authorization'] &&
+            error instanceof HttpErrorResponse &&
+            error.status === 401
+          ) {
             this.sessions.clear();
             void this.router.navigate(['/manage/login'], {
               queryParams: { redirect: this.router.url },

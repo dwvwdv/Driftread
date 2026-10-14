@@ -428,7 +428,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 |--------|---------------------|------|
 | POST | `/manage/auth/request` | 唯一管理員 5 分鐘內的帳密登入 JWT 才可發送；固定 Vault 私人 Telegram 收件人；回傳 challenge，非管理 session |
 | POST | `/manage/auth/verify` | 同帳號／同 Supabase session 的 challenge + 6 位 ASCII 數字；成功消耗 OTP，回傳 8 小時有效的管理 token |
-| POST | `/manage/auth/logout` | 帶登入 token 與 `X-Manage-Session`，撤銷管理 session 與同 Supabase session 的來源評審 OAuth grants |
+| POST | `/manage/auth/logout` | 帶已驗證管理員的登入 token，撤銷同 Supabase session 的全部管理 sessions 與來源評審 OAuth grants；`X-Manage-Session` 可省略或已過期 |
 
 OTP 有效 5 分鐘，重送間隔 60 秒；同一管理員累計錯 5 次就鎖 15 分鐘，重送新驗證碼不會把錯誤次數歸零，只有驗證成功或鎖定期滿才重新計算，重新登入也不能解除。
 發送／驗證另外每 IP 每 60 秒限 5／10 次。Telegram 以 pg_net 非同步送出；只有確認 HTTP 200 與 `ok=true` 才能完成驗證。
@@ -437,6 +437,8 @@ OTP 有效 5 分鐘，重送間隔 60 秒；同一管理員累計錯 5 次就鎖
 ### 來源評審 OAuth
 
 OAuth discovery 在 origin 的 `/.well-known/oauth-authorization-server` 與 `/.well-known/oauth-protected-resource/api/admin/mcp`，不在 `/api` 前綴下。以下端點仍以 `/api` 為前綴；grant 操作只接受瀏覽器管理 session，不接受普通管理機器 key。
+
+管理 MCP OAuth bearer 驗證每 IP 每 60 秒最多 60 次，進資料庫前限制每 process 最多 4 個並發，獨立執行緒池；超額回 429／Retry-After，不排隊。
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|

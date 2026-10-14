@@ -177,12 +177,13 @@ def require_session(authorization: str | None, token: str | None):
 
 def revoke(user: AuthUser, token: str | None):
     uid, sid = owner(user)
-    if token and len(token) <= 128:
-        with connection() as cur:
-            cur.execute("DELETE FROM driftread.manage_sessions WHERE token_hash=%s AND user_id=%s AND auth_session_id=%s",
-                        (hashlib.sha256(token.encode()).hexdigest(), uid, sid))
-
-            # Consent and logout share the management-session lock; revoke all
-            # source-review grants issued by this Supabase login as well.
-            cur.execute("""UPDATE driftread.review_oauth_grants SET revoked_at=coalesce(revoked_at,now())
-                WHERE owner_user_id=%s AND auth_session_id=%s""", (uid, sid))
+    with connection() as cur:
+        # The verified owner/Supabase login identifies what to revoke. The
+        # browser may have discarded its expired Telegram token already.
+        # Delete every elevated session for this login before touching grants:
+        # consent holds FOR SHARE on its elevated session until grant creation,
+        # so either logout waits and revokes that grant, or consent fails.
+        cur.execute("DELETE FROM driftread.manage_sessions WHERE user_id=%s AND auth_session_id=%s",
+                    (uid, sid))
+        cur.execute("""UPDATE driftread.review_oauth_grants SET revoked_at=coalesce(revoked_at,now())
+            WHERE owner_user_id=%s AND auth_session_id=%s""", (uid, sid))

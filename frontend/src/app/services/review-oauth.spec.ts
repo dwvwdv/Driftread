@@ -8,11 +8,17 @@ import { isReviewOAuthRedirect, reviewOAuthError, ReviewOAuthService } from './r
 
 describe('source review OAuth administration', () => {
   let mock: HttpTestingController;
-  let identity: string;
+  let userId: string | null;
+  let authSessionId: string;
+  let accessToken: string;
+  let manageToken: string;
   let clear: ReturnType<typeof vi.fn>;
   let navigate: ReturnType<typeof vi.fn<Router['navigate']>>;
   beforeEach(() => {
-    identity = 'owner';
+    userId = 'owner';
+    authSessionId = 'login-1';
+    accessToken = 'owner';
+    manageToken = 'owner';
     clear = vi.fn();
     navigate = vi.fn<Router['navigate']>().mockResolvedValue(true);
     TestBed.configureTestingModule({
@@ -23,7 +29,11 @@ describe('source review OAuth administration', () => {
         {
           provide: ManageSessionService,
           useValue: {
-            headers: () => ({ Authorization: `Bearer ${identity}`, 'x-manage-session': identity }),
+            identity: () => (userId ? { userId, authSessionId } : null),
+            headers: () => ({
+              Authorization: `Bearer ${accessToken}`,
+              'x-manage-session': manageToken,
+            }),
             clear,
           },
         },
@@ -69,30 +79,57 @@ describe('source review OAuth administration', () => {
       queryParams: { redirect: '/manage/mcp-authorize?request=opaque' },
     });
   });
-  it('discards a consent response after the account changes', () => {
+  it('accepts the consent callback after the JWT refreshes within the same login', () => {
     let value: unknown;
     let error: unknown;
     TestBed.inject(ReviewOAuthService)
       .decide('req', true)
       .subscribe({ next: (v) => (value = v), error: (e) => (error = e) });
-    identity = 'other';
-    mock
-      .expectOne((r) => r.method === 'POST')
-      .flush({ redirect_url: 'https://chatgpt.com/connector_platform_oauth_redirect?code=old' });
-    expect(value).toBeUndefined();
-    expect(reviewOAuthError(error)).toContain('帳號已變更');
-  });
-  it('does not clear a newer session on an older unauthorized response', () => {
-    TestBed.inject(ReviewOAuthService)
-      .grants()
-      .subscribe({ error: () => {} });
-    identity = 'other';
-    mock
-      .expectOne((r) => r.url.endsWith('/grants'))
-      .flush({}, { status: 401, statusText: 'Unauthorized' });
+    accessToken = 'refreshed-jwt';
+    const callback = {
+      redirect_url: 'https://chatgpt.com/connector_platform_oauth_redirect?code=approved',
+    };
+    mock.expectOne((r) => r.method === 'POST').flush(callback);
+    expect(value).toEqual(callback);
+    expect(error).toBeUndefined();
     expect(clear).not.toHaveBeenCalled();
-    expect(navigate).not.toHaveBeenCalled();
   });
+  it.each(['account', 'auth session', 'management session', 'sign out'])(
+    'discards a consent response after a change to the %s',
+    (change) => {
+      let value: unknown;
+      let error: unknown;
+      TestBed.inject(ReviewOAuthService)
+        .decide('req', true)
+        .subscribe({ next: (v) => (value = v), error: (e) => (error = e) });
+      if (change === 'account') userId = 'other';
+      if (change === 'auth session') authSessionId = 'login-2';
+      if (change === 'management session') manageToken = 'verified-again';
+      if (change === 'sign out') userId = null;
+      mock
+        .expectOne((r) => r.method === 'POST')
+        .flush({ redirect_url: 'https://chatgpt.com/connector_platform_oauth_redirect?code=old' });
+      expect(value).toBeUndefined();
+      expect(reviewOAuthError(error)).toContain('帳號已變更');
+    },
+  );
+  it.each(['account', 'auth session', 'management session', 'refreshed JWT'])(
+    'does not clear a newer %s on an older unauthorized response',
+    (change) => {
+      TestBed.inject(ReviewOAuthService)
+        .grants()
+        .subscribe({ error: () => {} });
+      if (change === 'account') userId = 'other';
+      if (change === 'auth session') authSessionId = 'login-2';
+      if (change === 'management session') manageToken = 'verified-again';
+      if (change === 'refreshed JWT') accessToken = 'refreshed-jwt';
+      mock
+        .expectOne((r) => r.url.endsWith('/grants'))
+        .flush({}, { status: 401, statusText: 'Unauthorized' });
+      expect(clear).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('OAuth callback destination', () => {

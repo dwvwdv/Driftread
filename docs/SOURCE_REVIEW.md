@@ -50,13 +50,15 @@ ChatGPT Web 的「無驗證」不能附上自訂 `X-API-Key`。部署本版後�
 
 授權使用 S256 PKCE，一次性 code 綁定 client、已註冊 callback 與 MCP resource。`source:review` 只授權表中的五個工具；另以 `offline_access` 支援持續連線。請求 10 分鐘、code 2 分鐘、access token 15 分鐘、grant 最長 30 天；refresh 每次旋轉，已使用 refresh 重放會撤銷整個 grant。伺服器只保存授權碼與 bearer 憑證的 SHA-256 hash，原文只回傳給 client。每次 MCP／refresh 都檢查目前管理員 UUID、Supabase session、帳號停用、resource 與到期／撤銷；不提供 client_credentials 或接受其他 JWT。
 
-`/manage/mcp-connections` 可查看授權與到期時間並撤銷。後台登出會撤銷該 Supabase 登入 session 簽發的 OAuth grants；管理 OTP session 自然到期不等於 OAuth grant 到期，Supabase session 失效仍會拒絕工具呼叫。OAuth 同意不是逐次工具批准，ChatGPT 的工具執行權限另由客戶端管理。MCP 連線也不會自行啟動常駐 agent。
+`/manage/mcp-connections` 可查看授權與到期時間並撤銷。後台明確登出會依已驗證的 owner／Supabase 登入 session 撤銷該登入的管理 sessions 與 OAuth grants，即使管理 token 已過期、清除或未傳入也生效；不影響其他登入。管理 OTP session 自然到期不等於 OAuth grant 到期，Supabase session 失效仍會拒絕工具呼叫。前端以 user ID／auth session ID 與管理 token 隔離在途回應，正常 JWT 自動刷新仍可完成同意回跳；舊 JWT 的延遲 401 不清除新憑證。OAuth 同意不是逐次工具批准，ChatGPT 的工具執行權限另由客戶端管理。MCP 連線也不會自行啟動常駐 agent。
 
 公開 discovery：`/.well-known/oauth-authorization-server`、`/.well-known/oauth-protected-resource/api/admin/mcp`（另提供 root 與尾斜線 alias）。HTTP 401 的 `WWW-Authenticate` 指向 resource metadata，所有工具的 `securitySchemes` 同時宣告 `source:review`／`offline_access`。授權端點為 `/api/review-oauth/{register,authorize,token,revoke}`；token／revoke 只收有界 form，不使用 query token。DCR callback 只允許官方 `https://chatgpt.com/connector_platform_oauth_redirect` 或 `https://chatgpt.com/connector/oauth/{callback_id}`，須逐字與註冊值相同，不抓取客戶端 URL。
 
 本實作是既有單管理員應用的窄用途授權服務；OAuth 表 RLS 零 policy、撤銷所有 Data API roles（含 service_role），沿用後台 privileged `DATABASE_URL`，不改共用 Supabase 的 OAuth provider／註冊設定。匿名 DCR 回傳包含公開 metadata 的 HMAC 簽名 client ID，不新增 client 記錄，也不佔用持久 client 配額；只有管理員明確同意才保存 client，之後不因閒置或 grant 到期刪除，讓 ChatGPT 可重用同一 client ID 重新授權。簽名不加密 metadata；私有 `review_oauth_registration_key` 保存唯一持久簽名金鑰，必須隨資料庫備份保留，不可在重啟／清理時重建。
 
 待授權 requests 最多 1,000、10 分鐘到期，公開端點有每 IP 限流。授權請求過期有界清理，grant 到期 30 天後清除其 token／code；refresh replay 的 digest 保留到 grant 清理。實際 ChatGPT Web／正式 Telegram／Supabase 與代理部署必須另驗收。
+
+管理 MCP 的 OAuth bearer 驗證在進資料庫前，按來源 IP 每 60 秒最多 60 次，另限每 process 同時 4 次驗證，使用獨立執行緒池保留其他後台工作的共用容量。超出任一上限回 429 與 `Retry-After`；不排隊，請依回應稍後重試。取消 HTTP 請求不會提前釋放仍在執行的資料庫驗證名額；專用機器 key 不使用此驗證池。
 
 官方契約：[OpenAI authentication](https://developers.openai.com/plugins/build/auth)、[ChatGPT MCP setup](https://developers.openai.com/api/docs/guides/custom-mcp-server)。
 

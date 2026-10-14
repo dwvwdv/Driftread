@@ -69,6 +69,17 @@ describe('ManageSessionService', () => {
     session.set(login('owner', 'login-2'));
     expect(service.token()).toBeNull();
   });
+  it('keeps the login identity and management session when the JWT refreshes', () => {
+    saved();
+    const service = TestBed.inject(ManageSessionService);
+    const identity = service.identity();
+    const refreshed = login();
+    refreshed.access_token += '-refreshed';
+    session.set(refreshed);
+    expect(service.identity()).toEqual(identity);
+    expect(service.headers()['Authorization']).toBe(`Bearer ${refreshed.access_token}`);
+    expect(service.token()).toBe('verified');
+  });
   it('does not accept expired stored sessions', () => {
     saved(Date.now() - 1);
     expect(TestBed.inject(ManageSessionService).token()).toBeNull();

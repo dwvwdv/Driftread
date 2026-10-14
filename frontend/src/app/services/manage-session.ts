@@ -23,7 +23,7 @@ export class ManageSessionService {
   private auth = inject(AuthService);
   private saved = signal<ManagementSession | null>(this.read());
   private base = `${environment.apiUrl}/manage/auth`;
-  private identity = computed(() => {
+  readonly identity = computed(() => {
     const session = this.auth.session();
     if (!session) return null;
     try {

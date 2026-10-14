@@ -173,13 +173,55 @@ def test_live_auth_and_current_owner_each_request(setup,monkeypatch,action):
         refresh(setup,tokens['refresh_token'])
 
 
-def test_telegram_session_expiry_and_logout_revoke(setup):
+@pytest.mark.parametrize('logout_token',['original',None,'','cleared','x'*129])
+def test_telegram_session_expiry_and_logout_revoke(setup,logout_token):
     tokens=exchange(setup)
     query("UPDATE driftread.manage_sessions SET expires_at=now()-interval '1 second' WHERE user_id=%s",(setup[0].id,))
+    if logout_token=='cleared':
+        query('DELETE FROM driftread.manage_sessions WHERE user_id=%s',(setup[0].id,))
     assert oauth.validate_access_token(tokens['access_token'])
-    manage_auth.revoke(setup[0],setup[1])
+    manage_auth.revoke(setup[0],setup[1] if logout_token=='original' else logout_token)
     with pytest.raises(oauth.OAuthError):
         oauth.validate_access_token(tokens['access_token'])
+    with pytest.raises(oauth.OAuthError):
+        refresh(setup,tokens['refresh_token'])
+    assert not query('SELECT token_hash FROM driftread.manage_sessions WHERE user_id=%s AND auth_session_id=%s',
+                     (setup[0].id,setup[0].session_id))
+
+
+def test_logout_only_revokes_verified_owner_auth_session(setup,monkeypatch):
+    current=exchange(setup)
+    other_sid=str(uuid4())
+    other_token='management-'+uuid4().hex
+    query('INSERT INTO auth.sessions(id,user_id) VALUES(%s,%s)',(other_sid,setup[0].id))
+    query("INSERT INTO driftread.manage_sessions(token_hash,user_id,auth_session_id,expires_at) VALUES(%s,%s,%s,now()+interval '1 hour')",
+          (oauth._digest(other_token),setup[0].id,other_sid))
+    other=(AuthUser(setup[0].id,session_id=other_sid),other_token,setup[2])
+    preserved=exchange(other)
+    # An unrelated owner can have historical grants after a configuration
+    # change; logout must not touch those records either.
+    other_uid,unrelated_sid=str(uuid4()),str(uuid4())
+    query('INSERT INTO auth.users(id) VALUES(%s)',(other_uid,))
+    query('INSERT INTO auth.sessions(id,user_id) VALUES(%s,%s)',(unrelated_sid,other_uid))
+    query("INSERT INTO driftread.manage_sessions(token_hash,user_id,auth_session_id,expires_at) VALUES(%s,%s,%s,now()+interval '1 hour')",
+          (oauth._digest('unrelated'),other_uid,unrelated_sid))
+    unrelated=(AuthUser(other_uid,session_id=unrelated_sid),'unrelated',setup[2])
+    with monkeypatch.context() as owner_config:
+        owner_config.setenv('MANAGE_OWNER_USER_ID',other_uid)
+        exchange(unrelated)
+    with pytest.raises(HTTPException):
+        manage_auth.revoke(unrelated[0],None)
+    assert oauth.validate_access_token(current['access_token'])
+    # Even another login's elevated token cannot redirect logout's scope.
+    manage_auth.revoke(setup[0],other_token)
+    with pytest.raises(oauth.OAuthError):
+        oauth.validate_access_token(current['access_token'])
+    assert oauth.validate_access_token(preserved['access_token'])
+    assert refresh(other,preserved['refresh_token'])['access_token']
+    assert query('SELECT token_hash FROM driftread.manage_sessions WHERE user_id=%s AND auth_session_id=%s',
+                 (other_uid,unrelated_sid))
+    assert query('SELECT revoked_at FROM driftread.review_oauth_grants WHERE owner_user_id=%s',
+                 (other_uid,))[0]['revoked_at'] is None
 
 
 def test_list_revoke_grant_and_rfc7009(setup):
@@ -336,7 +378,8 @@ def test_standard_registration_metadata_is_not_fetched_or_trusted(setup):
     assert oauth.get_consent(rid,setup[0],setup[1])['redirect_host']=='chatgpt.com'
 
 
-def test_consent_racing_logout_never_leaves_live_grant(setup):
+@pytest.mark.parametrize('logout_token',['original',None,''])
+def test_consent_racing_logout_never_leaves_live_grant(setup,logout_token):
     from threading import Barrier
     ready=Barrier(2)
     rid=request(setup)
@@ -348,7 +391,7 @@ def test_consent_racing_logout_never_leaves_live_grant(setup):
             return None
     def logout():
         ready.wait(timeout=3)
-        manage_auth.revoke(setup[0],setup[1])
+        manage_auth.revoke(setup[0],setup[1] if logout_token=='original' else logout_token)
     with ThreadPoolExecutor(2) as pool:
         one=pool.submit(consent)
         two=pool.submit(logout)

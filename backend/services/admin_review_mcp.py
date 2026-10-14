@@ -4,9 +4,13 @@ Streamable HTTP clients send X-API-Key: SOURCE_REVIEW_MCP_KEY on every
 request. ChatGPT Web uses separately-issued OAuth access tokens. Personal JWTs,
 management sessions and ADMIN_API_KEY never authorize this transport.
 """
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+import re
 import secrets
+from threading import BoundedSemaphore
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -15,10 +19,12 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from database import get_client
+from rate_limit import rate_limit
 from services import source_review, review_oauth
 from services.discovery_config import discovery_enabled
 from services.review_models import ReviewSubmission
@@ -26,6 +32,26 @@ from services.settings import get_setting
 
 logger = logging.getLogger(__name__)
 REVIEWER_ID = "external_agent"
+_oauth_rate_limit = rate_limit("review_mcp_oauth", 60)
+_OAUTH_VERIFY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="review-oauth-auth")
+_OAUTH_VERIFY_SLOTS = BoundedSemaphore(4)
+
+
+async def _verify_oauth(token):
+    # Admit before submitting work; overload cannot queue unbounded database
+    # connections or consume the shared FastAPI worker pool.
+    slots = _OAUTH_VERIFY_SLOTS
+    if not slots.acquire(blocking=False):
+        raise HTTPException(429, "OAuth verification is busy, please try again later", headers={"Retry-After": "1"})
+    try:
+        future = _OAUTH_VERIFY_POOL.submit(review_oauth.validate_access_token, token)
+    except BaseException:
+        slots.release()
+        raise
+    # Release when the actual worker finishes, including failures. Cancelling
+    # an HTTP request must not free capacity while its DB query is still running.
+    future.add_done_callback(lambda _: slots.release())
+    return await asyncio.wrap_future(future)
 
 
 class ReviewMCP(FastMCP):
@@ -167,11 +193,16 @@ class AuthenticatedReviewMCP:
             return
         if authorization is not None:
             parts = authorization.split(" ")
-            if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].startswith("droa_") or len(parts[1]) > 256:
+            if len(parts) != 2 or parts[0].lower() != "bearer" or not re.fullmatch(r"droa_[A-Za-z0-9_-]{43}", parts[1]):
                 await self.unauthorized(scope, receive, send)
                 return
             try:
-                grant = await run_in_threadpool(review_oauth.validate_access_token, parts[1])
+                _oauth_rate_limit(request)
+                grant = await _verify_oauth(parts[1])
+            except HTTPException as exc:
+                await JSONResponse({"detail": exc.detail}, exc.status_code,
+                                   headers={**(exc.headers or {}), "Cache-Control": "no-store"})(scope, receive, send)
+                return
             except review_oauth.OAuthError as exc:
                 if exc.status_code == 503:
                     await JSONResponse({"detail": "Source review OAuth is unavailable"}, 503)(scope, receive, send)
