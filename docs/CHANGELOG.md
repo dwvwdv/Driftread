@@ -1155,3 +1155,19 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 後端全套 1134 passed、186 skipped：本機未設定 `DRIFTREAD_TEST_DATABASE_URL`，真 PostgreSQL 測試交 CI。沙箱跨執行緒喚醒問題以 repo 外 selector bounded polling runner 完成測試，未改產品程式。批次 API 測試涵蓋管理認證只執行一次、1–50 個 UUID、真正 PostgREST client 產生的單次嵌入請求與摘要敏感欄位過濾；MockTransport 只驗證請求／回應契約，不冒稱已驗證真 PostgREST 執行。
 - 前端 38 個測試檔、384 tests 通過，production build 通過；initial bundle 511.81 kB／500 kB 保留既有 warning。回歸測試涵蓋 20／50 筆僅一次批次、空頁、缺評審、失敗後恢復、換頁／操作取消舊回應，以及通知去重與關閉／到期後重新提示。獨立 review、文件檢查與 `git diff --check` 通過。
 - 正式 Supabase 唯讀查詢確認關聯與 service_role 讀取權限齊全，並以等價 SQL 取得 20 個候選各自最新的評審。尚未部署或走查真實登入、PostgREST HTTP 與瀏覽器；部署時先升級 API，再升級 frontend。
+
+## 階段四十七：OAuth 授權接受附加參數，修復 ChatGPT 連線中斷（PR #103，2026-10-15）
+
+使用者已能完成 ChatGPT OAuth discovery，但進入 Driftread 授權時收到 `invalid_request`／`Unsupported request parameters`。授權端點的固定白名單會在驗證前拒絕任何額外參數；以帶附加提示的標準授權請求可重現，違反 RFC 6749 §3.1 對不識別參數應忽略的規定。使用者實際請求的附加參數名稱尚未取得，不能宣稱已重播正式瀏覽器請求。
+
+- 授權端點忽略不識別的參數，仍精確驗證 client、官方 callback、resource、scope 與 S256 PKCE；提示不授權、不作為登入憑證、不反射至 callback、不額外抓取 URL。其他端點的輸入契約不變。
+- 在解析前限制原始 query 為 8,192 bytes，保留最多 20 欄位及任何重複參數拒絕；不藉相容性修復開放無界輸入。
+- 回歸測試涵蓋附加提示下錯誤的已知參數仍遭拒絕、重複附加鍵／過長 query／超量欄位；真 PostgreSQL 同意與 token 交換、HTTP linking→MCP→refresh→撤銷增加附加參數，驗證 resource／scope 與 callback 不被改寫。
+- 不新增環境變數、migration 或 Supabase 設定；不修改正式部署。正式 ChatGPT Web 再次授權驗收仍由 #83 追蹤。
+
+### 驗證與部署界限
+
+- 本機 backend 全套 1133 passed／187 skipped；未設定本機 PostgreSQL，真 SQL 的附加參數與完整 HTTP linking 回歸交 CI PostgreSQL 17 驗證。修復前以同樣的標準授權欄位加一個 `audience` 提示，可重現相同錯誤。
+- OAuth 目標測試 53 passed／36 skipped，獨立 review、文件檢查與 `git diff --check` 通過。沿用 repo 外 bounded selector runner 處理沙箱執行緒喚醒限制，不修改產品 async 行為。
+- 未修改 frontend，不需要新增部署設定；正式環境需更新 API image 後，從 ChatGPT 重新開始授權。尚未代替使用者驗證正式瀏覽器／Telegram 流程。
+- Review 事件 hook 工具不可用，依使用者與 AGENTS.md 的指示建立 PR #103 每小時檢查，直到合併或關閉；無新進展時不通知。

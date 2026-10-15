@@ -444,7 +444,7 @@ OAuth discovery 在 origin 的 `/.well-known/oauth-authorization-server` 與 `/.
 | 方法 | 路徑 | 說明 |
 |------|------|------|
 | POST | `/review-oauth/register` | 有界 public-client DCR，只允許官方 ChatGPT callbacks |
-| GET | `/review-oauth/authorize` | 驗證 client／redirect／resource／scope／S256 後轉向後台同意頁 |
+| GET | `/review-oauth/authorize` | 驗證 client／redirect／resource／scope／S256 後轉向後台同意頁；忽略不識別附加參數，query 最多 8,192 bytes／20 欄位，拒絕重複鍵 |
 | POST | `/review-oauth/token` | 有界 form 的 code 交換／refresh 輪替，不接受其他 grant type |
 | POST | `/review-oauth/revoke` | RFC 7009，持有本 client token 可撤銷其 grant |
 | GET／POST | `/review-oauth/consent/{request_id}` | 管理員＋Telegram session 讀取／明確同意或拒絕 |

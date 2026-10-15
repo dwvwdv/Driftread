@@ -237,7 +237,10 @@ def register_client(body: dict) -> dict:
 
 def begin_authorization(params: dict) -> dict:
     base = base_url()
-    _strict(params, {'client_id','redirect_uri','response_type','scope','state','resource','code_challenge','code_challenge_method','prompt'})
+    # RFC 6749 section 3.1: ignore unrecognized authorization parameters.
+    # Client hints must not override the validated resource, callback or scope.
+    if not isinstance(params, dict):
+        raise OAuthError('invalid_request', description='Invalid authorization parameters')
     if _text(params, 'response_type', 20) != 'code':
         raise OAuthError('unsupported_response_type')
     if params.get('code_challenge_method') != 'S256':

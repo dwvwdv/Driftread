@@ -370,6 +370,8 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 
 管理 MCP 只接受完整格式的 OAuth access token，進資料庫前限制來源 IP 每 60 秒 60 次驗證；獨立 4 執行緒池配合立即拒絕的 4 個名額，不將匿名驗證排入共用 threadpool。429 帶 Retry-After；HTTP 取消後仍由實際 worker 完成才釋放名額，避免透過反覆取消繞過並發限制。
 
+OAuth 授權 query 依 RFC 6749 §3.1 忽略不識別參數，避免客戶端附加提示阻斷登入；提示不作為權限或身分依據，不存入 grant、不反射至 callback，也不觸發外連。原始 query 限 8,192 bytes／20 欄位且拒絕所有重複鍵；已知的 resource、scope、callback、client 與 S256 PKCE 繼續精確驗證，不能以額外 `audience` 取代 resource。
+
 public origin 只能來自環境設定，不能信任 Host／forwarded headers；DCR 不抓第三方 URL，只接受官方 ChatGPT HTTPS callbacks，有界 metadata／body／待授權容量與每 IP 限流。token 走 form body 與 Bearer header，不接受 URL token。OAuth credentials 表開 RLS、撤銷所有 Data API roles（含 service_role），沿用後台 privileged DATABASE_URL；不改共用 Supabase Auth 配置。nginx 將 discovery 轉 API、設定 no-referrer 與 X-Frame-Options DENY，避免 HTML fallback、授權請求洩漏與 framed consent。期限、清理及實際 Web 驗收界限見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#chatgpt-web-oauth100)。
 
 匿名 DCR 使用 HMAC 簽名的公開 client metadata，不建立持久 client 記錄，避免免認證註冊耗盡全域 client 配額。只有管理員明確同意才保存 client；其身分保留供閒置後重新授權，token／grant 仍依原期限失效。唯一簽名金鑰存在同樣封鎖 Data API 的私有表，必須持久保存與備份；它是伺服器驗證簽名所需的私密金鑰，並非可只存 hash 的 bearer 憑證。

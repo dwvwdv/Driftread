@@ -142,6 +142,8 @@ Free plan 的資料庫上限是 500 MB，超過會被切成唯讀。`DELETE` 和
 
 回滾前撤銷已有 grants、清空 OAuth origin 並重建 API；回滾到只支援機器 key 的版本時，Web OAuth 無法使用。新增私有表保留，原個人唯讀 MCP 與管理機器 key 不變。程式、PR 合併與正式驗收分開由 #100／#83 記錄。
 
+如果 discovery 已成功，但進入 `/api/review-oauth/authorize` 回 `invalid_request`／`Unsupported request parameters`，確認 API 已包含授權附加參數相容性修復：舊版固定白名單會拒絕客戶端額外參數，新版依 RFC 6749 忽略不識別的提示，繼續驗證既有安全欄位。可提供網址路徑與參數名稱協助診斷，勿記錄或貼出 state、授權碼、token 或完整授權 URL。
+
 ## 回滾
 
 Image 只有兩種 tag：`latest`（永遠指向最後一次成功的 push）與

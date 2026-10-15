@@ -56,6 +56,8 @@ ChatGPT Web 的「無驗證」不能附上自訂 `X-API-Key`。部署本版後�
 
 公開 discovery：`/.well-known/oauth-authorization-server`、`/.well-known/oauth-protected-resource/api/admin/mcp`（另提供 root 與尾斜線 alias）。HTTP 401 的 `WWW-Authenticate` 指向 resource metadata，所有工具的 `securitySchemes` 同時宣告 `source:review`／`offline_access`。授權端點為 `/api/review-oauth/{register,authorize,token,revoke}`；token／revoke 只收有界 form，不使用 query token。DCR callback 只允許官方 `https://chatgpt.com/connector_platform_oauth_redirect` 或 `https://chatgpt.com/connector/oauth/{callback_id}`，須逐字與註冊值相同，不抓取客戶端 URL。
 
+授權 query 依 [RFC 6749 §3.1](https://www.rfc-editor.org/rfc/rfc6749.html#section-3.1) 忽略不識別的附加參數，例如 `audience`、`access_type` 或 `id_token_hint`；這些提示不改變權限、不當成登入證明，也不傳到 callback。已知的 client／callback／resource／scope／S256 PKCE 仍須通過原驗證。原始 query 上限 8,192 bytes、最多 20 個欄位，任何重複參數均拒絕；其他端點的參數規則不變。
+
 本實作是既有單管理員應用的窄用途授權服務；OAuth 表 RLS 零 policy、撤銷所有 Data API roles（含 service_role），沿用後台 privileged `DATABASE_URL`，不改共用 Supabase 的 OAuth provider／註冊設定。匿名 DCR 回傳包含公開 metadata 的 HMAC 簽名 client ID，不新增 client 記錄，也不佔用持久 client 配額；只有管理員明確同意才保存 client，之後不因閒置或 grant 到期刪除，讓 ChatGPT 可重用同一 client ID 重新授權。簽名不加密 metadata；私有 `review_oauth_registration_key` 保存唯一持久簽名金鑰，必須隨資料庫備份保留，不可在重啟／清理時重建。
 
 待授權 requests 最多 1,000、10 分鐘到期，公開端點有每 IP 限流。授權請求過期有界清理，grant 到期 30 天後清除其 token／code；refresh replay 的 digest 保留到 grant 清理。實際 ChatGPT Web／正式 Telegram／Supabase 與代理部署必須另驗收。

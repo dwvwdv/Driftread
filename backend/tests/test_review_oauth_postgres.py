@@ -81,6 +81,25 @@ def test_owner_telegram_and_explicit_consent(setup):
     assert not query('SELECT client_id FROM driftread.review_oauth_clients WHERE client_id=%s',(setup[2],))
 
 
+def test_authorization_ignores_extensions_without_changing_grant_or_callback(setup):
+    rid=request(setup,audience='https://other-resource.example',access_type='offline',
+                id_token_hint='untrusted-hint',unknown='extension',admin='true')
+    row=query('SELECT * FROM driftread.review_oauth_requests WHERE request_hash=%s',
+              (oauth._digest(rid),))[0]
+    assert row['resource']==oauth.resource_url()
+    assert row['redirect_uri']==CALLBACK and row['code_challenge']==CHALLENGE
+    assert row['scope']=='source:review offline_access'
+    assert oauth.get_consent(rid,setup[0],setup[1])['scope']=='source:review offline_access'
+    response=oauth.decide_authorization(rid,True,setup[0],setup[1])
+    callback=urlsplit(response['redirect_url'])
+    values=parse_qs(callback.query)
+    assert callback.hostname=='chatgpt.com'
+    assert set(values)=={'code','state'} and values['state']==['opaque/client+state']
+    tokens=exchange(setup,values['code'][0])
+    assert tokens['scope']=='source:review offline_access'
+    assert oauth.validate_access_token(tokens['access_token'])['scope']=='source:review'
+
+
 def test_one_use_code_and_hashed_secrets(setup):
     rid=request(setup)
     code=parse_qs(urlsplit(oauth.decide_authorization(rid,True,setup[0],setup[1])['redirect_url']).query)['code'][0]
