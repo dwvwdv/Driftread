@@ -1128,6 +1128,10 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - **不修：既有來源的寫入也納入鎖**：新別名與既有來源同一輪到期時，新別名可能看不到既有來源本輪才抓到的項目。但鎖只保證互斥、不保證先後，新別名仍可能先拿到鎖，所以納入鎖解決不了這個問題，反而會讓整個 worker 的文章寫入全部序列化。這個落差與既有來源抓取間隔造成的落差相同，由 80% 門檻吸收。
 - 修正後本機 PostgreSQL 16 完整 backend：1215 passed、0 skipped。
 
+### 協作規範
+
+- PR #101 在 `AGENTS.md`「分支與 PR」加入的每小時 PR 檢查，是使用者給 Codex 的指示（Codex 沒有事件 hook）。依使用者要求標註為「僅 Codex 適用」；Claude Code 仍以事件 hook 訂閱為準。
+
 ### 與 master 整合
 
 - 合併 PR #101 後，它的 `20261014010000_source_review_oauth.sql` 排在本 PR 原本的 migration 之後。比照階段四十三的作法，把本 PR 尚未合併的 migration 改名為 `20261015040607_source_mirror_gate.sql`，讓它排在所有已合併的 migration 之後，結尾的 schema reload 仍是最後一支。兩支 migration 動的是不同的表，沒有相依關係。PR #101 的條目佔用了階段四十四，本條目順延為階段四十五。
