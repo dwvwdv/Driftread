@@ -360,13 +360,27 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 
 新增表開 RLS 並撤銷 PUBLIC／anon／authenticated 權限，業務 RPC 為 service-only `SECURITY INVOKER`。入庫在交易內 `INSERT ON CONFLICT DO NOTHING`，既有來源 metadata 不被重複核准覆寫。Jev 固定官方 endpoint、禁止 redirects，key 只在 backend；付費預算原子預留，回應先 durable 再解析，unknown 額外發送有界。保存期與停用後本地清理、線上成本邊界見 [來源評審](SOURCE_REVIEW.md)。正式 Jev 呼叫與部署仍需另行驗收。
 
+### #35 — ChatGPT Web 的窄權限來源評審 OAuth
+
+管理 MCP 除專用機器 key 外，可使用本服務獨立發出的來源評審 OAuth token；拒絕混合憑證、普通 Supabase JWT、管理 session 與一般管理 key。授權／撤銷只接受唯一管理員的有效帳密＋Telegram session，scope 不擴張到設定、人工覆寫或管理 REST。所有工具維持原有業務 fencing。
+
+授權碼、access／refresh token 與授權請求只保存 SHA-256，S256 PKCE、註冊 callback／client／resource 精確綁定；code 一次消耗，refresh 旋轉與重放撤銷以 grant row lock 序列化，撤銷先提交再回錯誤。每次請求檢查目前 owner、Supabase session、停用、到期與撤銷；後台登出撤銷同登入 session 的 grants，不把管理 session 自然到期誤作 OAuth 的續期。
+
+明確登出以已驗證 owner／Supabase session 刪除該登入的全部管理 sessions，再撤銷同登入 grants；不依賴管理 token 尚未過期或存在。與 consent 共用管理 session 的列鎖，避免空 token 登出和同意競跑留下有效 grant，其他登入不受影響。前端在途回應綁定 user ID／auth session ID／管理 token，正常 JWT refresh 不視為帳號切換，舊 JWT 的延遲 401 不清除新憑證。
+
+管理 MCP 只接受完整格式的 OAuth access token，進資料庫前限制來源 IP 每 60 秒 60 次驗證；獨立 4 執行緒池配合立即拒絕的 4 個名額，不將匿名驗證排入共用 threadpool。429 帶 Retry-After；HTTP 取消後仍由實際 worker 完成才釋放名額，避免透過反覆取消繞過並發限制。
+
+public origin 只能來自環境設定，不能信任 Host／forwarded headers；DCR 不抓第三方 URL，只接受官方 ChatGPT HTTPS callbacks，有界 metadata／body／待授權容量與每 IP 限流。token 走 form body 與 Bearer header，不接受 URL token。OAuth credentials 表開 RLS、撤銷所有 Data API roles（含 service_role），沿用後台 privileged DATABASE_URL；不改共用 Supabase Auth 配置。nginx 將 discovery 轉 API、設定 no-referrer 與 X-Frame-Options DENY，避免 HTML fallback、授權請求洩漏與 framed consent。期限、清理及實際 Web 驗收界限見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#chatgpt-web-oauth100)。
+
+匿名 DCR 使用 HMAC 簽名的公開 client metadata，不建立持久 client 記錄，避免免認證註冊耗盡全域 client 配額。只有管理員明確同意才保存 client；其身分保留供閒置後重新授權，token／grant 仍依原期限失效。唯一簽名金鑰存在同樣封鎖 Data API 的私有表，必須持久保存與備份；它是伺服器驗證簽名所需的私密金鑰，並非可只存 hash 的 bearer 憑證。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
 |----|------|------|
 | Request 入口 | `Content-Length` > 6 MiB → 413（讀 body 前）；未宣告或宣告不實時改由串流位元組計數兜底，超額同樣 413（見 #27）——最外層 middleware | `main.py::MaxBodySizeMiddleware` |
 | Client 識別 | `ProxyHeadersMiddleware(trusted_hosts="*")` + nginx `X-Forwarded-For $remote_addr` | `main.py`、`frontend/nginx.conf` |
-| 濫用防護 | 每 IP 每端點 20 req / 60s，追蹤上限 10k clients | `rate_limit.py` |
+| 濫用防護 | 預設每 IP 每端點 20 req / 60s，追蹤上限 10k clients；管理 MCP OAuth 驗證另限 60 req / 60s 與獨立 4 個並發名額 | `rate_limit.py`、`services/admin_review_mcp.py` |
 | 外連目標 | `fetch_with_cap()` 對**初始 URL 與每個 redirect hop**都跑 `validate_fetch_url()`，阻擋私網 / loopback / link-local——本身是 `async def`，解析走專屬、固定大小的執行緒池且受逾時約束，不會卡住事件迴圈（見 #26）；傳輸層 `PinnedTransport` 對實際連線目標做獨立的單次解析並驗證，關閉 #22 記載的 DNS rebinding check-then-fetch 缺口；該解析同樣受呼叫端配置的連線逾時約束，且在同一個專屬、固定大小的執行緒池執行，逾時後即使查詢仍在跑也不會佔用 app 其他地方共用的預設執行緒池（見 #25） | `services/feed_discovery.py` |
 | 爬取政策 | `allow_url` hook 掛在同一個 choke point，對初始 URL 與每個 hop 評估 denylist ∧ robots（在 SSRF gate 之後）| `services/feed_discovery.py`、`discovery_probe.py::_make_gate` |
 | 外連大小 | `fetch_with_cap()` 串流 + 5 MiB（所有對外抓取共用）；robots.txt 另限 512 KiB | `services/feed_discovery.py`、`services/robots.py` |
@@ -374,7 +388,7 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 | XML 解析 | 全數 `defusedxml`（feed、OPML 上傳、遠端 OPML 目錄三條路徑） | `rss_parser.py`、`routers/opml.py`、`services/directory_sources.py` |
 | DB 查詢 | `escape_postgrest_literal()`、`.in_()` 取代手拼 filter、`.maybe_single()`；第三方字串一律不進 filter；id 類參數一律宣告 `UUID` 型別，格式錯誤在進 DB 呼叫前就回 422（見 #28） | `utils.py`、`routers/*`、`services/link_harvest.py::HostIndex` |
 | 第三方文字落庫 | `sanitize_text()`（控制字元 / 零寬 / bidi override）、`sanitize_http_url()`（強制 http(s)）| `services/discovery_candidates.py` |
-| 認證 | Supabase JWT，依 token `alg` 分流：`HS256` 用 `SUPABASE_JWT_SECRET`、`ES256`／`RS256` 用 JWKS（`jwt.PyJWKClient`，見 #31）；永久帳號必須帶 `is_anonymous=false`；瀏覽器後台需管理員帳密登入 + Telegram OTP session；機器呼叫保留 `X-API-Key` | `auth.py`、`routers/admin.py`、`services/manage_auth.py` |
+| 認證 | Supabase JWT，依 token `alg` 分流：`HS256` 用 `SUPABASE_JWT_SECRET`、`ES256`／`RS256` 用 JWKS（`jwt.PyJWKClient`，見 #31）；永久帳號必須帶 `is_anonymous=false`；瀏覽器後台需管理員帳密登入 + Telegram OTP session；機器呼叫保留 `X-API-Key`；來源評審 MCP 另接受窄權限 OAuth | `auth.py`、`routers/admin.py`、`services/manage_auth.py`、`services/review_oauth.py` |
 | 資料存取 | 專屬 `driftread` schema + scoped client；五張使用者資料表 RLS permanent-user owner-only；公開 feeds 僅 normal、raw articles 禁止 anon/authenticated SELECT，backend 共用 publication；系統狀態表 RLS 零公開 policy | `database.py`、`migrations/002`、`010`、`019`、`20261009*`，見 #32 |
 | 錯誤訊息 | 不回傳原始外連例外文字 | `routers/discover.py`、`routers/admin.py` |
 

@@ -1,0 +1,58 @@
+<ob-page-header kicker="MCP CONNECTIONS" heading="MCP 連線" subtitle="管理 ChatGPT 的來源評審授權">
+  <button
+    type="button"
+    class="ob-btn ob-btn--ghost"
+    [disabled]="loading() || revoking() !== null"
+    (click)="load()"
+  >
+    重新整理
+  </button>
+</ob-page-header>
+<p class="hint">
+  新增連線請在 ChatGPT 的 MCP 設定選擇 OAuth，使用本站的 /api/admin/mcp/
+  網址。撤銷會停用該連線的評審權限，既有評審結果會保留。
+</p>
+@if (error()) {
+  <ob-error [message]="error()" />
+}
+@if (loading()) {
+  <ob-loading label="讀取授權清單中" />
+} @else if (!grants().length && !error()) {
+  <ob-empty message="尚無已授權的 MCP 連線" />
+} @else {
+  @for (grant of grants(); track grant.id) {
+    <ob-card [heading]="grant.client_name" meta="來源評審">
+      <dl>
+        <dt>狀態</dt>
+        <dd>{{ grant.revoked_at ? '已撤銷' : inactive(grant) ? '已過期' : '已授權' }}</dd>
+        <dt>授權時間</dt>
+        <dd>{{ grant.created_at | date: 'yyyy/MM/dd HH:mm:ss' }}</dd>
+        <dt>有效期限</dt>
+        <dd>{{ grant.expires_at | date: 'yyyy/MM/dd HH:mm:ss' }}</dd>
+        <dt>最後使用</dt>
+        <dd>
+          {{ grant.last_used_at ? (grant.last_used_at | date: 'yyyy/MM/dd HH:mm:ss') : '尚未使用' }}
+        </dd>
+      </dl>
+      <div cardActions>
+        <button
+          type="button"
+          class="ob-btn ob-btn--danger"
+          [disabled]="revoking() !== null || inactive(grant)"
+          [attr.aria-label]="'撤銷 ' + grant.client_name + ' 的連線'"
+          (click)="revoke(grant.id)"
+        >
+          {{
+            grant.revoked_at
+              ? '已撤銷'
+              : inactive(grant)
+                ? '已過期'
+                : revoking() === grant.id
+                  ? '撤銷中…'
+                  : '撤銷連線'
+          }}
+        </button>
+      </div>
+    </ob-card>
+  }
+}

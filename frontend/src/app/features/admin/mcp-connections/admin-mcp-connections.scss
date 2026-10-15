@@ -1,0 +1,26 @@
+:host {
+  display: block;
+}
+.hint {
+  color: var(--text-dim);
+  margin-bottom: var(--sp-4);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+ob-card,
+ob-error {
+  display: block;
+  margin-bottom: var(--sp-6);
+}
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-2) var(--sp-4);
+}
+dt {
+  color: var(--text-dim);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

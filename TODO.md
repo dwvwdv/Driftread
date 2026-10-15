@@ -9,13 +9,20 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [~] 進行中
 - [x] 已完成
 
+## issue #100：ChatGPT Web 來源評審 OAuth
+
+- [x] DCR／OAuth discovery、S256 PKCE、窄權限 token／refresh、重放撤銷及管理員 session 綁定：`backend/services/review_oauth.py`。
+- [x] 管理員同意／拒絕、登入回跳與連線撤銷頁，保留原機器 key；[設定與權限](docs/SOURCE_REVIEW.md#chatgpt-web-oauth100)。
+- [ ] PR 合併與 #83 正式 migration／代理／ChatGPT Web、本人 Telegram／Supabase 驗收。
+
 ## issue #96：來源收錄評審
 
 使用者已批准此 AI 範圍；其餘 #88–#91 的 embedding、事件模型與生成摘要沿原 roadmap 排程。
 
 - [x] 候選資料包、租約與版本保護、人工覆寫優先／可選人工覆核、自動入庫：`backend/services/source_review.py`。
 - [x] 管理 MCP 與 `/manage` 設定／候選介面、Jev adapter、付費請求／預算與離線評測：[設計與操作](docs/SOURCE_REVIEW.md)。
-- [ ] PR 合併與 #83 正式 migration／部署驗收；正式 Jev 中文評測、專用 key 連線及付費行為驗證。
+- [x] PR #97 已合併，#96 結案。
+- [ ] #83 正式 migration／部署驗收；正式 Jev 中文評測、專用 key 連線及付費行為驗證。
 
 #84–#87 本批提供來源評審需要的共用部分，文章／Story 分析、其他模型能力、其他付費服務及分類／事件／推薦的 gold sets 仍待後續實作。
 
