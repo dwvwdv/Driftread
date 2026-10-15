@@ -18,7 +18,12 @@ from rss_parser import fetch_and_parse_conditional
 from services.articles import upsert_articles
 from services.feed_discovery import validate_fetch_url
 from services.language import resolve_feed_language
-from services.source_identity import MIRROR_MIN_ITEMS, is_comment_feed, new_source_rejection
+from services.source_identity import (
+    MIRROR_MIN_ITEMS,
+    canonical_item_urls,
+    is_comment_feed,
+    new_source_rejection,
+)
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -218,7 +223,11 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
     }
     if language:
         update["language"] = language
-    if gated and total >= MIRROR_MIN_ITEMS:
+    # Admit only after a fetch whose own items were enough to judge. The
+    # stored total is not the evidence the gate saw: a feed that only ever
+    # shows three items would otherwise be admitted unchecked once three
+    # fetches had accumulated five articles.
+    if gated and len(canonical_item_urls([a.url for a in fetched.parsed.articles])) >= MIRROR_MIN_ITEMS:
         update["admitted_at"] = now.isoformat()
     # returning="minimal" — same reason as the two update() calls above.
     db.table("feeds").update(update, returning="minimal").eq("id", feed_id).execute()

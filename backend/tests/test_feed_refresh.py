@@ -643,8 +643,9 @@ async def test_source_is_admitted_once_enough_items_are_stored():
         await refresh_one(db, feed)
     assert db.feed_updates[-1]["admitted_at"]
 
-    # Too few items to judge: stays under admission.
-    db = _FakeDB(articles_counts=[0, 3])
+    # A small-window feed: the stored total reached five, but this fetch only
+    # showed three items, too few to judge, so it stays under admission.
+    db = _FakeDB(articles_counts=[3, 6])
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(3).articles)),
