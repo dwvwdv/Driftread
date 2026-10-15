@@ -93,6 +93,8 @@ async def register(request: Request):
 
 @router.get("/api/review-oauth/authorize", dependencies=[Depends(rate_limit("review_oauth_authorize", 20))])
 async def authorize(request: Request):
+    if len(request.scope.get("query_string", b"")) > MAX_OAUTH_BODY:
+        return oauth_error(invalid_request())
     pairs = request.query_params.multi_items()
     if len(pairs) > 20 or len({key for key, _ in pairs}) != len(pairs):
         return oauth_error(invalid_request())

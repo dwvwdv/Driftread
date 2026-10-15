@@ -52,6 +52,8 @@ async def test_web_link_consent_token_tools_refresh_and_revoke(setup, monkeypatc
             begin = await browser.get(metadata['authorization_endpoint'], params={
                 'response_type': 'code', 'client_id': client_id, 'redirect_uri': CALLBACK,
                 'scope': 'source:review offline_access', 'state': 'client-state+exact',
+                'audience': 'https://other-resource.example', 'access_type': 'offline',
+                'id_token_hint': 'untrusted-client-hint',
                 'resource': resource, 'code_challenge': CHALLENGE, 'code_challenge_method': 'S256'})
             assert begin.status_code == 302
             rid = parse_qs(urlsplit(begin.headers['location']).query)['request'][0]

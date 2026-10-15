@@ -59,6 +59,10 @@ def test_authorize_preserves_params_and_rejects_duplicate_fields(client, monkeyp
     begin.reset_mock()
     assert client.get('/api/review-oauth/authorize?state=one&state=two').status_code == 400
     begin.assert_not_called()
+    for query in ('extension=one&extension=two', 'extension=' + 'x'*8192,
+                  '&'.join(f'hint{i}=x' for i in range(21))):
+        assert client.get('/api/review-oauth/authorize?' + query).status_code == 400
+    begin.assert_not_called()
 
 
 def test_token_only_accepts_bounded_unambiguous_form_and_safe_errors(client, monkeypatch):

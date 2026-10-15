@@ -61,10 +61,10 @@ def authorize(**changes):
 
 @pytest.mark.parametrize('changes',[{'code_challenge_method':'plain'},{'code_challenge':'bad'},
  {'response_type':'token'},{'scope':'admin'},{'resource':'https://reader.example/api/mcp/'},
- {'state':''},{'prompt':'none'},{'unknown':'x'}])
+ {'state':''},{'prompt':'none'}])
 def test_invalid_authorization(changes):
     with pytest.raises(oauth.OAuthError):
-        oauth.begin_authorization(authorize(**changes))
+        oauth.begin_authorization(authorize(audience='https://untrusted.example',unknown='hint',**changes))
 
 
 @pytest.mark.parametrize('token',['signed.jwt.token','manage-secret','dror_'+'a'*43,'droa_bad','☃'])
