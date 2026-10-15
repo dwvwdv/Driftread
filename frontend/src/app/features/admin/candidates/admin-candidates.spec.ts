@@ -38,7 +38,7 @@ describe('AdminCandidates queue paging', () => {
     held = null;
 
     const admin = {
-      listSourceReviews: () => of({ items: [] }),
+      latestSourceReviews: () => of({ items: [] }),
       listCandidates: (p: number, size: number) => {
         requests.push([p, size]);
         if (held) {
@@ -191,7 +191,7 @@ describe('AdminCandidates source review', () => {
     const calls = { request: 0, retry: 0, resolve: [] as string[], read: 0 };
     const admin = {
       listCandidates: () => of({ items: [candidate(1)], total: 1, page: 1, page_size: 20 }),
-      listSourceReviews: () => {
+      latestSourceReviews: () => {
         calls.read++;
         return of({ items: [] });
       },
@@ -226,10 +226,114 @@ describe('AdminCandidates source review', () => {
       };
       requestReview: (c: FeedCandidate, retry?: boolean) => void;
       resolveReview: (c: FeedCandidate, decision: 'accept' | 'reject' | 'defer') => void;
-      load: () => void;
+      load: (quiet?: boolean) => void;
+      onPage: (page: number) => void;
+      reviewErrors: () => Set<string>;
     };
     return { component, fixture, calls };
   }
+
+  it.each([20, 50])('reads %i candidates in one batch and maps missing reviews to null', (size) => {
+    const ids: string[][] = [];
+    const { component } = setup({
+      listCandidates: () =>
+        of({ items: Array.from({ length: size }, (_, i) => candidate(i + 1)), total: size }),
+      latestSourceReviews: (candidateIds: string[]) => {
+        ids.push(candidateIds);
+        return of({ items: [{ ...task(), candidate_id: 'cand-2' }] });
+      },
+      listSourceReviews: () => {
+        throw new Error('Per-candidate review reads must not be used');
+      },
+    });
+    expect(ids).toEqual([Array.from({ length: size }, (_, i) => `cand-${i + 1}`)]);
+    expect(component.sourceReviews()['cand-2']?.id).toBe('r1');
+    expect(component.sourceReviews()['cand-1']).toBeNull();
+    expect(Object.keys(component.sourceReviews())).toHaveLength(size);
+  });
+
+  it('does not request reviews for an empty candidate page', () => {
+    const { calls } = setup({ listCandidates: () => of({ items: [], total: 0 }) });
+    expect(calls.read).toBe(0);
+  });
+
+  it('marks every candidate after a batch failure and clears errors after a successful reload', () => {
+    const response = new Subject<{ items: SourceReview[] }>();
+    const { component, fixture, calls } = setup({
+      listCandidates: () => of({ items: [candidate(1), candidate(2)], total: 2 }),
+      latestSourceReviews: () => response,
+    });
+    response.error(new HttpErrorResponse({ status: 503 }));
+    fixture.detectChanges();
+    expect([...component.reviewErrors()]).toEqual(['cand-1', 'cand-2']);
+    expect(fixture.nativeElement.textContent.match(/無法讀取評審狀態/g)).toHaveLength(2);
+    component.requestReview(candidate(1));
+    component.requestReview(candidate(2));
+    expect(calls.request).toBe(0);
+    TestBed.inject(AdminService).latestSourceReviews = () => of({ items: [] });
+    component.load();
+    expect(component.reviewErrors().size).toBe(0);
+    expect(component.sourceReviews()).toEqual({ 'cand-1': null, 'cand-2': null });
+  });
+
+  it.each([false, true])(
+    'cancels the previous batch immediately when reloading (quiet=%s)',
+    (quiet) => {
+      const old = new Subject<{ items: SourceReview[] }>();
+      const latest = new Subject<{ items: SourceReview[] }>();
+      let reads = 0;
+      const { component } = setup({ latestSourceReviews: () => (++reads === 1 ? old : latest) });
+      const list = new Subject<PaginatedFeedCandidates>();
+      TestBed.inject(AdminService).listCandidates = () => list;
+      expect(old.observed).toBe(true);
+      component.load(quiet);
+      expect(old.observed).toBe(false);
+      expect(latest.observed).toBe(false);
+      list.next({ items: [candidate(1)], total: 1, page: 1, page_size: 20 });
+      latest.next({ items: [task('requested')] });
+      old.next({ items: [] });
+      expect(component.sourceReviews()['cand-1']?.status).toBe('requested');
+    },
+  );
+
+  it('cancels the previous page batch and ignores its late response', () => {
+    const old = new Subject<{ items: SourceReview[] }>();
+    const latest = new Subject<{ items: SourceReview[] }>();
+    let reads = 0;
+    const { component } = setup({
+      listCandidates: (page: number) => of({ items: [candidate(page)], total: 40 }),
+      latestSourceReviews: () => (++reads === 1 ? old : latest),
+    });
+    component.onPage(2);
+    expect(old.observed).toBe(false);
+    latest.next({ items: [{ ...task(), candidate_id: 'cand-2' }] });
+    old.next({ items: [task('failed')] });
+    expect(component.sourceReviews()['cand-1']).toBeUndefined();
+    expect(component.sourceReviews()['cand-2']?.status).toBe('ready');
+  });
+
+  it('cancels an old batch when an action starts and excludes busy rows from later reads', () => {
+    const old = new Subject<{ items: SourceReview[] }>();
+    const write = new Subject<SourceReview>();
+    const ids: string[][] = [];
+    const { component } = setup({
+      listCandidates: () => of({ items: [candidate(1), candidate(2)], total: 2 }),
+      latestSourceReviews: (candidateIds: string[]) => {
+        ids.push(candidateIds);
+        return ids.length === 1 ? old : of({ items: ids.length === 2 ? [] : [task('requested')] });
+      },
+      requestSourceReview: () => write,
+    });
+    component.sourceReviews.set({ 'cand-1': null });
+    component.requestReview(candidate(1));
+    expect(old.observed).toBe(false);
+    component.load(true);
+    expect(ids[1]).toEqual(['cand-2']);
+    write.next(task('requested'));
+    expect(ids[2]).toEqual(['cand-1', 'cand-2']);
+    old.next({ items: [task('failed')] });
+    expect(component.sourceReviews()['cand-1']?.status).toBe('requested');
+  });
 
   it('requests one task, guards double clicks, and refreshes using reads only', () => {
     const response = new Subject<SourceReview>();
@@ -239,7 +343,7 @@ describe('AdminCandidates source review', () => {
         requests++;
         return response;
       },
-      listSourceReviews: () => of({ items: [task('requested')] }),
+      latestSourceReviews: () => of({ items: [task('requested')] }),
     });
     // Start from a known empty task list, as returned by the first review read.
     component.sourceReviews.set({ 'cand-1': null });
@@ -253,7 +357,7 @@ describe('AdminCandidates source review', () => {
 
   it('shows structured results and permits explicit retry only for recoverable tasks', () => {
     const { component, fixture, calls } = setup({
-      listSourceReviews: () =>
+      latestSourceReviews: () =>
         of({
           items: [
             {
@@ -281,7 +385,7 @@ describe('AdminCandidates source review', () => {
 
   it('resolves human review through its dedicated endpoint and protects manual overrides', () => {
     const { component, calls } = setup({
-      listSourceReviews: () => of({ items: [task('awaiting_human')] }),
+      latestSourceReviews: () => of({ items: [task('awaiting_human')] }),
     });
     component.resolveReview(candidate(1), 'defer');
     expect(calls.resolve).toEqual(['defer']);
@@ -294,7 +398,7 @@ describe('AdminCandidates source review', () => {
     const old = new Subject<{ items: SourceReview[] }>();
     let readCount = 0;
     const { component } = setup({
-      listSourceReviews: () => (++readCount === 1 ? old : of({ items: [task('requested')] })),
+      latestSourceReviews: () => (++readCount === 1 ? old : of({ items: [task('requested')] })),
     });
     component.sourceReviews.set({ 'cand-1': null });
     component.requestReview(candidate(1));
@@ -304,13 +408,13 @@ describe('AdminCandidates source review', () => {
 
   it('does not offer a fresh task after a failed state read and cancels reads on leaving', () => {
     const response = new Subject<{ items: SourceReview[] }>();
-    const { component, fixture } = setup({ listSourceReviews: () => response });
+    const { component, fixture } = setup({ latestSourceReviews: () => response });
     response.error(new Error('offline'));
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('無法讀取評審狀態');
     expect(fixture.nativeElement.textContent).not.toContain('請求 AI 評審');
     const pending = new Subject<{ items: SourceReview[] }>();
-    TestBed.inject(AdminService).listSourceReviews = () => pending;
+    TestBed.inject(AdminService).latestSourceReviews = () => pending;
     component.load();
     fixture.destroy();
     pending.next({ items: [task()] });
@@ -326,7 +430,7 @@ describe('AdminCandidates source review', () => {
     ['provider_model_unsupported', '模型版本尚未支援'],
   ])('shows an actionable safe explanation for %s', (code, message) => {
     const { fixture } = setup({
-      listSourceReviews: () => of({ items: [{ ...task('failed'), error_code: code }] }),
+      latestSourceReviews: () => of({ items: [{ ...task('failed'), error_code: code }] }),
     });
     expect(fixture.nativeElement.textContent).toContain(message);
     expect(fixture.nativeElement.textContent).not.toContain(code);
@@ -334,7 +438,7 @@ describe('AdminCandidates source review', () => {
 
   it('keeps unknown provider error text out of the UI', () => {
     const { fixture } = setup({
-      listSourceReviews: () =>
+      latestSourceReviews: () =>
         of({ items: [{ ...task('failed'), error_code: 'raw-secret-provider-error' }] }),
     });
     expect(fixture.nativeElement.textContent).toContain('請檢查服務狀態後重試');
@@ -342,12 +446,12 @@ describe('AdminCandidates source review', () => {
   });
 
   it('explains deferred review even without an operational error code', () => {
-    const { fixture } = setup({ listSourceReviews: () => of({ items: [task('deferred')] }) });
+    const { fixture } = setup({ latestSourceReviews: () => of({ items: [task('deferred')] }) });
     expect(fixture.nativeElement.textContent).toContain('樣本或評審結果未達收錄門檻');
   });
   it('allows retrying a model rejection after policy changes while protecting manual rejection', () => {
     const { component, fixture, calls } = setup({
-      listSourceReviews: () => of({ items: [task('rejected')] }),
+      latestSourceReviews: () => of({ items: [task('rejected')] }),
     });
     expect(fixture.nativeElement.textContent).toContain('重試 AI 評審');
     component.requestReview(candidate(1), true);
@@ -380,7 +484,7 @@ describe('AdminCandidates manual decision conflicts', () => {
                   page: 1,
                   page_size: 20,
                 }),
-              listSourceReviews: () => of({ items: [] }),
+              latestSourceReviews: () => of({ items: [] }),
               holdCandidate: () => throwError(() => conflict),
               rejectCandidate: () => throwError(() => conflict),
             },

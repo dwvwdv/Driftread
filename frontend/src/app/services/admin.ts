@@ -250,6 +250,14 @@ export class AdminService {
     );
   }
 
+  latestSourceReviews(candidateIds: string[]): Observable<{ items: SourceReview[] }> {
+    return this.post<{ items: SourceReview[] }>(
+      '/admin/source-reviews/latest',
+      { candidate_ids: candidateIds },
+      '讀取來源評審失敗',
+    );
+  }
+
   requestSourceReview(candidateId: string): Observable<SourceReview> {
     return this.post<SourceReview>(
       `/admin/source-reviews/candidates/${candidateId}/request`,

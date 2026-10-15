@@ -70,6 +70,19 @@ def list_reviews(db, candidate_id=None, limit=50) -> list[dict]:
     return [_summary(row, candidates[row['candidate_id']]) for row in rows]
 
 
+def latest_reviews(db, candidate_ids: list[str]) -> list[dict]:
+    # Limit each candidate's embedded history, rather than truncating a shared
+    # history list where one frequently retried candidate could hide the rest.
+    candidates = (db.table('discovery_candidates')
+                  .select('id,manual_override,source_reviews(*)')
+                  .in_('id', candidate_ids)
+                  .order('created_at', desc=True, foreign_table='source_reviews')
+                  .order('id', desc=True, foreign_table='source_reviews')
+                  .limit(1, foreign_table='source_reviews').execute().data or [])
+    return [_summary(candidate['source_reviews'][0], candidate)
+            for candidate in candidates if candidate.get('source_reviews')]
+
+
 def request_review(db, candidate_id, *, retry=False) -> dict:
     candidate = get_candidate(db, str(candidate_id))
     if candidate and is_comment_feed(candidate['feed_url']):

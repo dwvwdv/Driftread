@@ -79,3 +79,50 @@ def test_usage_summary_is_admin_only_and_not_parsed_as_review_uuid(review_client
         usage.assert_awaited_once_with(db, limit=5)
         assert client.get("/api/admin/source-reviews/usage?limit=101", headers={"X-API-Key": "test-admin-key"}).status_code == 422
         assert usage.await_count == 1
+
+
+def test_latest_reviews_checks_admin_auth_once_for_the_whole_batch(review_client):
+    client, db = review_client
+    candidate_ids = [CANDIDATE_ID, REVIEW_ID]
+    items = [{"id": REVIEW_ID, "candidate_id": CANDIDATE_ID, "manual_override": "held"}]
+    with patch.object(reviews.source_review, "latest_reviews", return_value=items) as read, \
+            patch("services.manage_auth.require_session") as session:
+        assert client.post("/api/admin/source-reviews/latest", json={"candidate_ids": candidate_ids}).status_code == 422
+        assert client.post("/api/admin/source-reviews/latest", headers={"X-API-Key": "review-machine-key"},
+                           json={"candidate_ids": candidate_ids}).status_code == 403
+        read.assert_not_called()
+        result = client.post("/api/admin/source-reviews/latest",
+                             headers={"Authorization": "Bearer admin", "X-Manage-Session": "session"},
+                             json={"candidate_ids": candidate_ids})
+        assert result.status_code == 200 and result.json() == {"items": items}
+        session.assert_called_once_with("Bearer admin", "session")
+        read.assert_called_once_with(db, candidate_ids)
+
+
+@pytest.mark.parametrize("body", [
+    {}, {"candidate_ids": []}, {"candidate_ids": [CANDIDATE_ID] * 51},
+    {"candidate_ids": ["invalid"]}, {"candidate_ids": [CANDIDATE_ID], "limit": 100},
+])
+def test_latest_reviews_rejects_invalid_or_unbounded_batches(review_client, body):
+    client, _ = review_client
+    with patch.object(reviews.source_review, "latest_reviews") as read:
+        result = client.post("/api/admin/source-reviews/latest", headers={"X-API-Key": "test-admin-key"}, json=body)
+        assert result.status_code == 422
+        read.assert_not_called()
+
+
+def test_latest_reviews_accepts_fifty_candidates_and_maps_business_errors(review_client):
+    from uuid import uuid4
+
+    client, db = review_client
+    candidate_ids = [str(uuid4()) for _ in range(50)]
+    with patch.object(reviews.source_review, "latest_reviews", return_value=[]) as read:
+        result = client.post("/api/admin/source-reviews/latest", headers={"X-API-Key": "test-admin-key"},
+                             json={"candidate_ids": candidate_ids})
+        assert result.status_code == 200 and result.json() == {"items": []}
+        read.assert_called_once_with(db, candidate_ids)
+    with patch.object(reviews.source_review, "latest_reviews", side_effect=reviews.source_review.ReviewError(409, "Review conflict")) as read:
+        result = client.post("/api/admin/source-reviews/latest", headers={"X-API-Key": "test-admin-key"},
+                             json={"candidate_ids": [CANDIDATE_ID]})
+        assert result.status_code == 409 and result.json()["detail"] == "Review conflict"
+        read.assert_called_once_with(db, [CANDIDATE_ID])
