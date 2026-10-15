@@ -72,8 +72,11 @@ class _FakeDB:
         self.articles_ops: list = []
         self.feed_updates: list[dict] = []
         self.source_fetch_calls: list[dict] = []
+        self.subscribers = 0
 
     def rpc(self, name, args):
+        if name == "find_mirror_sources":
+            return _FakeTable(_FakeResult()).query()
         assert name == "record_source_fetch"
         self.source_fetch_calls.append(args)
         return _FakeTable(_FakeResult()).query()
@@ -83,6 +86,8 @@ class _FakeDB:
             return _FeedsProxy(self)
         if name == "articles":
             return _ArticlesProxy(self)
+        if name == "user_feeds":
+            return _FakeTable(_FakeResult(count=self.subscribers)).query()
         raise AssertionError(f"unexpected table {name}")
 
 
@@ -489,3 +494,192 @@ async def test_first_successful_fetch_carries_historical_context(previous_fetch)
         await refresh_one(db, feed)
     assert ingest.call_args.kwargs['backfill'] is (previous_fetch is None)
     assert ingest.call_args.kwargs['backfill_reason'] == ('initial_fetch' if previous_fetch is None else None)
+
+
+# ------------------------------------------------- first-fetch admission gate
+
+def _fetched(articles):
+    parsed = ParsedFeed(title="Feed", url="https://example.com", articles=articles)
+    return ConditionalFetch(not_modified=False, parsed=parsed)
+
+
+def _comment_items(n=4):
+    return [ParsedArticle(title=f"C{i}", url=f"https://example.com/post/#comment-{i}") for i in range(n)]
+
+
+@pytest.mark.asyncio
+async def test_first_fetch_archives_comment_feed_without_storing_items():
+    db = _FakeDB(articles_counts=[0, 0])
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
+        patch("services.feed_refresh.upsert_articles") as upsert,
+    ):
+        result = await refresh_one(db, feed)
+
+    upsert.assert_not_called()
+    assert result.status == "failed" and result.archived is True
+    update = db.feed_updates[-1]
+    assert update["archived_at"] and update["last_fetched_at"]
+    assert update["last_failure_reason"] == "Excluded before admission: comment feed"
+    assert "consecutive_failures" not in update
+
+
+@pytest.mark.asyncio
+async def test_first_fetch_archives_mirror_of_existing_source():
+    db = _FakeDB(articles_counts=[0, 0])
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
+    mirror = ("mirror", {"feed_id": "existing-id", "feed_url": "https://example.com/feed/"})
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
+        patch("services.feed_refresh.new_source_rejection", return_value=mirror) as gate,
+        patch("services.feed_refresh.upsert_articles") as upsert,
+    ):
+        result = await refresh_one(db, feed)
+
+    upsert.assert_not_called()
+    assert gate.call_args.kwargs["exclude_feed_id"] == feed["id"]
+    assert result.archived is True
+    assert db.feed_updates[-1]["last_failure_reason"] == (
+        "Excluded before admission: duplicates existing source existing-id"
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_fetch_keeps_a_source_someone_already_subscribed_to():
+    db = _FakeDB(articles_counts=[0, 4])
+    db.subscribers = 1
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
+        patch("services.feed_refresh.upsert_articles", return_value=4) as upsert,
+    ):
+        result = await refresh_one(db, feed)
+
+    upsert.assert_called_once()
+    assert result.status == "updated"
+    assert "archived_at" not in db.feed_updates[-1]
+
+
+@pytest.mark.asyncio
+async def test_admitted_sources_skip_the_admission_gate():
+    db = _FakeDB(articles_counts=[2, 2])
+    feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00", admitted_at="2026-10-01T00:00:00+00:00")
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
+        patch("services.feed_refresh.new_source_rejection") as gate,
+        patch("services.feed_refresh.upsert_articles", return_value=0),
+    ):
+        result = await refresh_one(db, feed)
+
+    gate.assert_not_called()
+    assert result.status == "updated"
+
+
+@pytest.mark.asyncio
+async def test_sources_too_small_to_judge_are_checked_again_later():
+    # Two items stored at the first fetch; the source now shows enough
+    # comment items to be judged even though last_fetched_at is set.
+    db = _FakeDB(articles_counts=[2, 2])
+    feed = _feed_row(last_fetched_at="2026-10-01T00:00:00+00:00", admitted_at=None)
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
+        patch("services.feed_refresh.upsert_articles") as upsert,
+    ):
+        result = await refresh_one(db, feed)
+
+    upsert.assert_not_called()
+    assert result.archived is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_new_sources_check_and_store_one_at_a_time():
+    """Aliases promoted together land in the same refresh batch; the second
+    check must see the first one's stored items."""
+    import time
+
+    events: list[str] = []
+
+    def gate(db, urls, exclude_feed_id=None):
+        events.append(f"check:{exclude_feed_id}")
+        return None
+
+    def ingest(db, feed_id, articles, **kwargs):
+        events.append(f"start:{feed_id}")
+        time.sleep(0.05)
+        events.append(f"end:{feed_id}")
+        return len(articles)
+
+    db = _FakeDB()
+    feeds = [_feed_row(last_fetched_at=None, admitted_at=None) for _ in range(2)]
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
+        patch("services.feed_refresh.new_source_rejection", side_effect=gate),
+        patch("services.feed_refresh.upsert_articles", side_effect=ingest),
+    ):
+        await asyncio.gather(*(refresh_one(db, feed) for feed in feeds))
+
+    first, second = (events.index(f"check:{f['id']}") for f in feeds)
+    later_check = max(first, second)
+    earlier_id = feeds[0]["id"] if first < second else feeds[1]["id"]
+    assert events.index(f"end:{earlier_id}") < later_check
+
+
+@pytest.mark.asyncio
+async def test_source_is_admitted_once_enough_items_are_stored():
+    db = _FakeDB(articles_counts=[0, 6])
+    feed = _feed_row(last_fetched_at=None, admitted_at=None)
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
+        patch("services.feed_refresh.upsert_articles", return_value=6),
+    ):
+        await refresh_one(db, feed)
+    assert db.feed_updates[-1]["admitted_at"]
+
+    # A small-window feed: the stored total reached five, but this fetch only
+    # showed three items, too few to judge, so it stays under admission.
+    db = _FakeDB(articles_counts=[3, 6])
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(3).articles)),
+        patch("services.feed_refresh.upsert_articles", return_value=3),
+    ):
+        await refresh_one(db, _feed_row(last_fetched_at=None, admitted_at=None))
+    assert "admitted_at" not in db.feed_updates[-1]
+
+
+@pytest.mark.asyncio
+async def test_gate_applies_the_comment_url_rule_to_metadata_only_imports():
+    db = _FakeDB(articles_counts=[0, 0])
+    feed = _feed_row(url="https://example.com/comments/feed/", last_fetched_at=None, admitted_at=None)
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_parsed(6).articles)),
+        patch("services.feed_refresh.upsert_articles") as upsert,
+    ):
+        result = await refresh_one(db, feed)
+    upsert.assert_not_called()
+    assert result.archived is True
+
+
+@pytest.mark.asyncio
+async def test_rows_without_the_admission_column_keep_the_old_behavior():
+    db = _FakeDB(articles_counts=[0, 4])
+    feed = _feed_row(last_fetched_at=None)  # migration not applied yet
+    with (
+        patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
+        patch("services.feed_refresh.fetch_and_parse_conditional", return_value=_fetched(_comment_items())),
+        patch("services.feed_refresh.new_source_rejection") as gate,
+        patch("services.feed_refresh.upsert_articles", return_value=4),
+    ):
+        result = await refresh_one(db, feed)
+    gate.assert_not_called()
+    assert result.status == "updated"
+    assert "admitted_at" not in db.feed_updates[-1]

@@ -1077,3 +1077,66 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 接受追加 P2：前端比較完整 JWT 導致正常自動刷新被誤判為切換帳號，同意已消耗卻不回跳。改以穩定 user ID／auth session ID 與管理 token 隔離成功回應，舊 JWT 的延遲 401 不能清除新憑證；真帳號／登入／管理 session 切換仍拒收舊結果。
 - 接受追加 P2：管理 token 過期／清除後，明確登出沒有撤銷 30 天 OAuth grant。改以已驗證 owner／Supabase session 撤銷該登入全部管理 sessions 與 grants，不依賴可選管理 token；沿用 consent 列鎖，其他登入與 owner 隔離，補空／已清理 token 的登出與同意競跑真 SQL 測試。
 - 接受追加 P1：形狀正確的偽造 bearer 可在未認證前大量新建 DB 連線，佔滿共用 threadpool。加入進 DB 前每 IP 每分鐘 60 次驗證與每 process 4 個名額、獨立驗證執行緒池；超額立即 429／Retry-After，不排隊，取消請求仍待實際 worker 結束才釋放名額。補 IP 隔離、偽造 forwarded header、取消／過載及機器 key 不受驗證池阻塞的回歸。
+
+## 階段四十五：清除重複來源並在收錄前以內容判斷鏡像與留言 feed（PR #99，2026-10-15）
+
+正式 Supabase 用到 551 MB，超過 Free plan 的 500 MB，會被切成唯讀。唯讀查詢的結果是：跨 feed 的文章重複全部來自同站別名 feed（Ars Technica、TIME 各收了 `/feed`、`/feed/`、`/rss` 三個），同一 feed 內的重複全部來自留言 feed（truenas 一篇文章最多存成 70 列 `#comment-N`）。這幾個來源都在 2026-07-31～08-04 經由候選收錄進來，早於 10-08 加入的 URL 守門。另外 pub.dev 的套件發版通知占了 13,667 篇（33%）。
+
+### 正式資料清理（直接在 Supabase 執行，不在 diff 內）
+
+- 經使用者確認後，用單一 statement 封存 10 個 feed，並刪除它們的 18,435 篇文章：pub.dev、TIME 的 `/feed`、`/rss`（保留 `/feed/`）、Ars 的 `/feed/`、`/rss`（保留 `/feed`），以及 truenas、cyberinsider、iso20022、x402、gdpr.eu 的留言 feed。revisions 與 discoveries 透過 cascade 一起刪除。這些來源的訂閱、已讀、收藏都是 0。保留 feed 列當墓碑：直接刪除 feed 會讓 `discovery_candidates.feed_id` 變成 NULL，之後可能再被收錄。
+- 對 `articles`、`article_revisions`、`article_discoveries` 跑 `VACUUM (FULL, ANALYZE)`。資料庫從 551 MB 降到 195 MB（articles 472 → 137 MB）。實際刪除的資料只有約 60 MB，**其餘約 290 MB 是 UPDATE 造成的 bloat**，所以空間仍會長回去。處理步驟寫進 [RUNBOOK](RUNBOOK.md#資料庫接近-supabase-容量上限)。
+- 對應的 `discovery_candidates` 仍是 `imported`，沒有改。
+
+### 入口守門
+
+- 新增 `items_look_like_comments()` 與 `find_mirror_source()`（`services/source_identity.py`），以及 service-only RPC `find_mirror_sources`（migration `20261015040607_source_mirror_gate.sql`）。鏡像判斷看新 feed 項目的 canonical URL 和既有來源文章的**雙向**重疊（各 80%），分類 feed 才不會被當成主 feed 的鏡像；不以 host 合併。設計與套用範圍見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
+- `/discover/import`、`/me/import/opml`、`/admin/feeds/from-url` 原本完全沒有留言 feed 或別名檢查。現在建立來源前都會檢查：留言 feed 拒絕；鏡像來源在使用者路徑改為訂閱既有來源，在管理 API 回 409。前端沿用回傳 feed 的 id 標記訂閱，不需要修改。
+- 候選收錄與管理 JSON 匯入不抓取，因此在排程抓取存入文章前檢查（直到來源存了 5 篇），命中就封存並記錄 `last_failure_reason`。已經有人訂閱的來源不封存。
+- 查詢失敗時放行並記 warning，避免 worker 早於 migration 啟動時排程中斷。
+
+### 沒做的事
+
+- 沒有加入以標題判斷留言 feed（例如「Comments Feed」）：`is_comment_feed()` 的既有決策是不靠標題關鍵字；gdpr.eu 那種 0 篇文章的來源不會產生資料。
+- 沒有做 `TODO.md` 的「重複來源管理畫面」與後台的批次清除功能；這次清理直接在資料庫執行。
+- pub.dev 這類「不是文章」的來源沒有自動判斷規則，仍靠收錄評審。
+- 沒有處理 UPDATE 造成的 bloat 本身（例如調整 autovacuum 或減少不必要的文章 UPDATE）；先用容量歷史觀察成長速度。
+
+### 驗證
+
+- 本機 PostgreSQL 16 的完整 backend：1205 passed、0 skipped。新增的真 PostgreSQL fixture 驗證鏡像、fragment 正規化、分類 feed 子集不命中、封存與 private 來源排除，以及 anon／authenticated 無法執行；單元測試涵蓋門檻、fail-open、首次抓取封存、已訂閱不封存，以及三條匯入路徑。PostgreSQL 17 交給 CI。
+- 用正式資料唯讀驗證：拿每個啟用中來源最新 50 篇比對其他來源，清理後沒有任何重疊，現有來源不會被誤判。
+- 未部署；正式環境套用 migration 後的實際攔截，要等下一次有人匯入別名或留言 feed 才看得到。
+
+### Review 過程中修掉的問題
+
+- **並行競跑**：同一批收錄的別名（正式資料裡 Ars 三個別名在同一秒建立）會在同一輪 `refresh_due()` 並行抓取，兩邊都在對方寫入前完成檢查而一起放行。改為檢查與寫入文章共用一把 process 內的 `asyncio.Lock`；新增的測試在拿掉鎖時會失敗。沒有改成資料庫鎖：文章寫入是多次 PostgREST 呼叫，無法放進同一個交易；跨 process 的情況寫進 SOURCE_MODEL 的限制。
+- **門檻太寬**：兩個方向都以新 feed 的樣本數當分母，60% 門檻下，占主 feed 六成以上的分類 feed 會被對應到主 feed；反過來，匯入主 feed 時也可能被對應到既有的分類 feed，使用者會漏掉其他分類的文章。門檻提高到 80%；真鏡像在兩邊都正常抓取時接近 100%。
+- **「最新文章」的定義**：原本用 `published_at DESC NULLS LAST`，最近沒有日期的文章會排在有舊日期的文章後面，內容相同的新別名因此被放行。改用專案既有的 `timeline_at` 排序與索引，並補真 PostgreSQL 測試。
+- **證據不足就永遠不再檢查**：第一次抓取時項目少於門檻的來源會正常寫入並設定 `last_fetched_at`，之後就不再檢查。改為來源存滿 5 篇之前，每次排程抓取都重新檢查。
+
+### 討論後不修
+
+- **先訂閱就略過檢查**：候選收錄或 JSON 匯入建立的來源，若在第一次排程抓取前就被使用者訂閱，會略過檢查。新來源一建立就排定立即抓取，這段時間最多一個 tick（預設 5 分鐘）。要涵蓋這種情況，得在封存時把訂閱搬到鏡像來源，而這會批次改動使用者資料，代價和它防止的情況不成比例。
+- 修正後本機 PostgreSQL 16 完整 backend：1208 passed、0 skipped。
+
+### 第二輪 review
+
+- **解除封存後立刻被重新封存**：被檢查擋下的來源沒有任何文章，原本「存了 5 篇前都再檢查」的條件會讓管理者解除封存後的下一次抓取又把它封存，SOURCE_MODEL 寫的復原流程實際不能用。改為新增 `feeds.admitted_at`：存滿 5 篇時寫入；管理者解除 `Excluded before admission` 這類封存時也寫入，視為人工覆核。migration 把已抓取過的既有來源回填為已收錄；worker 先於 migration 啟動時沿用原本行為，不寫不存在的欄位。
+- **同一份 OPML 裡的別名**：兩個新網址都只建立 metadata、還沒有文章，目錄比對看不出相同，兩個都會被建立並訂閱，之後又因為有訂閱而略過排程檢查。匯入過程改為保留已處理 outline 的項目並互相比對，只訂閱第一個。
+- **排程檢查沒有套用 URL 規則**：管理 JSON 匯入只建 metadata，完全依賴排程檢查；項目連結不是 `#comment-N` 的明確留言端點（`/comments/feed`、`?withcomments=1`）原本會被收錄。排程檢查改為先套 `is_comment_feed()`。
+- **不修：既有來源的寫入也納入鎖**：新別名與既有來源同一輪到期時，新別名可能看不到既有來源本輪才抓到的項目。但鎖只保證互斥、不保證先後，新別名仍可能先拿到鎖，所以納入鎖解決不了這個問題，反而會讓整個 worker 的文章寫入全部序列化。這個落差與既有來源抓取間隔造成的落差相同，由 80% 門檻吸收。
+- 修正後本機 PostgreSQL 16 完整 backend：1215 passed、0 skipped。
+
+### 第三輪 review
+
+- **小視窗 feed 會被提早標成已收錄**：檢查看的是這次抓到的項目，`admitted_at` 卻依累積存了幾篇來寫入。永遠只顯示最新 3 篇的別名，每次都因樣本不足無法判斷，累積到 5 篇後卻被標成已收錄，之後再也不檢查。改為只有某次抓取本身有 5 個以上項目（檢查真的判斷過）才寫入；更新測試，修正前會失敗。
+- **不修：兩位使用者同時匯入同一站的不同別名**：需要兩個請求落在同一次外部抓取的幾秒內，屬於 AGENTS.md「Code Review 原則」列出的極端 timing；要涵蓋得把抓取後的檢查、建立、寫入、訂閱全部序列化。發生時只多一個重複來源，可用 RUNBOOK 清理。
+
+### 協作規範
+
+- PR #101 在 `AGENTS.md`「分支與 PR」加入的每小時 PR 檢查，是使用者給 Codex 的指示（Codex 沒有事件 hook）。依使用者要求標註為「僅 Codex 適用」；Claude Code 仍以事件 hook 訂閱為準。
+
+### 與 master 整合
+
+- 合併 PR #101 後，它的 `20261014010000_source_review_oauth.sql` 排在本 PR 原本的 migration 之後。比照階段四十三的作法，把本 PR 尚未合併的 migration 改名為 `20261015040607_source_mirror_gate.sql`，讓它排在所有已合併的 migration 之後，結尾的 schema reload 仍是最後一支。兩支 migration 動的是不同的表，沒有相依關係。PR #101 的條目佔用了階段四十四，本條目順延為階段四十五。

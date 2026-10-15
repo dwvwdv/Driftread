@@ -12,7 +12,8 @@ from database import get_client
 from models import OpmlImportResult
 from rss_parser import fetch_and_parse
 from services.feed_discovery import DiscoveryError, validate_fetch_url
-from services.source_visibility import import_readable_source
+from services.source_identity import canonical_item_urls, same_items
+from services.source_visibility import import_readable_source, screen_new_source
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -64,6 +65,11 @@ async def import_opml(
             f"{skipped} outline(s) skipped: import is limited to {MAX_OPML_OUTLINES} feeds per file"
         )
 
+    # Feeds created by this import have no stored articles yet, so the
+    # catalog check cannot see that two outlines (e.g. /feed and /rss) are
+    # the same source. Compare against what this file already brought in.
+    seen: list[tuple[str, str, set[str]]] = []
+
     for outline in outlines:
         raw_url = outline.get("xmlUrl")
         if not raw_url:
@@ -78,6 +84,11 @@ async def import_opml(
             failed.append(f"{raw_url}: failed to fetch")
             continue
 
+        screened = screen_new_source(db, feed_url, parsed)
+        if screened and screened[0] == "comment_feed":
+            failed.append(f"{feed_url}: comment feeds cannot be imported")
+            continue
+
         title = outline.get("title") or outline.get("text") or parsed.title
         feed_data = {
             "title": title,
@@ -90,13 +101,23 @@ async def import_opml(
             # request. Mark each feed due so the scheduler fetches it next pass.
             "next_fetch_at": datetime.now(timezone.utc).isoformat(),
         }
-        row = import_readable_source(db, feed_data)
-        if not row:
-            failed.append(f"{feed_url}: feed not available")
+        items = set(canonical_item_urls([article.url for article in parsed.articles]))
+        twin = next((entry for entry in seen if same_items(items, entry[2])), None)
+        if twin:
+            failed.append(f"{feed_url}: same items as {twin[1]}; subscribed to that feed only")
             continue
-        feed_id = row["id"]
-        db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": datetime.now(timezone.utc).isoformat(), "p_ok": True}).execute()
+        if screened:
+            # A mirror of an existing source: subscribe to that one instead.
+            feed_id = screened[1]["id"]
+        else:
+            row = import_readable_source(db, feed_data)
+            if not row:
+                failed.append(f"{feed_url}: feed not available")
+                continue
+            feed_id = row["id"]
+            db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": datetime.now(timezone.utc).isoformat(), "p_ok": True}).execute()
         imported += 1
+        seen.append((feed_id, feed_url, items))
 
         sub = db.table("user_feeds").upsert(
             {"user_id": user.id, "feed_id": feed_id},

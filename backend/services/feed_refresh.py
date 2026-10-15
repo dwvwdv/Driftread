@@ -18,12 +18,20 @@ from rss_parser import fetch_and_parse_conditional
 from services.articles import upsert_articles
 from services.feed_discovery import validate_fetch_url
 from services.language import resolve_feed_language
+from services.source_identity import (
+    MIRROR_MIN_ITEMS,
+    canonical_item_urls,
+    is_comment_feed,
+    new_source_rejection,
+)
 
 if TYPE_CHECKING:
     from supabase import Client
 
 logger = logging.getLogger(__name__)
 AUTO_ARCHIVE_FAILURE_THRESHOLD = 10
+_ADMISSION_LOCK = asyncio.Lock()
+ADMISSION_EXCLUSION_PREFIX = "Excluded before admission"
 DEFAULT_INTERVAL_MINUTES = 60
 Outcome = Literal["new", "unchanged", "failed"]
 Status = Literal["updated", "not_modified", "failed"]
@@ -171,13 +179,29 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
 
     assert fetched.parsed is not None
     before = count_articles(db, feed_id)
-    # Batch ingestion includes synchronous PostgREST calls and HTML parsing.
-    # Keep worker heartbeat and other async refreshes responsive during it.
-    upserted = await asyncio.to_thread(
-        upsert_articles, db, feed_id, fetched.parsed.articles,
-        backfill=not feed.get("last_fetched_at"),
-        backfill_reason="initial_fetch" if not feed.get("last_fetched_at") else None,
-    )
+    initial = not feed.get("last_fetched_at")
+    # A row without the column comes from a database the migration has not
+    # reached yet (worker started ahead of the api); keep the old behavior.
+    gated = "admitted_at" in feed and not feed["admitted_at"]
+    if gated:
+        # Until a source is admitted (enough stored items to have been
+        # judged, or an administrator's override), every fetch re-runs the
+        # gate. One process-wide lock covers the check and the write, so
+        # aliases promoted together and refreshed in the same batch cannot
+        # both pass before either stores its items.
+        async with _ADMISSION_LOCK:
+            rejection = await asyncio.to_thread(_admission_rejection, db, feed_id, feed_url, fetched.parsed)
+            if rejection:
+                db.table("feeds").update({
+                    "archived_at": now.isoformat(),
+                    "last_fetched_at": now.isoformat(),
+                    "last_failure_reason": rejection,
+                }, returning="minimal").eq("id", feed_id).execute()
+                logger.info("Archived %s before admission: %s", feed_url, rejection)
+                return RefreshResult(feed_id=feed_id, status="failed", error=rejection, archived=True)
+            upserted = await _ingest(db, feed_id, fetched.parsed, initial)
+    else:
+        upserted = await _ingest(db, feed_id, fetched.parsed, initial)
     total = count_articles(db, feed_id)
     new_articles = max(0, total - before)
     interval = next_interval(current_interval, "new" if new_articles else "unchanged")
@@ -199,6 +223,12 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
     }
     if language:
         update["language"] = language
+    # Admit only after a fetch whose own items were enough to judge. The
+    # stored total is not the evidence the gate saw: a feed that only ever
+    # shows three items would otherwise be admitted unchecked once three
+    # fetches had accumulated five articles.
+    if gated and len(canonical_item_urls([a.url for a in fetched.parsed.articles])) >= MIRROR_MIN_ITEMS:
+        update["admitted_at"] = now.isoformat()
     # returning="minimal" — same reason as the two update() calls above.
     db.table("feeds").update(update, returning="minimal").eq("id", feed_id).execute()
 
@@ -209,6 +239,45 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         upserted=upserted,
         total_articles=total,
     )
+
+
+async def _ingest(db: "Client", feed_id: str, parsed, initial: bool) -> int:
+    # Batch ingestion includes synchronous PostgREST calls and HTML parsing.
+    # Keep worker heartbeat and other async refreshes responsive during it.
+    return await asyncio.to_thread(
+        upsert_articles, db, feed_id, parsed.articles,
+        backfill=initial,
+        backfill_reason="initial_fetch" if initial else None,
+    )
+
+
+def _admission_rejection(db: "Client", feed_id: str, feed_url: str, parsed) -> str | None:
+    """Keep comment feeds and mirrors out before their items are stored.
+
+    Candidate promotion and bulk JSON import never fetch, so the scheduled
+    fetches are the only point that sees their items. A source someone
+    already subscribed to is left alone: archiving it would silently empty
+    that reader's subscription, and every subscribing path already ran this
+    gate before creating the row.
+    """
+    if is_comment_feed(feed_url):
+        rejection = ("comment_feed", None)
+    else:
+        rejection = new_source_rejection(
+            db, [article.url for article in parsed.articles], exclude_feed_id=feed_id,
+        )
+    if not rejection:
+        return None
+    subscribers = (
+        db.table("user_feeds").select("feed_id", count="exact", head=True)
+        .eq("feed_id", feed_id).execute()
+    )
+    if getattr(subscribers, "count", None):
+        return None
+    kind, mirror = rejection
+    if kind == "comment_feed":
+        return f"{ADMISSION_EXCLUSION_PREFIX}: comment feed"
+    return f"{ADMISSION_EXCLUSION_PREFIX}: duplicates existing source {mirror['feed_id']}"
 
 
 async def refresh_due(

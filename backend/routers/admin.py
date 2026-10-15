@@ -21,7 +21,9 @@ from models import (
 )
 from rss_parser import fetch_and_parse
 from services.feed_discovery import DiscoveryError, validate_fetch_url
+from services.source_visibility import screen_new_source
 from services.feed_refresh import (
+    ADMISSION_EXCLUSION_PREFIX,
     AUTO_ARCHIVE_FAILURE_THRESHOLD,  # noqa: F401  (re-exported for existing importers)
     batch_size,
     concurrency,
@@ -152,9 +154,14 @@ async def unarchive_feed(
     if not result or not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
 
+    changes: dict = {"archived_at": None}
+    if (result.data.get("last_failure_reason") or "").startswith(ADMISSION_EXCLUSION_PREFIX):
+        # Unarchiving a source the admission gate excluded overrides it;
+        # without this the next fetch would exclude it again.
+        changes["admitted_at"] = datetime.now(timezone.utc).isoformat()
     updated = (
         db.table("feeds")
-        .update({"archived_at": None})
+        .update(changes)
         .eq("id", str(feed_id))
         .execute()
     )
@@ -203,6 +210,14 @@ async def import_feed_from_url(
         parsed = await fetch_and_parse(safe_url)
     except Exception:
         raise HTTPException(status_code=400, detail="Failed to fetch feed")
+    screened = screen_new_source(db, safe_url, parsed)
+    if screened and screened[0] == "comment_feed":
+        raise HTTPException(status_code=422, detail="Comment feeds cannot be imported")
+    if screened:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Feed duplicates existing source {screened[1]['id']}",
+        )
 
     feed_data = {
         "title": parsed.title,
