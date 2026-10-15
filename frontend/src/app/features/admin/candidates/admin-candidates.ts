@@ -9,7 +9,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
-import { Observable } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 import { AdminService } from '../../../services/admin';
 import { FeedCandidate, SourceReview } from '../../../models';
 import { ObCard } from '../../../ui/card/card';
@@ -38,6 +38,7 @@ import { clampPage } from '../../../shared/paging';
 export class AdminCandidates implements OnInit {
   private destroyRef = inject(DestroyRef);
   private reviewSeq = new Map<string, number>();
+  private reviewRead?: Subscription;
   protected sourceReviews = signal<Record<string, SourceReview | null>>({});
   protected reviewErrors = signal<Set<string>>(new Set());
   protected reviewBusy = signal<Set<string>>(new Set());
@@ -90,6 +91,7 @@ export class AdminCandidates implements OnInit {
    */
   protected load(quiet = false): void {
     const seq = ++this.loadSeq;
+    this.reviewRead?.unsubscribe();
     if (!quiet) this.loading.set(true);
 
     this.admin
@@ -102,7 +104,7 @@ export class AdminCandidates implements OnInit {
           this.selected.set(new Set());
           this.total.set(result.total);
           this.loading.set(false);
-          for (const candidate of result.items) this.loadSourceReview(candidate.id);
+          this.loadSourceReviews(result.items, seq);
         },
         error: () => {
           if (seq !== this.loadSeq) return;
@@ -117,25 +119,36 @@ export class AdminCandidates implements OnInit {
     return seq;
   }
 
-  private loadSourceReview(id: string): void {
-    if (this.reviewBusy().has(id)) return;
-    const seq = this.nextReviewSeq(id);
-    this.admin
-      .listSourceReviews(id)
+  private loadSourceReviews(candidates: FeedCandidate[], loadSeq: number): void {
+    const ids = candidates.map(({ id }) => id).filter((id) => !this.reviewBusy().has(id));
+    if (!ids.length) return;
+    const sequences = new Map(ids.map((id) => [id, this.nextReviewSeq(id)]));
+    const currentIds = () =>
+      loadSeq === this.loadSeq
+        ? ids.filter((id) => sequences.get(id) === this.reviewSeq.get(id))
+        : [];
+    // One verification for the whole page; navigation and backfills cancel the
+    // previous batch instead of piling up management database connections.
+    this.reviewRead = this.admin
+      .latestSourceReviews(ids)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: ({ items }) => {
-          if (seq !== this.reviewSeq.get(id)) return;
-          this.sourceReviews.update((current) => ({ ...current, [id]: items[0] ?? null }));
+          const validIds = currentIds();
+          const reviews = new Map(items.map((review) => [review.candidate_id, review]));
+          this.sourceReviews.update((current) => {
+            const next = { ...current };
+            for (const id of validIds) next[id] = reviews.get(id) ?? null;
+            return next;
+          });
           this.reviewErrors.update((current) => {
             const next = new Set(current);
-            next.delete(id);
+            for (const id of validIds) next.delete(id);
             return next;
           });
         },
         error: () => {
-          if (seq !== this.reviewSeq.get(id)) return;
-          this.reviewErrors.update((current) => new Set(current).add(id));
+          this.reviewErrors.update((current) => new Set([...current, ...currentIds()]));
         },
       });
   }
@@ -178,6 +191,7 @@ export class AdminCandidates implements OnInit {
   private runReviewAction(id: string, request: Observable<SourceReview>): void {
     this.nextReviewSeq(id);
     ++this.loadSeq;
+    this.reviewRead?.unsubscribe();
     this.reviewBusy.update((current) => new Set(current).add(id));
     const finished = () =>
       this.reviewBusy.update((current) => {
@@ -443,6 +457,8 @@ export class AdminCandidates implements OnInit {
    * end up past the end, and the empty branch hides the paginator with it.
    */
   private remove(id: string): void {
+    this.nextReviewSeq(id);
+    this.reviewRead?.unsubscribe();
     this.candidates.update((list) => list.filter((c) => c.id !== id));
     this.total.update((n) => Math.max(0, n - 1));
 

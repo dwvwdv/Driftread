@@ -202,6 +202,21 @@ describe('AdminService source review API', () => {
     mock = TestBed.inject(HttpTestingController);
   });
   afterEach(() => mock.verify());
+  it('reads the latest review for a page with one authenticated batch request', () => {
+    const service = TestBed.inject(AdminService);
+    const ids = Array.from({ length: 20 }, (_, i) => `c${i}`);
+    let result: unknown;
+    service.latestSourceReviews(ids).subscribe((response) => (result = response));
+    const read = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/latest'));
+    expect(read.request.method).toBe('POST');
+    expect(read.request.body).toEqual({ candidate_ids: ids });
+    expect(read.request.headers.get('Authorization')).toBe('Bearer user');
+    expect(read.request.headers.get('x-manage-session')).toBe('session');
+    expect(read.request.headers.has('x-api-key')).toBe(false);
+    const response = { items: [{ id: 'r1', candidate_id: 'c3', status: 'ready' }] };
+    read.flush(response);
+    expect(result).toEqual(response);
+  });
   it('filters reviews by candidate and submits request, retry and human resolution with management authentication', () => {
     const service = TestBed.inject(AdminService);
     service.listSourceReviews('c1').subscribe();

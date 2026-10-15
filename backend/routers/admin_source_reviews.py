@@ -3,7 +3,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from supabase import Client
 
@@ -21,6 +21,11 @@ class ResolveReviewRequest(BaseModel):
     decision: Literal["accept", "reject", "defer"]
 
 
+class LatestReviewsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate_ids: list[UUID] = Field(min_length=1, max_length=50)
+
+
 async def _call(operation, *args, **kwargs):
     try:
         return await run_in_threadpool(operation, *args, **kwargs)
@@ -34,6 +39,14 @@ async def list_source_reviews(candidate_id: UUID | None = None,
                               db: Client = Depends(get_client)) -> dict:
     items = await _call(source_review.list_reviews, db,
                         candidate_id=str(candidate_id) if candidate_id else None, limit=limit)
+    return {"items": items}
+
+
+@router.post("/latest")
+async def latest_source_reviews(body: LatestReviewsRequest,
+                                db: Client = Depends(get_client)) -> dict:
+    items = await _call(source_review.latest_reviews, db,
+                        [str(candidate_id) for candidate_id in body.candidate_ids])
     return {"items": items}
 
 

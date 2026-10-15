@@ -55,7 +55,11 @@ export class ToastService {
   }
 
   show(text: string, tone: ToastTone = 'info', durationMs = DURATION[tone]): void {
-    this.ensureHost().push({ id: nextId++, text, tone }, durationMs);
+    const host = this.ensureHost();
+    // Concurrent requests can report the same outage. Keep one notification
+    // (and one screen-reader announcement) until it expires or is dismissed.
+    if (host.toasts().some((toast) => toast.text === text && toast.tone === tone)) return;
+    host.push({ id: nextId++, text, tone }, durationMs);
     this.announcer.announce(text, tone === 'danger' ? 'assertive' : 'polite');
   }
 

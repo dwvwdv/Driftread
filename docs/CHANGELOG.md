@@ -1140,3 +1140,18 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 ### 與 master 整合
 
 - 合併 PR #101 後，它的 `20261014010000_source_review_oauth.sql` 排在本 PR 原本的 migration 之後。比照階段四十三的作法，把本 PR 尚未合併的 migration 改名為 `20261015040607_source_mirror_gate.sql`，讓它排在所有已合併的 migration 之後，結尾的 schema reload 仍是最後一支。兩支 migration 動的是不同的表，沒有相依關係。PR #101 的條目佔用了階段四十四，本條目順延為階段四十五。
+
+## 階段四十六：候選評審改為批次讀取，避免後台驗證連線超額（PR #102，2026-10-15）
+
+候選頁原本在載入清單後，為每筆候選立即發出一次評審讀取；預設 20 筆就會同時進行 20 次管理驗證，各自建立 PostgreSQL 連線。正式 Supavisor 日誌在 2026-10-15 09:34:03 與 09:34:39 UTC 各記錄六次 `EMAXCONNSESSION`，session pool 上限為 15。每個失敗請求各自提示，而通知最多顯示三則，因此進頁時反覆看到三則「後台驗證服務暫時無法使用」。離線以原始前端類別重現了 20 個並行評審讀取與三則可見通知。
+
+- 新增管理批次摘要 API，每次接受 1–50 個候選 UUID，以 PostgREST 關聯查詢各取最新一筆；沿用既有管理認證與摘要欄位過濾，不取得全域前 100 筆後再篩選，也不替每筆候選另查人工覆寫狀態。
+- 前端改為清單一次、當頁評審一次；預設單頁從 21 個 HTTP 請求降為兩個。重載取消舊批次，並保留人工操作與舊回應的版本圍欄；批次失敗明確標示相關列為讀取失敗。
+- 相同內容與等級的通知在顯示期間去重，螢幕閱讀器也只宣告一次；不延長通知停留時間，關閉或到期後可以再次提示。
+- 不調高正式連線池、不修改全域 `DATABASE_URL`、不快取或略過管理認證；不新增 migration 或環境變數。全域 URL 仍供 migration 的跨交易 session advisory lock 使用。
+
+### 驗證與部署界限
+
+- 後端全套 1134 passed、186 skipped：本機未設定 `DRIFTREAD_TEST_DATABASE_URL`，真 PostgreSQL 測試交 CI。沙箱跨執行緒喚醒問題以 repo 外 selector bounded polling runner 完成測試，未改產品程式。批次 API 測試涵蓋管理認證只執行一次、1–50 個 UUID、真正 PostgREST client 產生的單次嵌入請求與摘要敏感欄位過濾；MockTransport 只驗證請求／回應契約，不冒稱已驗證真 PostgREST 執行。
+- 前端 38 個測試檔、384 tests 通過，production build 通過；initial bundle 511.81 kB／500 kB 保留既有 warning。回歸測試涵蓋 20／50 筆僅一次批次、空頁、缺評審、失敗後恢復、換頁／操作取消舊回應，以及通知去重與關閉／到期後重新提示。獨立 review、文件檢查與 `git diff --check` 通過。
+- 正式 Supabase 唯讀查詢確認關聯與 service_role 讀取權限齊全，並以等價 SQL 取得 20 個候選各自最新的評審。尚未部署或走查真實登入、PostgREST HTTP 與瀏覽器；部署時先升級 API，再升級 frontend。

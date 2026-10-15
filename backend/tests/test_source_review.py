@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from services.review_models import ReviewSubmission
-from services.source_review import ReviewError, _fetch_snapshot, _rpc, get_review_packet, submit_review
+from services.source_review import ReviewError, _fetch_snapshot, _rpc, get_review_packet, latest_reviews, submit_review
 
 
 def body(**changes):
@@ -35,6 +35,68 @@ class RPCDB:
     def rpc(self, name, params):
         self.calls.append((name, params))
         return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.response))
+
+
+def test_latest_reviews_uses_one_embedded_request_with_per_candidate_limit_and_no_packet_secrets():
+    import httpx
+    from postgrest import SyncPostgrestClient
+
+    candidate_ids = [str(uuid4()) for _ in range(50)]
+    latest_id, tied_id = "ffffffff-ffff-4fff-8fff-ffffffffffff", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    histories = {
+        # A single candidate has more history than the old list endpoint's
+        # global maximum; it must not consume another candidate's result slot.
+        candidate_ids[0]: [
+            {"id": str(uuid4()), "candidate_id": candidate_ids[0], "created_at": "2026-10-01T00:00:00Z"}
+            for _ in range(120)
+        ] + [
+            {"id": tied_id, "candidate_id": candidate_ids[0], "created_at": "2026-10-15T00:00:00Z"},
+            {"id": latest_id, "candidate_id": candidate_ids[0], "created_at": "2026-10-15T00:00:00Z",
+             "status": "awaiting_human", "snapshot": {"secret": "untrusted samples"},
+             "lease_token": "private-token", "lease_expires_at": "private-expiry", "policy": {"secret": "private-policy"}},
+        ],
+        candidate_ids[1]: [],
+        **{cid: [{"id": str(uuid4()), "candidate_id": cid, "created_at": "2026-09-01T00:00:00Z"}]
+           for cid in candidate_ids[2:]},
+    }
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert request.method == "GET" and request.url.path == "/discovery_candidates"
+        params = request.url.params
+        assert params["select"] == "id,manual_override,source_reviews(*)"
+        assert params["id"] == "in.(" + ",".join(candidate_ids) + ")"
+        assert params["source_reviews.order"] == "created_at.desc,id.desc"
+        assert params["source_reviews.limit"] == "1"
+        assert "limit" not in params and "order" not in params
+        # This models the embedded response contract; the assertions above use
+        # the real client to verify the actual PostgREST request parameters.
+        rows = [{"id": cid, "manual_override": "held" if cid == candidate_ids[0] else None,
+                 "source_reviews": sorted(history, key=lambda row: (row["created_at"], row["id"]), reverse=True)[:1]}
+                for cid, history in histories.items()]
+        return httpx.Response(200, json=rows)
+
+    with httpx.Client(base_url="https://postgrest.test", transport=httpx.MockTransport(handle)) as http:
+        db = SyncPostgrestClient("https://postgrest.test", schema="driftread", http_client=http)
+        items = latest_reviews(db, candidate_ids)
+    assert len(requests) == 1 and len(items) == 49
+    by_candidate = {row["candidate_id"]: row for row in items}
+    assert set(by_candidate) == set(candidate_ids) - {candidate_ids[1]}
+    assert by_candidate[candidate_ids[0]]["id"] == latest_id
+    assert by_candidate[candidate_ids[0]]["manual_override"] == "held"
+    assert all(by_candidate[cid]["manual_override"] is None for cid in candidate_ids[2:])
+    assert not {"snapshot", "lease_token", "lease_expires_at", "policy"}.intersection(by_candidate[candidate_ids[0]])
+
+
+def test_latest_reviews_omits_missing_candidates():
+    import httpx
+    from postgrest import SyncPostgrestClient
+
+    with httpx.Client(base_url="https://postgrest.test", transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=[]))) as http:
+        db = SyncPostgrestClient("https://postgrest.test", schema="driftread", http_client=http)
+        assert latest_reviews(db, [str(uuid4())]) == []
 
 
 @pytest.mark.parametrize('error,status', [('disabled',503), ('not_found',404), ('lease',409), ('manual_decision',409)])

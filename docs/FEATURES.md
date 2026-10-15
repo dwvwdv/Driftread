@@ -367,6 +367,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/admin/settings` | 共用全域設定與版本，包含探測方向與來源評審政策 |
 | PUT | `/admin/settings/{key}` | 型別驗證與版本比對的設定儲存，衝突回 409 |
 | GET | `/admin/source-reviews` | 有界評審列表，可依 `candidate_id` 過濾 |
+| POST | `/admin/source-reviews/latest` | 批次讀取 1–50 個 `candidate_ids` 各自最新的評審摘要，沒有評審者省略；沿用管理認證 |
 | POST | `/admin/source-reviews/candidates/{id}/request` | 申請候選評審，不 inline 抓取 |
 | GET | `/admin/source-reviews/usage` | 付費請求計數、成本與未知／暫停狀態，不含原始 payload |
 | GET | `/admin/source-reviews/{id}` | 讀取有界評審資料包與結果，不簽發租約 |
