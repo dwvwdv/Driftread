@@ -38,6 +38,16 @@ describe('adminGuard', () => {
     expect(url).toContain('/manage/login');
     expect(decodeURIComponent(url)).toContain('/manage/candidates');
   });
+  it('preserves the OAuth request query through management login', async () => {
+    const router = TestBed.inject(Router);
+    const destination = router.parseUrl('/manage/mcp-authorize?request=opaque-request');
+    router.getCurrentNavigation = () =>
+      ({ extractedUrl: destination }) as ReturnType<Router['getCurrentNavigation']>;
+    const result = await run('manage', 'mcp-authorize');
+    expect(decodeURIComponent(router.serializeUrl(result as UrlTree))).toContain(
+      '/manage/mcp-authorize?request=opaque-request',
+    );
+  });
   it('waits for Supabase session restoration before testing the OTP session', async () => {
     let restore!: () => void;
     TestBed.inject(AuthService).ready = new Promise<void>((resolve) => {

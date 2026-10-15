@@ -116,6 +116,12 @@ def main():
     if not existing.get("JEV_API_KEY", "").strip():
         print("\nℹ JEV_API_KEY 未設定；只有啟用 Jev 來源評審時才需要，external agent 不需要此 key。")
 
+    if "SOURCE_REVIEW_OAUTH_BASE_URL" not in existing:
+        with open(ENV_FILE, "a") as f:
+            f.write("\nSOURCE_REVIEW_OAUTH_BASE_URL=\n")
+    if not existing.get("SOURCE_REVIEW_OAUTH_BASE_URL", "").strip():
+        print("\nℹ ChatGPT Web MCP 需要 SOURCE_REVIEW_OAUTH_BASE_URL（正式 HTTPS origin）；空白時保留機器 key 認證。")
+
     PLACEHOLDERS = {
         "SUPABASE_URL": "https://your-project-id.supabase.co",
         "SUPABASE_KEY": "your-service-role-key",

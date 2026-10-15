@@ -125,7 +125,8 @@ docker compose down
 | `SUPABASE_JWT_SECRET` | ✅ | 驗證用戶 `Authorization: Bearer` token（Dashboard → Settings → API → JWT Settings）。仍為必填：專案尚未輪替到 JWT signing key 時送來的 HS256 token 靠它驗證 |
 | `SUPABASE_JWKS_URL` | | 覆寫預設的 JWKS 端點（`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`）。多數部署不需要設定；用 ES256／RS256 JWT signing key 的專案送來的 token 會自動走這條路徑驗證，見 `docs/SECURITY.md` |
 | `ADMIN_API_KEY` | ✅ | 外部腳本／擴充的管理 API 金鑰，由 `gen_env.py` 自動產生；瀏覽器後台不再使用 |
-| `SOURCE_REVIEW_MCP_KEY` | 評審 MCP 必填 | 獨立機器評審 key，由 `gen_env.py` 產生；不能與 `ADMIN_API_KEY` 相同，空白拒絕管理 MCP |
+| `SOURCE_REVIEW_MCP_KEY` | 機器評審 MCP 必填 | 獨立機器評審 key，由 `gen_env.py` 產生；不能與 `ADMIN_API_KEY` 相同，空白停用機器 key 認證 |
+| `SOURCE_REVIEW_OAUTH_BASE_URL` | ChatGPT Web MCP 必填 | 正式 HTTPS origin；空白停用 OAuth。沿用管理員帳密＋Telegram 授權；[設定方式](docs/SOURCE_REVIEW.md#chatgpt-web-oauth100) |
 | `JEV_API_KEY` | Jev 引擎必填 | 只在 backend api／worker 使用；外部 agent 模式不需要 |
 | `MANAGE_OWNER_USER_ID` | 後台必填 | 唯一管理員的 Supabase `auth.users.id`；空白拒絕後台登入。部署順序見 [RUNBOOK](docs/RUNBOOK.md#後台-telegram-兩步驟驗證) |
 | `CORS_ORIGINS` | | 逗號分隔的允許來源，預設 `*` |

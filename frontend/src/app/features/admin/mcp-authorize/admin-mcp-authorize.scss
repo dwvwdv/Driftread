@@ -1,0 +1,35 @@
+:host {
+  display: block;
+}
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-2) var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+dt,
+.hint {
+  color: var(--text-dim);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+ul {
+  margin: var(--sp-3) 0;
+  padding-left: var(--sp-6);
+}
+li {
+  margin-bottom: var(--sp-2);
+}
+.hint {
+  font-size: var(--text-sm);
+}
+.back {
+  display: inline-block;
+  margin-top: var(--sp-6);
+}
+ob-error {
+  display: block;
+  margin-bottom: var(--sp-4);
+}

@@ -96,6 +96,14 @@ describe('management password and Telegram login', () => {
     await page.resend();
     expect(request).toHaveBeenCalledOnce();
   });
+  it('returns to the original OAuth request after Telegram verification', async () => {
+    redirect = '/manage/mcp-authorize?request=opaque-request';
+    const { page } = setup();
+    await page.submit();
+    page.code = '123456';
+    await page.submit();
+    expect(navigate).toHaveBeenCalledWith(redirect);
+  });
   it('rejects redirects outside /manage', async () => {
     redirect = '/manage-attacker';
     const { page } = setup();

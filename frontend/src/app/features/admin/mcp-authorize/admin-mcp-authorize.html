@@ -1,0 +1,52 @@
+<ob-page-header
+  kicker="MCP AUTHORIZATION"
+  heading="授權來源評審"
+  subtitle="允許 ChatGPT 使用來源評審工具"
+/>
+@if (loading()) {
+  <ob-loading label="讀取授權請求中" />
+}
+@if (error()) {
+  <ob-error [message]="error()" />
+}
+@if (consent(); as request) {
+  <ob-card heading="確認連線" meta="OAUTH">
+    <dl>
+      <dt>應用程式</dt>
+      <dd>{{ request.client_name }}</dd>
+      <dt>授權後返回</dt>
+      <dd>{{ request.redirect_host }}</dd>
+      <dt>請求有效期限</dt>
+      <dd>{{ request.expires_at | date: 'yyyy/MM/dd HH:mm:ss' }}</dd>
+    </dl>
+    <p>這項授權允許 ChatGPT：</p>
+    <ul>
+      <li>讀取來源收錄政策。</li>
+      <li>提出、領取來源評審任務，讀取候選樣本。</li>
+      <li>提交評審結果；若後台已開啟「跳過人工覆核」，符合門檻的來源會自動收錄。</li>
+    </ul>
+    <p class="hint">
+      授權僅涵蓋五個來源評審工具，不能修改全域設定或人工覆寫評審。之後可到「MCP 連線」撤銷。
+    </p>
+    <p class="hint">連線最多 30 天，後台登出或撤銷即失效。</p>
+    <div cardActions>
+      <button
+        type="button"
+        class="ob-btn ob-btn--primary"
+        [disabled]="busy()"
+        (click)="decide(true)"
+      >
+        允許連線
+      </button>
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost"
+        [disabled]="busy()"
+        (click)="decide(false)"
+      >
+        拒絕
+      </button>
+    </div>
+  </ob-card>
+}
+<a class="back" routerLink="/manage/mcp-connections">管理已授權的 MCP 連線</a>

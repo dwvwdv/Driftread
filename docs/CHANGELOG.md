@@ -1049,7 +1049,36 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - `storage` 已在 queue kinds 註冊，但舊 `worker_runs_kind_check` 仍只接受三種 scheduler，實際 INSERT 會被拒絕；best-effort recorder 吞掉錯誤，讓採樣的成功／失敗從 recent runs 消失。補上同支未合併 migration 的可重跑約束更新，保留原三種 kind、最新 master 的 source_review，並接受 storage，未知 kind 仍拒絕。真 PostgreSQL fixture 使用 service_role 驗證五種工作的 running → failed／succeeded 寫入與讀回；修正前會明確因 storage 的 CHECK violation 失敗。
 - 整合已合併 PR #97：保留來源評審與 storage 的 timeout、loop、前端服務與型別，合併衝突已解；將本 PR 未合併的 migration 重命名為 `20261013115249_article_storage_history.sql`（由 CLI 產生），排在來源評審三支 migration 之後，避免後者重新設定 kind whitelist 時移除 storage。完整 migration chain 的 fixture 同時驗證 source_review 與 storage；本 PR 階段順延至四十三。
 
-## 階段四十四：清除重複來源並在收錄前以內容判斷鏡像與留言 feed（PR #99，2026-10-13）
+## 階段四十四：ChatGPT Web 來源評審 OAuth 與管理員授權（PR #101，#100，2026-10-14）
+
+管理 MCP 原本只接受專用 X-API-Key，ChatGPT Web 新增連線介面無法提供自訂 header，選 OAuth／混合／無驗證皆不能直接接入。依使用者指示補窄權限 OAuth，沿用單管理員帳密＋Telegram 驗證，不更換既有服務 hosting 或共用 Supabase Auth 配置。
+
+- OAuth discovery、public client DCR、S256 PKCE 與精確 callback／client／resource 綁定；public origin 只來自新 `SOURCE_REVIEW_OAUTH_BASE_URL`，同步 env 範本／compose api／gen_env。空白停用 OAuth，原專用機器 key 保留，拒絕混合憑證與普通 JWT。
+- `/manage/mcp-authorize` 顯式同意／拒絕，登入回跳保留 opaque request；`/manage/mcp-connections` 顯示授權、期限、撤銷及歷史。前端檢查官方 ChatGPT callback、account switch／離頁在途回應、重複提交與清單 race；沒有把 key 或 OAuth token 放進前端設定。
+- 五個 MCP 工具維持來源評審權限，`securitySchemes` 宣告來源評審與 offline_access。OAuth 不授權全域設定、人工覆寫或一般管理 REST；人工覆核開關沿用既有政策。
+- 一次性 code、15 分鐘 access、30 天 grant、refresh 輪替與重放提交後撤銷；每次檢查目前管理員、Supabase session、帳號停用、resource／到期／撤銷。後台登出同步撤銷該登入 session grants，OTP session 自然到期不阻斷仍有效的 OAuth grant。
+- 六張 OAuth 私有表保存憑證 hash／replay fencing 與持久 DCR 簽名金鑰，RLS 零 policy，撤銷所有 Data API roles（含 service_role），沿用 privileged DATABASE_URL。簽名金鑰須保留原值並隨資料庫備份；bearer 憑證仍只存 hash。新增可重跑 timestamp migration；本機 Supabase CLI 不可用，按既有 runner 命名規範建立，不改已合併 migration。
+- nginx forwarding discovery，避免回傳 Angular HTML；no-referrer 與 X-Frame-Options DENY 保護同意頁。公開 DCR／authorize／token 有界 body／參數／限流與容量，有界清理保留必要的 replay digest。
+
+### 驗證與界限
+
+- 本機 backend（含 review 修復）1101 passed／183 skipped；OAuth HTTP 與官方 MCP SDK 的 key／OAuth、scope／metadata、錯誤與業務邊界測試通過。真 PostgreSQL 包含 code／refresh 競跑、重放撤銷、登出／同意競跑、角色／RLS、migration 重跑及 HTTP linking→工具→refresh→撤銷，交 CI PostgreSQL 17 驗證。
+- 程式 commit `873bd46` 的 GitHub CI 全部成功：backend 1263 passed（含 PostgreSQL 17 的全部 SQL／角色／競跑與 HTTP linking fixture）、frontend 364 tests／build、docs 與兩個 Docker image build。PR workflow 未推送正式 image。
+- 前端（含追加 review 修復）37 files／372 tests 通過，production build 通過；initial 511.81 kB／500 kB 保留既有 warning，不放寬預算。文件與 diff 檢查通過。普通沙箱執行緒喚醒限制以 repo 外 bounded selector runner 驗證，不更改產品 async 邏輯、不新增權限要求。
+- 獨立 review 發現同意頁原本只接受 source:review，會拒絕正常 offline_access grant；改為 scope allowlist 並補測試。installed SDK 驗證 metadata、DCR、code／refresh request shape 相容。
+- 真實 ChatGPT Web、本人帳密／Telegram、正式 Supabase、TLS／nginx／Docker 部署未驗收，交 #83。隔離 HTTP 測試的 browser JWT identity 與 MCP 業務資料使用假資料，不能冒稱已接上正式 Web。ChatGPT 客戶端自己的工具批准策略不由 OAuth 同意取代；MCP 不建立常駐 agent。
+- 本批只提供官方 ChatGPT callbacks／public client／DCR，不實作任意 callback、CIMD URL 抓取、client_credentials 或一般用途 OAuth provider；其他 AI roadmap 範圍不變。Review 事件 hook 工具不可用，依使用者更新指示建立 PR #101 每小時檢查，持續至合併或關閉；無新進展時不通知。
+
+### Review 過程中修掉的問題
+
+- 接受 P1：公開 DCR 原先每次新增 client，匿名呼叫可耗盡 100 筆配額並阻斷合法連線至清理。改為 HMAC 簽名的公開 metadata，匿名註冊零 client 記錄，只有管理員同意才保存；待授權請求仍有 10 分鐘期限、容量上限與 IP 限流。
+- 接受 P2：grant 清理後連帶移除閒置 client，會令 ChatGPT 快取的 client ID 無法重新授權。已同意 client 改為保留，token／grant 仍按原期限失效；原 client ID 相容。
+- 新增 120 次匿名註冊後仍可同意／交換 token、閒置 61 天清理後同 ID 重新授權、簽名篡改與金鑰跨連線持久化、同意重放及最大 metadata 的 PostgreSQL 回歸測試。issued client ID 限 2,048 字元，避免索引大小限制；簽名 metadata 不加密且不包含 bearer 憑證。
+- 接受追加 P2：前端比較完整 JWT 導致正常自動刷新被誤判為切換帳號，同意已消耗卻不回跳。改以穩定 user ID／auth session ID 與管理 token 隔離成功回應，舊 JWT 的延遲 401 不能清除新憑證；真帳號／登入／管理 session 切換仍拒收舊結果。
+- 接受追加 P2：管理 token 過期／清除後，明確登出沒有撤銷 30 天 OAuth grant。改以已驗證 owner／Supabase session 撤銷該登入全部管理 sessions 與 grants，不依賴可選管理 token；沿用 consent 列鎖，其他登入與 owner 隔離，補空／已清理 token 的登出與同意競跑真 SQL 測試。
+- 接受追加 P1：形狀正確的偽造 bearer 可在未認證前大量新建 DB 連線，佔滿共用 threadpool。加入進 DB 前每 IP 每分鐘 60 次驗證與每 process 4 個名額、獨立驗證執行緒池；超額立即 429／Retry-After，不排隊，取消請求仍待實際 worker 結束才釋放名額。補 IP 隔離、偽造 forwarded header、取消／過載及機器 key 不受驗證池阻塞的回歸。
+
+## 階段四十五：清除重複來源並在收錄前以內容判斷鏡像與留言 feed（PR #99，2026-10-15）
 
 正式 Supabase 用到 551 MB，超過 Free plan 的 500 MB，會被切成唯讀。唯讀查詢的結果是：跨 feed 的文章重複全部來自同站別名 feed（Ars Technica、TIME 各收了 `/feed`、`/feed/`、`/rss` 三個），同一 feed 內的重複全部來自留言 feed（truenas 一篇文章最多存成 70 列 `#comment-N`）。這幾個來源都在 2026-07-31～08-04 經由候選收錄進來，早於 10-08 加入的 URL 守門。另外 pub.dev 的套件發版通知占了 13,667 篇（33%）。
 
@@ -1061,7 +1090,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 ### 入口守門
 
-- 新增 `items_look_like_comments()` 與 `find_mirror_source()`（`services/source_identity.py`），以及 service-only RPC `find_mirror_sources`（migration `20261013142256_source_mirror_gate.sql`）。鏡像判斷看新 feed 項目的 canonical URL 和既有來源文章的**雙向**重疊（各 80%），分類 feed 才不會被當成主 feed 的鏡像；不以 host 合併。設計與套用範圍見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
+- 新增 `items_look_like_comments()` 與 `find_mirror_source()`（`services/source_identity.py`），以及 service-only RPC `find_mirror_sources`（migration `20261015040607_source_mirror_gate.sql`）。鏡像判斷看新 feed 項目的 canonical URL 和既有來源文章的**雙向**重疊（各 80%），分類 feed 才不會被當成主 feed 的鏡像；不以 host 合併。設計與套用範圍見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
 - `/discover/import`、`/me/import/opml`、`/admin/feeds/from-url` 原本完全沒有留言 feed 或別名檢查。現在建立來源前都會檢查：留言 feed 拒絕；鏡像來源在使用者路徑改為訂閱既有來源，在管理 API 回 409。前端沿用回傳 feed 的 id 標記訂閱，不需要修改。
 - 候選收錄與管理 JSON 匯入不抓取，因此在排程抓取存入文章前檢查（直到來源存了 5 篇），命中就封存並記錄 `last_failure_reason`。已經有人訂閱的來源不封存。
 - 查詢失敗時放行並記 warning，避免 worker 早於 migration 啟動時排程中斷。
@@ -1098,3 +1127,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - **排程檢查沒有套用 URL 規則**：管理 JSON 匯入只建 metadata，完全依賴排程檢查；項目連結不是 `#comment-N` 的明確留言端點（`/comments/feed`、`?withcomments=1`）原本會被收錄。排程檢查改為先套 `is_comment_feed()`。
 - **不修：既有來源的寫入也納入鎖**：新別名與既有來源同一輪到期時，新別名可能看不到既有來源本輪才抓到的項目。但鎖只保證互斥、不保證先後，新別名仍可能先拿到鎖，所以納入鎖解決不了這個問題，反而會讓整個 worker 的文章寫入全部序列化。這個落差與既有來源抓取間隔造成的落差相同，由 80% 門檻吸收。
 - 修正後本機 PostgreSQL 16 完整 backend：1215 passed、0 skipped。
+
+### 與 master 整合
+
+- 合併 PR #101 後，它的 `20261014010000_source_review_oauth.sql` 排在本 PR 原本的 migration 之後。比照階段四十三的作法，把本 PR 尚未合併的 migration 改名為 `20261015040607_source_mirror_gate.sql`，讓它排在所有已合併的 migration 之後，結尾的 schema reload 仍是最後一支。兩支 migration 動的是不同的表，沒有相依關係。PR #101 的條目佔用了階段四十四，本條目順延為階段四十五。

@@ -1,5 +1,7 @@
 """Official SDK interoperability and machine/management permission boundaries."""
+import asyncio
 from contextlib import asynccontextmanager
+from threading import BoundedSemaphore, Event
 from unittest.mock import Mock, patch
 
 import httpx
@@ -136,3 +138,127 @@ async def test_unexpected_service_error_does_not_expose_credentials():
     with pytest.raises(ValueError, match="^Source review operation failed$") as error:
         await transport._call(operation)
     assert "SECRET_PROVIDER_KEY" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_oauth_official_sdk_works_without_machine_key_and_advertises_scopes(mcp_app, monkeypatch):
+    monkeypatch.setenv('SOURCE_REVIEW_OAUTH_BASE_URL', 'https://reader.example')
+    monkeypatch.delenv('SOURCE_REVIEW_MCP_KEY')
+    token = 'droa_' + 'a' * 43
+    grant = {'owner_user_id': 'owner', 'scope': 'source:review', 'grant_id': 'grant'}
+    with patch.object(transport.review_oauth, 'validate_access_token', return_value=grant) as validate, \
+            patch.object(transport, 'get_client', return_value=Mock(spec=[])), \
+            patch.object(transport.source_review, 'claim_review', return_value=None) as claim:
+        async with mcp_app.router.lifespan_context(mcp_app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app),
+                                         headers={'Authorization': 'Bearer ' + token}) as http:
+                async with streamable_http_client('http://testserver/api/admin/mcp/', http_client=http) as (receive, send, _):
+                    async with ClientSession(receive, send) as session:
+                        await session.initialize()
+                        tools = (await session.list_tools()).tools
+                        for tool in tools:
+                            assert tool.meta['securitySchemes'] == [{'type': 'oauth2', 'scopes': ['source:review', 'offline_access']}]
+                            assert tool.model_dump()['securitySchemes'] == tool.meta['securitySchemes']
+                        result = await session.call_tool('claim_source_review')
+                        assert result.structuredContent == {'review': None}
+                        claim.assert_called_once()
+                        assert claim.call_args.kwargs == {'reviewer_id': 'external_agent'}
+        assert validate.call_count >= 3
+        assert all(call.args == (token,) for call in validate.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_oauth_challenge_revocation_and_mixed_credentials_fail_before_business(mcp_app, monkeypatch):
+    monkeypatch.setenv('SOURCE_REVIEW_OAUTH_BASE_URL', 'https://reader.example')
+    token = 'droa_' + 'a' * 43
+    with patch.object(transport, 'get_client') as db, \
+            patch.object(transport.review_oauth, 'validate_access_token',
+                         side_effect=transport.review_oauth.OAuthError('invalid_token', 401)) as validate:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), base_url='http://testserver') as http:
+            for headers in ({}, {'Authorization': 'Bearer ' + token},
+                            {'Authorization': 'Bearer ' + token, 'X-API-Key': KEY},
+                            {'Authorization': 'Bearer ' + token, 'X-Manage-Session': 'admin-session'}):
+                result = await http.post('/api/admin/mcp/', headers=headers, json={})
+                assert result.status_code == 401
+                assert 'https://reader.example/.well-known/oauth-protected-resource/api/admin/mcp' in result.headers['www-authenticate']
+                assert 'source:review offline_access' in result.headers['www-authenticate']
+            db.assert_not_called()
+            validate.assert_called_once_with(token)
+
+
+@pytest.mark.asyncio
+async def test_oauth_ip_limit_rejects_before_verification_and_does_not_trust_forwarded_header(mcp_app):
+    token = 'droa_' + 'a' * 43
+    with patch.object(transport.review_oauth, 'validate_access_token',
+                      side_effect=transport.review_oauth.OAuthError('invalid_token', 401)) as validate, \
+            patch.object(transport, 'get_client') as db:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app, client=('192.0.2.1', 123)),
+                                     base_url='http://testserver') as http:
+            for i in range(60):
+                response = await http.post('/api/admin/mcp/', json={}, headers={
+                    'Authorization': 'Bearer ' + token, 'X-Forwarded-For': f'198.51.100.{i}'})
+                assert response.status_code == 401
+            blocked = await http.post('/api/admin/mcp/', json={}, headers={'Authorization': 'Bearer ' + token})
+            assert blocked.status_code == 429 and int(blocked.headers['retry-after']) > 0
+            assert blocked.headers['cache-control'] == 'no-store'
+            assert validate.call_count == 60
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app, client=('192.0.2.2', 123)),
+                                     base_url='http://testserver') as other:
+            assert (await other.post('/api/admin/mcp/', json={},
+                                     headers={'Authorization': 'Bearer ' + token})).status_code == 401
+        assert validate.call_count == 61
+        db.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_oauth_verification_capacity_survives_cancellation_without_blocking_machine_key(mcp_app, monkeypatch):
+    monkeypatch.setattr(transport, '_OAUTH_VERIFY_SLOTS', BoundedSemaphore(2))
+    monkeypatch.setattr(transport, 'review_mcp_http', transport.JSONResponse({'ok': True}))
+    loop = asyncio.get_running_loop()
+    started = [asyncio.Event(), asyncio.Event()]
+    release = Event()
+    tokens = ['droa_' + c * 43 for c in 'abc']
+
+    def verify(token):
+        index = tokens.index(token)
+        if index < 2:
+            loop.call_soon_threadsafe(started[index].set)
+            assert release.wait(5), 'test verification worker was not released'
+        raise transport.review_oauth.OAuthError('invalid_token', 401)
+
+    with patch.object(transport.review_oauth, 'validate_access_token', side_effect=verify) as validate, \
+            patch.object(transport, 'get_client', return_value=Mock(spec=[])):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), base_url='http://testserver') as http:
+            tasks = [asyncio.create_task(http.post('/api/admin/mcp/', json={}, headers={
+                'Authorization': 'Bearer ' + token})) for token in tokens[:2]]
+            try:
+                await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 2)
+                tasks[0].cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await tasks[0]
+                blocked = await http.post('/api/admin/mcp/', json={}, headers={'Authorization': 'Bearer ' + tokens[2]})
+                assert blocked.status_code == 429 and blocked.headers['retry-after'] == '1'
+                assert validate.call_count == 2
+                # The OAuth workers cannot exhaust the shared pool used by key-authenticated tools.
+                keyed = await asyncio.wait_for(http.post('/api/admin/mcp/', json={}, headers={'X-API-Key': KEY}), 2)
+                assert keyed.status_code == 200
+            finally:
+                release.set()
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 2)
+            assert tasks[1].result().status_code == 401
+            # Verification failures release capacity for subsequent requests.
+            assert (await http.post('/api/admin/mcp/', json={}, headers={
+                'Authorization': 'Bearer ' + tokens[2]})).status_code == 401
+            assert validate.call_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('token', ['droa_short', 'droa_' + 'a' * 44, 'droa_' + '!' * 43])
+async def test_malformed_oauth_bearer_never_dispatches_verification(mcp_app, token):
+    with patch.object(transport.review_oauth, 'validate_access_token') as validate, \
+            patch.object(transport, 'get_client') as db:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), base_url='http://testserver') as http:
+            response = await http.post('/api/admin/mcp/', json={}, headers={'Authorization': 'Bearer ' + token})
+            assert response.status_code == 401
+        validate.assert_not_called()
+        db.assert_not_called()
