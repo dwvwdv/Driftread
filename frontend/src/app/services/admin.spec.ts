@@ -217,6 +217,37 @@ describe('AdminService source review API', () => {
     read.flush(response);
     expect(result).toEqual(response);
   });
+  it('sends the awaiting-human candidate filter to the server', () => {
+    TestBed.inject(AdminService).listCandidates(2, 20, 'awaiting_human').subscribe();
+    const request = mock.expectOne((r) => r.url.endsWith('/admin/discovery/candidates'));
+    expect(request.request.params.get('status')).toBe('awaiting_human');
+    expect(request.request.params.get('page')).toBe('2');
+    request.flush({ items: [], total: 0 });
+  });
+
+  it('uses authenticated batch endpoints and preserves per-item failures', () => {
+    const service = TestBed.inject(AdminService);
+    let result: unknown;
+    service
+      .batchRequestSourceReviews(['c1', 'c2'], true)
+      .subscribe((response) => (result = response));
+    const request = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/batch/request'));
+    expect(request.request.body).toEqual({ candidate_ids: ['c1', 'c2'], retry: true });
+    expect(request.request.headers.get('x-manage-session')).toBe('session');
+    const partial = {
+      items: [{ candidate_id: 'c2', ok: false, status_code: 409, detail: {} }],
+      succeeded: 1,
+      failed: 1,
+    };
+    request.flush(partial);
+    expect(result).toEqual(partial);
+    service.batchResolveSourceReviews(['r1'], 'defer').subscribe();
+    const resolve = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/batch/resolve'));
+    expect(resolve.request.body).toEqual({ review_ids: ['r1'], decision: 'defer' });
+    expect(resolve.request.headers.get('Authorization')).toBe('Bearer user');
+    resolve.flush({ items: [], succeeded: 0, failed: 0 });
+  });
+
   it('filters reviews by candidate and submits request, retry and human resolution with management authentication', () => {
     const service = TestBed.inject(AdminService);
     service.listSourceReviews('c1').subscribe();

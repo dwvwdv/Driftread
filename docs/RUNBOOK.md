@@ -130,13 +130,21 @@ Free plan 的資料庫上限是 500 MB，超過會被切成唯讀。`DELETE` 和
 
 回滾前先關閉 `source.review` 並停 worker；舊應用忽略新欄位，但不理解評審政策，可能重新使用原 referrer 自動入庫。因此回滾時保持 `FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS=0` 或停用 discovery，不能把舊版視為仍有模型把關。新增資料保留，不移除人工覆寫與分析歷史。
 
+## 來源評審批次與待複審
+
+先更新 API，開機套用 `20261016033310_review_candidate_listing.sql`（最新評審索引、唯讀列表 RPC、人工覆核版本檢查），healthy 後更新同版 frontend／worker。沒有新增環境變數、資料表或 Dashboard 設定；既有候選／評審歷史保留。舊版 API 的 resolve 呼叫仍可用，但只能處理最新待人工覆核的結果。
+
+ChatGPT 刷新 MCP 工具列表後應有九個工具。先呼叫唯讀 `list_source_review_candidates`，確認不建立租約，再以少量任務驗收批次領取／提交、部分失敗與已過期租約重領。候選頁確認「待複審」跨頁總數、全選與批次覆核。明確重試仍可能產生費用，不以正式任務任意做失敗測試。
+
+回滾應用時保留 migration；新增 RPC／索引不影響舊列表，較嚴格的覆核檢查繼續生效。回滾到沒有新工具的 API 後，重新刷新 ChatGPT 工具列表。
+
 ## ChatGPT Web 來源評審 OAuth（#100）
 
 1. 備份並停舊 worker，升級 API，開機套用 `20261014010000_source_review_oauth.sql`；保留 ledger，healthy 後啟動同版 worker／frontend。新表撤銷所有 Data API roles（含 service_role），沿用既有 privileged `DATABASE_URL`，不需要修改 Supabase Dashboard 的 OAuth server／Exposed Schemas。
    OAuth 啟用後，資料庫備份／還原必須包含私有 `driftread.review_oauth_registration_key`：匿名 DCR 的 client ID 由此持久金鑰驗證，不能在重啟或清理時重建。已同意 client 的 metadata 保留，過期 grant／token 清理不會要求刪除並重建 ChatGPT 連線。
 2. `.env` 填 `SOURCE_REVIEW_OAUTH_BASE_URL=https://正式網域`，只填 HTTPS origin；重新建立 API 容器讓環境變數載入。此值只傳 API，worker 不用；空白停用 OAuth，原 `SOURCE_REVIEW_MCP_KEY` 保留。代理必須使用同版 nginx 的 `/.well-known/` API forwarding、no-referrer／禁止 frame headers，外層 TLS 與 public origin 一致。
 3. 用未帶 token 的 MCP request 確認 401 `WWW-Authenticate` 指向 public origin 的 resource metadata；確認 `/.well-known/oauth-authorization-server` 與 `/.well-known/oauth-protected-resource/api/admin/mcp` 回傳 JSON，不能是 Angular HTML。metadata／工具 scopes 含 `source:review`、`offline_access`。
-4. ChatGPT 自訂 MCP 填 `https://正式網域/api/admin/mcp/`，選 OAuth；Client ID／Client Secret 留白，採 DCR public client。完成管理員帳密＋Telegram OTP → 來源評審同意頁 → 回 ChatGPT 掃描五個工具。API key、普通 Supabase JWT 或「無驗證」都不能取代此流程。
+4. ChatGPT 自訂 MCP 填 `https://正式網域/api/admin/mcp/`，選 OAuth；Client ID／Client Secret 留白，採 DCR public client。完成管理員帳密＋Telegram OTP → 來源評審同意頁 → 回 ChatGPT 掃描九個工具。API key、普通 Supabase JWT 或「無驗證」都不能取代此流程。
 5. 呼叫 `review_policy` 確認有效政策；如要採樣，還需 `FEED_DISCOVERY_ENABLED` 和 `source.review.enabled` 皆啟用，引擎 `external_agent`。人工覆核可依既有設定跳過，不因新增 OAuth 改變政策或批次放行舊結果。
 6. 驗證 refresh、`/manage/mcp-connections` 撤銷與後台登出後舊 token 失效（包括管理 token 已過期／清除的登出），普通帳號不能授權；同意期間的 JWT 自動刷新仍能回跳，來源評審 token 無法改設定／人工覆寫／一般管理 REST。OAuth MCP 驗證每 IP 每分鐘 60 次、每 process 4 個並發，超額依 429 的 Retry-After 重試。驗收本人 ChatGPT 帳號、正式 Telegram 與 Supabase session，不以假的 JWT／隔離 PostgreSQL 測試冒稱已連上 Web。
 

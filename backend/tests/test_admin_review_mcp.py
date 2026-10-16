@@ -59,8 +59,9 @@ async def test_official_sdk_source_review_workflow_and_annotations(mcp_app):
                         init = await session.initialize()
                         assert init.serverInfo.name == "Driftread Source Review"
                         tools = {t.name: t for t in (await session.list_tools()).tools}
-                        assert set(tools) == {"review_policy", "request_source_review", "claim_source_review", "source_review_packet", "submit_source_review"}
-                        assert {name for name, tool in tools.items() if tool.annotations.readOnlyHint} == {"review_policy", "source_review_packet"}
+                        assert set(tools) == {"review_policy", "request_source_review", "claim_source_review", "source_review_packet", "submit_source_review",
+                                              "list_source_review_candidates", "request_source_reviews", "claim_source_reviews", "submit_source_reviews"}
+                        assert {name for name, tool in tools.items() if tool.annotations.readOnlyHint} == {"review_policy", "source_review_packet", "list_source_review_candidates"}
                         assert all(not tool.annotations.openWorldHint for tool in tools.values())
                         assert tools["claim_source_review"].annotations.idempotentHint is False
                         assert all(t.inputSchema["additionalProperties"] is False for t in tools.values())
@@ -128,8 +129,11 @@ async def test_expired_lease_and_provider_packet_are_tool_errors(mcp_app):
                         await session.initialize()
                         result = await session.call_tool("submit_source_review", {"review_id": REVIEW_ID, "submission": SUBMISSION})
                         assert result.isError is True and "lease expired" in str(result)
+                        assert result.structuredContent == {'error_code': 'REVIEW_CONFLICT', 'status_code': 409,
+                                                            'detail': 'Review lease expired'}
                         result = await session.call_tool("source_review_packet", {"review_id": REVIEW_ID})
                         assert result.isError is True and "another engine" in str(result)
+                        assert result.structuredContent['error_code'] == 'FORBIDDEN'
 
 
 @pytest.mark.asyncio
@@ -138,6 +142,90 @@ async def test_unexpected_service_error_does_not_expose_credentials():
     with pytest.raises(ValueError, match="^Source review operation failed$") as error:
         await transport._call(operation)
     assert "SECRET_PROVIDER_KEY" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_sdk_batches_listing_bounds_and_machine_authority(mcp_app):
+    db = Mock(spec=[])
+    summary = {'items': [{'id': CANDIDATE_ID, 'latest_review': {'id': REVIEW_ID, 'status': 'ready'}}]}
+    partial = {'items': [{'review_id': REVIEW_ID, 'ok': False, 'status_code': 409,
+                          'detail': 'Review lease expired'}], 'succeeded': 0, 'failed': 1}
+    leases = {'reviews': [{'id': REVIEW_ID, 'lease_token': LEASE}], 'claimed': 1, 'error': None}
+    with patch.object(transport, 'get_client', return_value=db), \
+            patch.object(transport, 'list_review_candidates', return_value=summary) as listing, \
+            patch.object(transport.source_review, 'request_reviews', return_value={'items': [], 'succeeded': 1, 'failed': 0}) as enqueue, \
+            patch.object(transport.source_review, 'claim_reviews', return_value=leases) as claims, \
+            patch.object(transport.source_review, 'claim_review') as single_claim, \
+            patch.object(transport.source_review, 'submit_reviews', return_value=partial) as submit:
+        async with mcp_app.router.lifespan_context(mcp_app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), headers={'X-API-Key': KEY}) as http:
+                async with streamable_http_client('http://testserver/api/admin/mcp/', http_client=http) as (receive, send, _):
+                    async with ClientSession(receive, send) as session:
+                        await session.initialize()
+                        tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+                        assert tools['list_source_review_candidates'].annotations.readOnlyHint is True
+                        assert tools['claim_source_reviews'].annotations.idempotentHint is False
+                        assert tools['request_source_reviews'].annotations.idempotentHint is True
+                        assert tools['submit_source_reviews'].annotations.idempotentHint is True
+                        listed = await session.call_tool('list_source_review_candidates')
+                        assert listed.isError is False and listed.structuredContent == summary
+                        listing.assert_called_once_with(db, status='ready', limit=20, offset=0)
+                        single_claim.assert_not_called()
+                        claims.assert_not_called()
+
+                        # The server accepts both batch bounds and leaves each
+                        # submission tied to its own validated packet identity.
+                        for size in (1, 50):
+                            result = await session.call_tool('request_source_reviews', {'candidate_ids': [CANDIDATE_ID] * size})
+                            assert result.isError is False
+                            assert enqueue.call_args.args[0] is db
+                            assert [str(cid) for cid in enqueue.call_args.args[1]] == [CANDIDATE_ID] * size
+                            assert enqueue.call_args.kwargs == {}
+                            result = await session.call_tool('submit_source_reviews', {
+                                'submissions': [{'review_id': REVIEW_ID, 'submission': SUBMISSION}] * size})
+                            assert result.isError is False and result.structuredContent == partial
+                            assert submit.call_args.kwargs == {'reviewer_id': 'external_agent'}
+                            assert len(submit.call_args.args[1]) == size
+                            assert str(submit.call_args.args[1][0].submission.lease_token) == LEASE
+                        for limit in (1, 5):
+                            result = await session.call_tool('claim_source_reviews', {'limit': limit})
+                            assert result.isError is False and result.structuredContent == leases
+                            claims.assert_called_with(db, limit, reviewer_id='external_agent')
+
+                        for name, args in (
+                            ('request_source_reviews', {'candidate_ids': []}),
+                            ('request_source_reviews', {'candidate_ids': [CANDIDATE_ID] * 51}),
+                            ('request_source_reviews', {'candidate_ids': [CANDIDATE_ID], 'retry': True}),
+                            ('request_source_reviews', {'candidate_ids': [CANDIDATE_ID], 'manual_override': None}),
+                            ('claim_source_reviews', {'limit': 0}), ('claim_source_reviews', {'limit': 6}),
+                            ('claim_source_reviews', {'reviewer_id': 'jev'}),
+                            ('submit_source_reviews', {'submissions': []}),
+                            ('submit_source_reviews', {'submissions': [{'review_id': REVIEW_ID, 'submission': SUBMISSION}] * 51}),
+                            ('submit_source_reviews', {'submissions': [{'review_id': REVIEW_ID, 'submission': {**SUBMISSION, 'engine': 'jev'}}]}),
+                            ('submit_source_reviews', {'submissions': [{'review_id': REVIEW_ID, 'submission': SUBMISSION, 'decision': 'accept'}]}),
+                            ('list_source_review_candidates', {'status': 'held'}),
+                            ('list_source_review_candidates', {'limit': 51}),
+                            ('list_source_review_candidates', {'offset': -1}),
+                        ):
+                            assert (await session.call_tool(name, args)).isError is True, (name, args)
+                        assert enqueue.call_count == submit.call_count == claims.call_count == 2
+                        assert listing.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sdk_unavailable_error_has_stable_code_without_secret(mcp_app, caplog):
+    with patch.object(transport, 'get_client', return_value=Mock(spec=[])), \
+            patch.object(transport.source_review, 'claim_reviews', side_effect=RuntimeError('key=SECRET_PROVIDER_KEY')):
+        async with mcp_app.router.lifespan_context(mcp_app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), headers={'X-API-Key': KEY}) as http:
+                async with streamable_http_client('http://testserver/api/admin/mcp/', http_client=http) as (receive, send, _):
+                    async with ClientSession(receive, send) as session:
+                        await session.initialize()
+                        result = await session.call_tool('claim_source_reviews')
+    assert result.isError is True
+    assert result.structuredContent == {'error_code': 'UNAVAILABLE', 'status_code': 503,
+                                        'detail': 'Source review operation failed'}
+    assert 'SECRET_PROVIDER_KEY' not in str(result) + caplog.text
 
 
 @pytest.mark.asyncio

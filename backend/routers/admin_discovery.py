@@ -210,7 +210,9 @@ async def block_target(
     dependencies=[Depends(require_api_key)],
 )
 async def list_pending_candidates(
-    status: str | None = "pending",
+    status: str | None = Query(
+        "pending", description="Candidate status, or awaiting_human for the latest review awaiting manual review",
+    ),
     min_referrers: int = Query(0, ge=0),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),

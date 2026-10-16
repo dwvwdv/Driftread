@@ -76,6 +76,21 @@ def test_extract_feed_links_empty_when_none():
     assert _extract_feed_links(html, "https://example.com") == []
 
 
+def test_extract_feed_links_skips_comment_feeds_without_consuming_candidate_cap():
+    comments = "".join(
+        f'<link rel="alternate" type="application/rss+xml" href="/post{i}/comments/feed/"/>'
+        for i in range(MAX_FEED_LINK_CANDIDATES)
+    )
+    html = (
+        f"<html><head>{comments}"
+        '<link rel="alternate" type="application/rss+xml" href="/?feed=comments-rss2"/>'
+        '<link rel="alternate" type="application/rss+xml" href="/feed/" title="Comments on tech"/>'
+        "</head></html>"
+    )
+    out = _extract_feed_links(html, "https://example.com/")
+    assert [c.feed_url for c in out] == ["https://example.com/feed/"]
+
+
 @pytest.mark.asyncio
 async def test_normalize_url_adds_scheme():
     with patch("services.feed_discovery._is_safe_host", return_value=True):
@@ -184,6 +199,66 @@ def _mock_client_factory(handler):
         return _RealAsyncClient(*args, **kwargs)
 
     return factory
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_skips_explicit_comment_url_before_fetch():
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("services.feed_discovery.ssrf_safe_client") as client,
+    ):
+        assert await discover_feeds(
+            "https://example.com/comments/feed/", raise_on_fetch_error=True
+        ) == []
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_treats_initial_comment_redirect_as_terminal():
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(302, headers={"location": "/comments/feed/"})
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        assert await discover_feeds(
+            "https://example.com/feed", raise_on_fetch_error=True
+        ) == []
+    assert requested == ["/feed"]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_never_fetches_advertised_or_redirected_comment_feed():
+    requested: list[str] = []
+    article_feed = '<rss version="2.0"><channel><title>Articles</title></channel></rss>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/":
+            return httpx.Response(200, text=(
+                '<html><head><link rel="alternate" type="application/rss+xml" '
+                'href="/comments/feed/"/><link rel="alternate" '
+                'type="application/rss+xml" href="/feed"/></head></html>'
+            ), headers={"content-type": "text/html"})
+        if request.url.path == "/feed":
+            return httpx.Response(302, headers={"location": "/comments/feed/"})
+        if request.url.path == "/rss.xml":
+            return httpx.Response(200, text=article_feed,
+                                  headers={"content-type": "application/rss+xml"})
+        return httpx.Response(404)
+
+    with (
+        patch("services.feed_discovery._is_safe_host", return_value=True),
+        patch("httpx.AsyncClient", new=_mock_client_factory(handler)),
+    ):
+        candidates = await discover_feeds("https://example.com/")
+
+    assert "/comments/feed/" not in requested
+    assert [c.feed_url for c in candidates] == ["https://example.com/rss.xml"]
 
 
 @pytest.mark.asyncio

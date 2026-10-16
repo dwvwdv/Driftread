@@ -26,6 +26,14 @@ class LatestReviewsRequest(BaseModel):
     candidate_ids: list[UUID] = Field(min_length=1, max_length=50)
 
 
+class BatchRequestReviews(LatestReviewsRequest):
+    retry: bool = False
+
+
+class BatchResolveReviews(ResolveReviewRequest):
+    review_ids: list[UUID] = Field(min_length=1, max_length=50)
+
+
 async def _call(operation, *args, **kwargs):
     try:
         return await run_in_threadpool(operation, *args, **kwargs)
@@ -54,6 +62,18 @@ async def latest_source_reviews(body: LatestReviewsRequest,
 async def request_source_review(candidate_id: UUID, db: Client = Depends(get_client)) -> dict:
     # Preparation and any network work belong to the worker, never this request.
     return await _call(source_review.request_review, db, str(candidate_id))
+
+
+@router.post("/batch/request")
+async def request_source_reviews(body: BatchRequestReviews,
+                                 db: Client = Depends(get_client)) -> dict:
+    return await _call(source_review.request_reviews, db, body.candidate_ids, retry=body.retry)
+
+
+@router.post("/batch/resolve")
+async def resolve_source_reviews(body: BatchResolveReviews,
+                                 db: Client = Depends(get_client)) -> dict:
+    return await _call(source_review.resolve_reviews, db, body.review_ids, body.decision)
 
 
 @router.get("/usage")

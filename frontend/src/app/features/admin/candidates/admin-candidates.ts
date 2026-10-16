@@ -9,9 +9,9 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
-import { Observable, Subscription } from 'rxjs';
+import { Observable, Subscription, catchError, from, map, mergeMap, of } from 'rxjs';
 import { AdminService } from '../../../services/admin';
-import { FeedCandidate, SourceReview } from '../../../models';
+import { FeedCandidate, SourceReview, SourceReviewBatchResult } from '../../../models';
 import { ObCard } from '../../../ui/card/card';
 import { ObIcon } from '../../../ui/icon/icon';
 import { ObListRow } from '../../../ui/list-row/list-row';
@@ -48,9 +48,11 @@ export class AdminCandidates implements OnInit {
 
   protected candidates = signal<FeedCandidate[]>([]);
   protected total = signal(0);
-  protected status = signal<'pending' | 'held'>('pending');
+  protected status = signal<'pending' | 'held' | 'awaiting_human'>('pending');
   protected selected = signal<Set<string>>(new Set());
   protected reviewing = signal(false);
+  protected actionBusy = computed(() => this.reviewing() || this.reviewBusy().size > 0);
+  protected batchNotice = signal('');
   protected groups = computed(() => {
     const groups = new Map<string, FeedCandidate[]>();
     for (const candidate of this.candidates()) {
@@ -89,7 +91,7 @@ export class AdminCandidates implements OnInit {
    * them. Navigation and first load still show the spinner, because there is
    * genuinely nothing valid to keep on screen.
    */
-  protected load(quiet = false): void {
+  protected load(quiet = false, keepSelected = new Set<string>()): void {
     const seq = ++this.loadSeq;
     this.reviewRead?.unsubscribe();
     if (!quiet) this.loading.set(true);
@@ -100,8 +102,21 @@ export class AdminCandidates implements OnInit {
       .subscribe({
         next: (result) => {
           if (seq !== this.loadSeq) return;
+          const lastPage = clampPage(this.page(), result.total, this.pageSize());
+          if (lastPage !== this.page()) {
+            this.page.set(lastPage);
+            this.load(quiet, keepSelected);
+            return;
+          }
           this.candidates.set(result.items);
-          this.selected.set(new Set());
+          this.selected.set(
+            new Set(result.items.filter(({ id }) => keepSelected.has(id)).map(({ id }) => id)),
+          );
+          this.sourceReviews.update((current) => {
+            const next = { ...current };
+            for (const { id } of result.items) if (!this.reviewBusy().has(id)) delete next[id];
+            return next;
+          });
           this.total.set(result.total);
           this.loading.set(false);
           this.loadSourceReviews(result.items, seq);
@@ -154,8 +169,9 @@ export class AdminCandidates implements OnInit {
   }
 
   protected requestReview(candidate: FeedCandidate, retry = false): void {
-    if (this.reviewBusy().has(candidate.id) || this.reviewing()) return;
+    if (this.actionBusy()) return;
     const review = this.sourceReviews()[candidate.id];
+    if (this.reviewErrors().has(candidate.id)) return;
     if (candidate.manual_override || review?.manual_override) {
       this.toast.warning('此候選已有人工決定，不能由模型覆寫');
       return;
@@ -179,8 +195,8 @@ export class AdminCandidates implements OnInit {
     if (
       !review ||
       review.status !== 'awaiting_human' ||
-      this.reviewBusy().has(candidate.id) ||
-      this.reviewing() ||
+      this.actionBusy() ||
+      this.reviewErrors().has(candidate.id) ||
       candidate.manual_override ||
       review.manual_override
     )
@@ -189,16 +205,8 @@ export class AdminCandidates implements OnInit {
   }
 
   private runReviewAction(id: string, request: Observable<SourceReview>): void {
-    this.nextReviewSeq(id);
-    ++this.loadSeq;
-    this.reviewRead?.unsubscribe();
-    this.reviewBusy.update((current) => new Set(current).add(id));
-    const finished = () =>
-      this.reviewBusy.update((current) => {
-        const next = new Set(current);
-        next.delete(id);
-        return next;
-      });
+    this.beginActions([id]);
+    const finished = () => this.reviewBusy.set(new Set());
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (review) => {
         this.sourceReviews.update((current) => ({ ...current, [id]: review }));
@@ -209,6 +217,91 @@ export class AdminCandidates implements OnInit {
       error: () => {
         finished();
         this.load(true);
+      },
+    });
+  }
+
+  private beginActions(ids: string[]): void {
+    for (const id of ids) this.nextReviewSeq(id);
+    ++this.loadSeq;
+    this.reviewRead?.unsubscribe();
+    this.reviewBusy.set(new Set(ids));
+  }
+
+  protected eligibleCandidates(action: 'request' | 'retry' | 'resolve'): FeedCandidate[] {
+    return this.candidates().filter((candidate) => {
+      if (
+        !this.selected().has(candidate.id) ||
+        candidate.manual_override ||
+        this.reviewErrors().has(candidate.id)
+      )
+        return false;
+      const review = this.sourceReviews()[candidate.id];
+      if (review?.manual_override) return false;
+      if (action === 'request') return review === null;
+      if (action === 'retry') return !!review && this.canRetry(review);
+      return review?.status === 'awaiting_human';
+    });
+  }
+
+  protected batchRequest(retry = false): void {
+    const items = this.eligibleCandidates(retry ? 'retry' : 'request');
+    if (this.actionBusy() || this.loading() || !items.length) return;
+    this.runBatch(
+      items,
+      this.admin.batchRequestSourceReviews(
+        items.map(({ id }) => id),
+        retry,
+      ),
+    );
+  }
+
+  protected batchResolve(decision: 'accept' | 'reject' | 'defer'): void {
+    const items = this.eligibleCandidates('resolve');
+    if (this.actionBusy() || this.loading() || !items.length) return;
+    this.runBatch(
+      items,
+      this.admin.batchResolveSourceReviews(
+        items.map(({ id }) => this.sourceReviews()[id]!.id),
+        decision,
+      ),
+    );
+  }
+
+  private runBatch(items: FeedCandidate[], request: Observable<SourceReviewBatchResult>): void {
+    const candidateIds = items.map(({ id }) => id);
+    const reviewCandidates = new Map(items.map(({ id }) => [this.sourceReviews()[id]?.id, id]));
+    this.reviewing.set(true);
+    this.batchNotice.set('批次作業處理中…');
+    this.beginActions(candidateIds);
+    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (result) => {
+        const failed = new Set<string>();
+        this.sourceReviews.update((current) => {
+          const next = { ...current };
+          for (const item of result.items) {
+            const id = item.candidate_id ?? reviewCandidates.get(item.review_id);
+            if (!id) continue;
+            if (item.ok) next[id] = item.review;
+            else failed.add(id);
+          }
+          return next;
+        });
+        this.reviewing.set(false);
+        this.reviewBusy.set(new Set());
+        const message = `批次作業完成：成功 ${result.succeeded} 項，失敗 ${result.failed} 項`;
+        this.batchNotice.set(
+          result.failed ? `${message}；已保留失敗項目選取，請重新確認評審狀態後再試。` : message,
+        );
+        if (result.failed) this.toast.warning(message);
+        else this.toast.info(message);
+        this.load(true, failed);
+      },
+      error: () => {
+        this.reviewing.set(false);
+        this.reviewBusy.set(new Set());
+        this.batchNotice.set('批次作業未完成，請確認最新評審狀態後再試。');
+        this.load(true, new Set(candidateIds));
       },
     });
   }
@@ -274,8 +367,9 @@ export class AdminCandidates implements OnInit {
     return `${label} · 信心 ${Math.round(result.confidence * 100)}% · 品質 ${Math.round(result.dimensions.quality * 100)}% · 垃圾機率 ${Math.round(result.dimensions.spam_probability * 100)}%`;
   }
 
-  protected changeStatus(status: 'pending' | 'held'): void {
+  protected changeStatus(status: 'pending' | 'held' | 'awaiting_human'): void {
     if (status === this.status()) return;
+    this.batchNotice.set('');
     this.status.set(status);
     this.page.set(1);
     this.load();
@@ -297,13 +391,18 @@ export class AdminCandidates implements OnInit {
     });
   }
 
+  protected someSelected(items: FeedCandidate[]): boolean {
+    return items.some((item) => this.selected().has(item.id));
+  }
+
   protected allSelected(items: FeedCandidate[]): boolean {
-    return items.every((item) => this.selected().has(item.id));
+    return items.length > 0 && items.every((item) => this.selected().has(item.id));
   }
 
   protected async bulk(action: 'approve' | 'hold' | 'reject'): Promise<void> {
     const items = this.candidates().filter((candidate) => this.selected().has(candidate.id));
-    if (!items.length || this.reviewing()) return;
+    if (!items.length || this.actionBusy() || this.loading()) return;
+    this.reviewing.set(true);
 
     if (action === 'reject' && this.blockHostOnReject) {
       const ok = await this.confirm.ask({
@@ -312,7 +411,10 @@ export class AdminCandidates implements OnInit {
         confirmLabel: '批量拒絕並封鎖',
         danger: true,
       });
-      if (!ok || this.destroyRef.destroyed) return;
+      if (!ok || this.destroyRef.destroyed) {
+        this.reviewing.set(false);
+        return;
+      }
     }
 
     const tags = this.parsedTags();
@@ -330,7 +432,7 @@ export class AdminCandidates implements OnInit {
             }),
     );
 
-    this.reviewing.set(true);
+    this.beginActions(items.map(({ id }) => id));
     let finished = 0;
     let succeeded = 0;
     const completeOne = (ok: boolean) => {
@@ -338,14 +440,25 @@ export class AdminCandidates implements OnInit {
       if (ok) succeeded += 1;
       if (finished !== requests.length) return;
       this.reviewing.set(false);
+      this.reviewBusy.set(new Set());
       this.toast.info(`批量作業完成：${succeeded}/${items.length}`);
       this.load();
     };
-    for (const request of requests) {
-      request
-        .pipe(takeUntilDestroyed(this.destroyRef))
-        .subscribe({ next: () => completeOne(true), error: () => completeOne(false) });
-    }
+    // Each legacy decision verifies management authentication separately; bound
+    // concurrency so a full page cannot exhaust the verification worker pool.
+    from(requests)
+      .pipe(
+        mergeMap(
+          (request) =>
+            request.pipe(
+              map(() => true),
+              catchError(() => of(false)),
+            ),
+          2,
+        ),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe((ok) => completeOne(ok));
   }
 
   private primaryDomain(host: string | null): string {
@@ -377,6 +490,8 @@ export class AdminCandidates implements OnInit {
   }
 
   protected approve(candidate: FeedCandidate): void {
+    if (this.actionBusy()) return;
+    this.beginActions([candidate.id]);
     const tags = this.parsedTags();
 
     this.admin
@@ -384,25 +499,35 @@ export class AdminCandidates implements OnInit {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (feed) => {
+          this.reviewBusy.set(new Set());
           this.toast.success(`已入庫：${feed.title}`);
           this.remove(candidate.id);
         },
         // A 409 means it was already rejected elsewhere, so the row on screen is
         // stale. AdminService has explained it; reload so it disappears.
-        error: () => this.load(),
+        error: () => {
+          this.reviewBusy.set(new Set());
+          this.load();
+        },
       });
   }
 
   protected hold(candidate: FeedCandidate): void {
+    if (this.actionBusy()) return;
+    this.beginActions([candidate.id]);
     this.admin
       .holdCandidate(candidate.id, { note: null })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
+          this.reviewBusy.set(new Set());
           this.toast.info('已保留為備用 RSS 節點');
           this.remove(candidate.id);
         },
-        error: () => this.load(),
+        error: () => {
+          this.reviewBusy.set(new Set());
+          this.load();
+        },
       });
   }
 
@@ -414,6 +539,8 @@ export class AdminCandidates implements OnInit {
   }
 
   protected async reject(candidate: FeedCandidate): Promise<void> {
+    if (this.actionBusy()) return;
+    this.beginActions([candidate.id]);
     if (this.blockHostOnReject) {
       const host = candidate.source_host ?? '該網域';
       const ok = await this.confirm.ask({
@@ -422,7 +549,11 @@ export class AdminCandidates implements OnInit {
         confirmLabel: '拒絕並封鎖',
         danger: true,
       });
-      if (!ok || this.destroyRef.destroyed) return;
+      if (!ok || this.destroyRef.destroyed) {
+        this.reviewBusy.set(new Set());
+        if (!this.destroyRef.destroyed) this.load(true);
+        return;
+      }
     }
 
     this.admin
@@ -430,10 +561,14 @@ export class AdminCandidates implements OnInit {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
+          this.reviewBusy.set(new Set());
           this.toast.info(this.blockHostOnReject ? '已拒絕並封鎖該網域' : '已拒絕');
           this.remove(candidate.id);
         },
-        error: () => this.load(),
+        error: () => {
+          this.reviewBusy.set(new Set());
+          this.load();
+        },
       });
   }
 
@@ -457,6 +592,11 @@ export class AdminCandidates implements OnInit {
    * end up past the end, and the empty branch hides the paginator with it.
    */
   private remove(id: string): void {
+    // Navigation may have replaced the page while this write was in flight.
+    if (!this.candidates().some((candidate) => candidate.id === id)) {
+      this.load(true);
+      return;
+    }
     this.nextReviewSeq(id);
     this.reviewRead?.unsubscribe();
     this.candidates.update((list) => list.filter((c) => c.id !== id));

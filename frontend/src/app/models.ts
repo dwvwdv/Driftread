@@ -507,3 +507,13 @@ export interface SourceReview {
   created_at?: string;
   updated_at?: string;
 }
+
+/** Each source-review batch commits independently and reports per-item failures. */
+export interface SourceReviewBatchResult {
+  items: ({ candidate_id?: string; review_id?: string } & (
+    | { ok: true; review: SourceReview }
+    | { ok: false; status_code: number; detail: unknown }
+  ))[];
+  succeeded: number;
+  failed: number;
+}

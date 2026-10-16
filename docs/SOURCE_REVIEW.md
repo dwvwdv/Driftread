@@ -14,6 +14,12 @@
 
 候選頁以一次批次請求取得當頁每個候選的最新評審摘要，最多 50 個候選；以 `created_at DESC, id DESC` 決定最新一筆，沒有評審者顯示為尚未申請。不受全域最新評審筆數截斷，也不逐筆建立管理驗證連線。換頁或重載會取消舊批次，人工操作期間的舊回應不能覆蓋新狀態。相同內容及等級的通知在顯示期間只保留一則，關閉或到期後可再次提醒。
 
+候選頁另有「待複審」篩選：候選仍為 pending、沒有人工覆寫，且**最新**評審為 `awaiting_human`；這是評審工作狀態，不增加候選資料表的 status 值。伺服器先篩選，再計算總數與分頁，舊評審不能把新任務帶進待複審列表。覆核交易也驗證最新任務、候選版本與結果，過時的瀏覽器選取回 409。
+
+當頁可全選並批次申請 AI 評審、明確重試，或對待複審結果批次通過／不通過／暫緩。每批 1–50 筆，管理認證只執行一次，各筆沿用既有交易與政策；部分失敗不回滾其他成功結果，回傳每筆 ID、`ok`、結果或安全的 `status_code`／`detail`。前端顯示成功／失敗數，重載後保留仍在當頁的失敗項目選取。明確重試可能重新付費，仍遵守原預算與人工覆寫限制。
+
+來源發現會在抽取 alternate、直接 feed URL 與每次 redirect 時排除 `comments/feed/` 等明確留言端點，不抓取留言內容，也不占候選額度。候選寫入與申請評審的既有防線保留。URL 規則不以標題的 comments 字樣猜測，也不批次刪除歷史候選。
+
 模型建議的分類與標籤只沿用既有詞彙：分類必須已被某個來源或探測方向使用，標籤必須已被某個來源使用，否則收錄時捨棄（分類留空、標籤略過），不讓模型自創的名稱進入公開目錄與推薦分類。自動收錄與「覆核通過」都套用這條規則；需要新分類時由管理員在候選頁「核准」時指定，或到來源管理修改。
 
 候選保留／拒絕與模型收錄使用同一候選鎖。人工操作先完成時，模型不能再收錄；模型已先收錄時，候選操作回傳 409，後台重讀並提示前往來源管理。已收錄來源須在來源管理封存或刪除，候選操作不回報假的拒絕成功，也不撤銷既有來源。
@@ -37,10 +43,18 @@ Jev 使用官方固定 API endpoint，問題拆分為品質、主題相關性與
 | 工具 | 用途 |
 |---|---|
 | `review_policy` | 取得有效政策與背景執行可用狀態 |
+| `list_source_review_candidates` | 唯讀候選及最新評審摘要，支援 pending／ready／awaiting_human，最多 50 筆，含精確總數；不領租約、不回傳樣本或 token |
 | `request_source_review` | 申請候選評審；背景準備樣本，不在 MCP request 內抓取 |
+| `request_source_reviews` | 批次申請 1–50 個候選，去重並逐筆回報；不開放強制付費重試 |
 | `claim_source_review` | 原子領取已備妥任務與有限租約 |
+| `claim_source_reviews` | 批次領取預設 3、最多 5 個任務；各有自己的 10 分鐘租約 |
 | `source_review_packet` | 讀取有界資料包 |
 | `submit_source_review` | 提交租約、快照 hash 與結構化結果 |
+| `submit_source_reviews` | 批次提交 1–50 筆獨立判斷，逐筆回報，保留相同結果冪等性 |
+
+建議先讀政策與唯讀 ready 清單，再批次領取、依各份證據獨立評審、批次提交。沒有樣本的 pending 候選先申請，再等待背景準備。領取不是冪等操作：批次數量不足可能是佇列暫空；中途遇錯會保留已取得的 packet 並帶 `error`，先處理已回傳租約。領取後不再額外查候選，避免第二次資料庫連線失敗而遺失 token。每包仍受 90 KB 採樣上限約束，工具描述公開期限及服務端額外門檻。
+
+清單 offset 會隨評審完成而移動；每批處理後從 offset=0 重讀，避免跳過候選。ready 清單也包含租約過期、仍可重領的任務。一般業務錯誤回 MCP `isError=true`，結構化碼包含 `NOT_FOUND`、`FORBIDDEN`、`REVIEW_CONFLICT`、`UNAVAILABLE`，不必解析自然語言；格式錯誤仍由 SDK 驗證。批次以逐筆 `ok`／狀態碼區分業務結果，重試失敗項目即可。
 
 評審者身分由伺服器指定，不相信模型或客戶端傳入的引擎名稱。專用 key 不能處理人工 resolve、解除人工覆寫或變更設定。Browser REST 走現有管理帳密 + Telegram session；原有腳本管理 key 的 API 契約保留，詳見 [部署手冊](RUNBOOK.md#後台-telegram-兩步驟驗證)。
 
@@ -50,7 +64,7 @@ ChatGPT Web 的「無驗證」不能附上自訂 `X-API-Key`。部署本版後�
 
 在 ChatGPT 的自訂 MCP 新增頁填 `https://你的網域/api/admin/mcp/`，選 **OAuth**。Client ID／Client Secret 留白，由 ChatGPT 經 DCR 註冊 public client；若介面要求選註冊模式，選 DCR。第一次連線跳到 Driftread 的 `/manage/mcp-authorize?request=...`：先登入唯一管理員帳密、輸入 Telegram OTP，再明確允許或拒絕來源評審權限。登入回跳保留原 request。一般帳號不能同意，既有管理 key 不能簽發 OAuth grant；客戶端可提供的名稱不是已驗證品牌。
 
-授權使用 S256 PKCE，一次性 code 綁定 client、已註冊 callback 與 MCP resource。`source:review` 只授權表中的五個工具；另以 `offline_access` 支援持續連線。請求 10 分鐘、code 2 分鐘、access token 15 分鐘、grant 最長 30 天；refresh 每次旋轉，已使用 refresh 重放會撤銷整個 grant。伺服器只保存授權碼與 bearer 憑證的 SHA-256 hash，原文只回傳給 client。每次 MCP／refresh 都檢查目前管理員 UUID、Supabase session、帳號停用、resource 與到期／撤銷；不提供 client_credentials 或接受其他 JWT。
+授權使用 S256 PKCE，一次性 code 綁定 client、已註冊 callback 與 MCP resource。`source:review` 只授權表中的九個工具；另以 `offline_access` 支援持續連線。請求 10 分鐘、code 2 分鐘、access token 15 分鐘、grant 最長 30 天；refresh 每次旋轉，已使用 refresh 重放會撤銷整個 grant。伺服器只保存授權碼與 bearer 憑證的 SHA-256 hash，原文只回傳給 client。每次 MCP／refresh 都檢查目前管理員 UUID、Supabase session、帳號停用、resource 與到期／撤銷；不提供 client_credentials 或接受其他 JWT。
 
 `/manage/mcp-connections` 可查看授權與到期時間並撤銷。後台明確登出會依已驗證的 owner／Supabase 登入 session 撤銷該登入的管理 sessions 與 OAuth grants，即使管理 token 已過期、清除或未傳入也生效；不影響其他登入。管理 OTP session 自然到期不等於 OAuth grant 到期，Supabase session 失效仍會拒絕工具呼叫。前端以 user ID／auth session ID 與管理 token 隔離在途回應，正常 JWT 自動刷新仍可完成同意回跳；舊 JWT 的延遲 401 不清除新憑證。OAuth 同意不是逐次工具批准，ChatGPT 的工具執行權限另由客戶端管理。MCP 連線也不會自行啟動常駐 agent。
 
@@ -97,3 +111,9 @@ python3 scripts/source_review_eval.py --split holdout --fixtures /path/to/labell
 - #88–#91 可共用上述介面，這次不啟用 embedding、事件自動分組或生成摘要。
 
 程式／測試完成、PR 合併與正式環境驗收分開追蹤；正式部署沿用 #83。未以正式來源、Jev key 或正式 Supabase 執行的檢查不得宣稱已驗證。
+
+## MCP 獨立評估（2026-10-16）
+
+獨立 agent 實際讀取已連接服務的 `review_policy`，並以不存在、格式錯誤及空 ID 測試 packet；沒有領取正式任務、提交決策或觸發付費請求。確認舊版缺少唯讀清單與批次工具、業務錯誤無穩定碼。程式審查另找出領取後額外查詢可能遺失 token、ready 清單需要對齊政策與過期租約重領，以及人工覆核需要最新任務檢查，本輪一併修復並納入回歸測試。
+
+後續保留一項 P3：提供有界的既有分類／標籤詞彙表。現階段不知道有效詞彙時省略建議，服務端繼續捨棄未知詞彙。本輪 SDK／隔離 PostgreSQL 驗證不能代替更新正式 API 後的 ChatGPT 工具刷新、正式 PostgREST、Telegram 登入與 UI 驗收。

@@ -6,7 +6,7 @@
   <button
     type="button"
     class="ob-btn ob-btn--ghost ob-btn--sm"
-    [disabled]="loading()"
+    [disabled]="loading() || actionBusy()"
     (click)="load()"
   >
     <ob-icon name="refresh" [size]="14" /> 重新整理
@@ -40,6 +40,7 @@
       class="ob-btn ob-btn--sm"
       [class.ob-btn--primary]="status() === 'pending'"
       [class.ob-btn--ghost]="status() !== 'pending'"
+      [attr.aria-pressed]="status() === 'pending'"
       (click)="changeStatus('pending')"
     >
       待審核
@@ -47,19 +48,83 @@
     <button
       type="button"
       class="ob-btn ob-btn--sm"
+      [class.ob-btn--primary]="status() === 'awaiting_human'"
+      [class.ob-btn--ghost]="status() !== 'awaiting_human'"
+      [attr.aria-pressed]="status() === 'awaiting_human'"
+      (click)="changeStatus('awaiting_human')"
+    >
+      待複審
+    </button>
+    <button
+      type="button"
+      class="ob-btn ob-btn--sm"
       [class.ob-btn--primary]="status() === 'held'"
       [class.ob-btn--ghost]="status() !== 'held'"
+      [attr.aria-pressed]="status() === 'held'"
       (click)="changeStatus('held')"
     >
       已保留
     </button>
   </div>
   <div class="bulk-actions">
+    <label class="ob-checkbox">
+      <input
+        type="checkbox"
+        [checked]="allSelected(candidates())"
+        [indeterminate]="selected().size > 0 && !allSelected(candidates())"
+        [disabled]="loading() || actionBusy() || !candidates().length"
+        (change)="toggleGroup(candidates(), $any($event.target).checked)"
+      />當頁全選
+    </label>
     <strong>已選 {{ selected().size }} 項</strong>
+    @if (status() !== 'held') {
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="loading() || actionBusy() || !eligibleCandidates('request').length"
+        (click)="batchRequest()"
+      >
+        批次請求 AI 評審（{{ eligibleCandidates('request').length }}）
+      </button>
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="loading() || actionBusy() || !eligibleCandidates('retry').length"
+        (click)="batchRequest(true)"
+      >
+        批次重試 AI 評審（{{ eligibleCandidates('retry').length }}）
+      </button>
+    }
+    @if (status() === 'awaiting_human') {
+      <button
+        type="button"
+        class="ob-btn ob-btn--primary ob-btn--sm"
+        [disabled]="loading() || actionBusy() || !eligibleCandidates('resolve').length"
+        (click)="batchResolve('accept')"
+      >
+        批次覆核通過（{{ eligibleCandidates('resolve').length }}）
+      </button>
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="loading() || actionBusy() || !eligibleCandidates('resolve').length"
+        (click)="batchResolve('reject')"
+      >
+        批次覆核不通過
+      </button>
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="loading() || actionBusy() || !eligibleCandidates('resolve').length"
+        (click)="batchResolve('defer')"
+      >
+        批次暫緩評審
+      </button>
+    }
     <button
       type="button"
       class="ob-btn ob-btn--primary ob-btn--sm"
-      [disabled]="!selected().size || reviewing() || reviewBusy().size > 0"
+      [disabled]="loading() || !selected().size || actionBusy()"
       (click)="bulk('approve')"
     >
       批量核准
@@ -68,7 +133,7 @@
       <button
         type="button"
         class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="!selected().size || reviewing() || reviewBusy().size > 0"
+        [disabled]="loading() || !selected().size || actionBusy()"
         (click)="bulk('hold')"
       >
         批量保留
@@ -77,7 +142,7 @@
     <button
       type="button"
       class="ob-btn ob-btn--ghost ob-btn--sm"
-      [disabled]="!selected().size || reviewing() || reviewBusy().size > 0"
+      [disabled]="loading() || !selected().size || actionBusy()"
       (click)="bulk('reject')"
     >
       批量拒絕
@@ -85,11 +150,21 @@
   </div>
 </div>
 
+<p role="status" aria-live="polite">{{ batchNotice() }}</p>
+
 <div class="queue">
   @if (loading()) {
     <ob-loading label="讀取候選中" />
   } @else if (candidates().length === 0) {
-    <ob-empty [message]="status() === 'held' ? '沒有已保留的備用節點。' : '沒有待審核的候選。'" />
+    <ob-empty
+      [message]="
+        status() === 'held'
+          ? '沒有已保留的備用節點。'
+          : status() === 'awaiting_human'
+            ? '沒有待複審的候選。'
+            : '沒有待審核的候選。'
+      "
+    />
   } @else {
     @for (group of groups(); track group.domain) {
       <section class="domain-group">
@@ -98,6 +173,8 @@
             ><input
               type="checkbox"
               [checked]="allSelected(group.items)"
+              [disabled]="actionBusy()"
+              [indeterminate]="!allSelected(group.items) && someSelected(group.items)"
               (change)="toggleGroup(group.items, $any($event.target).checked)"
             />
             <strong>{{ group.domain }}</strong></label
@@ -111,6 +188,7 @@
                 class="candidate-check"
                 type="checkbox"
                 [checked]="selected().has(candidate.id)"
+                [disabled]="actionBusy()"
                 [attr.aria-label]="'選取 ' + (candidate.title || candidate.feed_url)"
                 (change)="toggle(candidate.id, $any($event.target).checked)"
               />
@@ -156,7 +234,7 @@
                   <button
                     type="button"
                     class="ob-btn ob-btn--ghost ob-btn--sm"
-                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    [disabled]="actionBusy()"
                     (click)="requestReview(candidate, true)"
                   >
                     重試 AI 評審
@@ -170,7 +248,7 @@
                   <button
                     type="button"
                     class="ob-btn ob-btn--primary ob-btn--sm"
-                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    [disabled]="actionBusy()"
                     (click)="resolveReview(candidate, 'accept')"
                   >
                     覆核通過
@@ -178,7 +256,7 @@
                   <button
                     type="button"
                     class="ob-btn ob-btn--ghost ob-btn--sm"
-                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    [disabled]="actionBusy()"
                     (click)="resolveReview(candidate, 'reject')"
                   >
                     覆核不通過
@@ -186,7 +264,7 @@
                   <button
                     type="button"
                     class="ob-btn ob-btn--ghost ob-btn--sm"
-                    [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                    [disabled]="actionBusy()"
                     (click)="resolveReview(candidate, 'defer')"
                   >
                     暫緩評審
@@ -200,7 +278,7 @@
                 <button
                   type="button"
                   class="ob-btn ob-btn--ghost ob-btn--sm"
-                  [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                  [disabled]="actionBusy()"
                   (click)="requestReview(candidate)"
                 >
                   {{ reviewBusy().has(candidate.id) ? '請求中…' : '請求 AI 評審' }}
@@ -209,7 +287,7 @@
               <button
                 type="button"
                 class="ob-btn ob-btn--primary ob-btn--sm"
-                [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                [disabled]="actionBusy()"
                 (click)="approve(candidate)"
               >
                 核准
@@ -218,7 +296,7 @@
                 <button
                   type="button"
                   class="ob-btn ob-btn--ghost ob-btn--sm"
-                  [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                  [disabled]="actionBusy()"
                   (click)="hold(candidate)"
                 >
                   保留
@@ -227,7 +305,7 @@
               <button
                 type="button"
                 class="ob-btn ob-btn--ghost ob-btn--sm"
-                [disabled]="reviewBusy().has(candidate.id) || reviewing()"
+                [disabled]="actionBusy()"
                 (click)="reject(candidate)"
               >
                 拒絕

@@ -6,7 +6,13 @@ import { AdminCandidates } from './admin-candidates';
 import { AdminService } from '../../../services/admin';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
-import { Feed, FeedCandidate, PaginatedFeedCandidates, SourceReview } from '../../../models';
+import {
+  Feed,
+  FeedCandidate,
+  PaginatedFeedCandidates,
+  SourceReview,
+  SourceReviewBatchResult,
+} from '../../../models';
 
 const candidate = (i: number) =>
   ({
@@ -214,7 +220,10 @@ describe('AdminCandidates source review', () => {
       providers: [
         { provide: AdminService, useValue: admin },
         { provide: ConfirmService, useValue: { ask: () => Promise.resolve(true) } },
-        { provide: ToastService, useValue: { info: () => {}, warning: () => {} } },
+        {
+          provide: ToastService,
+          useValue: { info: () => {}, warning: () => {}, success: () => {} },
+        },
       ],
     });
     const fixture = TestBed.createComponent(AdminCandidates);
@@ -228,10 +237,300 @@ describe('AdminCandidates source review', () => {
       resolveReview: (c: FeedCandidate, decision: 'accept' | 'reject' | 'defer') => void;
       load: (quiet?: boolean) => void;
       onPage: (page: number) => void;
-      reviewErrors: () => Set<string>;
+      reviewErrors: { (): Set<string>; set: (v: Set<string>) => void };
+      candidates: () => FeedCandidate[];
+      selected: () => Set<string>;
+      status: () => string;
+      total: () => number;
+      batchNotice: () => string;
+      toggleGroup: (items: FeedCandidate[], checked: boolean) => void;
+      allSelected: (items: FeedCandidate[]) => boolean;
+      changeStatus: (status: 'pending' | 'held' | 'awaiting_human') => void;
+      eligibleCandidates: (action: 'request' | 'retry' | 'resolve') => FeedCandidate[];
+      batchRequest: (retry?: boolean) => void;
+      batchResolve: (decision: 'accept' | 'reject' | 'defer') => void;
+      bulk: (action: 'approve' | 'hold' | 'reject') => Promise<void>;
+      approve: (c: FeedCandidate) => void;
+      hold: (c: FeedCandidate) => void;
+      reject: (c: FeedCandidate) => Promise<void>;
     };
     return { component, fixture, calls };
   }
+
+  it('requests a server-filtered awaiting-human page and clears selection when switching status', () => {
+    const statuses: string[] = [];
+    const { component, fixture } = setup({
+      listCandidates: (_page: number, _size: number, status: string) => {
+        statuses.push(status);
+        return of({
+          items: status === 'awaiting_human' ? [] : [candidate(1)],
+          total: status === 'awaiting_human' ? 0 : 1,
+        });
+      },
+    });
+    component.toggleGroup(component.candidates(), true);
+    expect(component.allSelected(component.candidates())).toBe(true);
+    component.changeStatus('awaiting_human');
+    fixture.detectChanges();
+    expect(statuses).toEqual(['pending', 'awaiting_human']);
+    expect(component.selected().size).toBe(0);
+    expect(component.allSelected([])).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain('沒有待複審的候選');
+  });
+
+  it.each([false, true])(
+    'sends only eligible selected candidates in one batch (retry=%s)',
+    (retry) => {
+      const batches: { ids: string[]; retry: boolean }[] = [];
+      const response = new Subject<SourceReviewBatchResult>();
+      const { component } = setup({
+        listCandidates: () =>
+          of({
+            items: [1, 2, 3, 4, 5, 6, 7].map((i) => ({
+              ...candidate(i),
+              manual_override: i === 7 ? 'hold' : null,
+            })),
+            total: 7,
+          }),
+        latestSourceReviews: () =>
+          of({
+            items: [
+              { ...task('failed'), candidate_id: 'cand-2' },
+              { ...task('leased'), candidate_id: 'cand-3' },
+              { ...task('awaiting_human'), candidate_id: 'cand-4' },
+              { ...task('failed'), candidate_id: 'cand-5', manual_override: 'reject' },
+            ],
+          }),
+        batchRequestSourceReviews: (ids: string[], retry: boolean) => {
+          batches.push({ ids, retry });
+          return response;
+        },
+      });
+      component.reviewErrors.set(new Set(['cand-6']));
+      component.toggleGroup(component.candidates(), true);
+      component.batchRequest(retry);
+      component.batchRequest(retry);
+      component.requestReview(candidate(1));
+      expect(batches).toEqual([{ ids: [retry ? 'cand-2' : 'cand-1'], retry }]);
+    },
+  );
+
+  it.each(['accept', 'reject', 'defer'] as const)(
+    'resolves only selected awaiting-human reviews with %s',
+    (decision) => {
+      const batches: unknown[] = [];
+      const { component } = setup({
+        listCandidates: () =>
+          of({
+            items: [1, 2, 3, 4].map((i) => ({
+              ...candidate(i),
+              manual_override: i === 3 ? 'hold' : null,
+            })),
+            total: 4,
+          }),
+        latestSourceReviews: () =>
+          of({
+            items: [1, 2, 3, 4].map((i) => ({
+              ...task(i === 4 ? 'failed' : 'awaiting_human'),
+              id: `r${i}`,
+              candidate_id: `cand-${i}`,
+            })),
+          }),
+        batchResolveSourceReviews: (ids: string[], decision: string) => {
+          batches.push({ ids, decision });
+          return new Subject<SourceReviewBatchResult>();
+        },
+      });
+      component.changeStatus('awaiting_human');
+      component.toggleGroup(component.candidates(), true);
+      component.batchResolve(decision);
+      component.resolveReview(candidate(1), 'accept');
+      expect(batches).toEqual([{ ids: ['r1', 'r2'], decision }]);
+    },
+  );
+
+  it('reports partial batch failures and preserves only failed selections after refresh', () => {
+    const response = new Subject<SourceReviewBatchResult>();
+    const { component, fixture } = setup({
+      listCandidates: () => of({ items: [candidate(1), candidate(2)], total: 2 }),
+      batchRequestSourceReviews: () => response,
+    });
+    component.toggleGroup(component.candidates(), true);
+    component.batchRequest();
+    response.next({
+      items: [
+        { candidate_id: 'cand-1', ok: true, review: task('requested') },
+        { candidate_id: 'cand-2', ok: false, status_code: 409, detail: 'raw-internal-error' },
+      ],
+      succeeded: 1,
+      failed: 1,
+    });
+    fixture.detectChanges();
+    expect([...component.selected()]).toEqual(['cand-2']);
+    expect(component.batchNotice()).toContain('成功 1 項，失敗 1 項');
+    expect(fixture.nativeElement.textContent).not.toContain('raw-internal-error');
+  });
+
+  it('maps a failed review ID back to the selected candidate after batch resolution', () => {
+    const response = new Subject<SourceReviewBatchResult>();
+    const { component } = setup({
+      latestSourceReviews: () => of({ items: [task('awaiting_human')] }),
+      batchResolveSourceReviews: () => response,
+    });
+    component.toggleGroup(component.candidates(), true);
+    component.batchResolve('defer');
+    response.next({
+      items: [{ review_id: 'r1', ok: false, status_code: 409, detail: {} }],
+      succeeded: 0,
+      failed: 1,
+    });
+    expect([...component.selected()]).toEqual(['cand-1']);
+  });
+
+  it('recovers from a whole-batch failure and keeps submitted selections for inspection', () => {
+    const response = new Subject<SourceReviewBatchResult>();
+    const { component } = setup({ batchRequestSourceReviews: () => response });
+    component.toggleGroup(component.candidates(), true);
+    component.batchRequest();
+    response.error(new HttpErrorResponse({ status: 503 }));
+    expect(component.batchNotice()).toContain('批次作業未完成');
+    expect([...component.selected()]).toEqual(['cand-1']);
+    expect(component.eligibleCandidates('request')).toHaveLength(1);
+  });
+
+  it('blocks all manual single and batch actions while an AI batch is running', async () => {
+    const writes: string[] = [];
+    const { component } = setup({
+      batchRequestSourceReviews: () => new Subject<SourceReviewBatchResult>(),
+      approveCandidate: () => {
+        writes.push('approve');
+        return of({});
+      },
+      holdCandidate: () => {
+        writes.push('hold');
+        return of({});
+      },
+      rejectCandidate: () => {
+        writes.push('reject');
+        return of({});
+      },
+    });
+    component.toggleGroup(component.candidates(), true);
+    component.batchRequest();
+    component.approve(candidate(1));
+    component.hold(candidate(1));
+    await component.reject(candidate(1));
+    await component.bulk('approve');
+    expect(writes).toEqual([]);
+  });
+
+  it('blocks batches while a manual single action is running and fences older candidate reads', async () => {
+    const write = new Subject<Feed>();
+    const staleList = new Subject<PaginatedFeedCandidates>();
+    const batches: unknown[] = [];
+    const { component } = setup({
+      approveCandidate: () => write,
+      batchRequestSourceReviews: () => {
+        batches.push(true);
+        return of({});
+      },
+    });
+    component.toggleGroup(component.candidates(), true);
+    TestBed.inject(AdminService).listCandidates = () => staleList;
+    component.load(true);
+    component.approve(candidate(1));
+    component.batchRequest();
+    await component.bulk('reject');
+    staleList.next({ items: [candidate(2)], total: 2, page: 1, page_size: 20 });
+    expect(component.candidates().map(({ id }) => id)).toEqual(['cand-1']);
+    expect(batches).toEqual([]);
+  });
+
+  it('keeps a newly selected status page intact when an earlier manual action finishes', () => {
+    const write = new Subject<Feed>();
+    const { component } = setup({ approveCandidate: () => write });
+    component.approve(candidate(1));
+    TestBed.inject(AdminService).listCandidates = () =>
+      of({ items: [{ ...candidate(2), status: 'held' }], total: 1, page: 1, page_size: 20 });
+    component.changeStatus('held');
+    write.next({ id: 'feed-1', title: '已入庫' } as Feed);
+    expect(component.status()).toBe('held');
+    expect(component.candidates().map(({ id }) => id)).toEqual(['cand-2']);
+    expect(component.total()).toBe(1);
+  });
+
+  it.each(['approve', 'hold', 'reject'] as const)(
+    'limits manual bulk %s to two in-flight requests and continues after an item fails',
+    async (action) => {
+      const responses: Subject<unknown>[] = [];
+      const notices: string[] = [];
+      const { component } = setup({
+        listCandidates: () => of({ items: [1, 2, 3, 4, 5].map(candidate), total: 5 }),
+        [`${action}Candidate`]: () => {
+          const response = new Subject<unknown>();
+          responses.push(response);
+          return response;
+        },
+      });
+      TestBed.inject(ToastService).info = (message: string) => {
+        notices.push(message);
+      };
+      component.toggleGroup(component.candidates(), true);
+      await component.bulk(action);
+      const active = () => responses.filter((response) => response.observed).length;
+      expect(active()).toBe(2);
+      expect(responses[2].observed).toBe(false);
+      for (let i = 0; i < responses.length; i++) {
+        expect(responses[i].observed).toBe(true);
+        if (i === 1) responses[i].error(new HttpErrorResponse({ status: 409 }));
+        else {
+          responses[i].next({});
+          responses[i].complete();
+        }
+        expect(active()).toBeLessThanOrEqual(2);
+      }
+      expect(active()).toBe(0);
+      expect(notices).toEqual(['批量作業完成：4/5']);
+    },
+  );
+
+  it('locks manual batch confirmation immediately and unlocks after cancellation', async () => {
+    const { component, fixture, calls } = setup();
+    Object.assign(fixture.componentInstance, { blockHostOnReject: true });
+    let respond!: (value: boolean) => void;
+    TestBed.inject(ConfirmService).ask = () =>
+      new Promise<boolean>((resolve) => (respond = resolve));
+    component.toggleGroup(component.candidates(), true);
+    const pending = component.bulk('reject');
+    component.requestReview(candidate(1));
+    component.batchRequest();
+    expect(calls.request).toBe(0);
+    respond(false);
+    await pending;
+    component.requestReview(candidate(1));
+    expect(calls.request).toBe(1);
+  });
+
+  it('cancels old summary reads when a batch starts and ignores their late results', () => {
+    const old = new Subject<{ items: SourceReview[] }>();
+    const write = new Subject<SourceReviewBatchResult>();
+    let reads = 0;
+    const { component } = setup({
+      latestSourceReviews: () => (++reads === 1 ? old : of({ items: [task('requested')] })),
+      batchRequestSourceReviews: () => write,
+    });
+    component.sourceReviews.set({ 'cand-1': null });
+    component.toggleGroup(component.candidates(), true);
+    component.batchRequest();
+    expect(old.observed).toBe(false);
+    write.next({
+      items: [{ candidate_id: 'cand-1', ok: true, review: task('requested') }],
+      succeeded: 1,
+      failed: 0,
+    });
+    old.next({ items: [task('failed')] });
+    expect(component.sourceReviews()['cand-1']?.status).toBe('requested');
+  });
 
   it.each([20, 50])('reads %i candidates in one batch and maps missing reviews to null', (size) => {
     const ids: string[][] = [];
@@ -412,7 +711,11 @@ describe('AdminCandidates source review', () => {
     response.error(new Error('offline'));
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('無法讀取評審狀態');
-    expect(fixture.nativeElement.textContent).not.toContain('請求 AI 評審');
+    expect(
+      Array.from(fixture.nativeElement.querySelectorAll('ob-list-row button'), (button: unknown) =>
+        (button as HTMLElement).textContent?.trim(),
+      ),
+    ).not.toContain('請求 AI 評審');
     const pending = new Subject<{ items: SourceReview[] }>();
     TestBed.inject(AdminService).latestSourceReviews = () => pending;
     component.load();
@@ -458,7 +761,11 @@ describe('AdminCandidates source review', () => {
     expect(calls.retry).toBe(1);
     component.sourceReviews.set({ 'cand-1': { ...task('rejected'), manual_override: 'reject' } });
     fixture.detectChanges();
-    expect(fixture.nativeElement.textContent).not.toContain('重試 AI 評審');
+    expect(
+      Array.from(fixture.nativeElement.querySelectorAll('ob-list-row button'), (button: unknown) =>
+        (button as HTMLElement).textContent?.trim(),
+      ),
+    ).not.toContain('重試 AI 評審');
     component.requestReview(candidate(1), true);
     expect(calls.retry).toBe(1);
   });
