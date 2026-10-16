@@ -11,11 +11,12 @@ from database import get_client
 from models import (
     DiscoverImportRequest,
     Feed,
+    AdminFeed,
     FeedCreate,
     FeedHealthSummary,
     FeedRefreshResult,
     ImportFeedsRequest,
-    PaginatedFeeds,
+    PaginatedAdminFeeds,
     RefreshDueSummary,
     SourceMetadataUpdate,
 )
@@ -183,7 +184,7 @@ async def refresh_feed(
 
     # All the fetch / health / backoff bookkeeping lives in feed_refresh so the
     # scheduler behaves identically to this endpoint.
-    result = await refresh_one(db, feed_result.data)
+    result = await refresh_one(db, feed_result.data, force=True)
     if result.status == "failed":
         raise HTTPException(status_code=502, detail="Failed to fetch feed")
 
@@ -262,13 +263,13 @@ async def refresh_due_feeds(
     return RefreshDueSummary(**summarize(results))
 
 
-@router.get("/feeds", response_model=PaginatedFeeds, dependencies=[Depends(_require_api_key)])
+@router.get("/feeds", response_model=PaginatedAdminFeeds, dependencies=[Depends(_require_api_key)])
 async def list_all_feeds(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     archived: bool | None = None,
     db: Client = Depends(get_client),
-) -> PaginatedFeeds:
+) -> PaginatedAdminFeeds:
     """Paginated list of every feed, archived included.
 
     The public GET /feeds hides archived rows and the other admin lists are
@@ -287,8 +288,8 @@ async def list_all_feeds(
         .order("next_fetch_at")
         .execute()
     )
-    return PaginatedFeeds(
-        items=[Feed(**row) for row in result.data],
+    return PaginatedAdminFeeds(
+        items=[AdminFeed(**row) for row in result.data],
         total=result.count or 0,
         page=page,
         page_size=page_size,
@@ -321,11 +322,11 @@ async def list_unhealthy_feeds(
     return [FeedHealthSummary(**row) for row in rows.data]
 
 
-@router.get("/feeds/archived", response_model=list[Feed], dependencies=[Depends(_require_api_key)])
+@router.get("/feeds/archived", response_model=list[AdminFeed], dependencies=[Depends(_require_api_key)])
 async def list_archived_feeds(
     limit: int = Query(200, ge=1, le=1000),
     db: Client = Depends(get_client),
-) -> list[Feed]:
+) -> list[AdminFeed]:
     result = (
         db.table("feeds")
         .select("*")
@@ -334,4 +335,4 @@ async def list_archived_feeds(
         .limit(limit)
         .execute()
     )
-    return [Feed(**row) for row in result.data]
+    return [AdminFeed(**row) for row in result.data]

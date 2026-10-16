@@ -78,6 +78,26 @@ X-API-Key: <admin key>
 
 部署需新增容量歷史 migration，順序見 [RUNBOOK](RUNBOOK.md#每日容量歷史)。只有 service_role 可讀寫私有 RLS 表並呼叫 INVOKER RPC，PUBLIC／anon／authenticated 無權限。
 
+## 來源抓取診斷（#106）
+
+時間欄位分別表示：`last_fetch_at` 是外連開始嘗試，`last_ok_at` 是 HTTP 抓取／解析成功（包含 304），`last_fetched_at` 是既有刷新完成時間（也包含准入排除）。`last_ok_at` 不代表文章已成功入庫；寫入失敗仍保留傳輸成功的證據，並另外記錄失敗、退避與下次嘗試。
+
+`feeds.last_fetch_result` 保存最新一次的有界診斷，公開 API 僅提供安全結果碼、時間與計數，不保存原始外連／DB 例外或回應內容。舊來源維持 null，不能事後推測歷史原因。後台使用中及封存列表會區分等待首次抓取、歷史原因未知、准入排除、空內容、解析／傳輸／寫入失敗，並顯示未封存來源的 `next_fetch_at`。
+
+| `outcome` | 語義 |
+|---|---|
+| `in_progress` | 已開始；尚無完成結果，可能仍執行或中斷，不能宣稱成功 |
+| `fetch_timeout`／`http_error`／`fetch_failed`／`parse_failed` | 逾時、HTTP 錯誤（附狀態碼）、其他抓取錯誤、RSS／Atom 解析失敗 |
+| `ingest_failed` | 抓取成功，但文章保存、計數或完成狀態寫入未完成；不保存本輪新 validator |
+| `excluded` | 准入檢查排除並封存；管理端另外提供既有排除原因 |
+| `empty_feed` | RSS／Atom 解析成功但零項目；傳輸成功與有文章可讀分開呈現 |
+| `no_usable_entries` | 所有解析項目皆缺少網址，沒有可入庫項目 |
+| `unchanged`／`updated`／`not_modified` | 文章總數未增加、增加、HTTP 304 |
+
+有 body 時記錄 `entries_seen`、`missing_url`、`duplicate_entries`（同批完全相同網址）；成功完成另外記 `upserted`（含更新）、`new_articles`（前後精確計數差值）與 `total_articles`。這些不是跨來源去重數；鏡像准入排除仍由來源身分檢查負責，不能把「無新增」都說成被判重。
+
+零文章來源的排程會略過 validator、重新下載 body，避免只有 304 而無法診斷；其他排程維持 conditional GET。後台單筆「更新文章」一律重新下載並做現有前後精確 COUNT，成功時重算 `article_count`，提供逐來源修復快取的入口。精確 COUNT 缺少結果時視為失敗，禁止把未知當 0 寫回；本次正式查核沒有發現快取落差，不執行批次修復。全目錄唯讀核對與歷史證據見 [#106 調查](ISSUE_106.md)。
+
 ## Worker 監控
 
 `GET /api/admin/operations?limit=20`（需 `X-API-Key`）提供 worker heartbeat、最近迴圈與最近失敗數。refresh、discovery、retention、storage 分別記錄，每 30 秒更新 heartbeat；超過 90 秒視為 stale。正在執行但 heartbeat 過期的 run 在讀取時呈現 interrupted；尚無紀錄呈現未知。這是近期執行視窗，不是每日累積報表。

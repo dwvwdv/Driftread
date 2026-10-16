@@ -51,6 +51,8 @@ class Feed(SourceMetadata):
     last_fetched_at: datetime | None = None
     last_fetch_at: datetime | None = None
     last_ok_at: datetime | None = None
+    last_fetch_result: dict[str, Any] | None = None
+    admitted_at: datetime | None = None
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -158,6 +160,16 @@ class PaginatedFeeds(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class AdminFeed(Feed):
+    # Existing failure details are management-only; public diagnostics contain
+    # safe outcome codes and counts, never arbitrary exception strings.
+    last_failure_reason: str | None = None
+
+
+class PaginatedAdminFeeds(PaginatedFeeds):
+    items: list[AdminFeed]
 
 
 class FeedArticle(ArticleSummary):

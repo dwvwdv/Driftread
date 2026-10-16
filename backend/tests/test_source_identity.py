@@ -1,12 +1,21 @@
 from unittest.mock import MagicMock
 
 from services.source_identity import (
+    is_default_demo_article,
     canonical_item_urls,
     same_items,
     find_mirror_source,
     items_look_like_comments,
     new_source_rejection,
 )
+
+
+def test_default_demo_detection_requires_both_title_and_complete_starter_body():
+    body = 'Welcome to WordPress! This is your first post. Edit or delete it to take the first step in your blogging journey.'
+    assert is_default_demo_article('Hello world!', body)
+    assert not is_default_demo_article('Hello world!', 'A real article about programming and compilers.')
+    assert not is_default_demo_article('Installing WordPress', body)
+    assert not is_default_demo_article('Hello world!', body + ' My original writing follows.')
 
 
 def _db(rows=None, error=None):

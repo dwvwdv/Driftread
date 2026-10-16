@@ -193,6 +193,23 @@ describe('AdminCandidates source review', () => {
     status,
     engine: 'external_agent',
   });
+  it('requeues stale or old missing-key work with the ordinary request and protects manual overrides', () => {
+    const { component, calls, fixture } = setup({
+      latestSourceReviews: () => of({ items: [task('stale')] }),
+    });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('依目前政策重新申請');
+    component.requestReview(candidate(1));
+    expect(calls.request).toBe(1);
+    expect(calls.retry).toBe(0);
+    component.sourceReviews.set({ 'cand-1': { ...task('failed'), engine: 'jev', error_code: 'provider_key_missing' } });
+    component.requestReview(candidate(1));
+    expect(calls.request).toBe(2);
+    component.sourceReviews.set({ 'cand-1': { ...task('stale'), manual_override: 'hold' } });
+    component.requestReview(candidate(1));
+    expect(calls.request).toBe(2);
+    expect(calls.retry).toBe(0);
+  });
   function setup(overrides: Record<string, unknown> = {}) {
     const calls = { request: 0, retry: 0, resolve: [] as string[], read: 0 };
     const admin = {

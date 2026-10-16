@@ -230,6 +230,12 @@
             </div>
             <div rowMeta>
               @if (sourceReviews()[candidate.id]; as review) {
+                @if (canRequeue(review) && !candidate.manual_override) {
+                  <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm"
+                    [disabled]="actionBusy()" (click)="requestReview(candidate)">
+                    依目前政策重新申請
+                  </button>
+                }
                 @if (canRetry(review) && !candidate.manual_override) {
                   <button
                     type="button"
