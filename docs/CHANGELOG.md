@@ -1172,7 +1172,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 未修改 frontend，不需要新增部署設定；正式環境需更新 API image 後，從 ChatGPT 重新開始授權。尚未代替使用者驗證正式瀏覽器／Telegram 流程。
 - Review 事件 hook 工具不可用，依使用者與 AGENTS.md 的指示建立 PR #103 每小時檢查，直到合併或關閉；無新進展時不通知。
 
-## 階段四十八：批次來源評審、待複審清單與留言來源前置排除（PR 待定，2026-10-16）
+## 階段四十八：批次來源評審、待複審清單與留言來源前置排除（PR #104，2026-10-16）
 
 首次 ChatGPT MCP 評審可用，但「查看任務」缺少唯讀入口、領取與提交只能逐筆；候選頁也無法集中處理等待人工覆核的結果。新增完整批次流程與待複審視圖，並依使用者補充在來源發現時提前排除留言 feed，減少無效抓取與評審成本。
 
@@ -1188,3 +1188,4 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 本機 PostgreSQL 17 跑完整 backend：1366 passed、0 skipped；frontend 38 files／403 tests 通過，production build 通過（既有 initial bundle warning：511.82 kB／500 kB）。文件檢查與 git diff --check 通過。測試需開啟本機 socket 執行權限；未修改產品 async 行為。
 - 正式 MCP 舊版唯讀測試成功；新工具以官方 SDK、本機隔離 PostgreSQL 17 與單元測試驗證。真實 ChatGPT／瀏覽器、正式 Supabase／PostgREST、Telegram 與正式部署尚未驗收。
 - 先更新 API 套用 migration，healthy 後更新 frontend／worker，再刷新 ChatGPT 工具列表；不直接部署或合併 master。
+- GitHub review 事件 hook 工具不可用；依 AGENTS.md 既有 Codex 規範建立 PR #104 每小時追蹤，合併或關閉後停止，無新進展不通知。
