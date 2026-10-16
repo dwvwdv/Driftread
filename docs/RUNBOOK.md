@@ -138,6 +138,10 @@ ChatGPT 刷新 MCP 工具列表後應有九個工具。先呼叫唯讀 `list_sou
 
 回滾應用時保留 migration；新增 RPC／索引不影響舊列表，較嚴格的覆核檢查繼續生效。回滾到沒有新工具的 API 後，重新刷新 ChatGPT 工具列表。
 
+管理連線期限另需 `20261016050000_review_oauth_expiry.sql`：API 先套 nullable grant／refresh 期限 migration，再升級 frontend，既有授權保持原期限；MCP 連線頁可改未來日期或永久。有效永久授權仍可立即撤銷，access token 仍短效。回滾到不理解 null 期限的舊 API 前，先用新版後台將有效永久授權改回有限日期。若資料庫仍有永久授權的 null 歷史列，回滾時依原 OAuth 回滾流程撤銷授權並清空 SOURCE_REVIEW_OAUTH_BASE_URL，保持 OAuth 停用直到再次升級；僅撤銷但讓舊版繼續提供列表仍可能序列化失敗。不要為回滾放寬 OAuth 私有表權限。
+
+批次／單筆明確重試另需 `20261016050100_review_retry_fencing.sql`，新 API 依選定評審 ID 原子驗證最新終態，舊前端缺少 `expected_review_ids` 的批次重試會回 422，需一同升級前端。
+
 ## ChatGPT Web 來源評審 OAuth（#100）
 
 1. 備份並停舊 worker，升級 API，開機套用 `20261014010000_source_review_oauth.sql`；保留 ledger，healthy 後啟動同版 worker／frontend。新表撤銷所有 Data API roles（含 service_role），沿用既有 privileged `DATABASE_URL`，不需要修改 Supabase Dashboard 的 OAuth server／Exposed Schemas。

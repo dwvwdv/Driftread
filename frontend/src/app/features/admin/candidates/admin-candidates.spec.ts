@@ -281,7 +281,11 @@ describe('AdminCandidates source review', () => {
   it.each([false, true])(
     'sends only eligible selected candidates in one batch (retry=%s)',
     (retry) => {
-      const batches: { ids: string[]; retry: boolean }[] = [];
+      const batches: {
+        ids: string[];
+        retry: boolean;
+        expectedReviewIds?: Record<string, string>;
+      }[] = [];
       const response = new Subject<SourceReviewBatchResult>();
       const { component } = setup({
         listCandidates: () =>
@@ -301,8 +305,12 @@ describe('AdminCandidates source review', () => {
               { ...task('failed'), candidate_id: 'cand-5', manual_override: 'reject' },
             ],
           }),
-        batchRequestSourceReviews: (ids: string[], retry: boolean) => {
-          batches.push({ ids, retry });
+        batchRequestSourceReviews: (
+          ids: string[],
+          retry: boolean,
+          expectedReviewIds?: Record<string, string>,
+        ) => {
+          batches.push({ ids, retry, expectedReviewIds });
           return response;
         },
       });
@@ -311,7 +319,13 @@ describe('AdminCandidates source review', () => {
       component.batchRequest(retry);
       component.batchRequest(retry);
       component.requestReview(candidate(1));
-      expect(batches).toEqual([{ ids: [retry ? 'cand-2' : 'cand-1'], retry }]);
+      expect(batches).toEqual([
+        {
+          ids: [retry ? 'cand-2' : 'cand-1'],
+          retry,
+          expectedReviewIds: retry ? { 'cand-2': 'r1' } : undefined,
+        },
+      ]);
     },
   );
 

@@ -126,19 +126,57 @@ def test_model_cannot_assign_provider_identity_or_use_unknown_reviewer():
 @pytest.mark.parametrize('retry', [False, True])
 def test_batch_requests_deduplicate_in_order_and_keep_partial_failures(retry, caplog):
     ids = [str(uuid4()) for _ in range(4)]
+    expected = {cid: str(uuid4()) for cid in ids}
     db = object()
     with patch.object(service, 'request_review', side_effect=[
         {'id': 'first'}, ReviewError(409, 'A manual decision already controls this candidate'),
         RuntimeError('provider?key=SECRET'), {'id': 'last'},
     ]) as request:
-        result = service.request_reviews(db, [ids[0], ids[1], ids[0], ids[2], ids[3]], retry=retry)
-    assert request.call_args_list == [call(db, cid, retry=retry) for cid in ids]
+        result = service.request_reviews(db, [ids[0], ids[1], ids[0], ids[2], ids[3]], retry=retry,
+                                         expected_review_ids=expected)
+    assert request.call_args_list == [call(db, cid, retry=True, expected_review_id=expected[cid])
+                                     if retry else call(db, cid, retry=False) for cid in ids]
     assert [item['candidate_id'] for item in result['items']] == ids
     assert [item['ok'] for item in result['items']] == [True, False, False, True]
     assert result['succeeded'] == result['failed'] == 2
     assert result['items'][1]['status_code'] == 409
     assert result['items'][2]['status_code'] == 503
     assert 'SECRET' not in str(result) + caplog.text
+
+
+def test_explicit_retry_uses_the_selected_review_in_the_fenced_rpc():
+    cid, rid = str(uuid4()), str(uuid4())
+    db = RPCDB({'id': str(uuid4()), 'candidate_id': cid, 'status': 'requested'})
+    with patch.object(service, 'get_candidate', return_value={'feed_url': 'https://publisher.example/feed'}):
+        result = service.request_review(db, cid, retry=True, expected_review_id=rid)
+    assert result['status'] == 'requested'
+    assert db.calls == [('retry_source_review', {'p_candidate_id': cid, 'p_expected_review_id': rid})]
+
+
+def test_retry_requires_review_identity_before_any_database_mutation():
+    db = RPCDB(None)
+    with patch.object(service, 'get_candidate') as read:
+        with pytest.raises(ReviewError) as caught:
+            service.request_review(db, str(uuid4()), retry=True)
+    assert caught.value.status_code == 422
+    assert db.calls == []
+    read.assert_not_called()
+    with patch.object(service, 'request_review') as request:
+        with pytest.raises(ReviewError) as caught:
+            service.request_reviews(db, [str(uuid4()), str(uuid4())], retry=True)
+    assert caught.value.status_code == 422
+    request.assert_not_called()
+
+
+def test_stale_retry_is_a_partial_conflict_without_replacing_another_review():
+    ids = [str(uuid4()), str(uuid4())]
+    expected = {cid: str(uuid4()) for cid in ids}
+    with patch.object(service, 'request_review', side_effect=[ReviewError(409, 'Review conflict'),
+                                                           {'status': 'requested'}]):
+        result = service.request_reviews(object(), ids, retry=True, expected_review_ids=expected)
+    assert result['succeeded'] == result['failed'] == 1
+    assert result['items'][0]['status_code'] == 409
+    assert result['items'][1]['ok'] is True
 
 
 def test_batch_resolutions_deduplicate_and_preserve_decision():

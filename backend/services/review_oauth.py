@@ -134,7 +134,8 @@ def _cleanup(cur):
     cur.execute("""DELETE FROM driftread.review_oauth_requests WHERE request_hash IN
       (SELECT request_hash FROM driftread.review_oauth_requests WHERE expires_at<now() LIMIT 200)""")
     cur.execute("""DELETE FROM driftread.review_oauth_grants WHERE id IN
-      (SELECT id FROM driftread.review_oauth_grants WHERE expires_at<now()-interval '30 days' LIMIT 100)""")
+      (SELECT id FROM driftread.review_oauth_grants
+       WHERE expires_at<now()-interval '30 days' OR revoked_at<now()-interval '30 days' LIMIT 100)""")
     # Clients are created only after owner consent. Their compact metadata must
     # survive expired grants: ChatGPT can cache a client ID and reauthorize it.
 
@@ -331,7 +332,7 @@ def decide_authorization(request_id: str, approved: bool, user: AuthUser, manage
 
 
 def _valid_grant(cur, grant):
-    if (not grant or grant['revoked_at'] or grant['expires_at'] <= _now()
+    if (not grant or grant['revoked_at'] or (grant['expires_at'] is not None and grant['expires_at'] <= _now())
             or grant['resource'] != resource_url() or SCOPE not in grant['scope'].split(' ')):
         raise OAuthError('invalid_grant', description='Authorization is expired or revoked')
     try:
@@ -356,7 +357,8 @@ def _lock_grant(cur, grant_id):
 def _issue_tokens(cur, grant, refresh):
     access = 'droa_' + secrets.token_urlsafe(32)
     now = _now()
-    lifetime = min(ACCESS_SECONDS, max(1,int((grant['expires_at']-now).total_seconds())))
+    lifetime = (ACCESS_SECONDS if grant['expires_at'] is None
+                else min(ACCESS_SECONDS, max(1,int((grant['expires_at']-now).total_seconds()))))
     cur.execute("INSERT INTO driftread.review_oauth_tokens(token_hash,grant_id,kind,expires_at) VALUES(%s,%s,'access',%s)",
                 (_digest(access),str(grant['id']),now+timedelta(seconds=lifetime)))
     result = {'access_token':access,'token_type':'Bearer','expires_in':lifetime,'scope':grant['scope']}
@@ -419,7 +421,7 @@ def exchange_token(params: dict) -> dict:
                 # Raise only after the transaction commits the replay fence.
                 cur.execute("UPDATE driftread.review_oauth_grants SET revoked_at=now() WHERE id=%s", (grant['id'],))
                 failure = OAuthError('invalid_grant', description='Refresh token has already been used')
-            elif row['expires_at'] <= _now():
+            elif row['expires_at'] is not None and row['expires_at'] <= _now():
                 raise OAuthError('invalid_grant')
             else:
                 cur.execute("UPDATE driftread.review_oauth_tokens SET consumed_at=now() WHERE token_hash=%s", (_digest(token),))
@@ -458,8 +460,45 @@ def list_grants(user: AuthUser, manage_token: str) -> list:
          FROM driftread.review_oauth_grants g JOIN driftread.review_oauth_clients c ON c.client_id=g.client_id
          WHERE g.owner_user_id=%s ORDER BY g.created_at DESC LIMIT 100""", (uid,))
         rows = cur.fetchall()
-    return [{**r,'id':str(r['id']),'created_at':r['created_at'].isoformat(),
-             'expires_at':r['expires_at'].isoformat(),'last_used_at':r['last_used_at'].isoformat() if r['last_used_at'] else None,'revoked_at':r['revoked_at'].isoformat() if r['revoked_at'] else None} for r in rows]
+    return [_grant_summary(r) for r in rows]
+
+
+def _grant_summary(row):
+    return {key: (value.isoformat() if value is not None else None)
+            for key, value in row.items() if key in {'created_at', 'expires_at', 'last_used_at', 'revoked_at'}} | {
+                'id': str(row['id']), 'client_name': row['client_name'], 'scope': row['scope'],
+            }
+
+
+def update_grant_expiry(grant_id: str, expires_at: datetime | None, user: AuthUser, manage_token: str):
+    base_url()
+    try:
+        gid = str(UUID(str(grant_id)))
+    except ValueError:
+        raise OAuthError('invalid_request') from None
+    if expires_at is not None:
+        if (not isinstance(expires_at, datetime) or expires_at.tzinfo is None
+                or expires_at.utcoffset() is None):
+            raise OAuthError('invalid_request', 422, 'Expiry must include a timezone')
+        expires_at = expires_at.astimezone(timezone.utc)
+    with manage_auth.connection() as cur:
+        uid, _ = _manage(cur, user, manage_token)
+        # Refresh/rotation/revocation serialize on this same grant row. Update
+        # the live refresh credential too, so extending the grant really extends
+        # an already connected client without issuing or revealing a new token.
+        cur.execute("SELECT * FROM driftread.review_oauth_grants WHERE id=%s AND owner_user_id=%s FOR UPDATE", (gid,uid))
+        grant = cur.fetchone()
+        if not grant:
+            raise OAuthError('not_found', 404, 'Connection not found')
+        if grant['revoked_at'] or (grant['expires_at'] is not None and grant['expires_at'] <= _now()):
+            raise OAuthError('grant_inactive', 409, 'Expired or revoked connections require new authorization')
+        if expires_at is not None and expires_at <= _now():
+            raise OAuthError('invalid_request', 422, 'Expiry must be in the future')
+        cur.execute("UPDATE driftread.review_oauth_grants SET expires_at=%s WHERE id=%s", (expires_at,gid))
+        cur.execute("""UPDATE driftread.review_oauth_tokens SET expires_at=%s
+          WHERE grant_id=%s AND kind='refresh' AND consumed_at IS NULL""", (expires_at,gid))
+        cur.execute("SELECT client_name FROM driftread.review_oauth_clients WHERE client_id=%s", (grant['client_id'],))
+        return _grant_summary({**grant, 'expires_at': expires_at, 'client_name': cur.fetchone()['client_name']})
 
 
 def revoke_grant(grant_id: str, user: AuthUser, manage_token: str):

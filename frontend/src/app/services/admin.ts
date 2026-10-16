@@ -289,10 +289,15 @@ export class AdminService {
   batchRequestSourceReviews(
     candidateIds: string[],
     retry = false,
+    expectedReviewIds?: Record<string, string>,
   ): Observable<SourceReviewBatchResult> {
     return this.post<SourceReviewBatchResult>(
       '/admin/source-reviews/batch/request',
-      { candidate_ids: candidateIds, retry },
+      {
+        candidate_ids: candidateIds,
+        retry,
+        ...(retry ? { expected_review_ids: expectedReviewIds } : {}),
+      },
       retry ? '批次重試來源評審失敗' : '批次請求來源評審失敗',
     );
   }

@@ -366,6 +366,8 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 
 授權碼、access／refresh token 與授權請求只保存 SHA-256，S256 PKCE、註冊 callback／client／resource 精確綁定；code 一次消耗，refresh 旋轉與重放撤銷以 grant row lock 序列化，撤銷先提交再回錯誤。每次請求檢查目前 owner、Supabase session、停用、到期與撤銷；後台登出撤銷同登入 session 的 grants，不把管理 session 自然到期誤作 OAuth 的續期。
 
+管理員可透過帶 Telegram session 的後台 PATCH 修改本人有效 grant 的期限或明確設為 null 永久；一般管理 key 與來源評審 MCP token 不能執行。修改與 refresh／撤銷共用 grant row lock，連帶更新未消耗 refresh 的期限；不恢復過期／撤銷 grant，access 仍最多 15 分鐘且每次核對目前 grant。永久不略過 owner、Supabase session、登出與 replay 檢查，已撤銷永久授權於 30 天後清理。
+
 明確登出以已驗證 owner／Supabase session 刪除該登入的全部管理 sessions，再撤銷同登入 grants；不依賴管理 token 尚未過期或存在。與 consent 共用管理 session 的列鎖，避免空 token 登出和同意競跑留下有效 grant，其他登入不受影響。前端在途回應綁定 user ID／auth session ID／管理 token，正常 JWT refresh 不視為帳號切換，舊 JWT 的延遲 401 不清除新憑證。
 
 管理 MCP 只接受完整格式的 OAuth access token，進資料庫前限制來源 IP 每 60 秒 60 次驗證；獨立 4 執行緒池配合立即拒絕的 4 個名額，不將匿名驗證排入共用 threadpool。429 帶 Retry-After；HTTP 取消後仍由實際 worker 完成才釋放名額，避免透過反覆取消繞過並發限制。

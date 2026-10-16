@@ -83,11 +83,18 @@ def latest_reviews(db, candidate_ids: list[str]) -> list[dict]:
             for candidate in candidates if candidate.get('source_reviews')]
 
 
-def request_review(db, candidate_id, *, retry=False) -> dict:
+def request_review(db, candidate_id, *, retry=False, expected_review_id=None) -> dict:
+    if retry and expected_review_id is None:
+        raise ReviewError(422, 'Retry requires the selected review ID')
     candidate = get_candidate(db, str(candidate_id))
     if candidate and is_comment_feed(candidate['feed_url']):
         raise ReviewError(409, 'Comment feeds are excluded from article discovery')
-    row = _rpc(db, 'request_source_review', {'p_candidate_id': str(candidate_id), 'p_retry': retry})
+    if retry:
+        row = _rpc(db, 'retry_source_review', {
+            'p_candidate_id': str(candidate_id), 'p_expected_review_id': str(expected_review_id),
+        })
+    else:
+        row = _rpc(db, 'request_source_review', {'p_candidate_id': str(candidate_id), 'p_retry': False})
     if not row:
         raise ReviewError(409, 'Review could not be requested')
     return _summary(row, candidate)
@@ -208,10 +215,17 @@ def _batch(items, operation, *, id_key) -> dict:
     return {'items': results, 'succeeded': succeeded, 'failed': len(results) - succeeded}
 
 
-def request_reviews(db, candidate_ids, *, retry=False) -> dict:
+def request_reviews(db, candidate_ids, *, retry=False, expected_review_ids=None) -> dict:
     # Deduplicate before mutating, retaining the caller's first-occurrence order.
-    return _batch(dict.fromkeys(map(str, candidate_ids)),
-                  lambda cid: request_review(db, cid, retry=retry), id_key='candidate_id')
+    candidates = dict.fromkeys(map(str, candidate_ids))
+    selected_reviews = {str(cid): str(rid) for cid, rid in (expected_review_ids or {}).items()}
+    if retry and any(cid not in selected_reviews for cid in candidates):
+        raise ReviewError(422, 'Retry requires an expected review ID for every candidate')
+    def request(cid):
+        if retry:
+            return request_review(db, cid, retry=True, expected_review_id=selected_reviews[cid])
+        return request_review(db, cid, retry=False)
+    return _batch(candidates, request, id_key='candidate_id')
 
 
 def resolve_reviews(db, review_ids, decision) -> dict:

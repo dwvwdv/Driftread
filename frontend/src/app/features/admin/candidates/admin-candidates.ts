@@ -252,6 +252,9 @@ export class AdminCandidates implements OnInit {
       this.admin.batchRequestSourceReviews(
         items.map(({ id }) => id),
         retry,
+        retry
+          ? Object.fromEntries(items.map(({ id }) => [id, this.sourceReviews()[id]!.id]))
+          : undefined,
       ),
     );
   }

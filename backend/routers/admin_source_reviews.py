@@ -3,7 +3,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 from supabase import Client
 
@@ -28,6 +28,13 @@ class LatestReviewsRequest(BaseModel):
 
 class BatchRequestReviews(LatestReviewsRequest):
     retry: bool = False
+    expected_review_ids: dict[UUID, UUID] = Field(default_factory=dict, max_length=50)
+
+    @model_validator(mode="after")
+    def retry_requires_selected_reviews(self):
+        if self.retry and any(cid not in self.expected_review_ids for cid in self.candidate_ids):
+            raise ValueError("Retry requires an expected review ID for every candidate")
+        return self
 
 
 class BatchResolveReviews(ResolveReviewRequest):
@@ -67,7 +74,8 @@ async def request_source_review(candidate_id: UUID, db: Client = Depends(get_cli
 @router.post("/batch/request")
 async def request_source_reviews(body: BatchRequestReviews,
                                  db: Client = Depends(get_client)) -> dict:
-    return await _call(source_review.request_reviews, db, body.candidate_ids, retry=body.retry)
+    return await _call(source_review.request_reviews, db, body.candidate_ids, retry=body.retry,
+                       expected_review_ids={str(cid): str(rid) for cid, rid in body.expected_review_ids.items()})
 
 
 @router.post("/batch/resolve")
@@ -97,4 +105,5 @@ async def resolve_source_review(review_id: UUID, body: ResolveReviewRequest,
 @router.post("/{review_id}/retry")
 async def retry_source_review(review_id: UUID, db: Client = Depends(get_client)) -> dict:
     packet = await _call(source_review.get_review_packet, db, str(review_id))
-    return await _call(source_review.request_review, db, packet["candidate_id"], retry=True)
+    return await _call(source_review.request_review, db, packet["candidate_id"], retry=True,
+                       expected_review_id=str(review_id))

@@ -1,5 +1,6 @@
 """HTTP discovery, public-client inputs and browser authorization boundaries."""
 from types import SimpleNamespace
+from datetime import datetime
 from unittest.mock import Mock
 
 import pytest
@@ -124,3 +125,51 @@ def test_rfc7009_revoke_returns_200_and_browser_revoke_204(client, monkeypatch):
     r = client.delete('/api/review-oauth/grants/' + gid, headers={'X-Manage-Session': 'admin-session'})
     assert r.status_code == 204 and not r.content
     revoke_grant.assert_called_once_with(gid, user, 'admin-session')
+
+
+@pytest.mark.parametrize('expires_at', [None, '2099-01-01T08:00:00+08:00'])
+def test_grant_expiry_patch_requires_browser_session_and_returns_only_summary(client, monkeypatch, expires_at):
+    gid = '10000000-0000-4000-8000-000000000001'
+    required = Mock(side_effect=HTTPException(401, '登入已失效'))
+    update = Mock(return_value={'id': gid, 'expires_at': expires_at, 'client_name': 'ChatGPT'})
+    monkeypatch.setattr(routes.manage_auth, 'require_session', required)
+    monkeypatch.setattr(oauth, 'update_grant_expiry', update)
+    for machine_key in ('test-admin-key', 'source-review-machine-key'):
+        response = client.patch('/api/review-oauth/grants/' + gid,
+                                headers={'X-API-Key': machine_key}, json={'expires_at': expires_at})
+        assert response.status_code == 401
+        assert response.headers['cache-control'] == 'no-store'
+    update.assert_not_called()
+    user = SimpleNamespace(id='owner')
+    required.side_effect = None
+    required.return_value = user
+    headers = {'Authorization': 'Bearer verified-user', 'X-Manage-Session': 'telegram-session'}
+    response = client.patch('/api/review-oauth/grants/' + gid, headers=headers,
+                            json={'expires_at': expires_at})
+    assert response.status_code == 200 and response.json() == update.return_value
+    assert response.headers['cache-control'] == 'no-store'
+    required.assert_called_with('Bearer verified-user', 'telegram-session')
+    expected = datetime.fromisoformat(expires_at) if expires_at else None
+    update.assert_called_once_with(gid, expected, user, 'telegram-session')
+
+
+@pytest.mark.parametrize('payload', [{}, {'expires_at': '2099-01-01T00:00:00'},
+    {'expires_at': 'bad-date'}, {'expires_at': '2099999999'}, {'expires_at': 4070908800}, {'expires_at': True}, {'expires_at': {}},
+    {'expires_at': '2099-01-01'}, {'expires_at': None, 'scope': 'admin'}, {'expires_at': None, 'owner': 'other'}])
+def test_grant_expiry_patch_rejects_missing_naive_or_unknown_inputs(client, monkeypatch, payload):
+    update = Mock()
+    monkeypatch.setattr(oauth, 'update_grant_expiry', update)
+    response = client.patch('/api/review-oauth/grants/10000000-0000-4000-8000-000000000001', json=payload)
+    assert response.status_code == 422
+    update.assert_not_called()
+
+
+@pytest.mark.parametrize('status,error', [(404, 'not_found'), (409, 'grant_inactive'), (422, 'invalid_request')])
+def test_grant_expiry_patch_maps_service_errors(client, monkeypatch, status, error):
+    monkeypatch.setattr(routes.manage_auth, 'require_session', lambda a, t: SimpleNamespace(id='owner'))
+    update = Mock(side_effect=oauth.OAuthError(error, status, 'Connection expiry cannot be changed'))
+    monkeypatch.setattr(oauth, 'update_grant_expiry', update)
+    response = client.patch('/api/review-oauth/grants/10000000-0000-4000-8000-000000000001',
+                            json={'expires_at': None}, headers={'X-Manage-Session': 'telegram-session'})
+    assert response.status_code == status and response.json()['error'] == error
+    assert response.headers['cache-control'] == 'no-store'

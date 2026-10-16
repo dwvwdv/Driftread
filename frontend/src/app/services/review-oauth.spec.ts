@@ -65,6 +65,82 @@ describe('source review OAuth administration', () => {
       req.flush(method === 'DELETE' ? null : {});
     }
   });
+  it.each([null, '2029-01-01T00:00:00.000Z'])(
+    'patches a grant expiry with management authentication (%s)',
+    (expires_at) => {
+      let result: unknown;
+      TestBed.inject(ReviewOAuthService)
+        .updateExpiry('grant/id', expires_at)
+        .subscribe((value) => (result = value));
+      const request = mock.expectOne((r) => r.url.endsWith('/review-oauth/grants/grant%2Fid'));
+      expect(request.request.method).toBe('PATCH');
+      expect(request.request.body).toEqual({ expires_at });
+      expect(request.request.headers.get('Authorization')).toBe('Bearer owner');
+      expect(request.request.headers.get('x-manage-session')).toBe('owner');
+      const updated = { id: 'grant/id', expires_at };
+      request.flush(updated);
+      expect(result).toEqual(updated);
+    },
+  );
+
+  it('accepts an expiry update after JWT refresh within the same login', () => {
+    let value: unknown;
+    TestBed.inject(ReviewOAuthService)
+      .updateExpiry('grant', null)
+      .subscribe((result) => (value = result));
+    accessToken = 'refreshed';
+    mock.expectOne((r) => r.method === 'PATCH').flush({ id: 'grant', expires_at: null });
+    expect(value).toEqual({ id: 'grant', expires_at: null });
+    expect(clear).not.toHaveBeenCalled();
+  });
+
+  it.each(['account', 'auth session', 'management session', 'sign out'])(
+    'discards an expiry write response after a change to the %s',
+    (change) => {
+      let value: unknown;
+      let error: unknown;
+      TestBed.inject(ReviewOAuthService)
+        .updateExpiry('grant', null)
+        .subscribe({ next: (result) => (value = result), error: (reason) => (error = reason) });
+      if (change === 'account') userId = 'other';
+      if (change === 'auth session') authSessionId = 'login-2';
+      if (change === 'management session') manageToken = 'new';
+      if (change === 'sign out') userId = null;
+      mock.expectOne((r) => r.method === 'PATCH').flush({ id: 'grant', expires_at: null });
+      expect(value).toBeUndefined();
+      expect(reviewOAuthError(error)).toContain('帳號已變更');
+    },
+  );
+
+  it.each(['account', 'auth session', 'management session', 'refreshed JWT'])(
+    'preserves a newer %s after an older expiry PATCH returns 401',
+    (change) => {
+      TestBed.inject(ReviewOAuthService)
+        .updateExpiry('grant', null)
+        .subscribe({ error: () => {} });
+      if (change === 'account') userId = 'other';
+      if (change === 'auth session') authSessionId = 'login-2';
+      if (change === 'management session') manageToken = 'new';
+      if (change === 'refreshed JWT') accessToken = 'refreshed';
+      mock
+        .expectOne((r) => r.method === 'PATCH')
+        .flush({}, { status: 401, statusText: 'Unauthorized' });
+      expect(clear).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns to management login when the current expiry PATCH session is unauthorized', () => {
+    TestBed.inject(ReviewOAuthService)
+      .updateExpiry('grant', null)
+      .subscribe({ error: () => {} });
+    mock
+      .expectOne((r) => r.method === 'PATCH')
+      .flush({}, { status: 401, statusText: 'Unauthorized' });
+    expect(clear).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledOnce();
+  });
+
   it('keeps the OAuth query when a management session expires', () => {
     const router = TestBed.inject(Router);
     vi.spyOn(router, 'url', 'get').mockReturnValue('/manage/mcp-authorize?request=opaque');

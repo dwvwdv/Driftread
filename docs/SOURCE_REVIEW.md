@@ -16,7 +16,7 @@
 
 候選頁另有「待複審」篩選：候選仍為 pending、沒有人工覆寫，且**最新**評審為 `awaiting_human`；這是評審工作狀態，不增加候選資料表的 status 值。伺服器先篩選，再計算總數與分頁，舊評審不能把新任務帶進待複審列表。覆核交易也驗證最新任務、候選版本與結果，過時的瀏覽器選取回 409。
 
-當頁可全選並批次申請 AI 評審、明確重試，或對待複審結果批次通過／不通過／暫緩。每批 1–50 筆，管理認證只執行一次，各筆沿用既有交易與政策；部分失敗不回滾其他成功結果，回傳每筆 ID、`ok`、結果或安全的 `status_code`／`detail`。前端顯示成功／失敗數，重載後保留仍在當頁的失敗項目選取。明確重試可能重新付費，仍遵守原預算與人工覆寫限制。
+當頁可全選並批次申請 AI 評審、明確重試，或對待複審結果批次通過／不通過／暫緩。每批 1–50 筆，管理認證只執行一次，各筆沿用既有交易與政策；部分失敗不回滾其他成功結果，回傳每筆 ID、`ok`、結果或安全的 `status_code`／`detail`。前端顯示成功／失敗數，重載後保留仍在當頁的失敗項目選取。明確重試可能重新付費，仍遵守原預算與人工覆寫限制。 重試需攜帶畫面上選到的評審 ID（批次 `expected_review_ids` 以候選 ID 對應評審 ID）；SQL 在政策→候選→任務鎖內確認仍是最新終態後才取代，若 worker 已建立新任務回 409，不中止新任務或增加付費重試。
 
 來源發現會在抽取 alternate、直接 feed URL 與每次 redirect 時排除 `comments/feed/` 等明確留言端點，不抓取留言內容，也不占候選額度。候選寫入與申請評審的既有防線保留。URL 規則不以標題的 comments 字樣猜測，也不批次刪除歷史候選。
 
@@ -64,9 +64,13 @@ ChatGPT Web 的「無驗證」不能附上自訂 `X-API-Key`。部署本版後�
 
 在 ChatGPT 的自訂 MCP 新增頁填 `https://你的網域/api/admin/mcp/`，選 **OAuth**。Client ID／Client Secret 留白，由 ChatGPT 經 DCR 註冊 public client；若介面要求選註冊模式，選 DCR。第一次連線跳到 Driftread 的 `/manage/mcp-authorize?request=...`：先登入唯一管理員帳密、輸入 Telegram OTP，再明確允許或拒絕來源評審權限。登入回跳保留原 request。一般帳號不能同意，既有管理 key 不能簽發 OAuth grant；客戶端可提供的名稱不是已驗證品牌。
 
-授權使用 S256 PKCE，一次性 code 綁定 client、已註冊 callback 與 MCP resource。`source:review` 只授權表中的九個工具；另以 `offline_access` 支援持續連線。請求 10 分鐘、code 2 分鐘、access token 15 分鐘、grant 最長 30 天；refresh 每次旋轉，已使用 refresh 重放會撤銷整個 grant。伺服器只保存授權碼與 bearer 憑證的 SHA-256 hash，原文只回傳給 client。每次 MCP／refresh 都檢查目前管理員 UUID、Supabase session、帳號停用、resource 與到期／撤銷；不提供 client_credentials 或接受其他 JWT。
+授權使用 S256 PKCE，一次性 code 綁定 client、已註冊 callback 與 MCP resource。`source:review` 只授權表中的九個工具；另以 `offline_access` 支援持續連線。請求 10 分鐘、code 2 分鐘、access token 15 分鐘、新 grant 預設 30 天（管理員可調整或設為永久）；refresh 每次旋轉，已使用 refresh 重放會撤銷整個 grant。伺服器只保存授權碼與 bearer 憑證的 SHA-256 hash，原文只回傳給 client。每次 MCP／refresh 都檢查目前管理員 UUID、Supabase session、帳號停用、resource 與到期／撤銷；不提供 client_credentials 或接受其他 JWT。
 
-`/manage/mcp-connections` 可查看授權與到期時間並撤銷。後台明確登出會依已驗證的 owner／Supabase 登入 session 撤銷該登入的管理 sessions 與 OAuth grants，即使管理 token 已過期、清除或未傳入也生效；不影響其他登入。管理 OTP session 自然到期不等於 OAuth grant 到期，Supabase session 失效仍會拒絕工具呼叫。前端以 user ID／auth session ID 與管理 token 隔離在途回應，正常 JWT 自動刷新仍可完成同意回跳；舊 JWT 的延遲 401 不清除新憑證。OAuth 同意不是逐次工具批准，ChatGPT 的工具執行權限另由客戶端管理。MCP 連線也不會自行啟動常駐 agent。
+`/manage/mcp-connections` 可查看授權、修改有效期限或設為「永久有效」，並隨時撤銷。每條連線獨立設定；自訂日期使用瀏覽器本地時區輸入，轉成含時區的時間送出。新授權仍預設 30 天，既有期限不自動延長。後台明確登出會依已驗證的 owner／Supabase 登入 session 撤銷該登入的管理 sessions 與 OAuth grants，即使管理 token 已過期、清除或未傳入也生效；不影響其他登入。管理 OTP session 自然到期不等於 OAuth grant 到期，Supabase session 失效仍會拒絕工具呼叫。前端以 user ID／auth session ID 與管理 token 隔離在途回應，正常 JWT 自動刷新仍可完成同意回跳；舊 JWT 的延遲 401 不清除新憑證。OAuth 同意不是逐次工具批准，ChatGPT 的工具執行權限另由客戶端管理。MCP 連線也不會自行啟動常駐 agent。
+
+修改期限使用 `PATCH /api/review-oauth/grants/{id}`，只接受管理員帳密＋Telegram session；body 必須明確帶 `expires_at`（含時區的未來 ISO 日期，或 `null` 表示永久）。只能修改本人仍有效且未撤銷的 grant；過期／撤銷後需重新授權，不藉編輯復活。交易沿用 grant row lock，同時調整尚未使用的 refresh token 期限，既有連線不需換 token 即可延長；縮短後每次 MCP／refresh 都依目前 grant 拒絕到期權限。access token 仍最多 15 分鐘，永久不改變其短效性。
+
+永久僅表示沒有固定到期日，撤銷、同登入的後台登出、owner／原 Supabase session 失效與 refresh replay 仍會中止授權。有效永久 grant 不被清理，已撤銷者 30 天後可清除；其 refresh replay digest 與其他有效 grant 一樣保留到 grant 清理。回應只含連線摘要，不提供任何 bearer 原文。
 
 公開 discovery：`/.well-known/oauth-authorization-server`、`/.well-known/oauth-protected-resource/api/admin/mcp`（另提供 root 與尾斜線 alias）。HTTP 401 的 `WWW-Authenticate` 指向 resource metadata，所有工具的 `securitySchemes` 同時宣告 `source:review`／`offline_access`。授權端點為 `/api/review-oauth/{register,authorize,token,revoke}`；token／revoke 只收有界 form，不使用 query token。DCR callback 只允許官方 `https://chatgpt.com/connector_platform_oauth_redirect` 或 `https://chatgpt.com/connector/oauth/{callback_id}`，須逐字與註冊值相同，不抓取客戶端 URL。
 
@@ -74,7 +78,7 @@ ChatGPT Web 的「無驗證」不能附上自訂 `X-API-Key`。部署本版後�
 
 本實作是既有單管理員應用的窄用途授權服務；OAuth 表 RLS 零 policy、撤銷所有 Data API roles（含 service_role），沿用後台 privileged `DATABASE_URL`，不改共用 Supabase 的 OAuth provider／註冊設定。匿名 DCR 回傳包含公開 metadata 的 HMAC 簽名 client ID，不新增 client 記錄，也不佔用持久 client 配額；只有管理員明確同意才保存 client，之後不因閒置或 grant 到期刪除，讓 ChatGPT 可重用同一 client ID 重新授權。簽名不加密 metadata；私有 `review_oauth_registration_key` 保存唯一持久簽名金鑰，必須隨資料庫備份保留，不可在重啟／清理時重建。
 
-待授權 requests 最多 1,000、10 分鐘到期，公開端點有每 IP 限流。授權請求過期有界清理，grant 到期 30 天後清除其 token／code；refresh replay 的 digest 保留到 grant 清理。實際 ChatGPT Web／正式 Telegram／Supabase 與代理部署必須另驗收。
+待授權 requests 最多 1,000、10 分鐘到期，公開端點有每 IP 限流。授權請求過期有界清理，grant 到期或撤銷 30 天後清除其 token／code；refresh replay 的 digest 保留到 grant 清理。實際 ChatGPT Web／正式 Telegram／Supabase 與代理部署必須另驗收。
 
 管理 MCP 的 OAuth bearer 驗證在進資料庫前，按來源 IP 每 60 秒最多 60 次，另限每 process 同時 4 次驗證，使用獨立執行緒池保留其他後台工作的共用容量。超出任一上限回 429 與 `Retry-After`；不排隊，請依回應稍後重試。取消 HTTP 請求不會提前釋放仍在執行的資料庫驗證名額；專用機器 key 不使用此驗證池。
 
