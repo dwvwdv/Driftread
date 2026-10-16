@@ -1192,7 +1192,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 先更新 API 套用 migration，healthy 後更新 frontend／worker，再刷新 ChatGPT 工具列表；不直接部署或合併 master。
 - GitHub review 事件 hook 工具不可用；依 AGENTS.md 既有 Codex 規範建立 PR #104 每小時追蹤，合併或關閉後停止，無新進展不通知。
 
-## 階段四十九：以同意／拒絕 AI 決策重新設計候選審核（PR 待定，2026-10-16）
+## 階段四十九：以同意／拒絕 AI 決策重新設計候選審核（PR #105，2026-10-16）
 
 舊頁面把 AI 已完成評審的候選同時放上「核准／拒絕」與「覆核通過／不通過」，混淆是否認同 AI 與最後收錄來源兩件事。評審結果也混在來源小字中，不易看出 MCP 已經做了什麼。改以 AI 建議為卡片主體，再由人工同意或拒絕該判定，清楚顯示即將發生的處置。
 
@@ -1207,3 +1207,4 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 本機 PostgreSQL 17 完整 backend：1472 passed、0 skipped；frontend 38 files／461 tests 通過，production build 通過（既有 initial bundle warning：511.85 kB／500 kB，元件樣式預算通過）。文件檢查與 git diff --check 通過。
 - 實際 Chromium／Playwright 以本機假資料驗證桌機 1440px、手機 390px 與深／淺主題，無水平溢位或頁面錯誤；驗證拒絕 AI 拒收會提議收錄、取消不送寫入、abstain 明選與混合批次不帶硬編碼最終處置。模擬 409 走錯誤恢復，未對正式環境寫入，不能當作正式登入／API 已部署驗收。
 - 獨立 subagent 檢查決策語義、批次、鎖、權限與回歸測試，未發現新增阻擋問題。部署先更新 API 套用 migration，再更新 frontend；來源評審 MCP 九個工具與權限範圍保持不變。
+- GitHub review事件hook工具不可用；依AGENTS.md既有規範建立PR #105每小時追蹤，合併或關閉後停止，無新進展不通知。
