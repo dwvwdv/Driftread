@@ -306,6 +306,19 @@ export interface PaginatedFeedCandidates {
   page_size: number;
 }
 
+/** Admission provenance records the action that created the source, not its latest AI result. */
+export interface RecentAdmission {
+  feed_id: string;
+  title: string | null;
+  feed_url: string;
+  website_url: string | null;
+  admitted_at: string;
+  method: 'ai_auto' | 'human_agree' | 'human_disagree' | 'manual' | 'referrer_auto' | 'unknown';
+  engine?: 'external_agent' | 'jev' | null;
+  candidate_id?: string | null;
+  review_id?: string | null;
+}
+
 export interface DiscoveryTarget {
   id: string;
   url: string;
@@ -519,6 +532,12 @@ export interface SourceReview {
   error_code?: string | null;
   result?: SourceReviewResult | null;
   manual_override?: 'approve' | 'reject' | 'hold' | null;
+  human_review?: {
+    assessment: 'agree' | 'disagree';
+    ai_decision: 'accept' | 'reject' | 'abstain';
+    decision: 'accept' | 'reject' | 'defer';
+    decided_at: string;
+  } | null;
   created_at?: string;
   updated_at?: string;
 }

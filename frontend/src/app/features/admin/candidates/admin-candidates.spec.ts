@@ -44,6 +44,7 @@ describe('AdminCandidates queue paging', () => {
     held = null;
 
     const admin = {
+      recentAdmissions: () => of({ items: [], limit: 10 }),
       latestSourceReviews: () => of({ items: [] }),
       listCandidates: (p: number, size: number) => {
         requests.push([p, size]);
@@ -87,6 +88,27 @@ describe('AdminCandidates queue paging', () => {
     if (page !== 1) reader.onPage(page);
     return { fixture, reader };
   }
+
+  it('scrolls to recent admissions locally without following the app base URL or reloading the queue', () => {
+    const { fixture } = setup({ items: [candidate(1)], total: 1, page: 1, page_size: 20 });
+    const region = fixture.nativeElement.querySelector('app-recent-admissions')
+      .parentElement as HTMLElement;
+    const options: (ScrollIntoViewOptions | boolean | undefined)[] = [];
+    region.scrollIntoView = (value) => {
+      options.push(value);
+    };
+    const before = requests.length;
+    const locationBefore = window.location.href;
+    const button = fixture.nativeElement.querySelector(
+      'button[aria-controls="recent-admissions"]',
+    ) as HTMLButtonElement;
+    expect(button.textContent).toContain('查看近期收錄');
+    button.click();
+    expect(options).toEqual([{ block: 'start' }]);
+    expect(window.location.href).toBe(locationBefore);
+    expect(requests).toHaveLength(before);
+    expect(fixture.nativeElement.querySelector('a[href="#recent-admissions"]')).toBeNull();
+  });
 
   it('backfills from the server even while rows remain on the page', () => {
     // The queue is paginated with .range(offset, …) over status='pending', so
@@ -192,6 +214,22 @@ describe('AdminCandidates source review', () => {
     candidate_id: 'cand-1',
     status,
     engine: 'external_agent',
+    ...(['awaiting_human', 'accepted', 'rejected', 'deferred', 'stale'].includes(status)
+      ? {
+          result: {
+            decision:
+              status === 'rejected'
+                ? ('reject' as const)
+                : status === 'deferred'
+                  ? ('abstain' as const)
+                  : ('accept' as const),
+            confidence: 0.95,
+            dimensions: { quality: 0.9, spam_probability: 0.01, relevance: 0.8 },
+            reason_codes: ['rubric_passed'],
+            rationale: '具備完整原創文章與明確來源。',
+          },
+        }
+      : {}),
   });
   it('requeues stale or old missing-key work with the ordinary request and protects manual overrides', () => {
     const { component, calls, fixture } = setup({
@@ -202,7 +240,9 @@ describe('AdminCandidates source review', () => {
     component.requestReview(candidate(1));
     expect(calls.request).toBe(1);
     expect(calls.retry).toBe(0);
-    component.sourceReviews.set({ 'cand-1': { ...task('failed'), engine: 'jev', error_code: 'provider_key_missing' } });
+    component.sourceReviews.set({
+      'cand-1': { ...task('failed'), engine: 'jev', error_code: 'provider_key_missing' },
+    });
     component.requestReview(candidate(1));
     expect(calls.request).toBe(2);
     component.sourceReviews.set({ 'cand-1': { ...task('stale'), manual_override: 'hold' } });
@@ -213,6 +253,7 @@ describe('AdminCandidates source review', () => {
   function setup(overrides: Record<string, unknown> = {}) {
     const calls = { request: 0, retry: 0, resolve: [] as string[], read: 0 };
     const admin = {
+      recentAdmissions: () => of({ items: [], limit: 10 }),
       listCandidates: () => of({ items: [candidate(1)], total: 1, page: 1, page_size: 20 }),
       latestSourceReviews: () => {
         calls.read++;
@@ -226,8 +267,8 @@ describe('AdminCandidates source review', () => {
         calls.retry++;
         return of(task('requested'));
       },
-      resolveSourceReview: (_id: string, decision: string) => {
-        calls.resolve.push(decision);
+      judgeSourceReview: (_id: string, assessment: string, decision?: string) => {
+        calls.resolve.push(assessment + (decision ? ':' + decision : ''));
         return of(task('deferred'));
       },
       ...overrides,
@@ -251,7 +292,14 @@ describe('AdminCandidates source review', () => {
         set: (v: Record<string, SourceReview | null>) => void;
       };
       requestReview: (c: FeedCandidate, retry?: boolean) => void;
-      resolveReview: (c: FeedCandidate, decision: 'accept' | 'reject' | 'defer') => void;
+      judgeReview: (
+        c: FeedCandidate,
+        assessment: 'agree' | 'disagree',
+        decision?: 'accept' | 'reject',
+      ) => Promise<void>;
+      canJudge: (c: FeedCandidate) => boolean;
+      canAgree: (c: FeedCandidate) => boolean;
+      canManual: (c: FeedCandidate) => boolean;
       load: (quiet?: boolean) => void;
       onPage: (page: number) => void;
       reviewErrors: { (): Set<string>; set: (v: Set<string>) => void };
@@ -263,9 +311,11 @@ describe('AdminCandidates source review', () => {
       toggleGroup: (items: FeedCandidate[], checked: boolean) => void;
       allSelected: (items: FeedCandidate[]) => boolean;
       changeStatus: (status: 'pending' | 'held' | 'awaiting_human') => void;
-      eligibleCandidates: (action: 'request' | 'retry' | 'resolve') => FeedCandidate[];
+      eligibleCandidates: (
+        action: 'request' | 'retry' | 'agree' | 'disagree' | 'manual',
+      ) => FeedCandidate[];
       batchRequest: (retry?: boolean) => void;
-      batchResolve: (decision: 'accept' | 'reject' | 'defer') => void;
+      batchJudge: (assessment: 'agree' | 'disagree') => Promise<void>;
       bulk: (action: 'approve' | 'hold' | 'reject') => Promise<void>;
       approve: (c: FeedCandidate) => void;
       hold: (c: FeedCandidate) => void;
@@ -346,9 +396,9 @@ describe('AdminCandidates source review', () => {
     },
   );
 
-  it.each(['accept', 'reject', 'defer'] as const)(
-    'resolves only selected awaiting-human reviews with %s',
-    (decision) => {
+  it.each(['agree', 'disagree'] as const)(
+    'judges only selected eligible reviews with %s',
+    async (assessment) => {
       const batches: unknown[] = [];
       const { component } = setup({
         listCandidates: () =>
@@ -367,16 +417,16 @@ describe('AdminCandidates source review', () => {
               candidate_id: `cand-${i}`,
             })),
           }),
-        batchResolveSourceReviews: (ids: string[], decision: string) => {
-          batches.push({ ids, decision });
+        judgeSourceReviews: (ids: string[], assessment: string) => {
+          batches.push({ ids, assessment });
           return new Subject<SourceReviewBatchResult>();
         },
       });
       component.changeStatus('awaiting_human');
       component.toggleGroup(component.candidates(), true);
-      component.batchResolve(decision);
-      component.resolveReview(candidate(1), 'accept');
-      expect(batches).toEqual([{ ids: ['r1', 'r2'], decision }]);
+      await component.batchJudge(assessment);
+      await component.judgeReview(candidate(1), 'agree');
+      expect(batches).toEqual([{ ids: ['r1', 'r2'], assessment }]);
     },
   );
 
@@ -402,14 +452,14 @@ describe('AdminCandidates source review', () => {
     expect(fixture.nativeElement.textContent).not.toContain('raw-internal-error');
   });
 
-  it('maps a failed review ID back to the selected candidate after batch resolution', () => {
+  it('maps a failed review ID back to the selected candidate after batch judgment', async () => {
     const response = new Subject<SourceReviewBatchResult>();
     const { component } = setup({
       latestSourceReviews: () => of({ items: [task('awaiting_human')] }),
-      batchResolveSourceReviews: () => response,
+      judgeSourceReviews: () => response,
     });
     component.toggleGroup(component.candidates(), true);
-    component.batchResolve('defer');
+    await component.batchJudge('agree');
     response.next({
       items: [{ review_id: 'r1', ok: false, status_code: 409, detail: {} }],
       succeeded: 0,
@@ -704,8 +754,8 @@ describe('AdminCandidates source review', () => {
     });
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('服務失敗');
-    expect(fixture.nativeElement.textContent).toContain('無法判定');
-    expect(fixture.nativeElement.textContent).toContain('insufficient_sample');
+    expect(fixture.nativeElement.textContent).toContain('AI 建議：暫緩');
+    expect(fixture.nativeElement.textContent).toContain('樣本不足');
     component.requestReview(candidate(1), true);
     expect(calls.retry).toBe(1);
     component.sourceReviews.set({ 'cand-1': task('leased') });
@@ -713,12 +763,12 @@ describe('AdminCandidates source review', () => {
     expect(calls.retry).toBe(1);
   });
 
-  it('resolves human review through its dedicated endpoint and protects manual overrides', () => {
+  it('judges human review through its dedicated endpoint and protects manual overrides', async () => {
     const { component, calls } = setup({
       latestSourceReviews: () => of({ items: [task('awaiting_human')] }),
     });
-    component.resolveReview(candidate(1), 'defer');
-    expect(calls.resolve).toEqual(['defer']);
+    await component.judgeReview(candidate(1), 'agree');
+    expect(calls.resolve).toEqual(['agree']);
     component.sourceReviews.set({ 'cand-1': task('failed') });
     component.requestReview({ ...candidate(1), manual_override: 'hold' }, true);
     expect(calls.retry).toBe(0);
@@ -743,8 +793,9 @@ describe('AdminCandidates source review', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('無法讀取評審狀態');
     expect(
-      Array.from(fixture.nativeElement.querySelectorAll('ob-list-row button'), (button: unknown) =>
-        (button as HTMLElement).textContent?.trim(),
+      Array.from(
+        fixture.nativeElement.querySelectorAll('.candidate-card button'),
+        (button: unknown) => (button as HTMLElement).textContent?.trim(),
       ),
     ).not.toContain('請求 AI 評審');
     const pending = new Subject<{ items: SourceReview[] }>();
@@ -793,12 +844,352 @@ describe('AdminCandidates source review', () => {
     component.sourceReviews.set({ 'cand-1': { ...task('rejected'), manual_override: 'reject' } });
     fixture.detectChanges();
     expect(
-      Array.from(fixture.nativeElement.querySelectorAll('ob-list-row button'), (button: unknown) =>
-        (button as HTMLElement).textContent?.trim(),
+      Array.from(
+        fixture.nativeElement.querySelectorAll('.candidate-card button'),
+        (button: unknown) => (button as HTMLElement).textContent?.trim(),
       ),
     ).not.toContain('重試 AI 評審');
     component.requestReview(candidate(1), true);
     expect(calls.retry).toBe(1);
+  });
+  it.each(['accept', 'reject', 'abstain'] as const)(
+    'makes MCP %s result prominent without generic manual buttons',
+    (decision) => {
+      const review = task('awaiting_human');
+      review.result!.decision = decision;
+      review.result!.reason_codes = ['original_reporting', 'future_reason_code'];
+      review.updated_at = '2026-10-16T08:00:00Z';
+      const { fixture } = setup({ latestSourceReviews: () => of({ items: [review] }) });
+      const card = fixture.nativeElement.querySelector('.candidate-card') as HTMLElement;
+      expect(card.querySelector('.engine')!.textContent).toContain('MCP · 外部 AI 評審');
+      expect(card.querySelector('h3')!.textContent).toContain(
+        { accept: '收錄', reject: '不收錄', abstain: '暫緩' }[decision],
+      );
+      expect(card.textContent).toContain('具備完整原創文章與明確來源。');
+      expect(card.textContent).toContain('原創報導');
+      expect(card.textContent).toContain('future_reason_code');
+      expect(card.textContent).toContain('95%');
+      expect(card.textContent).toContain('2026/10/16');
+      const buttons = Array.from(card.querySelectorAll('button'), (button) =>
+        button.textContent!.trim(),
+      );
+      expect(buttons).toContain('同意決策');
+      expect(buttons).toContain('拒絕決策');
+      expect(buttons).not.toContain('手動收錄');
+      expect(buttons).not.toContain('手動拒絕來源');
+      expect(buttons).not.toContain('手動保留');
+    },
+  );
+
+  it.each(['accept', 'reject'] as const)(
+    'disagreeing with AI %s confirms the opposite destination and records disagreement',
+    async (decision) => {
+      const review = task('awaiting_human');
+      review.result!.decision = decision;
+      const { component, calls } = setup({ latestSourceReviews: () => of({ items: [review] }) });
+      const confirmations: { body: string; confirmLabel?: string }[] = [];
+      TestBed.inject(ConfirmService).ask = (options) => {
+        confirmations.push(options);
+        return Promise.resolve(true);
+      };
+      await component.judgeReview(candidate(1), 'disagree');
+      expect(calls.resolve).toEqual(['disagree']);
+      expect(confirmations[0].confirmLabel).toBe(
+        decision === 'accept' ? '拒絕來源，離開候審區' : '收錄此來源',
+      );
+      expect(confirmations[0].body).toContain('人工不同意 AI');
+    },
+  );
+
+  it.each(['accept', 'reject'] as const)(
+    'requires an explicit human %s decision to disagree with abstention',
+    async (decision) => {
+      const review = task('deferred');
+      const { component, fixture, calls } = setup({
+        latestSourceReviews: () => of({ items: [review] }),
+      });
+      await component.judgeReview(candidate(1), 'disagree');
+      fixture.detectChanges();
+      expect(calls.resolve).toEqual([]);
+      expect(fixture.nativeElement.querySelector('fieldset')!.textContent).toContain(
+        '你的不同決定是',
+      );
+      await component.judgeReview(candidate(1), 'disagree', decision);
+      expect(calls.resolve).toEqual([`disagree:${decision}`]);
+    },
+  );
+
+  it('agrees with abstention by confirming that the source is held', async () => {
+    const { component, calls } = setup({
+      latestSourceReviews: () => of({ items: [task('deferred')] }),
+    });
+    let label = '';
+    TestBed.inject(ConfirmService).ask = (options) => {
+      label = options.confirmLabel!;
+      return Promise.resolve(true);
+    };
+    await component.judgeReview(candidate(1), 'agree');
+    expect(label).toBe('保留來源，暫不收錄');
+    expect(calls.resolve).toEqual(['agree']);
+  });
+
+  it('blocks accepting an AI accept result that did not pass collection policy', async () => {
+    const review = task('deferred');
+    review.result!.decision = 'accept';
+    const { component, fixture, calls } = setup({
+      latestSourceReviews: () => of({ items: [review] }),
+    });
+    component.toggleGroup(component.candidates(), true);
+    expect(component.eligibleCandidates('agree')).toHaveLength(0);
+    expect(component.eligibleCandidates('disagree')).toHaveLength(1);
+    await component.judgeReview(candidate(1), 'agree');
+    expect(calls.resolve).toEqual([]);
+    expect(fixture.nativeElement.textContent).toContain('未通過服務端收錄門檻');
+  });
+
+  it.each(['requested', 'preparing', 'ready', 'leased', 'stale'] as const)(
+    'prevents manual and AI judgments on %s tasks',
+    async (status) => {
+      const writes: string[] = [];
+      const { component, fixture, calls } = setup({
+        latestSourceReviews: () => of({ items: [task(status)] }),
+        approveCandidate: () => {
+          writes.push('approve');
+          return of({});
+        },
+        holdCandidate: () => {
+          writes.push('hold');
+          return of({});
+        },
+        rejectCandidate: () => {
+          writes.push('reject');
+          return of({});
+        },
+      });
+      component.toggleGroup(component.candidates(), true);
+      component.approve(candidate(1));
+      component.hold(candidate(1));
+      await component.reject(candidate(1));
+      await component.bulk('approve');
+      await component.judgeReview(candidate(1), 'agree');
+      expect(writes).toEqual([]);
+      expect(calls.resolve).toEqual([]);
+      expect(component.eligibleCandidates('manual')).toHaveLength(0);
+      expect(fixture.nativeElement.querySelector('.manual-actions')).toBeNull();
+      if (status === 'stale') expect(fixture.nativeElement.textContent).toContain('歷史結果已失效');
+    },
+  );
+
+  it.each(['failed', 'deferred'] as const)(
+    'allows manual fallback when %s has no AI result',
+    (status) => {
+      const { component, fixture } = setup({
+        latestSourceReviews: () => of({ items: [{ ...task(status), result: null }] }),
+      });
+      expect(component.canManual(candidate(1))).toBe(true);
+      expect(component.canJudge(candidate(1))).toBe(false);
+      expect(fixture.nativeElement.textContent).toContain('尚無有效 AI 決策');
+      expect(fixture.nativeElement.querySelector('.manual-actions')).not.toBeNull();
+    },
+  );
+
+  it('sends mixed AI judgments without flattening them into a single accept or reject decision', async () => {
+    const submitted: unknown[] = [];
+    const reviews = ['accept', 'reject', 'abstain'].map(
+      (decision, index) =>
+        ({
+          ...task('awaiting_human'),
+          id: `r${index + 1}`,
+          candidate_id: `cand-${index + 1}`,
+          result: { ...task('awaiting_human').result!, decision },
+        }) as SourceReview,
+    );
+    const { component, fixture } = setup({
+      listCandidates: () => of({ items: [1, 2, 3].map(candidate), total: 3 }),
+      latestSourceReviews: () => of({ items: reviews }),
+      judgeSourceReviews: (ids: string[], assessment: string, decision?: string) => {
+        submitted.push({ ids, assessment, decision });
+        return new Subject<SourceReviewBatchResult>();
+      },
+    });
+    component.toggleGroup(component.candidates(), true);
+    fixture.detectChanges();
+    expect(component.eligibleCandidates('agree')).toHaveLength(3);
+    expect(component.eligibleCandidates('disagree')).toHaveLength(2);
+    expect(fixture.nativeElement.textContent).toContain('收錄 1、不收錄 1、暫緩 1');
+    await component.batchJudge('agree');
+    expect(submitted).toEqual([
+      { ids: ['r1', 'r2', 'r3'], assessment: 'agree', decision: undefined },
+    ]);
+  });
+
+  it('excludes abstention from batch disagreement and preserves each binary opposite', async () => {
+    const submitted: unknown[] = [];
+    const reviews = ['accept', 'reject', 'abstain'].map(
+      (decision, index) =>
+        ({
+          ...task('awaiting_human'),
+          id: `r${index + 1}`,
+          candidate_id: `cand-${index + 1}`,
+          result: { ...task('awaiting_human').result!, decision },
+        }) as SourceReview,
+    );
+    const { component } = setup({
+      listCandidates: () => of({ items: [1, 2, 3].map(candidate), total: 3 }),
+      latestSourceReviews: () => of({ items: reviews }),
+      judgeSourceReviews: (ids: string[], assessment: string) => {
+        submitted.push({ ids, assessment });
+        return new Subject<SourceReviewBatchResult>();
+      },
+    });
+    component.toggleGroup(component.candidates(), true);
+    await component.batchJudge('disagree');
+    expect(submitted).toEqual([{ ids: ['r1', 'r2'], assessment: 'disagree' }]);
+  });
+
+  it('locks judgments during confirmation and permits trying again after cancellation', async () => {
+    const { component, calls } = setup({
+      latestSourceReviews: () => of({ items: [task('awaiting_human')] }),
+    });
+    let respond!: (value: boolean) => void;
+    TestBed.inject(ConfirmService).ask = () =>
+      new Promise<boolean>((resolve) => (respond = resolve));
+    const pending = component.judgeReview(candidate(1), 'agree');
+    await component.judgeReview(candidate(1), 'disagree');
+    expect(calls.resolve).toEqual([]);
+    respond(false);
+    await pending;
+    TestBed.inject(ConfirmService).ask = () => Promise.resolve(true);
+    await component.judgeReview(candidate(1), 'disagree');
+    expect(calls.resolve).toEqual(['disagree']);
+  });
+
+  it.each([
+    ['agree', 'accepted', true],
+    ['agree', 'rejected', false],
+    ['agree', 'overridden', false],
+    ['disagree', 'accepted', true],
+    ['disagree', 'rejected', false],
+  ] as const)(
+    'refreshes recent admissions only when %s returns %s',
+    async (assessment, status, refresh) => {
+      let reads = 0;
+      const { component, fixture } = setup({
+        recentAdmissions: () => {
+          reads++;
+          return of({ items: [], limit: 10 });
+        },
+        latestSourceReviews: () => of({ items: [task('awaiting_human')] }),
+        judgeSourceReview: () => of(task(status)),
+      });
+      expect(reads).toBe(1);
+      await component.judgeReview(candidate(1), assessment);
+      fixture.detectChanges();
+      expect(reads).toBe(refresh ? 2 : 1);
+    },
+  );
+
+  it('refreshes recent admissions once for a mixed batch with multiple accepted results', async () => {
+    let reads = 0;
+    const reviews = [1, 2, 3].map((i) => ({
+      ...task('awaiting_human'),
+      id: `r${i}`,
+      candidate_id: `cand-${i}`,
+    }));
+    const { component, fixture } = setup({
+      recentAdmissions: () => {
+        reads++;
+        return of({ items: [], limit: 10 });
+      },
+      listCandidates: () => of({ items: [1, 2, 3].map(candidate), total: 3 }),
+      latestSourceReviews: () => of({ items: reviews }),
+      judgeSourceReviews: () =>
+        of({
+          items: [
+            ...reviews.slice(0, 2).map((review) => ({
+              candidate_id: review.candidate_id,
+              review_id: review.id,
+              ok: true,
+              review: { ...review, status: 'accepted' },
+            })),
+            {
+              candidate_id: 'cand-3',
+              review_id: 'r3',
+              ok: false,
+              error: { status_code: 409, detail: 'changed' },
+            },
+          ],
+          succeeded: 2,
+          failed: 1,
+        }),
+    });
+    component.toggleGroup(component.candidates(), true);
+    await component.batchJudge('agree');
+    fixture.detectChanges();
+    expect(reads).toBe(2);
+  });
+
+  it('keeps the candidate queue usable when recent admissions fails and refreshes after a manual admission', () => {
+    let reads = 0;
+    const { component, fixture } = setup({
+      recentAdmissions: () => {
+        reads++;
+        return throwError(() => new Error('unavailable'));
+      },
+      approveCandidate: () => of({ id: 'feed-1', title: '來源' }),
+    });
+    expect(component.candidates()).toHaveLength(1);
+    expect(fixture.nativeElement.textContent).toContain('近期收錄暫時無法讀取');
+    component.approve(candidate(1));
+    fixture.detectChanges();
+    expect(reads).toBe(2);
+  });
+
+  it.each(['approve', 'hold', 'reject'] as const)(
+    'refreshes recent admissions once only for successful manual batch %s',
+    async (action) => {
+      let reads = 0;
+      const { component, fixture } = setup({
+        recentAdmissions: () => {
+          reads++;
+          return of({ items: [], limit: 10 });
+        },
+        listCandidates: () => of({ items: [candidate(1), candidate(2)], total: 2 }),
+        approveCandidate: () => of({ id: 'feed-1', title: '來源' }),
+        holdCandidate: () => of(candidate(1)),
+        rejectCandidate: () => of(candidate(1)),
+      });
+      component.toggleGroup(component.candidates(), true);
+      await component.bulk(action);
+      fixture.detectChanges();
+      expect(reads).toBe(action === 'approve' ? 2 : 1);
+    },
+  );
+
+  it('retains the original AI result and human agreement on held sources, allowing a later manual adjustment', () => {
+    const held = { ...candidate(1), status: 'held', manual_override: 'hold' } as FeedCandidate;
+    const review = {
+      ...task('overridden'),
+      manual_override: 'hold',
+      result: task('deferred').result,
+      human_review: {
+        assessment: 'agree',
+        ai_decision: 'abstain',
+        decision: 'defer',
+        decided_at: '2026-10-16T09:00:00Z',
+      },
+    } as SourceReview;
+    const { component, fixture } = setup({
+      listCandidates: () => of({ items: [held], total: 1 }),
+      latestSourceReviews: () => of({ items: [review] }),
+    });
+    expect(component.canJudge(held)).toBe(false);
+    expect(component.canManual(held)).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('人工同意 AI → 保留');
+    expect(fixture.nativeElement.textContent).toContain('原始 AI 結果');
+    expect(fixture.nativeElement.textContent).toContain('調整人工決定');
+    expect(fixture.nativeElement.textContent).toContain('改為收錄');
+    expect(fixture.nativeElement.querySelector('.decision-actions')).toBeNull();
   });
 });
 
@@ -822,6 +1213,7 @@ describe('AdminCandidates manual decision conflicts', () => {
                   page: 1,
                   page_size: 20,
                 }),
+              recentAdmissions: () => of({ items: [], limit: 10 }),
               latestSourceReviews: () => of({ items: [] }),
               holdCandidate: () => throwError(() => conflict),
               rejectCandidate: () => throwError(() => conflict),

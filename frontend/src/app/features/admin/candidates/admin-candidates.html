@@ -1,39 +1,49 @@
 <ob-page-header
   kicker="REVIEW"
   heading="候選審核"
-  subtitle="同一主域名集中審核；保留的節點可在現有 RSS 失效時替換"
+  subtitle="先讀 AI 建議，再決定是否同意；人工決策與 AI 原始結果分開保留。"
 >
+  <button
+    type="button"
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    aria-controls="recent-admissions"
+    (click)="admissionsRegion.scrollIntoView({ block: 'start' })"
+  >
+    查看近期收錄
+  </button>
   <button
     type="button"
     class="ob-btn ob-btn--ghost ob-btn--sm"
     [disabled]="loading() || actionBusy()"
     (click)="load()"
   >
-    <ob-icon name="refresh" [size]="14" /> 重新整理
+    <ob-icon name="refresh" [size]="14" />重新整理
   </button>
 </ob-page-header>
-
-<ob-card heading="審核設定" meta="REVIEW OPTIONS">
+<details class="manual-options">
+  <summary>手動審核設定（僅限尚無 AI 評審或已保留的來源）</summary>
   <div class="controls">
     <label class="field"
-      ><span class="ob-label">分類</span
-      ><input class="ob-input" name="category" [(ngModel)]="category" placeholder="例如 技術"
-    /></label>
-    <label class="field"
+      ><span class="ob-label">收錄分類</span
+      ><input
+        class="ob-input"
+        name="category"
+        [(ngModel)]="category"
+        placeholder="例如 技術" /></label
+    ><label class="field"
       ><span class="ob-label">標籤（逗號分隔）</span
-      ><input class="ob-input" name="tags" [(ngModel)]="tags" placeholder="rss, 開發"
-    /></label>
-    <label class="ob-checkbox block"
+      ><input class="ob-input" name="tags" [(ngModel)]="tags" placeholder="rss, 開發" /></label
+    ><label class="ob-checkbox"
       ><input
         type="checkbox"
         name="blockHost"
         [(ngModel)]="blockHostOnReject"
-      />拒絕時一併封鎖整個網域</label
+      />手動拒絕時一併封鎖整個網域</label
     >
   </div>
-</ob-card>
-
-<div class="toolbar" aria-label="候選狀態與批量作業">
+  <p>同意／拒絕 AI 決策不使用這些設定，也不封鎖網域；收錄時沿用評審分類與既有標籤。</p>
+</details>
+<div class="toolbar" aria-label="候選狀態">
   <div class="status-tabs">
     <button
       type="button"
@@ -66,92 +76,103 @@
       已保留
     </button>
   </div>
-  <div class="bulk-actions">
-    <label class="ob-checkbox">
-      <input
-        type="checkbox"
-        [checked]="allSelected(candidates())"
-        [indeterminate]="selected().size > 0 && !allSelected(candidates())"
-        [disabled]="loading() || actionBusy() || !candidates().length"
-        (change)="toggleGroup(candidates(), $any($event.target).checked)"
-      />當頁全選
-    </label>
-    <strong>已選 {{ selected().size }} 項</strong>
-    @if (status() !== 'held') {
-      <button
-        type="button"
-        class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="loading() || actionBusy() || !eligibleCandidates('request').length"
-        (click)="batchRequest()"
-      >
-        批次請求 AI 評審（{{ eligibleCandidates('request').length }}）
-      </button>
-      <button
-        type="button"
-        class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="loading() || actionBusy() || !eligibleCandidates('retry').length"
-        (click)="batchRequest(true)"
-      >
-        批次重試 AI 評審（{{ eligibleCandidates('retry').length }}）
-      </button>
-    }
-    @if (status() === 'awaiting_human') {
+  <label class="ob-checkbox"
+    ><input
+      type="checkbox"
+      [checked]="allSelected(candidates())"
+      [indeterminate]="selected().size > 0 && !allSelected(candidates())"
+      [disabled]="loading() || actionBusy() || !candidates().length"
+      (change)="toggleGroup(candidates(), $any($event.target).checked)"
+    />當頁全選 · 已選 {{ selected().size }} 項</label
+  >
+</div>
+@if (selected().size) {
+  <section class="batch-panel" aria-label="批次審核">
+    <strong>批次 AI 決策</strong>
+    <p>同意依各筆建議執行；拒絕代表人工與 AI 不同。適用項目才會送出。</p>
+    <div class="actions">
       <button
         type="button"
         class="ob-btn ob-btn--primary ob-btn--sm"
-        [disabled]="loading() || actionBusy() || !eligibleCandidates('resolve').length"
-        (click)="batchResolve('accept')"
+        [disabled]="loading() || actionBusy() || !eligibleCandidates('agree').length"
+        (click)="batchJudge('agree')"
       >
-        批次覆核通過（{{ eligibleCandidates('resolve').length }}）
+        批次同意決策（{{ eligibleCandidates('agree').length }}）
       </button>
       <button
         type="button"
         class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="loading() || actionBusy() || !eligibleCandidates('resolve').length"
-        (click)="batchResolve('reject')"
+        [disabled]="loading() || actionBusy() || !eligibleCandidates('disagree').length"
+        (click)="batchJudge('disagree')"
       >
-        批次覆核不通過
+        批次拒絕決策（{{ eligibleCandidates('disagree').length }}）
       </button>
-      <button
-        type="button"
-        class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="loading() || actionBusy() || !eligibleCandidates('resolve').length"
-        (click)="batchResolve('defer')"
-      >
-        批次暫緩評審
-      </button>
+    </div>
+    <p>同意適用 {{ eligibleCandidates('agree').length }} 項 · {{ batchSummary('agree') }}</p>
+    <p>
+      拒絕適用 {{ eligibleCandidates('disagree').length }} 項 · {{ batchSummary('disagree') }}；AI
+      暫緩請逐筆選擇人工結果。
+    </p>
+    @if (status() !== 'held') {
+      <div class="actions">
+        <button
+          type="button"
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [disabled]="loading() || actionBusy() || !eligibleCandidates('request').length"
+          (click)="batchRequest()"
+        >
+          批次請求 AI 評審（{{ eligibleCandidates('request').length }}）</button
+        ><button
+          type="button"
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [disabled]="loading() || actionBusy() || !eligibleCandidates('retry').length"
+          (click)="batchRequest(true)"
+        >
+          批次重試 AI 評審（{{ eligibleCandidates('retry').length }}）
+        </button>
+      </div>
     }
-    <button
-      type="button"
-      class="ob-btn ob-btn--primary ob-btn--sm"
-      [disabled]="loading() || !selected().size || actionBusy()"
-      (click)="bulk('approve')"
-    >
-      批量核准
-    </button>
-    @if (status() === 'pending') {
-      <button
-        type="button"
-        class="ob-btn ob-btn--ghost ob-btn--sm"
-        [disabled]="loading() || !selected().size || actionBusy()"
-        (click)="bulk('hold')"
-      >
-        批量保留
-      </button>
+    @if (eligibleCandidates('manual').length) {
+      <details>
+        <summary>
+          {{ status() === 'held' ? '調整人工決定' : '尚無 AI 評審：手動審核' }}（{{
+            eligibleCandidates('manual').length
+          }}
+          項）
+        </summary>
+        <div class="actions">
+          <button
+            type="button"
+            class="ob-btn ob-btn--ghost ob-btn--sm"
+            [disabled]="loading() || actionBusy()"
+            (click)="bulk('approve')"
+          >
+            批次手動收錄
+          </button>
+          @if (status() === 'pending') {
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              [disabled]="loading() || actionBusy()"
+              (click)="bulk('hold')"
+            >
+              批次手動保留
+            </button>
+          }
+          <button
+            type="button"
+            class="ob-btn ob-btn--ghost ob-btn--sm"
+            [disabled]="loading() || actionBusy()"
+            (click)="bulk('reject')"
+          >
+            批次手動拒絕來源
+          </button>
+        </div>
+      </details>
     }
-    <button
-      type="button"
-      class="ob-btn ob-btn--ghost ob-btn--sm"
-      [disabled]="loading() || !selected().size || actionBusy()"
-      (click)="bulk('reject')"
-    >
-      批量拒絕
-    </button>
-  </div>
-</div>
-
+  </section>
+}
 <p role="status" aria-live="polite">{{ batchNotice() }}</p>
-
 <div class="queue">
   @if (loading()) {
     <ob-loading label="讀取候選中" />
@@ -176,67 +197,204 @@
               [disabled]="actionBusy()"
               [indeterminate]="!allSelected(group.items) && someSelected(group.items)"
               (change)="toggleGroup(group.items, $any($event.target).checked)"
-            />
-            <strong>{{ group.domain }}</strong></label
-          >
-          <span>{{ group.items.length }} 個 RSS 節點</span>
+            /><strong>{{ group.domain }}</strong></label
+          ><span>{{ group.items.length }} 個 RSS 節點</span>
         </header>
         @for (candidate of group.items; track candidate.id) {
-          <ob-list-row>
-            <div rowTitle class="ctitle">
-              <input
-                class="candidate-check"
-                type="checkbox"
-                [checked]="selected().has(candidate.id)"
-                [disabled]="actionBusy()"
-                [attr.aria-label]="'選取 ' + (candidate.title || candidate.feed_url)"
-                (change)="toggle(candidate.id, $any($event.target).checked)"
-              />
-              <span class="host">{{ candidate.source_host || '(未知網域)' }}</span
-              ><span class="name">{{ candidate.title || '(無標題)' }}</span>
-            </div>
-            <div rowLines>
-              <span>{{ candidate.feed_url }}</span
-              ><span>{{ candidate.referring_feed_count }} 個既有來源連到這裡</span>
-              @if (candidate.manual_override || sourceReviews()[candidate.id]?.manual_override) {
-                <span class="ob-chip"
-                  >已有人工決定（{{
-                    candidate.manual_override || sourceReviews()[candidate.id]?.manual_override
-                  }}）</span
-                >
-              }
-              @if (sourceReviews()[candidate.id]; as review) {
-                <span class="ob-chip"
-                  >{{ reviewStatus(review) }} · {{ review.engine === 'jev' ? 'Jev' : '外部 Agent'
-                  }}{{ review.model ? ' · ' + review.model : '' }}</span
-                >
-                @if (reviewProblem(review); as problem) {
-                  <span role="status">{{ problem }}</span>
-                }
-                @if (review.result) {
-                  <span>{{ reviewDecision(review) }}</span>
-                  <span>{{ review.result.reason_codes.join('、') }}</span>
-                  @if (review.result.rationale) {
-                    <span>{{ review.result.rationale }}</span>
+          <article class="candidate-card" [attr.aria-label]="candidate.title || candidate.feed_url">
+            <header class="candidate-heading">
+              <label class="ob-checkbox"
+                ><input
+                  type="checkbox"
+                  [checked]="selected().has(candidate.id)"
+                  [disabled]="actionBusy()"
+                  [attr.aria-label]="'選取 ' + (candidate.title || candidate.feed_url)"
+                  (change)="toggle(candidate.id, $any($event.target).checked)"
+                /><strong class="name">{{ candidate.title || '(無標題)' }}</strong></label
+              ><span class="host">{{ candidate.source_host || '(未知網域)' }}</span>
+            </header>
+            <p class="source-url">{{ candidate.feed_url }}</p>
+            <p class="secondary">
+              來源證據 · {{ candidate.referring_feed_count }} 個既有來源連到這裡
+            </p>
+            @if (sourceReviews()[candidate.id]; as review) {
+              <section
+                class="ai-result"
+                [class.accept]="review.result?.decision === 'accept'"
+                [class.reject]="review.result?.decision === 'reject'"
+                [class.abstain]="review.result?.decision === 'abstain'"
+                [class.historical]="
+                  review.status === 'stale' ||
+                  !!review.human_review ||
+                  !!review.manual_override ||
+                  !!candidate.manual_override
+                "
+              >
+                <header class="result-heading">
+                  <strong class="engine">{{
+                    review.engine === 'jev' ? 'Jev · AI 評審' : 'MCP · 外部 AI 評審'
+                  }}</strong
+                  ><span class="ob-chip">{{ reviewStatus(review) }}</span>
+                </header>
+                @if (review.result; as result) {
+                  <h3>AI 建議：{{ decisionLabel(result.decision) }}</h3>
+                  @if (review.status === 'stale') {
+                    <p class="problem">歷史結果已失效，不能採納；請重新評審。</p>
+                  } @else if (
+                    review.human_review || candidate.manual_override || review.manual_override
+                  ) {
+                    <p class="secondary">原始 AI 結果 · 已有人工決定，以下保留評審依據。</p>
                   }
+                  <dl class="metrics">
+                    <div>
+                      <dt>信心</dt>
+                      <dd>{{ percent(result.confidence) }}%</dd>
+                    </div>
+                    <div>
+                      <dt>品質</dt>
+                      <dd>{{ percent(result.dimensions.quality) }}%</dd>
+                    </div>
+                    <div>
+                      <dt>垃圾機率</dt>
+                      <dd>{{ percent(result.dimensions.spam_probability) }}%</dd>
+                    </div>
+                    <div>
+                      <dt>相關性</dt>
+                      <dd>{{ percent(result.dimensions.relevance) }}%</dd>
+                    </div>
+                  </dl>
+                  <div class="rationale">
+                    <strong>{{ review.engine === 'jev' ? '規則說明' : '評審理由' }}</strong>
+                    <p>
+                      {{
+                        result.rationale ||
+                          (review.engine === 'jev'
+                            ? 'Jev 未提供文字理由，請參考量化指標與判斷依據。'
+                            : '評審者未提供文字理由，請參考下方判斷依據。')
+                      }}
+                    </p>
+                  </div>
+                  @if (result.reason_codes.length) {
+                    <div class="reason-codes" aria-label="判斷依據">
+                      @for (code of result.reason_codes; track $index) {
+                        <span class="ob-chip">{{ reasonLabel(code) }}</span>
+                      }
+                    </div>
+                  }
+                } @else {
+                  <p>
+                    {{
+                      review.status === 'failed' || review.status === 'deferred'
+                        ? '尚無有效 AI 決策；可手動審核或重試。'
+                        : '尚無 AI 決策；等待評審完成。'
+                    }}
+                  </p>
                 }
-              } @else if (reviewErrors().has(candidate.id)) {
-                <span role="status">無法讀取評審狀態，請重新整理後再試。</span>
-              } @else if (sourceReviews()[candidate.id] === null) {
-                <span>尚未請求 AI 評審</span>
-              } @else {
-                <span>讀取評審狀態中…</span>
+                @if (reviewProblem(review); as problem) {
+                  <p class="problem" role="status">{{ problem }}</p>
+                }
+                <p class="secondary">
+                  {{
+                    (review.model && review.model !== 'external-agent' ? review.model : null) ||
+                      (review.engine === 'external_agent' ? '模型未驗證' : '未提供模型')
+                  }}
+                  · 評審更新 {{ review.updated_at || review.created_at | date: 'yyyy/MM/dd HH:mm' }}
+                  @if (review.policy_version) {
+                    · 規準 v{{ review.policy_version }}
+                  }
+                </p>
+              </section>
+              @if (review.human_review; as human) {
+                <div class="human-result">
+                  <strong
+                    >{{ human.assessment === 'agree' ? '人工同意 AI' : '人工不同意 AI' }} →
+                    {{ decisionLabel(human.decision) }}</strong
+                  >
+                  <p>
+                    AI 原建議{{ decisionLabel(human.ai_decision) }} · 人工決定於
+                    {{ human.decided_at | date: 'yyyy/MM/dd HH:mm' }}
+                  </p>
+                </div>
+              } @else if (candidate.manual_override || review.manual_override) {
+                <p class="human-result">
+                  已有人工決定（{{
+                    decisionLabel(candidate.manual_override || review.manual_override!)
+                  }}）
+                </p>
               }
-            </div>
-            <div rowMeta>
-              @if (sourceReviews()[candidate.id]; as review) {
-                @if (canRequeue(review) && !candidate.manual_override) {
-                  <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm"
-                    [disabled]="actionBusy()" (click)="requestReview(candidate)">
-                    依目前政策重新申請
-                  </button>
+              @if (canJudge(candidate)) {
+                <div class="decision-actions">
+                  <div>
+                    <button
+                      type="button"
+                      class="ob-btn ob-btn--primary ob-btn--sm"
+                      [disabled]="actionBusy() || !canAgree(candidate)"
+                      (click)="judgeReview(candidate, 'agree')"
+                    >
+                      同意決策
+                    </button>
+                    <p>{{ judgmentOutcome(review, 'agree') }}</p>
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      class="ob-btn ob-btn--ghost ob-btn--sm"
+                      [disabled]="actionBusy()"
+                      (click)="judgeReview(candidate, 'disagree')"
+                    >
+                      拒絕決策
+                    </button>
+                    <p>{{ judgmentOutcome(review, 'disagree') }} · 記錄人工不同意 AI</p>
+                  </div>
+                </div>
+                @if (!canAgree(candidate)) {
+                  <p class="problem">
+                    AI 雖建議收錄，仍未通過服務端收錄門檻。請重試評審，或拒絕本次 AI
+                    決策並改為不收錄。
+                  </p>
                 }
-                @if (canRetry(review) && !candidate.manual_override) {
+                @if (disagreement() === candidate.id) {
+                  <fieldset class="disagreement">
+                    <legend>AI 建議暫緩；你的不同決定是？</legend>
+                    <div class="actions">
+                      <button
+                        type="button"
+                        class="ob-btn ob-btn--primary ob-btn--sm"
+                        [disabled]="actionBusy()"
+                        (click)="judgeReview(candidate, 'disagree', 'accept')"
+                      >
+                        人工決定收錄</button
+                      ><button
+                        type="button"
+                        class="ob-btn ob-btn--ghost ob-btn--sm"
+                        [disabled]="actionBusy()"
+                        (click)="judgeReview(candidate, 'disagree', 'reject')"
+                      >
+                        人工決定不收錄</button
+                      ><button
+                        type="button"
+                        class="ob-btn ob-btn--ghost ob-btn--sm"
+                        [disabled]="actionBusy()"
+                        (click)="disagreement.set(null)"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </fieldset>
+                }
+              }
+              @if (canRequeue(review) && !candidate.manual_override) {
+                <button
+                  type="button"
+                  class="ob-btn ob-btn--ghost ob-btn--sm"
+                  [disabled]="actionBusy()"
+                  (click)="requestReview(candidate)"
+                >
+                  依目前政策重新申請
+                </button>
+              }
+              @if (canRetry(review) && !candidate.manual_override) {
+                <div class="actions">
                   <button
                     type="button"
                     class="ob-btn ob-btn--ghost ob-btn--sm"
@@ -245,79 +403,61 @@
                   >
                     重試 AI 評審
                   </button>
-                }
-                @if (
-                  review.status === 'awaiting_human' &&
-                  !candidate.manual_override &&
-                  !review.manual_override
-                ) {
-                  <button
-                    type="button"
-                    class="ob-btn ob-btn--primary ob-btn--sm"
-                    [disabled]="actionBusy()"
-                    (click)="resolveReview(candidate, 'accept')"
-                  >
-                    覆核通過
-                  </button>
-                  <button
-                    type="button"
-                    class="ob-btn ob-btn--ghost ob-btn--sm"
-                    [disabled]="actionBusy()"
-                    (click)="resolveReview(candidate, 'reject')"
-                  >
-                    覆核不通過
-                  </button>
-                  <button
-                    type="button"
-                    class="ob-btn ob-btn--ghost ob-btn--sm"
-                    [disabled]="actionBusy()"
-                    (click)="resolveReview(candidate, 'defer')"
-                  >
-                    暫緩評審
-                  </button>
-                }
-              } @else if (
-                sourceReviews()[candidate.id] === null &&
-                !reviewErrors().has(candidate.id) &&
-                !candidate.manual_override
-              ) {
+                </div>
+              }
+            } @else if (reviewErrors().has(candidate.id)) {
+              <p role="status">無法讀取評審狀態，請重新整理後再試。</p>
+            } @else if (sourceReviews()[candidate.id] === null) {
+              <p class="secondary">尚未請求 AI 評審</p>
+              @if (!candidate.manual_override && candidate.status === 'pending') {
                 <button
                   type="button"
                   class="ob-btn ob-btn--ghost ob-btn--sm"
                   [disabled]="actionBusy()"
                   (click)="requestReview(candidate)"
                 >
-                  {{ reviewBusy().has(candidate.id) ? '請求中…' : '請求 AI 評審' }}
+                  請求 AI 評審
                 </button>
               }
-              <button
-                type="button"
-                class="ob-btn ob-btn--primary ob-btn--sm"
-                [disabled]="actionBusy()"
-                (click)="approve(candidate)"
-              >
-                核准
-              </button>
-              @if (status() === 'pending') {
-                <button
-                  type="button"
-                  class="ob-btn ob-btn--ghost ob-btn--sm"
-                  [disabled]="actionBusy()"
-                  (click)="hold(candidate)"
-                >
-                  保留
-                </button>
-              }
-              <button
-                type="button"
-                class="ob-btn ob-btn--ghost ob-btn--sm"
-                [disabled]="actionBusy()"
-                (click)="reject(candidate)"
-              >
-                拒絕
-              </button>
-            </div>
-          </ob-list-row>
+            } @else {
+              <p role="status">讀取評審狀態中…</p>
+            }
+            @if (canManual(candidate)) {
+              <section class="manual-actions">
+                <strong>{{
+                  candidate.status === 'held' ? '調整人工決定' : '手動審核 · 尚無 AI 決策'
+                }}</strong>
+                <div class="actions">
+                  <button
+                    type="button"
+                    class="ob-btn ob-btn--primary ob-btn--sm"
+                    [disabled]="actionBusy()"
+                    (click)="approve(candidate)"
+                  >
+                    {{ candidate.status === 'held' ? '改為收錄' : '手動收錄' }}
+                  </button>
+                  @if (candidate.status === 'pending') {
+                    <button
+                      type="button"
+                      class="ob-btn ob-btn--ghost ob-btn--sm"
+                      [disabled]="actionBusy()"
+                      (click)="hold(candidate)"
+                    >
+                      手動保留
+                    </button>
+                  }
+                  <button
+                    type="button"
+                    class="ob-btn ob-btn--ghost ob-btn--sm"
+                    [disabled]="actionBusy()"
+                    (click)="reject(candidate)"
+                  >
+                    手動拒絕來源
+                  </button>
+                </div>
+              </section>
+            }
+          </article>
         }
       </section>
     }
@@ -329,4 +469,7 @@
       (pageSizeChange)="onPageSize($event)"
     />
   }
+  <div #admissionsRegion>
+    <app-recent-admissions [refreshVersion]="admissionsVersion()" />
+  </div>
 </div>

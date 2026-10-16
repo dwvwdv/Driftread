@@ -1,0 +1,73 @@
+<section
+  id="recent-admissions"
+  class="recent-admissions"
+  aria-labelledby="recent-admissions-heading"
+>
+  <header class="section-heading">
+    <div>
+      <p class="kicker">RECENTLY ADMITTED</p>
+      <h2 id="recent-admissions-heading">近期收錄</h2>
+      <p class="secondary">最新 10 個已收錄來源 · 標記實際收錄方式</p>
+    </div>
+    <div class="actions">
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [attr.aria-expanded]="expanded()"
+        aria-controls="recent-admissions-content"
+        (click)="expanded.set(!expanded())"
+      >
+        {{ expanded() ? '收合' : '展開' }}
+      </button>
+      <button
+        type="button"
+        class="ob-btn ob-btn--ghost ob-btn--sm"
+        [disabled]="loading()"
+        (click)="load()"
+      >
+        重新整理近期收錄
+      </button>
+      <a class="ob-btn ob-btn--ghost ob-btn--sm" href="/manage/feeds">來源管理</a>
+    </div>
+  </header>
+  <div id="recent-admissions-content" [hidden]="!expanded()" [attr.aria-busy]="loading()">
+    @if (loading() && !items().length) {
+      <ob-loading label="讀取近期收錄中" />
+    } @else if (error()) {
+      <p role="status" class="problem">近期收錄暫時無法讀取，請重新整理此區塊後再試。</p>
+    } @else if (!items().length) {
+      <ob-empty message="尚無已收錄的來源。" />
+    }
+    @if (items().length) {
+      <p class="secondary">未記錄收錄方式的歷史或其他管道來源，不推測其收錄方式。</p>
+      @if (loading()) {
+        <p role="status" class="secondary">正在更新近期收錄…</p>
+      } @else if (error()) {
+        <p class="secondary">以下保留上次讀取的紀錄。</p>
+      }
+      <ol class="admission-list">
+        @for (item of items(); track item.feed_id) {
+          <li>
+            <div class="admission-heading">
+              <strong>{{ item.title || '(無標題)' }}</strong>
+              <span class="ob-chip method" [class.ai-auto]="item.method === 'ai_auto'">{{
+                methodLabel(item.method)
+              }}</span>
+            </div>
+            <p class="feed-url">{{ item.feed_url }}</p>
+            <p class="secondary metadata">
+              <time [attr.datetime]="item.admitted_at">{{
+                item.admitted_at | date: 'yyyy/MM/dd HH:mm'
+              }}</time>
+              @if (item.engine === 'external_agent') {
+                <span>MCP · 外部 AI</span>
+              } @else if (item.engine === 'jev') {
+                <span>Jev · AI 評審</span>
+              }
+            </p>
+          </li>
+        }
+      </ol>
+    }
+  </div>
+</section>

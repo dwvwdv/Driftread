@@ -225,7 +225,7 @@ robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有�
 **3. 候選審核（candidates）**——`services/discovery_candidates.py`
 
 探測到的 feed URL 進 `discovery_candidates`，帶來源 host 與「幾個不同的既有源連到這裡」。
-`status` 為 `pending` / `held` / `approved` / `rejected` / `imported`。來源評審任務狀態另存在 `source_reviews`，不混入候選 status。候選頁提供「待審核／待複審／已保留」；待複審以最新 `awaiting_human` 評審在伺服器端篩選與分頁，支援當頁批次申請、重試及覆核。來源發現於抓取前排除明確留言 feed（含 redirect），避免無效候選與評審成本。
+`status` 為 `pending` / `held` / `approved` / `rejected` / `imported`。來源評審任務狀態另存在 `source_reviews`，不混入候選 status。候選頁提供「待審核／待複審／已保留」；待複審以最新且未人工處置的有效 AI 評審在伺服器端篩選與分頁，支援當頁批次申請、重試及同意／拒絕 AI 決策。AI 結果以獨立卡片顯示，原始判定與人工最終處置分開保存。另有可收合的「近期收錄」區塊，獨立列出最新 10 個目錄來源及收錄方式；無可靠紀錄的歷史／其他匯入管道明確標示未記錄，詳見 [近期收錄與收錄方式](SOURCE_REVIEW.md#近期收錄與收錄方式)。來源發現於抓取前排除明確留言 feed（含 redirect），避免無效候選與評審成本。
 
 **被拒的候選永不重新提議** —— 而它「本來一定會」回來，因為同一批文章每輪都還連著同一個
 feed。所以寫入路徑從不 upsert 覆蓋 `status`，而是先查再插，既有列的更新一律加上
@@ -358,6 +358,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/admin/discovery/targets` | 分頁列出待探測佇列，可用 `status` 過濾，依證據數排序。`page_size` 上限 200 |
 | PATCH | `/admin/discovery/targets/{id}/block` | 永久封鎖該 host（設為 `rejected`）|
 | GET | `/admin/discovery/candidates` | 候選審核佇列。`status` 預設 `pending`，另支援 `awaiting_human` 最新待複審視圖；`min_referrers` 可過濾證據數 |
+| GET | `/admin/discovery/recent-admissions` | 唯讀近期目錄收錄與方式，獨立於候選分頁；`limit` 預設 10、1–50 |
 | POST | `/admin/discovery/candidates/{id}/approve` | 核准入庫，可帶 `category` / `tags`。只寫 metadata，文章交給排程器。已被拒的候選回 **409** |
 | POST | `/admin/discovery/candidates/{id}/reject` | 拒絕，可帶 `note`；`block_host=true` 一併封鎖整個網域 |
 | GET | `/admin/discovery/sources` | 目錄來源清單 |
@@ -375,6 +376,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/source-reviews/batch/resolve` | 批次人工覆核 1–50 個最新待複審結果，逐筆回報；鎖內檢查版本與狀態 |
 | GET | `/admin/source-reviews/usage` | 付費請求計數、成本與未知／暫停狀態，不含原始 payload |
 | GET | `/admin/source-reviews/{id}` | 讀取有界評審資料包與結果，不簽發租約 |
+| POST | `/admin/source-reviews/{id}/judgment` | 人工同意／不同意 AI；同意由伺服器推導最終處置，不同意必須與 AI 不同 |
+| POST | `/admin/source-reviews/batch/judgment` | 1–50 筆逐項採納／推翻各自 AI 決策，保留部分失敗結果 |
 | POST | `/admin/source-reviews/{id}/resolve` | 明確人工通過／拒絕／保留 |
 | POST | `/admin/source-reviews/{id}/retry` | 明確重新評審，不解除人工覆寫 |
 
@@ -500,6 +503,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `discovery_target_referrers` | 006 | `(target_id, feed_id)` 主鍵的分帳表，讓「幾個**不同**的既有源連到這裡」精確且重複收割時冪等 |
 | `discovery_candidates` | 006 + 20261013040000 | 候選審核佇列，`feed_url` 唯一；`review_version`／`manual_override` 保護人工決定，核准與入庫交易原子化 |
 | `source_reviews` / `analysis_results` | 20261013040000 | service-only 評審任務／有限快照與分析紀錄；見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md) |
+| `feed_admissions` | 20261016140000 | service-only 首次候選收錄方式、引擎及候選／評審 ID；不因評審清理或既有 feed 重連而變更，無證據的歷史／其他匯入不回填 |
 | `ai_request_receipts` / `ai_request_attempts` / `ai_request_retry_bindings` | 20261013040020 | service-only 邏輯付費請求、有限 raw response、明確重試綁定、並發安全預算與用量摘要 |
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |

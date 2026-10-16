@@ -457,6 +457,23 @@ class PaginatedFeedCandidates(BaseModel):
     page_size: int
 
 
+class RecentFeedAdmission(BaseModel):
+    feed_id: UUID
+    title: str
+    feed_url: str
+    website_url: str | None = None
+    admitted_at: datetime
+    method: Literal["ai_auto", "human_agree", "human_disagree", "manual", "referrer_auto", "unknown"]
+    engine: Literal["external_agent", "jev"] | None = None
+    candidate_id: UUID | None = None
+    review_id: UUID | None = None
+
+
+class RecentFeedAdmissions(BaseModel):
+    items: list[RecentFeedAdmission]
+    limit: int
+
+
 class DiscoverySource(BaseModel):
     id: UUID
     url: str

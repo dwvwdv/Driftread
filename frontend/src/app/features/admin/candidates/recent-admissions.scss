@@ -1,0 +1,70 @@
+.recent-admissions {
+  margin-top: var(--sp-6);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface-raised);
+}
+.section-heading,
+.admission-heading,
+.actions,
+.metadata {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.section-heading,
+.admission-heading {
+  justify-content: space-between;
+}
+.section-heading {
+  padding: var(--sp-4);
+  border-bottom: var(--border-width) solid var(--border);
+}
+h2,
+p {
+  margin: 0;
+}
+h2 {
+  margin: var(--sp-1) 0;
+  font-size: var(--text-xl);
+}
+.kicker,
+.feed-url {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.kicker {
+  color: var(--accent);
+}
+.secondary {
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+}
+.admission-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+li {
+  padding: var(--sp-4);
+  overflow-wrap: anywhere;
+}
+li + li {
+  border-top: var(--border-width) solid var(--border);
+}
+.feed-url,
+.metadata {
+  margin-top: var(--sp-2);
+}
+.method {
+  white-space: normal;
+}
+.ai-auto {
+  color: var(--success-ink);
+}
+.problem {
+  color: var(--warning-ink);
+}
+#recent-admissions-content > p {
+  padding: var(--sp-3) var(--sp-4);
+}

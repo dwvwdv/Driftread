@@ -22,6 +22,7 @@ import {
   PaginatedFeeds,
   RefreshDueSummary,
   RefreshFeedResult,
+  RecentAdmission,
   SeedTargetsResult,
 } from '../models';
 import { ToastService } from '../ui/toast/toast';
@@ -144,6 +145,14 @@ export class AdminService {
       '/admin/discovery/candidates',
       '讀取候選失敗',
       new HttpParams().set('status', status).set('page', page).set('page_size', pageSize),
+    );
+  }
+
+  recentAdmissions(limit = 10): Observable<{ items: RecentAdmission[]; limit: number }> {
+    return this.get<{ items: RecentAdmission[]; limit: number }>(
+      '/admin/discovery/recent-admissions',
+      '讀取近期收錄失敗',
+      new HttpParams().set('limit', limit),
     );
   }
 
@@ -310,6 +319,34 @@ export class AdminService {
       '/admin/source-reviews/batch/resolve',
       { review_ids: reviewIds, decision },
       '批次人工覆核失敗',
+    );
+  }
+
+  judgeSourceReview(
+    reviewId: string,
+    assessment: 'agree' | 'disagree',
+    decision?: 'accept' | 'reject',
+  ): Observable<SourceReview> {
+    return this.post<SourceReview>(
+      `/admin/source-reviews/${reviewId}/judgment`,
+      { assessment, ...(assessment === 'disagree' && decision ? { decision } : {}) },
+      '人工決策未完成',
+    );
+  }
+
+  judgeSourceReviews(
+    reviewIds: string[],
+    assessment: 'agree' | 'disagree',
+    decision?: 'accept' | 'reject',
+  ): Observable<SourceReviewBatchResult> {
+    return this.post<SourceReviewBatchResult>(
+      '/admin/source-reviews/batch/judgment',
+      {
+        review_ids: reviewIds,
+        assessment,
+        ...(assessment === 'disagree' && decision ? { decision } : {}),
+      },
+      '批次人工決策未完成',
     );
   }
 

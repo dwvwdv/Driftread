@@ -139,6 +139,27 @@ describe('AdminService 409 handling', () => {
     expect(toastCalls).toEqual([{ tone: 'warning', text: '候選狀態已更新，請確認最新清單後再試' }]);
   });
 
+  it('fetches recent admissions with its limit and the verified management session', () => {
+    const service = TestBed.inject(AdminService);
+    let count = -1;
+    service.recentAdmissions().subscribe(({ items }) => (count = items.length));
+    const request = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/discovery/recent-admissions'),
+    );
+    expect(request.request.method).toBe('GET');
+    expect(request.request.params.get('limit')).toBe('10');
+    expect(request.request.headers.get('x-manage-session')).toBe('otp-token');
+    expect(request.request.headers.get('Authorization')).toBe('Bearer user-token');
+    request.flush({ items: [], limit: 10 });
+    expect(count).toBe(0);
+    service.recentAdmissions(5).subscribe();
+    const custom = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/discovery/recent-admissions'),
+    );
+    expect(custom.request.params.get('limit')).toBe('5');
+    custom.flush({ items: [], limit: 5 });
+  });
+
   it('fetches read-only operation and storage snapshots with the verified management session', () => {
     const service = TestBed.inject(AdminService);
     service.operations().subscribe();
@@ -282,5 +303,26 @@ describe('AdminService source review API', () => {
       expect(write.request.headers.has('x-api-key')).toBe(false);
       write.flush({});
     }
+  });
+  it.each(['agree', 'disagree'] as const)(
+    'sends %s judgment independently from the resulting source decision',
+    (assessment) => {
+      const service = TestBed.inject(AdminService);
+      service.judgeSourceReview('r1', assessment).subscribe();
+      const single = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/r1/judgment'));
+      expect(single.request.body).toEqual({ assessment });
+      expect(single.request.headers.get('x-manage-session')).toBe('session');
+      single.flush({});
+      service.judgeSourceReviews(['r1', 'r2'], assessment).subscribe();
+      const batch = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/batch/judgment'));
+      expect(batch.request.body).toEqual({ review_ids: ['r1', 'r2'], assessment });
+      batch.flush({ items: [], succeeded: 0, failed: 0 });
+    },
+  );
+  it('sends an explicit source decision only for a human disagreement with abstention', () => {
+    TestBed.inject(AdminService).judgeSourceReview('r1', 'disagree', 'accept').subscribe();
+    const request = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/r1/judgment'));
+    expect(request.request.body).toEqual({ assessment: 'disagree', decision: 'accept' });
+    request.flush({});
   });
 });
