@@ -283,4 +283,25 @@ describe('AdminService source review API', () => {
       write.flush({});
     }
   });
+  it.each(['agree', 'disagree'] as const)(
+    'sends %s judgment independently from the resulting source decision',
+    (assessment) => {
+      const service = TestBed.inject(AdminService);
+      service.judgeSourceReview('r1', assessment).subscribe();
+      const single = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/r1/judgment'));
+      expect(single.request.body).toEqual({ assessment });
+      expect(single.request.headers.get('x-manage-session')).toBe('session');
+      single.flush({});
+      service.judgeSourceReviews(['r1', 'r2'], assessment).subscribe();
+      const batch = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/batch/judgment'));
+      expect(batch.request.body).toEqual({ review_ids: ['r1', 'r2'], assessment });
+      batch.flush({ items: [], succeeded: 0, failed: 0 });
+    },
+  );
+  it('sends an explicit source decision only for a human disagreement with abstention', () => {
+    TestBed.inject(AdminService).judgeSourceReview('r1', 'disagree', 'accept').subscribe();
+    const request = mock.expectOne((r) => r.url.endsWith('/admin/source-reviews/r1/judgment'));
+    expect(request.request.body).toEqual({ assessment: 'disagree', decision: 'accept' });
+    request.flush({});
+  });
 });

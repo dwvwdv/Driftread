@@ -206,3 +206,48 @@ def test_rest_batches_accept_fifty_and_reject_unknown_overrides(review_client, o
                            headers={'X-API-Key': 'test-admin-key'},
                            json={**payload, 'manual_override': None}).status_code == 422
         assert mutate.call_count == 1
+
+
+@pytest.mark.parametrize('assessment,decision', [('agree', None), ('disagree', None), ('disagree', 'accept'), ('disagree', 'defer')])
+@pytest.mark.parametrize('batch', [False, True])
+def test_judgment_endpoints_forward_only_admin_assessment(review_client, assessment, decision, batch):
+    client, db = review_client
+    payload = {'assessment': assessment}
+    if decision is not None:
+        payload['decision'] = decision
+    if batch:
+        payload['review_ids'] = [REVIEW_ID]
+    name = 'judge_reviews' if batch else 'judge_review'
+    url = '/api/admin/source-reviews/batch/judgment' if batch else f'/api/admin/source-reviews/{REVIEW_ID}/judgment'
+    with patch.object(reviews.source_review, name, return_value={'items': []}) as judge:
+        assert client.post(url, headers={'X-API-Key': 'review-machine-key'}, json=payload).status_code == 403
+        judge.assert_not_called()
+        response = client.post(url, headers={'X-API-Key': 'test-admin-key'}, json=payload)
+    assert response.status_code == 200
+    args = judge.call_args.args
+    assert args[0] is db
+    assert ([str(rid) for rid in args[1]] == [REVIEW_ID]) if batch else args[1] == REVIEW_ID
+    assert args[2:] == (assessment, decision)
+
+
+@pytest.mark.parametrize('body', [{}, {'assessment': 'unknown'}, {'assessment': 'agree', 'decision': 'accept'},
+                                  {'assessment': 'agree', 'decision': None},
+                                  {'assessment': 'disagree', 'decision': 'invalid'},
+                                  {'assessment': 'agree', 'engine': 'jev'}])
+def test_judgment_rejects_overrides_before_mutating(review_client, body):
+    client, _ = review_client
+    with patch.object(reviews.source_review, 'judge_review') as judge:
+        response = client.post(f'/api/admin/source-reviews/{REVIEW_ID}/judgment',
+                               headers={'X-API-Key': 'test-admin-key'}, json=body)
+    assert response.status_code == 422
+    judge.assert_not_called()
+
+
+@pytest.mark.parametrize('ids', [[], [REVIEW_ID] * 51, ['invalid']])
+def test_batch_judgment_is_bounded_and_validates_uuid(review_client, ids):
+    client, _ = review_client
+    with patch.object(reviews.source_review, 'judge_reviews') as judge:
+        response = client.post('/api/admin/source-reviews/batch/judgment', headers={'X-API-Key': 'test-admin-key'},
+                               json={'assessment': 'agree', 'review_ids': ids})
+    assert response.status_code == 422
+    judge.assert_not_called()

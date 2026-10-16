@@ -21,6 +21,22 @@ class ResolveReviewRequest(BaseModel):
     decision: Literal["accept", "reject", "defer"]
 
 
+class JudgeReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assessment: Literal["agree", "disagree"]
+    decision: Literal["accept", "reject", "defer"] | None = None
+
+    @model_validator(mode="after")
+    def agreement_uses_machine_decision(self):
+        if self.assessment == "agree" and "decision" in self.model_fields_set:
+            raise ValueError("Agreement derives its decision from the AI result")
+        return self
+
+
+class BatchJudgeReviews(JudgeReviewRequest):
+    review_ids: list[UUID] = Field(min_length=1, max_length=50)
+
+
 class LatestReviewsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidate_ids: list[UUID] = Field(min_length=1, max_length=50)
@@ -84,6 +100,13 @@ async def resolve_source_reviews(body: BatchResolveReviews,
     return await _call(source_review.resolve_reviews, db, body.review_ids, body.decision)
 
 
+@router.post("/batch/judgment")
+async def judge_source_reviews(body: BatchJudgeReviews,
+                               db: Client = Depends(get_client)) -> dict:
+    return await _call(source_review.judge_reviews, db, body.review_ids,
+                       body.assessment, body.decision)
+
+
 @router.get("/usage")
 async def source_review_usage(limit: int = Query(50, ge=1, le=100),
                               db: Client = Depends(get_client)) -> dict:
@@ -100,6 +123,13 @@ async def source_review_packet(review_id: UUID, db: Client = Depends(get_client)
 async def resolve_source_review(review_id: UUID, body: ResolveReviewRequest,
                                 db: Client = Depends(get_client)) -> dict:
     return await _call(source_review.resolve_review, db, str(review_id), body.decision)
+
+
+@router.post("/{review_id}/judgment")
+async def judge_source_review(review_id: UUID, body: JudgeReviewRequest,
+                              db: Client = Depends(get_client)) -> dict:
+    return await _call(source_review.judge_review, db, str(review_id),
+                       body.assessment, body.decision)
 
 
 @router.post("/{review_id}/retry")

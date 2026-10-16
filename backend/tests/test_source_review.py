@@ -378,3 +378,31 @@ async def test_jev_adapter_metadata_is_removed_before_submission_validation(monk
     assert '_analysis_metadata' not in submit.call_args.args[2]
     assert submit.call_args.kwargs['analysis_metadata'] == metadata
     assert counts == {'submitted':1, 'failed':0}
+
+
+def test_judgment_preserves_human_metadata_in_summary():
+    cid, rid = str(uuid4()), str(uuid4())
+    human = {'assessment': 'disagree', 'ai_decision': 'reject', 'decision': 'accept', 'decided_at': '2026-10-16'}
+    db = RPCDB({'id': rid, 'candidate_id': cid, 'human_review': human, 'result': {'decision': 'reject'}})
+    with patch.object(service, 'get_candidate', return_value={'manual_override': 'approve'}):
+        result = service.judge_review(db, rid, 'disagree')
+    assert db.calls == [('judge_source_review', {'p_review_id': rid, 'p_assessment': 'disagree', 'p_decision': None})]
+    assert result['human_review'] == human and result['result']['decision'] == 'reject'
+
+
+def test_batch_judgments_keep_partial_failures_and_deduplicate():
+    ids = [str(uuid4()), str(uuid4())]
+    db = object()
+    with patch.object(service, 'judge_review', side_effect=[{'id': ids[0]}, ReviewError(409, 'Review conflict')]) as judge:
+        result = service.judge_reviews(db, [ids[0], ids[1], ids[0]], 'agree')
+    assert judge.call_args_list == [call(db, rid, 'agree', None) for rid in ids]
+    assert result['succeeded'] == result['failed'] == 1
+    assert [item['ok'] for item in result['items']] == [True, False]
+
+
+@pytest.mark.parametrize('error,status', [('invalid_judgment', 422), ('policy_deferred', 409)])
+def test_judgment_rpc_maps_clear_business_errors(error, status):
+    with pytest.raises(ReviewError) as caught:
+        _rpc(RPCDB({'error': error}), 'judge_source_review', {})
+    assert caught.value.status_code == status
+    assert caught.value.detail != 'Review conflict'

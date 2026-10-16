@@ -24,7 +24,7 @@ BEGIN
  FROM generate_series(1,11) n;
 
  packet := driftread.list_review_candidates('awaiting_human',1,0,9900);
- IF packet->>'total'<>'2' OR jsonb_array_length(packet->'items')<>1
+ IF packet->>'total'<>'3' OR jsonb_array_length(packet->'items')<>1
   OR packet#>>'{items,0,id}'<>ids[2]::text THEN
   RAISE EXCEPTION 'latest-review filter must run before count/pagination: %',packet;
  END IF;
@@ -35,15 +35,15 @@ BEGIN
   RAISE EXCEPTION 'candidate listing leaked private review fields';
  END IF;
  packet := driftread.list_review_candidates('awaiting_human',1,1,9900);
- IF packet->>'total'<>'2' OR packet#>>'{items,0,id}'<>ids[6]::text THEN
+ IF packet->>'total'<>'3' OR packet#>>'{items,0,id}'<>ids[3]::text THEN
   RAISE EXCEPTION 'awaiting_human second page or count is incorrect: %',packet;
  END IF;
  packet := driftread.list_review_candidates('awaiting_human',20,20,9900);
- IF packet->>'total'<>'2' OR packet->'items'<>'[]'::jsonb THEN
+ IF packet->>'total'<>'3' OR packet->'items'<>'[]'::jsonb THEN
   RAISE EXCEPTION 'empty pages must retain the exact total';
  END IF;
  packet := driftread.list_review_candidates('awaiting_human',20,0,9995);
- IF packet->>'total'<>'1' THEN RAISE EXCEPTION 'min_referrers must affect count and rows'; END IF;
+ IF packet->>'total'<>'2' THEN RAISE EXCEPTION 'min_referrers must affect count and rows'; END IF;
  packet := driftread.list_review_candidates('pending',20,0,9900);
  IF packet->>'total'<>'8' OR packet#>>'{items,0,id}'<>ids[1]::text
   OR packet#>'{items,0,latest_review}'<>'null'::jsonb THEN

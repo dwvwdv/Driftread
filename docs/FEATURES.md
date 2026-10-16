@@ -223,7 +223,7 @@ robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有�
 **3. 候選審核（candidates）**——`services/discovery_candidates.py`
 
 探測到的 feed URL 進 `discovery_candidates`，帶來源 host 與「幾個不同的既有源連到這裡」。
-`status` 為 `pending` / `held` / `approved` / `rejected` / `imported`。來源評審任務狀態另存在 `source_reviews`，不混入候選 status。候選頁提供「待審核／待複審／已保留」；待複審以最新 `awaiting_human` 評審在伺服器端篩選與分頁，支援當頁批次申請、重試及覆核。來源發現於抓取前排除明確留言 feed（含 redirect），避免無效候選與評審成本。
+`status` 為 `pending` / `held` / `approved` / `rejected` / `imported`。來源評審任務狀態另存在 `source_reviews`，不混入候選 status。候選頁提供「待審核／待複審／已保留」；待複審以最新 `awaiting_human` 評審在伺服器端篩選與分頁，支援當頁批次申請、重試及同意／拒絕 AI 決策。AI 結果以獨立卡片顯示，原始判定與人工最終處置分開保存。來源發現於抓取前排除明確留言 feed（含 redirect），避免無效候選與評審成本。
 
 **被拒的候選永不重新提議** —— 而它「本來一定會」回來，因為同一批文章每輪都還連著同一個
 feed。所以寫入路徑從不 upsert 覆蓋 `status`，而是先查再插，既有列的更新一律加上
@@ -373,6 +373,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/source-reviews/batch/resolve` | 批次人工覆核 1–50 個最新待複審結果，逐筆回報；鎖內檢查版本與狀態 |
 | GET | `/admin/source-reviews/usage` | 付費請求計數、成本與未知／暫停狀態，不含原始 payload |
 | GET | `/admin/source-reviews/{id}` | 讀取有界評審資料包與結果，不簽發租約 |
+| POST | `/admin/source-reviews/{id}/judgment` | 人工同意／不同意 AI；同意由伺服器推導最終處置，不同意必須與 AI 不同 |
+| POST | `/admin/source-reviews/batch/judgment` | 1–50 筆逐項採納／推翻各自 AI 決策，保留部分失敗結果 |
 | POST | `/admin/source-reviews/{id}/resolve` | 明確人工通過／拒絕／保留 |
 | POST | `/admin/source-reviews/{id}/retry` | 明確重新評審，不解除人工覆寫 |
 

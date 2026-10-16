@@ -142,6 +142,8 @@ ChatGPT 刷新 MCP 工具列表後應有九個工具。先呼叫唯讀 `list_sou
 
 批次／單筆明確重試另需 `20261016050100_review_retry_fencing.sql`，新 API 依選定評審 ID 原子驗證最新終態，舊前端缺少 `expected_review_ids` 的批次重試會回 422，需一同升級前端。
 
+人工決策介面重新設計需先升級 API 套用 `20261016090000_review_human_judgment.sql`，再更新 frontend。新增 nullable `source_reviews.human_review` 與 service_role-only judgment RPC，保留原 AI result；待複審查詢包含尚未人工決定的 AI 拒收／暫緩結果。驗收 AI 建議拒收時「拒絕決策」的最終結果為收錄，以及混合批次逐筆採納；不要對正式候選隨意執行寫入測試。回滾應用保留新欄位與稽核記錄，舊 resolve API 仍有效。
+
 ## ChatGPT Web 來源評審 OAuth（#100）
 
 1. 備份並停舊 worker，升級 API，開機套用 `20261014010000_source_review_oauth.sql`；保留 ledger，healthy 後啟動同版 worker／frontend。新表撤銷所有 Data API roles（含 service_role），沿用既有 privileged `DATABASE_URL`，不需要修改 Supabase Dashboard 的 OAuth server／Exposed Schemas。

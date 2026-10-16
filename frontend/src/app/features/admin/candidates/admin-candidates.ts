@@ -8,13 +8,12 @@ import {
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Observable, Subscription, catchError, from, map, mergeMap, of } from 'rxjs';
 import { AdminService } from '../../../services/admin';
 import { FeedCandidate, SourceReview, SourceReviewBatchResult } from '../../../models';
-import { ObCard } from '../../../ui/card/card';
 import { ObIcon } from '../../../ui/icon/icon';
-import { ObListRow } from '../../../ui/list-row/list-row';
 import { ObLoading, ObEmpty } from '../../../ui/state/state';
 import { ObPageHeader } from '../../../ui/page-header/page-header';
 import { ObPaginator } from '../../../ui/paginator/paginator';
@@ -31,7 +30,7 @@ import { clampPage } from '../../../shared/paging';
 @Component({
   selector: 'app-admin-candidates',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, ObCard, ObIcon, ObListRow, ObLoading, ObEmpty, ObPageHeader, ObPaginator],
+  imports: [DatePipe, FormsModule, ObIcon, ObLoading, ObEmpty, ObPageHeader, ObPaginator],
   templateUrl: './admin-candidates.html',
   styleUrl: './admin-candidates.scss',
 })
@@ -190,18 +189,108 @@ export class AdminCandidates implements OnInit {
     this.runReviewAction(candidate.id, request);
   }
 
-  protected resolveReview(candidate: FeedCandidate, decision: 'accept' | 'reject' | 'defer'): void {
+  protected disagreement = signal<string | null>(null);
+
+  protected canJudge(candidate: FeedCandidate): boolean {
     const review = this.sourceReviews()[candidate.id];
+    return (
+      candidate.status === 'pending' &&
+      !candidate.manual_override &&
+      !!review &&
+      !review.manual_override &&
+      !review.human_review &&
+      !this.reviewErrors().has(candidate.id) &&
+      !!review.result &&
+      ['awaiting_human', 'rejected', 'deferred'].includes(review.status)
+    );
+  }
+
+  protected canAgree(candidate: FeedCandidate): boolean {
+    const review = this.sourceReviews()[candidate.id];
+    return (
+      this.canJudge(candidate) &&
+      !(review?.status === 'deferred' && review.result?.decision === 'accept')
+    );
+  }
+
+  protected canManual(candidate: FeedCandidate): boolean {
+    if (this.reviewErrors().has(candidate.id)) return false;
+    const review = this.sourceReviews()[candidate.id];
+    // A held source is a later manual adjustment, not a second judgment of its AI result.
+    return (
+      candidate.status === 'held' ||
+      review === null ||
+      (!!review && !review.result && ['failed', 'deferred'].includes(review.status))
+    );
+  }
+
+  protected decisionLabel(
+    decision: 'accept' | 'reject' | 'abstain' | 'defer' | 'approve' | 'hold',
+  ): string {
+    return {
+      accept: '收錄',
+      approve: '收錄',
+      reject: '不收錄',
+      abstain: '暫緩',
+      defer: '保留',
+      hold: '保留',
+    }[decision];
+  }
+
+  protected judgmentOutcome(review: SourceReview, assessment: 'agree' | 'disagree'): string {
+    const decision = review.result?.decision;
+    if (!decision) return '';
+    if (assessment === 'agree')
+      return decision === 'abstain'
+        ? '保留來源，暫不收錄'
+        : decision === 'accept'
+          ? '收錄此來源'
+          : '拒絕來源，離開候審區';
+    return decision === 'abstain'
+      ? '自行選擇收錄或不收錄'
+      : decision === 'accept'
+        ? '拒絕來源，離開候審區'
+        : '收錄此來源';
+  }
+
+  protected async judgeReview(
+    candidate: FeedCandidate,
+    assessment: 'agree' | 'disagree',
+    decision?: 'accept' | 'reject',
+  ): Promise<void> {
     if (
-      !review ||
-      review.status !== 'awaiting_human' ||
       this.actionBusy() ||
-      this.reviewErrors().has(candidate.id) ||
-      candidate.manual_override ||
-      review.manual_override
+      !this.canJudge(candidate) ||
+      (assessment === 'agree' && !this.canAgree(candidate))
     )
       return;
-    this.runReviewAction(candidate.id, this.admin.resolveSourceReview(review.id, decision));
+    const review = this.sourceReviews()[candidate.id]!;
+    if (assessment === 'disagree' && review.result!.decision === 'abstain' && !decision) {
+      this.disagreement.set(candidate.id);
+      return;
+    }
+    this.beginActions([candidate.id]);
+    const outcome = decision
+      ? decision === 'accept'
+        ? '收錄此來源'
+        : '拒絕來源，離開候審區'
+      : this.judgmentOutcome(review, assessment);
+    const ok = await this.confirm.ask({
+      heading: `${assessment === 'agree' ? '同意' : '拒絕'} AI 決策？`,
+      body: `AI 建議${this.decisionLabel(review.result!.decision)}。本次人工決定將${outcome}，並記錄為「人工${assessment === 'agree' ? '同意' : '不同意'} AI」。`,
+      confirmLabel: outcome,
+      danger: outcome.startsWith('拒絕'),
+    });
+    if (this.destroyRef.destroyed) return;
+    if (!ok) {
+      this.reviewBusy.set(new Set());
+      return;
+    }
+    this.disagreement.set(null);
+    this.runReviewAction(
+      candidate.id,
+      this.admin.judgeSourceReview(review.id, assessment, decision),
+    );
   }
 
   private runReviewAction(id: string, request: Observable<SourceReview>): void {
@@ -228,19 +317,19 @@ export class AdminCandidates implements OnInit {
     this.reviewBusy.set(new Set(ids));
   }
 
-  protected eligibleCandidates(action: 'request' | 'retry' | 'resolve'): FeedCandidate[] {
+  protected eligibleCandidates(
+    action: 'request' | 'retry' | 'agree' | 'disagree' | 'manual',
+  ): FeedCandidate[] {
     return this.candidates().filter((candidate) => {
-      if (
-        !this.selected().has(candidate.id) ||
-        candidate.manual_override ||
-        this.reviewErrors().has(candidate.id)
-      )
-        return false;
+      if (!this.selected().has(candidate.id) || this.reviewErrors().has(candidate.id)) return false;
       const review = this.sourceReviews()[candidate.id];
-      if (review?.manual_override) return false;
+      if (action === 'manual') return this.canManual(candidate);
+      if (candidate.manual_override || review?.manual_override) return false;
       if (action === 'request') return review === null;
       if (action === 'retry') return !!review && this.canRetry(review);
-      return review?.status === 'awaiting_human';
+      return action === 'agree'
+        ? this.canAgree(candidate)
+        : this.canJudge(candidate) && review?.result?.decision !== 'abstain';
     });
   }
 
@@ -259,21 +348,42 @@ export class AdminCandidates implements OnInit {
     );
   }
 
-  protected batchResolve(decision: 'accept' | 'reject' | 'defer'): void {
-    const items = this.eligibleCandidates('resolve');
-    if (this.actionBusy() || this.loading() || !items.length) return;
-    this.runBatch(
-      items,
-      this.admin.batchResolveSourceReviews(
-        items.map(({ id }) => this.sourceReviews()[id]!.id),
-        decision,
-      ),
-    );
+  protected batchSummary(assessment: 'agree' | 'disagree'): string {
+    const items = this.eligibleCandidates(assessment);
+    const count = (decision: string) =>
+      items.filter(({ id }) => this.sourceReviews()[id]?.result?.decision === decision).length;
+    return `AI 建議：收錄 ${count('accept')}、不收錄 ${count('reject')}、暫緩 ${count('abstain')}`;
   }
 
-  private runBatch(items: FeedCandidate[], request: Observable<SourceReviewBatchResult>): void {
+  protected async batchJudge(assessment: 'agree' | 'disagree'): Promise<void> {
+    const items = this.eligibleCandidates(assessment);
+    if (this.actionBusy() || this.loading() || !items.length) return;
+    const reviewIds = items.map(({ id }) => this.sourceReviews()[id]!.id);
+    const summary = this.batchSummary(assessment);
+    const reviewCandidates = new Map(items.map(({ id }) => [this.sourceReviews()[id]!.id, id]));
+    this.reviewing.set(true);
+    this.beginActions(items.map(({ id }) => id));
+    const ok = await this.confirm.ask({
+      heading: `批次${assessment === 'agree' ? '同意' : '拒絕'} ${items.length} 項 AI 決策？`,
+      body: `${summary}。${assessment === 'agree' ? '每筆依各自 AI 建議處理：收錄、不收錄或保留來源。' : '每筆反向處理：AI 建議收錄改為不收錄，AI 建議不收錄改為收錄；暫緩項目不包含在內，請逐筆選擇。'}只處理適用且選取的項目。`,
+      confirmLabel: assessment === 'agree' ? '依各自建議執行' : '反向執行各自決策',
+      danger: true,
+    });
+    if (this.destroyRef.destroyed) return;
+    if (!ok) {
+      this.reviewing.set(false);
+      this.reviewBusy.set(new Set());
+      return;
+    }
+    this.runBatch(items, this.admin.judgeSourceReviews(reviewIds, assessment), reviewCandidates);
+  }
+
+  private runBatch(
+    items: FeedCandidate[],
+    request: Observable<SourceReviewBatchResult>,
+    reviewCandidates = new Map(items.map(({ id }) => [this.sourceReviews()[id]?.id, id])),
+  ): void {
     const candidateIds = items.map(({ id }) => id);
-    const reviewCandidates = new Map(items.map(({ id }) => [this.sourceReviews()[id]?.id, id]));
     this.reviewing.set(true);
     this.batchNotice.set('批次作業處理中…');
     this.beginActions(candidateIds);
@@ -321,7 +431,7 @@ export class AdminCandidates implements OnInit {
       preparing: '準備樣本中',
       ready: '等待評審領取',
       leased: '評審中',
-      awaiting_human: '等待人工覆核',
+      awaiting_human: '等待人工決策',
       accepted: '已收錄',
       rejected: '未通過',
       deferred: '暫緩',
@@ -363,11 +473,22 @@ export class AdminCandidates implements OnInit {
     return '評審服務未完成，請檢查服務狀態後重試。';
   }
 
-  protected reviewDecision(review: SourceReview): string {
-    const result = review.result;
-    if (!result) return '';
-    const label = { accept: '通過', reject: '不通過', abstain: '無法判定' }[result.decision];
-    return `${label} · 信心 ${Math.round(result.confidence * 100)}% · 品質 ${Math.round(result.dimensions.quality * 100)}% · 垃圾機率 ${Math.round(result.dimensions.spam_probability * 100)}%`;
+  protected reasonLabel(code: string): string {
+    const labels: Record<string, string> = {
+      low_confidence: '信心不足',
+      low_information_value: '資訊價值不足',
+      spam_signal: '垃圾內容訊號',
+      outside_collection_scope: '不符收錄範圍',
+      rubric_passed: '符合收錄規準',
+      insufficient_sample: '樣本不足',
+      original_reporting: '原創報導',
+      informative: '具資訊價值',
+    };
+    return labels[code] ?? code;
+  }
+
+  protected percent(value: number): number {
+    return Math.round(value * 100);
   }
 
   protected changeStatus(status: 'pending' | 'held' | 'awaiting_human'): void {
@@ -403,7 +524,7 @@ export class AdminCandidates implements OnInit {
   }
 
   protected async bulk(action: 'approve' | 'hold' | 'reject'): Promise<void> {
-    const items = this.candidates().filter((candidate) => this.selected().has(candidate.id));
+    const items = this.eligibleCandidates('manual');
     if (!items.length || this.actionBusy() || this.loading()) return;
     this.reviewing.set(true);
 
@@ -493,7 +614,7 @@ export class AdminCandidates implements OnInit {
   }
 
   protected approve(candidate: FeedCandidate): void {
-    if (this.actionBusy()) return;
+    if (this.actionBusy() || !this.canManual(candidate)) return;
     this.beginActions([candidate.id]);
     const tags = this.parsedTags();
 
@@ -516,7 +637,7 @@ export class AdminCandidates implements OnInit {
   }
 
   protected hold(candidate: FeedCandidate): void {
-    if (this.actionBusy()) return;
+    if (this.actionBusy() || !this.canManual(candidate)) return;
     this.beginActions([candidate.id]);
     this.admin
       .holdCandidate(candidate.id, { note: null })
@@ -542,7 +663,7 @@ export class AdminCandidates implements OnInit {
   }
 
   protected async reject(candidate: FeedCandidate): Promise<void> {
-    if (this.actionBusy()) return;
+    if (this.actionBusy() || !this.canManual(candidate)) return;
     this.beginActions([candidate.id]);
     if (this.blockHostOnReject) {
       const host = candidate.source_host ?? '該網域';

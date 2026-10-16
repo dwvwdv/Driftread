@@ -1191,3 +1191,19 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 正式 MCP 舊版唯讀測試成功；新工具以官方 SDK、本機隔離 PostgreSQL 17 與單元測試驗證。真實 ChatGPT／瀏覽器、正式 Supabase／PostgREST、Telegram 與正式部署尚未驗收。
 - 先更新 API 套用 migration，healthy 後更新 frontend／worker，再刷新 ChatGPT 工具列表；不直接部署或合併 master。
 - GitHub review 事件 hook 工具不可用；依 AGENTS.md 既有 Codex 規範建立 PR #104 每小時追蹤，合併或關閉後停止，無新進展不通知。
+
+## 階段四十九：以同意／拒絕 AI 決策重新設計候選審核（PR 待定，2026-10-16）
+
+舊頁面把 AI 已完成評審的候選同時放上「核准／拒絕」與「覆核通過／不通過」，混淆是否認同 AI 與最後收錄來源兩件事。評審結果也混在來源小字中，不易看出 MCP 已經做了什麼。改以 AI 建議為卡片主體，再由人工同意或拒絕該判定，清楚顯示即將發生的處置。
+
+- MCP／Jev、AI 收錄／不收錄／暫緩建議、理由、評分與時間分層呈現，理由完整保留、已知代碼中文化、未知代碼保留原文；以文字加色條辨識，不只靠顏色。設定區收合，僅供無 AI 決策／已保留來源的手動操作。
+- 有效 AI 結果只顯示「同意決策／拒絕決策」。AI 建議不收錄時，同意會拒收、拒絕會改為收錄，寫入前確認實際後果。AI abstain 的不同意需明選人工收錄或不收錄，不能把拒絕 AI 一律當拒收來源。批次逐筆依各自 AI 結果計算，混合建議不硬套同一個 final decision。
+- 新增管理單筆／批次 judgment API 與 `source_reviews.human_review`；AI `result` 不變，另存人工同意／不同意、原 AI 判定、最終處置與時間。新 SQL 在候選／評審鎖內驗證最新任務、候選版本、有效結果與人工覆寫；原 resolve 保留相容並推導同一人工紀錄，MCP 不取得人工決策權限。
+- 待複審視圖涵蓋最新且版本一致、尚無人工決策的 AI 拒收與暫緩；不把 result=null 的服務錯誤混為 AI 判定。AI 建議收錄但被政策暫緩時，UI／SQL 均不允許直接同意收錄。失效或在途結果禁止重複手動繞過，失敗／暫緩且無 AI 決策保留人工備援；已保留節點仍可透過獨立「調整人工決定」改為收錄。
+- 新 migration `20261016090000_review_human_judgment.sql` 僅擴充既有表與 service_role-only RPC，不修改已合併 migration，不新增環境變數，不回填歷史人工意圖、不重新評審或改動正式候選。
+
+### 驗證與部署界限
+
+- 本機 PostgreSQL 17 完整 backend：1472 passed、0 skipped；frontend 38 files／461 tests 通過，production build 通過（既有 initial bundle warning：511.85 kB／500 kB，元件樣式預算通過）。文件檢查與 git diff --check 通過。
+- 實際 Chromium／Playwright 以本機假資料驗證桌機 1440px、手機 390px 與深／淺主題，無水平溢位或頁面錯誤；驗證拒絕 AI 拒收會提議收錄、取消不送寫入、abstain 明選與混合批次不帶硬編碼最終處置。模擬 409 走錯誤恢復，未對正式環境寫入，不能當作正式登入／API 已部署驗收。
+- 獨立 subagent 檢查決策語義、批次、鎖、權限與回歸測試，未發現新增阻擋問題。部署先更新 API 套用 migration，再更新 frontend；來源評審 MCP 九個工具與權限範圍保持不變。

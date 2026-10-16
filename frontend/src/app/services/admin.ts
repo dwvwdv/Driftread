@@ -313,6 +313,34 @@ export class AdminService {
     );
   }
 
+  judgeSourceReview(
+    reviewId: string,
+    assessment: 'agree' | 'disagree',
+    decision?: 'accept' | 'reject',
+  ): Observable<SourceReview> {
+    return this.post<SourceReview>(
+      `/admin/source-reviews/${reviewId}/judgment`,
+      { assessment, ...(assessment === 'disagree' && decision ? { decision } : {}) },
+      '人工決策未完成',
+    );
+  }
+
+  judgeSourceReviews(
+    reviewIds: string[],
+    assessment: 'agree' | 'disagree',
+    decision?: 'accept' | 'reject',
+  ): Observable<SourceReviewBatchResult> {
+    return this.post<SourceReviewBatchResult>(
+      '/admin/source-reviews/batch/judgment',
+      {
+        review_ids: reviewIds,
+        assessment,
+        ...(assessment === 'disagree' && decision ? { decision } : {}),
+      },
+      '批次人工決策未完成',
+    );
+  }
+
   // ── Plumbing ──────────────────────────────────────────────────────────────
 
   private get<T>(path: string, context: string, params?: HttpParams): Observable<T> {

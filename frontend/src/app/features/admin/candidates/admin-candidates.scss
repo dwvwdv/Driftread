@@ -2,83 +2,168 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: var(--sp-4);
-  align-items: end;
+  margin-top: var(--sp-3);
 }
-
 .field {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
 }
-
-.block {
-  grid-column: 1 / -1;
-}
-
-.queue {
-  margin-top: var(--sp-6);
-  background: var(--surface-raised);
+.manual-options,
+.batch-panel {
   border: var(--border-width) solid var(--border);
+  padding: var(--sp-4);
+  background: var(--surface-raised);
 }
-
-.ctitle {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
+.manual-options summary,
+.batch-panel summary {
+  cursor: pointer;
 }
-
-// The host is rendered as a code token so it reads as machine-derived fact rather
-// than as part of the remote-supplied title sitting next to it.
-.host {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 1px var(--sp-2);
-  background: var(--surface-sunken);
-  color: var(--accent);
-}
-
-.name {
-  overflow-wrap: anywhere;
-}
-
-ob-paginator {
-  display: block;
-  padding: 0 var(--sp-4) var(--sp-4);
-}
-
 .toolbar,
-.domain-header {
+.domain-header,
+.candidate-heading,
+.result-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
   flex-wrap: wrap;
 }
-
 .toolbar {
-  margin-top: var(--sp-6);
+  margin: var(--sp-5) 0 var(--sp-3);
 }
 .status-tabs,
-.bulk-actions {
+.actions,
+.reason-codes {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
 }
+.actions {
+  margin-top: var(--sp-3);
+}
+p {
+  margin: var(--sp-2) 0;
+}
 .queue {
   margin-top: var(--sp-3);
 }
-.domain-group + .domain-group {
-  border-top: var(--border-width) solid var(--border);
+.domain-group {
+  border: var(--border-width) solid var(--border);
+  margin-bottom: var(--sp-4);
 }
 .domain-header {
   padding: var(--sp-3) var(--sp-4);
   background: var(--surface-sunken);
   font-family: var(--font-mono);
 }
-.candidate-check {
-  flex: 0 0 auto;
+.candidate-card {
+  background: var(--surface-raised);
+  padding: var(--sp-5);
+  border-top: var(--border-width) solid var(--border);
+}
+.name {
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+.host,
+.source-url {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.host,
+.secondary {
+  color: var(--text-dim);
+}
+.ai-result {
+  border: var(--border-width) solid var(--border);
+  border-left: 6px solid var(--accent);
+  padding: var(--sp-4);
+  margin: var(--sp-4) 0;
+  background: var(--surface-sunken);
+}
+.ai-result.accept {
+  border-left-color: var(--success-ink);
+}
+.ai-result.reject {
+  border-left-color: var(--danger-ink);
+}
+.ai-result.abstain {
+  border-left-color: var(--warning-ink);
+}
+.ai-result h3 {
+  font-size: var(--text-xl);
+  margin: var(--sp-3) 0;
+}
+.engine {
+  color: var(--accent);
+}
+.historical {
+  border-left-style: dashed;
+}
+.metrics {
+  display: flex;
+  gap: var(--sp-5);
+  flex-wrap: wrap;
+  margin: var(--sp-3) 0;
+}
+.metrics dt {
+  color: var(--text-dim);
+  font-size: var(--text-xs);
+}
+.metrics dd {
+  margin: var(--sp-1) 0 0;
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+.rationale {
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+.reason-codes {
+  margin-top: var(--sp-3);
+}
+.reason-codes .ob-chip {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.problem {
+  color: var(--warning-ink);
+}
+.human-result,
+.manual-actions,
+.disagreement {
+  border: var(--border-width) solid var(--border);
+  padding: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.human-result {
+  border-left: 4px solid var(--accent);
+}
+.decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5);
+}
+.decision-actions p {
+  max-width: 28rem;
+  font-size: var(--text-sm);
+}
+.manual-actions {
+  border-style: dashed;
+}
+ob-paginator {
+  display: block;
+  padding: 0 0 var(--sp-4);
+}
+@media (max-width: 600px) {
+  .candidate-card {
+    padding: var(--sp-3);
+  }
+  .metrics,
+  .decision-actions {
+    gap: var(--sp-3);
+  }
 }

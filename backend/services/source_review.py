@@ -43,11 +43,14 @@ def _rpc(db, name: str, params: dict) -> dict | None:
         data = data[0] if data else None
     if isinstance(data, dict) and data.get('error'):
         code = data['error']
-        raise ReviewError(404 if code == 'not_found' else 503 if code == 'disabled' else 409,
+        status = {'not_found': 404, 'disabled': 503, 'invalid_judgment': 422}.get(code, 409)
+        raise ReviewError(status,
                           {'not_found': 'Review or candidate not found', 'disabled': 'Source review is disabled',
                            'manual_decision': 'A manual decision already controls this candidate',
                            'lease': 'Review lease or snapshot is no longer valid',
-                           'already_submitted': 'A different result was already submitted'}.get(code, 'Review conflict'))
+                           'already_submitted': 'A different result was already submitted',
+                           'invalid_judgment': 'Choose a final decision different from the AI decision',
+                           'policy_deferred': 'The AI recommendation did not pass policy gates; choose a different decision or retry'}.get(code, 'Review conflict'))
     return data
 
 
@@ -190,6 +193,23 @@ def resolve_review(db, review_id, decision: Literal['accept', 'reject', 'defer']
     if not row:
         raise ReviewError(409, 'Review could not be resolved')
     return _summary(row, get_candidate(db, row['candidate_id']))
+
+
+def judge_review(db, review_id, assessment: Literal['agree', 'disagree'],
+                 decision: Literal['accept', 'reject', 'defer'] | None = None) -> dict:
+    if (assessment not in {'agree', 'disagree'} or decision not in {None, 'accept', 'reject', 'defer'}
+            or (assessment == 'agree' and decision is not None)):
+        raise ReviewError(422, 'Invalid judgment')
+    row = _rpc(db, 'judge_source_review', {'p_review_id': str(review_id),
+               'p_assessment': assessment, 'p_decision': decision})
+    if not row:
+        raise ReviewError(409, 'Review could not be judged')
+    return _summary(row, get_candidate(db, row['candidate_id']))
+
+
+def judge_reviews(db, review_ids, assessment, decision=None) -> dict:
+    return _batch(dict.fromkeys(map(str, review_ids)),
+                  lambda rid: judge_review(db, rid, assessment, decision), id_key='review_id')
 
 
 def _batch(items, operation, *, id_key) -> dict:
