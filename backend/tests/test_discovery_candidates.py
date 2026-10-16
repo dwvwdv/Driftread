@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from services.discovery_candidates import (
     get_candidate,
     hold_candidate,
     list_candidates,
+    list_review_candidates,
     promote_approved,
     promote_candidate,
     record_candidates,
@@ -437,6 +439,45 @@ def test_list_candidates_paginates():
     items, total = list_candidates(db, page=2, page_size=2)
     assert [i["feed_url"] for i in items] == ["https://h2/f", "https://h3/f"]
     assert total == 5
+
+
+class ReviewListingDB:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def rpc(self, name, params):
+        assert name == 'list_review_candidates'
+        self.calls.append(params)
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.response)
+
+
+def test_awaiting_human_candidates_use_server_filter_and_exact_total():
+    row = _candidate_row()
+    db = ReviewListingDB({'items': [row], 'total': 7, 'limit': 2, 'offset': 2})
+    items, total = list_candidates(db, status='awaiting_human', min_referrers=3, page=2, page_size=2)
+    assert items == [row] and total == 7
+    assert db.calls == [{'p_status': 'awaiting_human', 'p_limit': 2, 'p_offset': 2,
+                         'p_min_referrers': 3}]
+
+
+def test_review_candidate_listing_keeps_total_on_an_empty_page():
+    page = {'items': [], 'total': 7, 'limit': 20, 'offset': 100}
+    db = ReviewListingDB([page])
+    assert list_review_candidates(db, offset=100) == page
+
+
+@pytest.mark.parametrize('options', [
+    {'status': 'unknown'}, {'limit': 0}, {'limit': 201}, {'offset': -1}, {'min_referrers': -1},
+])
+def test_review_candidate_listing_rejects_invalid_filters_before_database(options):
+    db = ReviewListingDB(None)
+    with pytest.raises(ValueError):
+        list_review_candidates(db, **options)
+    assert db.calls == []
 
 
 def test_stats_counts_every_status():

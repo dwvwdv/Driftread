@@ -83,11 +83,18 @@ def latest_reviews(db, candidate_ids: list[str]) -> list[dict]:
             for candidate in candidates if candidate.get('source_reviews')]
 
 
-def request_review(db, candidate_id, *, retry=False) -> dict:
+def request_review(db, candidate_id, *, retry=False, expected_review_id=None) -> dict:
+    if retry and expected_review_id is None:
+        raise ReviewError(422, 'Retry requires the selected review ID')
     candidate = get_candidate(db, str(candidate_id))
     if candidate and is_comment_feed(candidate['feed_url']):
         raise ReviewError(409, 'Comment feeds are excluded from article discovery')
-    row = _rpc(db, 'request_source_review', {'p_candidate_id': str(candidate_id), 'p_retry': retry})
+    if retry:
+        row = _rpc(db, 'retry_source_review', {
+            'p_candidate_id': str(candidate_id), 'p_expected_review_id': str(expected_review_id),
+        })
+    else:
+        row = _rpc(db, 'request_source_review', {'p_candidate_id': str(candidate_id), 'p_retry': False})
     if not row:
         raise ReviewError(409, 'Review could not be requested')
     return _summary(row, candidate)
@@ -110,7 +117,10 @@ def claim_review(db, reviewer_id='external_agent') -> dict | None:
     if reviewer_id not in {'external_agent', 'jev'}:
         raise ReviewError(403, 'Unknown review engine')
     row = _rpc(db, 'claim_source_review', {'p_reviewer_id': reviewer_id})
-    return _packet(row, get_candidate(db, row['candidate_id']), expose_lease=True) if row else None
+    # The atomic claim already checks candidate state. Do not perform another
+    # fallible database read after committing a lease: the caller must receive
+    # its token even if a subsequent connection would fail.
+    return _packet(row, None, expose_lease=True) if row else None
 
 
 def get_review_packet(db, review_id, *, reviewer_id=None) -> dict:
@@ -180,6 +190,69 @@ def resolve_review(db, review_id, decision: Literal['accept', 'reject', 'defer']
     if not row:
         raise ReviewError(409, 'Review could not be resolved')
     return _summary(row, get_candidate(db, row['candidate_id']))
+
+
+def _batch(items, operation, *, id_key) -> dict:
+    """Independent transactions, ordered results; never hide partial success.
+
+    Retry only failed items. Claim batches deliberately stop on an unexpected
+    database failure because further claims would consume additional leases.
+    """
+    results = []
+    for item in items:
+        identity = str(item.review_id) if hasattr(item, 'review_id') else str(item)
+        try:
+            review = operation(item)
+            results.append({id_key: identity, 'ok': True, 'review': review})
+        except ReviewError as exc:
+            results.append({id_key: identity, 'ok': False,
+                            'status_code': exc.status_code, 'detail': exc.detail})
+        except Exception:
+            logger.error('Source review batch item failed')
+            results.append({id_key: identity, 'ok': False, 'status_code': 503,
+                            'detail': 'Source review operation failed'})
+    succeeded = sum(item['ok'] for item in results)
+    return {'items': results, 'succeeded': succeeded, 'failed': len(results) - succeeded}
+
+
+def request_reviews(db, candidate_ids, *, retry=False, expected_review_ids=None) -> dict:
+    # Deduplicate before mutating, retaining the caller's first-occurrence order.
+    candidates = dict.fromkeys(map(str, candidate_ids))
+    selected_reviews = {str(cid): str(rid) for cid, rid in (expected_review_ids or {}).items()}
+    if retry and any(cid not in selected_reviews for cid in candidates):
+        raise ReviewError(422, 'Retry requires an expected review ID for every candidate')
+    def request(cid):
+        if retry:
+            return request_review(db, cid, retry=True, expected_review_id=selected_reviews[cid])
+        return request_review(db, cid, retry=False)
+    return _batch(candidates, request, id_key='candidate_id')
+
+
+def resolve_reviews(db, review_ids, decision) -> dict:
+    return _batch(dict.fromkeys(map(str, review_ids)),
+                  lambda rid: resolve_review(db, rid, decision), id_key='review_id')
+
+
+def submit_reviews(db, submissions, *, reviewer_id='external_agent') -> dict:
+    return _batch(submissions,
+                  lambda item: submit_review(db, str(item.review_id), item.submission,
+                                             reviewer_id=reviewer_id), id_key='review_id')
+
+
+def claim_reviews(db, limit=3, *, reviewer_id='external_agent') -> dict:
+    reviews = []
+    error = None
+    for _ in range(limit):
+        try:
+            packet = claim_review(db, reviewer_id=reviewer_id)
+        except Exception:
+            logger.error('Source review batch claim failed')
+            error = {'status_code': 503, 'detail': 'Claim stopped; process returned leases before retrying'}
+            break
+        if packet is None:
+            break
+        reviews.append(packet)
+    return {'reviews': reviews, 'claimed': len(reviews), 'error': error}
 
 
 def _crawl_database_allowed(db, candidate: dict, host: str, review: dict) -> bool:

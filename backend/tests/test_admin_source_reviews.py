@@ -47,7 +47,7 @@ def test_rest_request_packet_retry_and_human_resolution(review_client):
         assert client.get(f"/api/admin/source-reviews/{REVIEW_ID}", headers=headers).status_code == 200
         read.assert_called_with(db, REVIEW_ID)
         assert client.post(f"/api/admin/source-reviews/{REVIEW_ID}/retry", headers=headers).status_code == 200
-        enqueue.assert_called_with(db, CANDIDATE_ID, retry=True)
+        enqueue.assert_called_with(db, CANDIDATE_ID, retry=True, expected_review_id=REVIEW_ID)
         result = client.post(f"/api/admin/source-reviews/{REVIEW_ID}/resolve", headers=headers, json={"decision": "accept"})
         assert result.status_code == 200 and result.json()["status"] == "accepted"
         resolve.assert_called_once_with(db, REVIEW_ID, "accept")
@@ -126,3 +126,83 @@ def test_latest_reviews_accepts_fifty_candidates_and_maps_business_errors(review
                              json={"candidate_ids": [CANDIDATE_ID]})
         assert result.status_code == 409 and result.json()["detail"] == "Review conflict"
         read.assert_called_once_with(db, [CANDIDATE_ID])
+
+
+@pytest.mark.parametrize('retry', [False, True])
+def test_batch_request_is_admin_only_and_supports_explicit_paid_retry(review_client, retry):
+    client, db = review_client
+    payload = {'candidate_ids': [CANDIDATE_ID], 'retry': retry}
+    expected = {CANDIDATE_ID: REVIEW_ID} if retry else {}
+    if retry:
+        payload['expected_review_ids'] = expected
+    outcome = {'items': [{'candidate_id': CANDIDATE_ID, 'ok': False, 'status_code': 409,
+                          'detail': 'Manual decision'}], 'succeeded': 0, 'failed': 1}
+    with patch.object(reviews.source_review, 'request_reviews', return_value=outcome) as enqueue:
+        assert client.post('/api/admin/source-reviews/batch/request',
+                           headers={'X-API-Key': 'review-machine-key'}, json=payload).status_code == 403
+        enqueue.assert_not_called()
+        response = client.post('/api/admin/source-reviews/batch/request',
+                               headers={'X-API-Key': 'test-admin-key'}, json=payload)
+    assert response.status_code == 200 and response.json() == outcome
+    assert enqueue.call_args.args[0] is db
+    assert [str(cid) for cid in enqueue.call_args.args[1]] == [CANDIDATE_ID]
+    assert enqueue.call_args.kwargs == {'retry': retry, 'expected_review_ids': expected}
+
+
+@pytest.mark.parametrize('expected', [None, {}, {'invalid': REVIEW_ID}, {CANDIDATE_ID: 'invalid'},
+                                     {'10000000-0000-4000-8000-000000000003': REVIEW_ID}])
+def test_batch_retry_requires_a_selected_review_for_each_candidate(review_client, expected):
+    client, _ = review_client
+    body = {'candidate_ids': [CANDIDATE_ID], 'retry': True}
+    if expected is not None:
+        body['expected_review_ids'] = expected
+    with patch.object(reviews.source_review, 'request_reviews') as request:
+        result = client.post('/api/admin/source-reviews/batch/request',
+                             headers={'X-API-Key': 'test-admin-key'}, json=body)
+    assert result.status_code == 422
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize('decision', ['accept', 'reject', 'defer'])
+def test_batch_resolution_forwards_admin_decision(review_client, decision):
+    client, db = review_client
+    outcome = {'items': [], 'succeeded': 1, 'failed': 0}
+    with patch.object(reviews.source_review, 'resolve_reviews', return_value=outcome) as resolve:
+        response = client.post('/api/admin/source-reviews/batch/resolve',
+                               headers={'X-API-Key': 'test-admin-key'},
+                               json={'review_ids': [REVIEW_ID], 'decision': decision})
+    assert response.status_code == 200 and response.json() == outcome
+    assert resolve.call_args.args[0] is db
+    assert [str(rid) for rid in resolve.call_args.args[1]] == [REVIEW_ID]
+    assert resolve.call_args.args[2] == decision
+
+
+@pytest.mark.parametrize('operation,id_key,extra', [
+    ('request', 'candidate_ids', {}), ('resolve', 'review_ids', {'decision': 'accept'}),
+])
+@pytest.mark.parametrize('ids', [[], [CANDIDATE_ID] * 51, ['invalid']])
+def test_rest_batch_rejects_invalid_sizes_and_ids_before_mutation(review_client, operation, id_key, extra, ids):
+    client, _ = review_client
+    with patch.object(reviews.source_review, 'request_reviews') as request, \
+            patch.object(reviews.source_review, 'resolve_reviews') as resolve:
+        response = client.post('/api/admin/source-reviews/batch/' + operation,
+                               headers={'X-API-Key': 'test-admin-key'}, json={id_key: ids, **extra})
+    assert response.status_code == 422
+    request.assert_not_called()
+    resolve.assert_not_called()
+
+
+@pytest.mark.parametrize('operation,id_key,extra,service_name', [
+    ('request', 'candidate_ids', {}, 'request_reviews'),
+    ('resolve', 'review_ids', {'decision': 'defer'}, 'resolve_reviews'),
+])
+def test_rest_batches_accept_fifty_and_reject_unknown_overrides(review_client, operation, id_key, extra, service_name):
+    client, _ = review_client
+    with patch.object(reviews.source_review, service_name, return_value={'items': []}) as mutate:
+        payload = {id_key: [CANDIDATE_ID] * 50, **extra}
+        assert client.post('/api/admin/source-reviews/batch/' + operation,
+                           headers={'X-API-Key': 'test-admin-key'}, json=payload).status_code == 200
+        assert client.post('/api/admin/source-reviews/batch/' + operation,
+                           headers={'X-API-Key': 'test-admin-key'},
+                           json={**payload, 'manual_override': None}).status_code == 422
+        assert mutate.call_count == 1

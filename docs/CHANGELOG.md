@@ -1171,3 +1171,23 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - OAuth 目標測試 53 passed／36 skipped，獨立 review、文件檢查與 `git diff --check` 通過。沿用 repo 外 bounded selector runner 處理沙箱執行緒喚醒限制，不修改產品 async 行為。
 - 未修改 frontend，不需要新增部署設定；正式環境需更新 API image 後，從 ChatGPT 重新開始授權。尚未代替使用者驗證正式瀏覽器／Telegram 流程。
 - Review 事件 hook 工具不可用，依使用者與 AGENTS.md 的指示建立 PR #103 每小時檢查，直到合併或關閉；無新進展時不通知。
+
+## 階段四十八：批次來源評審、待複審與可調連線有效期限（PR #104，2026-10-16）
+
+首次 ChatGPT MCP 評審可用，但「查看任務」缺少唯讀入口、領取與提交只能逐筆；候選頁也無法集中處理等待人工覆核的結果。新增完整批次流程與待複審視圖，並依使用者補充在來源發現時提前排除留言 feed，減少無效抓取與評審成本。
+
+- 管理 MCP 從五個擴為九個工具：唯讀候選／最新結果清單、批次申請、批次領取與批次提交。清單最多 50 筆，批次申請／提交 1–50 筆，領取預設 3、最多 5 筆；各筆保留獨立租約、快照與原有冪等政策。
+- 新管理批次 REST 每批驗證一次；回報每筆成功或安全錯誤，部分失敗不回滾已成功項目。前端提供當頁全選、AI 申請／明確重試、人工批次覆核，保留失敗項目選取並阻擋舊回應覆蓋。既有人工作業核准／保留／拒絕限制同時兩個請求，避免再次耗盡管理驗證連線。
+- 「待複審」依各候選最新 `awaiting_human` 評審在 SQL 端先過濾，再計數與分頁。候選仍用既有 status，不搬動歷史資料；覆核在候選鎖內驗證最新任務、結果、版本及狀態，防止過時選取收錄舊結果。
+- alternate、直接 URL 與 redirect 發現路徑排除 `comments/feed/` 等明確留言端點；不占候選數，也不把政策排除當暫時錯誤重試。保留既有候選寫入／評審申請防線，不更動已收錄來源的泛用抓取政策。
+- 獨立 subagent 實測正式政策與錯誤，未領取或修改正式任務。依其發現補上穩定 MCP 業務錯誤碼、工具操作規則、移除領取租約後額外候選 GET，並讓 ready 清單包含尚可重領的過期租約且排除舊政策／版本／耗盡任務。
+- MCP 連線頁新增逐條編輯到期時間與永久有效。新 grant 仍預設 30 天；只有明確 null 才永久，access 仍最多 15 分鐘。修改時同步未使用 refresh 的期限，避免延長 grant 後連線仍被舊 token 期限中斷。永久授權仍可撤銷，並保留 owner、原 Supabase session、登出與 replay 檢查；過期／撤銷不復活。新增 `20261016050000_review_oauth_expiry.sql`，調整 grant／refresh nullable，保留 access 必須有期限的約束與既有私有表權限。
+- Review 發現批次重試只傳候選 ID，可能取消 worker 已建立的新任務。新增 `20261016050100_review_retry_fencing.sql`，單筆與批次明確重試依選定 review ID，在政策→候選→任務鎖內驗證最新終態，衝突回 409，不取消新租約或多建付費重試 key。
+- 新 migration `20261016033310_review_candidate_listing.sql` 加入索引與 service_role-only RPC／較嚴格覆核檢查；不新增環境變數、不變更權限範圍、不強制 MCP 付費重試。永久授權的回滾需先處理 null 歷史或停用 OAuth，詳見 RUNBOOK。既有有效分類／標籤詞彙查詢留為 P3 後續改善，未知建議仍依原政策捨棄。
+
+### 驗證與部署界限
+
+- 本機 PostgreSQL 17 跑完整 backend：1413 passed、0 skipped；frontend 38 files／439 tests 通過，production build 通過（既有 initial bundle warning：511.82 kB／500 kB）。文件檢查與 git diff --check 通過。測試需開啟本機 socket 執行權限；未修改產品 async 行為。
+- 正式 MCP 舊版唯讀測試成功；新工具以官方 SDK、本機隔離 PostgreSQL 17 與單元測試驗證。真實 ChatGPT／瀏覽器、正式 Supabase／PostgREST、Telegram 與正式部署尚未驗收。
+- 先更新 API 套用 migration，healthy 後更新 frontend／worker，再刷新 ChatGPT 工具列表；不直接部署或合併 master。
+- GitHub review 事件 hook 工具不可用；依 AGENTS.md 既有 Codex 規範建立 PR #104 每小時追蹤，合併或關閉後停止，無新進展不通知。

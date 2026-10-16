@@ -16,7 +16,7 @@ import logging
 import re
 import unicodedata
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 from services.discovery_config import auto_promote_min_referrers
@@ -199,6 +199,12 @@ def list_candidates(
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[dict], int]:
+    if status == "awaiting_human":
+        result = list_review_candidates(
+            db, status="awaiting_human", limit=page_size,
+            offset=(page - 1) * page_size, min_referrers=min_referrers,
+        )
+        return result["items"], result["total"]
     query = db.table("discovery_candidates").select("*", count="exact")
     if status:
         query = query.eq("status", status)
@@ -212,6 +218,35 @@ def list_candidates(
         .execute()
     )
     return (list(result.data or []), getattr(result, "count", None) or 0)
+
+
+def list_review_candidates(
+    db: "Client",
+    status: Literal["pending", "ready", "awaiting_human"] = "pending",
+    limit: int = 20,
+    offset: int = 0,
+    min_referrers: int = 0,
+) -> dict:
+    """Read candidates with their latest review, filtering before pagination.
+
+    Pending includes candidates without a review. Ready only includes current,
+    claimable external-agent packets. The RPC returns a bounded summary without
+    snapshots, policies or lease credentials and an exact pre-pagination total.
+    """
+    if status not in {"pending", "ready", "awaiting_human"}:
+        raise ValueError("Unknown review candidate status")
+    if not 1 <= limit <= 200 or offset < 0 or min_referrers < 0:
+        raise ValueError("Invalid review candidate pagination")
+    result = db.rpc("list_review_candidates", {
+        "p_status": status, "p_limit": limit, "p_offset": offset,
+        "p_min_referrers": min_referrers,
+    }).execute()
+    data = result.data
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        raise RuntimeError("Review candidate query returned no result")
+    return data
 
 
 def get_candidate(db: "Client", candidate_id: str) -> dict | None:

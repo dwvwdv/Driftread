@@ -18,7 +18,7 @@ export interface ReviewOAuthGrant {
   client_name: string;
   scope: string;
   created_at: string;
-  expires_at: string;
+  expires_at: string | null;
   last_used_at?: string | null;
   revoked_at?: string | null;
 }
@@ -98,6 +98,16 @@ export class ReviewOAuthService {
   grants(): Observable<ReviewOAuthGrant[]> {
     return this.request((headers) =>
       this.http.get<ReviewOAuthGrant[]>(`${this.base}/grants`, { headers }),
+    );
+  }
+
+  updateExpiry(id: string, expires_at: string | null): Observable<ReviewOAuthGrant> {
+    return this.request((headers) =>
+      this.http.patch<ReviewOAuthGrant>(
+        `${this.base}/grants/${encodeURIComponent(id)}`,
+        { expires_at },
+        { headers },
+      ),
     );
   }
 

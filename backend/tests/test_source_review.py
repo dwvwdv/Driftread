@@ -1,12 +1,15 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from uuid import uuid4
+from unittest.mock import call, patch
 
 import pytest
 from pydantic import ValidationError
 
 from services.review_models import ReviewSubmission
 from services.source_review import ReviewError, _fetch_snapshot, _rpc, get_review_packet, latest_reviews, submit_review
+from services import source_review as service
+from services.review_models import BatchReviewSubmission
 
 
 def body(**changes):
@@ -118,6 +121,114 @@ def test_model_cannot_assign_provider_identity_or_use_unknown_reviewer():
     with pytest.raises(ReviewError) as caught:
         submit_review(db, str(uuid4()), body(), reviewer_id='admin')
     assert caught.value.status_code == 403 and not db.calls
+
+
+@pytest.mark.parametrize('retry', [False, True])
+def test_batch_requests_deduplicate_in_order_and_keep_partial_failures(retry, caplog):
+    ids = [str(uuid4()) for _ in range(4)]
+    expected = {cid: str(uuid4()) for cid in ids}
+    db = object()
+    with patch.object(service, 'request_review', side_effect=[
+        {'id': 'first'}, ReviewError(409, 'A manual decision already controls this candidate'),
+        RuntimeError('provider?key=SECRET'), {'id': 'last'},
+    ]) as request:
+        result = service.request_reviews(db, [ids[0], ids[1], ids[0], ids[2], ids[3]], retry=retry,
+                                         expected_review_ids=expected)
+    assert request.call_args_list == [call(db, cid, retry=True, expected_review_id=expected[cid])
+                                     if retry else call(db, cid, retry=False) for cid in ids]
+    assert [item['candidate_id'] for item in result['items']] == ids
+    assert [item['ok'] for item in result['items']] == [True, False, False, True]
+    assert result['succeeded'] == result['failed'] == 2
+    assert result['items'][1]['status_code'] == 409
+    assert result['items'][2]['status_code'] == 503
+    assert 'SECRET' not in str(result) + caplog.text
+
+
+def test_explicit_retry_uses_the_selected_review_in_the_fenced_rpc():
+    cid, rid = str(uuid4()), str(uuid4())
+    db = RPCDB({'id': str(uuid4()), 'candidate_id': cid, 'status': 'requested'})
+    with patch.object(service, 'get_candidate', return_value={'feed_url': 'https://publisher.example/feed'}):
+        result = service.request_review(db, cid, retry=True, expected_review_id=rid)
+    assert result['status'] == 'requested'
+    assert db.calls == [('retry_source_review', {'p_candidate_id': cid, 'p_expected_review_id': rid})]
+
+
+def test_retry_requires_review_identity_before_any_database_mutation():
+    db = RPCDB(None)
+    with patch.object(service, 'get_candidate') as read:
+        with pytest.raises(ReviewError) as caught:
+            service.request_review(db, str(uuid4()), retry=True)
+    assert caught.value.status_code == 422
+    assert db.calls == []
+    read.assert_not_called()
+    with patch.object(service, 'request_review') as request:
+        with pytest.raises(ReviewError) as caught:
+            service.request_reviews(db, [str(uuid4()), str(uuid4())], retry=True)
+    assert caught.value.status_code == 422
+    request.assert_not_called()
+
+
+def test_stale_retry_is_a_partial_conflict_without_replacing_another_review():
+    ids = [str(uuid4()), str(uuid4())]
+    expected = {cid: str(uuid4()) for cid in ids}
+    with patch.object(service, 'request_review', side_effect=[ReviewError(409, 'Review conflict'),
+                                                           {'status': 'requested'}]):
+        result = service.request_reviews(object(), ids, retry=True, expected_review_ids=expected)
+    assert result['succeeded'] == result['failed'] == 1
+    assert result['items'][0]['status_code'] == 409
+    assert result['items'][1]['ok'] is True
+
+
+def test_batch_resolutions_deduplicate_and_preserve_decision():
+    ids = [str(uuid4()) for _ in range(2)]
+    db = object()
+    with patch.object(service, 'resolve_review', return_value={'status': 'accepted'}) as resolve:
+        result = service.resolve_reviews(db, [ids[0], ids[0], ids[1]], 'accept')
+    assert resolve.call_args_list == [call(db, rid, 'accept') for rid in ids]
+    assert result['succeeded'] == 2 and result['failed'] == 0
+
+
+def test_batch_submissions_keep_each_token_and_reviewer_and_report_partial_failure():
+    items = [BatchReviewSubmission(review_id=uuid4(), submission=body()) for _ in range(3)]
+    db = object()
+    with patch.object(service, 'submit_review', side_effect=[{'status': 'accepted'},
+            ReviewError(409, 'Review lease or snapshot is no longer valid'), {'status': 'awaiting_human'}]) as submit:
+        result = service.submit_reviews(db, items, reviewer_id='external_agent')
+    assert submit.call_args_list == [call(db, str(item.review_id), item.submission,
+                                        reviewer_id='external_agent') for item in items]
+    assert [row['review_id'] for row in result['items']] == [str(item.review_id) for item in items]
+    assert result['succeeded'] == 2 and result['failed'] == 1
+    assert result['items'][1]['status_code'] == 409
+
+
+@pytest.mark.parametrize('outcomes,expected,error', [
+    ([{'lease_token': 'first'}, {'lease_token': 'second'}, None], ['first', 'second'], False),
+    ([{'lease_token': 'first'}, RuntimeError('SECRET'), {'lease_token': 'never'}], ['first'], True),
+    ([None], [], False),
+])
+def test_batch_claims_keep_returned_leases_and_stop_on_empty_or_error(outcomes, expected, error, caplog):
+    db = object()
+    with patch.object(service, 'claim_review', side_effect=outcomes) as claim:
+        result = service.claim_reviews(db, 5, reviewer_id='external_agent')
+    assert [item['lease_token'] for item in result['reviews']] == expected
+    assert result['claimed'] == len(expected)
+    assert bool(result['error']) is error
+    assert claim.call_count == len(expected) + 1
+    assert all(c == call(db, reviewer_id='external_agent') for c in claim.call_args_list)
+    assert 'SECRET' not in str(result) + caplog.text
+
+
+def test_successful_claim_returns_lease_without_a_second_candidate_read():
+    row = {'id': str(uuid4()), 'candidate_id': str(uuid4()), 'policy': {},
+           'snapshot': {'source': {'name': 'Example'}, 'samples': []},
+           'lease_token': str(uuid4()), 'lease_expires_at': '2099-01-01T00:00:00Z'}
+    db = RPCDB(row)
+    with patch.object(service, 'get_candidate', side_effect=RuntimeError('database unavailable')) as read:
+        result = service.claim_review(db)
+    read.assert_not_called()
+    assert result['lease_token'] == row['lease_token']
+    assert result['lease_expires_at'] == row['lease_expires_at']
+    assert db.calls == [('claim_source_review', {'p_reviewer_id': 'external_agent'})]
 
 
 @pytest.mark.asyncio

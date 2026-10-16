@@ -2,7 +2,7 @@
   <button
     type="button"
     class="ob-btn ob-btn--ghost"
-    [disabled]="loading() || revoking() !== null"
+    [disabled]="loading() || writing()"
     (click)="load()"
   >
     重新整理
@@ -28,17 +28,88 @@
         <dt>授權時間</dt>
         <dd>{{ grant.created_at | date: 'yyyy/MM/dd HH:mm:ss' }}</dd>
         <dt>有效期限</dt>
-        <dd>{{ grant.expires_at | date: 'yyyy/MM/dd HH:mm:ss' }}</dd>
+        <dd>
+          {{
+            grant.expires_at === null
+              ? '永久有效'
+              : (grant.expires_at | date: 'yyyy/MM/dd HH:mm:ss')
+          }}
+        </dd>
         <dt>最後使用</dt>
         <dd>
           {{ grant.last_used_at ? (grant.last_used_at | date: 'yyyy/MM/dd HH:mm:ss') : '尚未使用' }}
         </dd>
       </dl>
+      @if (editing() === grant.id) {
+        <form class="expiry-editor" (ngSubmit)="saveExpiry(grant.id)">
+          <label class="expiry-field">
+            <span class="ob-label">期限方式</span>
+            <select
+              class="ob-select"
+              name="expiryMode"
+              [(ngModel)]="permanent"
+              [disabled]="writing()"
+            >
+              <option [ngValue]="false">自訂日期時間</option>
+              <option [ngValue]="true">永久有效</option>
+            </select>
+          </label>
+          @if (!permanent) {
+            <label class="expiry-field">
+              <span class="ob-label">到期日期與時間</span>
+              <input
+                class="ob-input"
+                type="datetime-local"
+                name="expiry"
+                step="1"
+                [(ngModel)]="expiry"
+                [disabled]="writing()"
+                [attr.aria-invalid]="draftError() ? 'true' : null"
+                [attr.aria-describedby]="'expiry-hint-' + grant.id"
+              />
+            </label>
+          }
+          <p class="hint" [id]="'expiry-hint-' + grant.id">
+            使用本機時區（{{
+              timeZone
+            }}）輸入。永久有效只取消固定到期日，仍可隨時撤銷；後台登出或原授權登入失效後也會停用。
+          </p>
+          @if (draftError()) {
+            <p role="alert">{{ draftError() }}</p>
+          }
+          <div class="expiry-actions">
+            <button
+              type="submit"
+              class="ob-btn ob-btn--primary"
+              [disabled]="writing() || inactive(grant)"
+            >
+              {{ saving() === grant.id ? '儲存中…' : '儲存有效期限' }}
+            </button>
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost"
+              [disabled]="writing()"
+              (click)="cancelEdit()"
+            >
+              取消
+            </button>
+          </div>
+        </form>
+      }
       <div cardActions>
         <button
           type="button"
+          class="ob-btn ob-btn--ghost"
+          [disabled]="writing() || inactive(grant) || editing() === grant.id"
+          [attr.aria-label]="'編輯 ' + grant.client_name + ' 的有效期限'"
+          (click)="edit(grant)"
+        >
+          編輯有效期限
+        </button>
+        <button
+          type="button"
           class="ob-btn ob-btn--danger"
-          [disabled]="revoking() !== null || inactive(grant)"
+          [disabled]="writing() || inactive(grant)"
           [attr.aria-label]="'撤銷 ' + grant.client_name + ' 的連線'"
           (click)="revoke(grant.id)"
         >

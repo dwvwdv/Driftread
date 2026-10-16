@@ -5,6 +5,7 @@ import { Observable, catchError, throwError } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
   SourceReview,
+  SourceReviewBatchResult,
   GlobalSetting,
   GlobalSettingsResponse,
   ArticleStorageStats,
@@ -137,7 +138,7 @@ export class AdminService {
   listCandidates(
     page = 1,
     pageSize = 50,
-    status: 'pending' | 'held' = 'pending',
+    status: 'pending' | 'held' | 'awaiting_human' = 'pending',
   ): Observable<PaginatedFeedCandidates> {
     return this.get<PaginatedFeedCandidates>(
       '/admin/discovery/candidates',
@@ -282,6 +283,33 @@ export class AdminService {
       `/admin/source-reviews/${reviewId}/resolve`,
       { decision },
       '人工覆核失敗',
+    );
+  }
+
+  batchRequestSourceReviews(
+    candidateIds: string[],
+    retry = false,
+    expectedReviewIds?: Record<string, string>,
+  ): Observable<SourceReviewBatchResult> {
+    return this.post<SourceReviewBatchResult>(
+      '/admin/source-reviews/batch/request',
+      {
+        candidate_ids: candidateIds,
+        retry,
+        ...(retry ? { expected_review_ids: expectedReviewIds } : {}),
+      },
+      retry ? '批次重試來源評審失敗' : '批次請求來源評審失敗',
+    );
+  }
+
+  batchResolveSourceReviews(
+    reviewIds: string[],
+    decision: 'accept' | 'reject' | 'defer',
+  ): Observable<SourceReviewBatchResult> {
+    return this.post<SourceReviewBatchResult>(
+      '/admin/source-reviews/batch/resolve',
+      { review_ids: reviewIds, decision },
+      '批次人工覆核失敗',
     );
   }
 

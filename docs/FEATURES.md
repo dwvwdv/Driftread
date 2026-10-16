@@ -223,7 +223,7 @@ robots.txt 依 RFC 9309：2xx 照解析、4xx 全允許（多數站根本沒有�
 **3. 候選審核（candidates）**——`services/discovery_candidates.py`
 
 探測到的 feed URL 進 `discovery_candidates`，帶來源 host 與「幾個不同的既有源連到這裡」。
-`status` 為 `pending` / `held` / `approved` / `rejected` / `imported`。來源評審任務狀態另存在 `source_reviews`，不混入候選 status。
+`status` 為 `pending` / `held` / `approved` / `rejected` / `imported`。來源評審任務狀態另存在 `source_reviews`，不混入候選 status。候選頁提供「待審核／待複審／已保留」；待複審以最新 `awaiting_human` 評審在伺服器端篩選與分頁，支援當頁批次申請、重試及覆核。來源發現於抓取前排除明確留言 feed（含 redirect），避免無效候選與評審成本。
 
 **被拒的候選永不重新提議** —— 而它「本來一定會」回來，因為同一批文章每輪都還連著同一個
 feed。所以寫入路徑從不 upsert 覆蓋 `status`，而是先查再插，既有列的更新一律加上
@@ -355,7 +355,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/discovery/targets` | 種子網址進待探測佇列。`urls` 1–500 筆、每筆上限 2048 字。單筆失敗進 `rejected` 陣列而不讓整批失敗；已 `rejected` 的 host **不會**被重新排入 |
 | GET | `/admin/discovery/targets` | 分頁列出待探測佇列，可用 `status` 過濾，依證據數排序。`page_size` 上限 200 |
 | PATCH | `/admin/discovery/targets/{id}/block` | 永久封鎖該 host（設為 `rejected`）|
-| GET | `/admin/discovery/candidates` | 候選審核佇列。`status` 預設 `pending`、`min_referrers` 可過濾證據數 |
+| GET | `/admin/discovery/candidates` | 候選審核佇列。`status` 預設 `pending`，另支援 `awaiting_human` 最新待複審視圖；`min_referrers` 可過濾證據數 |
 | POST | `/admin/discovery/candidates/{id}/approve` | 核准入庫，可帶 `category` / `tags`。只寫 metadata，文章交給排程器。已被拒的候選回 **409** |
 | POST | `/admin/discovery/candidates/{id}/reject` | 拒絕，可帶 `note`；`block_host=true` 一併封鎖整個網域 |
 | GET | `/admin/discovery/sources` | 目錄來源清單 |
@@ -369,6 +369,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/admin/source-reviews` | 有界評審列表，可依 `candidate_id` 過濾 |
 | POST | `/admin/source-reviews/latest` | 批次讀取 1–50 個 `candidate_ids` 各自最新的評審摘要，沒有評審者省略；沿用管理認證 |
 | POST | `/admin/source-reviews/candidates/{id}/request` | 申請候選評審，不 inline 抓取 |
+| POST | `/admin/source-reviews/batch/request` | 批次申請／明確重試 1–50 個候選，逐筆回報部分失敗，管理認證只執行一次 |
+| POST | `/admin/source-reviews/batch/resolve` | 批次人工覆核 1–50 個最新待複審結果，逐筆回報；鎖內檢查版本與狀態 |
 | GET | `/admin/source-reviews/usage` | 付費請求計數、成本與未知／暫停狀態，不含原始 payload |
 | GET | `/admin/source-reviews/{id}` | 讀取有界評審資料包與結果，不簽發租約 |
 | POST | `/admin/source-reviews/{id}/resolve` | 明確人工通過／拒絕／保留 |
@@ -449,7 +451,8 @@ OAuth discovery 在 origin 的 `/.well-known/oauth-authorization-server` 與 `/.
 | POST | `/review-oauth/revoke` | RFC 7009，持有本 client token 可撤銷其 grant |
 | GET／POST | `/review-oauth/consent/{request_id}` | 管理員＋Telegram session 讀取／明確同意或拒絕 |
 | GET | `/review-oauth/grants` | 管理員授權歷史、到期與撤銷狀態 |
-| DELETE | `/review-oauth/grants/{id}` | 撤銷本人來源評審 grant |
+| PATCH | `/review-oauth/grants/{id}` | 管理員＋Telegram session 修改本人有效連線期限；含時區未來日期或明確 null 永久，不恢復過期／撤銷授權 |
+| DELETE | `/review-oauth/grants/{id}` | 撤銷本人來源評審 grant（含永久授權） |
 
 權限、保存與客戶端契約集中在 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#chatgpt-web-oauth100)。
 
@@ -483,7 +486,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
 | `manage_login_state` / `manage_sessions` | 20261012020000 | OTP bcrypt hash、嘗試／冷卻與管理 token SHA-256 hash；RLS 無 policy，所有 Data API roles（含 service_role）均撤銷存取，只由 backend 直連 PostgreSQL 使用 |
-| `review_oauth_registration_key` / `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | 持久 DCR 簽名金鑰、管理員同意後保留的 ChatGPT client、待同意請求、窄權限 grant 與 token hash／重放 fencing；匿名 DCR 不新增 client 記錄；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
+| `review_oauth_registration_key` / `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | 持久 DCR 簽名金鑰、管理員同意後保留的 ChatGPT client、待同意請求、窄權限 grant 與 token hash／重放 fencing；grant／refresh 的 null 到期表示管理員明確設定永久，access 仍短效；匿名 DCR 不新增 client 記錄；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `user_feeds` | 002 + 021 + 022 | 訂閱關係＋`custom_title`（021，該使用者對這個訂閱的自訂顯示名稱，NULL 代表沿用 feed 原本的 title；只在這段 (user, feed) 關係內生效，不寫回 `feeds.title`）＋`muted_at`（022，靜音時間戳，NULL 代表未靜音；`list_reading_stream`／`reading_stream_unread_counts` 排除已靜音的訂閱，`GET /me/feeds` 與取消訂閱不受影響） |

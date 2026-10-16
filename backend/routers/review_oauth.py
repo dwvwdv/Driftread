@@ -1,9 +1,10 @@
 """OAuth discovery and authorization for ChatGPT's source-review MCP client."""
+from datetime import datetime
 from urllib.parse import parse_qsl
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
@@ -160,3 +161,29 @@ async def delete_grant(grant_id: UUID, authorization: str | None = Header(defaul
                        x_manage_session: str | None = Header(default=None)):
     return await invoke(browser_call, review_oauth.revoke_grant, authorization, x_manage_session,
                         str(grant_id), status=204)
+
+
+class GrantExpiry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Required explicit null means permanent; an omitted field must not silently
+    # turn a connection into an indefinite authorization.
+    expires_at: AwareDatetime | None = Field(...)
+
+    @field_validator('expires_at', mode='before')
+    @classmethod
+    def explicit_expiry(cls, value):
+        if value is not None and (not isinstance(value, str) or len(value) > 64):
+            raise ValueError('Expiry must be an ISO date-time or null')
+        if value is not None:
+            # AwareDatetime also accepts epoch strings; this management contract
+            # deliberately requires a date-time with an explicit timezone.
+            datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return value
+
+
+@router.patch("/api/review-oauth/grants/{grant_id}")
+async def update_grant_expiry(grant_id: UUID, body: GrantExpiry,
+                              authorization: str | None = Header(default=None),
+                              x_manage_session: str | None = Header(default=None)):
+    return await invoke(browser_call, review_oauth.update_grant_expiry, authorization, x_manage_session,
+                        str(grant_id), body.expires_at)

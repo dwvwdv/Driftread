@@ -194,6 +194,22 @@ def test_list_candidates_returns_pending_by_default(client):
     assert body["total"] == 1
 
 
+def test_list_candidates_awaiting_human_forwards_filter_and_pagination(client):
+    from tests.test_discovery_candidates import ReviewListingDB
+
+    c, _mock = client
+    row = {"id": str(uuid4()), "feed_url": "https://human.example/feed", "status": "pending",
+           "referring_feed_count": 4, "discovered_at": "2026-01-01T00:00:00+00:00"}
+    db = ReviewListingDB({'items': [row], 'total': 9, 'limit': 2, 'offset': 2})
+    _fake_db_client(c, db)
+    response = c.get(f"{BASE}/candidates?status=awaiting_human&page=2&page_size=2&min_referrers=3", headers=KEY)
+    assert response.status_code == 200
+    body = response.json()
+    assert [item['id'] for item in body['items']] == [row['id']]
+    assert body['total'] == 9 and body['page'] == 2 and body['page_size'] == 2
+    assert db.calls == [{'p_status': 'awaiting_human', 'p_limit': 2, 'p_offset': 2, 'p_min_referrers': 3}]
+
+
 # ── approve / reject ─────────────────────────────────────────────────────────
 
 def _candidate(**overrides) -> dict:

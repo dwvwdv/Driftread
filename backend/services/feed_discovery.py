@@ -21,6 +21,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from rss_parser import ParsedFeed, parse_feed
+from services.source_identity import is_comment_feed
 
 
 # A crawl-policy predicate: given the URL about to be fetched, may we fetch it?
@@ -109,6 +110,10 @@ class CappedResponse:
 
 class DiscoveryError(Exception):
     pass
+
+
+class _CommentFeedExcluded(DiscoveryError):
+    """A terminal discovery exclusion, not a transient fetch failure."""
 
 
 def user_agent() -> str:
@@ -571,7 +576,7 @@ def _extract_feed_links(html: str, base_url: str) -> list[DiscoveryCandidate]:
         if not href:
             continue
         feed_url = urljoin(base_url, href)
-        if feed_url in seen:
+        if feed_url in seen or is_comment_feed(feed_url):
             continue
         seen.add(feed_url)
         candidates.append(
@@ -625,9 +630,20 @@ async def discover_feeds(
     pasted a URL — they just want "nothing found". An unattended caller needs the
     difference, because "this site has no feed" is terminal while "this site is
     down" must be retried; passing True re-raises instead, leaving `[]` to mean
-    unambiguously "we fetched the page and it advertises no feed".
+    no eligible article feed (including an explicitly excluded comment feed).
     """
     safe_url = await validate_fetch_url(url, timeout=timeout)
+    if is_comment_feed(safe_url):
+        return []
+
+    async def allow_article_feed(candidate_url: str) -> bool:
+        # Discovery excludes explicit comment endpoints before fetching, also
+        # when a generic /feed alias redirects there. Keep this scoped to
+        # discovery: the shared fetch helper also serves existing catalog feeds.
+        if is_comment_feed(candidate_url):
+            raise _CommentFeedExcluded("Comment feeds are excluded from discovery")
+        return allow_url is None or await allow_url(candidate_url)
+
     headers = {"User-Agent": user_agent(), "Accept": "text/html,application/xhtml+xml,*/*"}
 
     async with ssrf_safe_client(
@@ -643,8 +659,10 @@ async def discover_feeds(
         # 1. Maybe the URL itself is already a feed.
         try:
             text, ctype = await fetch_with_cap(
-                client, safe_url, MAX_FEED_BYTES, allow_url=allow_url
+                client, safe_url, MAX_FEED_BYTES, allow_url=allow_article_feed
             )
+        except _CommentFeedExcluded:
+            return []
         except (httpx.HTTPError, DiscoveryError):
             if raise_on_fetch_error:
                 raise
@@ -669,7 +687,9 @@ async def discover_feeds(
         # 3. Validate each candidate; keep working ones with parsed metadata.
         validated: list[DiscoveryCandidate] = []
         for c in candidates:
-            parsed = await _validate_feed(client, c.feed_url, delay_seconds, allow_url)
+            parsed = await _validate_feed(
+                client, c.feed_url, delay_seconds, allow_article_feed
+            )
             if parsed:
                 validated.append(
                     DiscoveryCandidate(
@@ -687,7 +707,7 @@ async def discover_feeds(
         for path in FALLBACK_PATHS:
             candidate_url = urljoin(root, path)
             parsed = await _validate_feed(
-                client, candidate_url, delay_seconds, allow_url
+                client, candidate_url, delay_seconds, allow_article_feed
             )
             if parsed:
                 validated.append(

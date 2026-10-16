@@ -30,3 +30,9 @@ class ReviewSubmission(BaseModel):
         if any(len(item) > 100 for item in value):
             raise ValueError('each label must be at most 100 characters')
         return value
+
+
+class BatchReviewSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    review_id: UUID
+    submission: ReviewSubmission
