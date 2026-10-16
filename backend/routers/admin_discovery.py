@@ -19,6 +19,7 @@ from models import (
     PaginatedDiscoveryTargets,
     PaginatedFeedCandidates,
     RejectCandidateRequest,
+    RecentFeedAdmissions,
     SeedTargetsRequest,
     SeedTargetsResult,
     UpdateSourceRequest,
@@ -32,6 +33,7 @@ from services.discovery_candidates import (
     block_host,
     hold_candidate,
     list_candidates,
+    recent_admissions,
     reject_candidate,
     stats,
 )
@@ -40,6 +42,19 @@ from services.feed_discovery import DiscoveryError, validate_fetch_url
 from services.link_harvest import is_denied_host, normalize_host, origin_of
 
 router = APIRouter(prefix="/admin/discovery", tags=["admin", "discovery"])
+
+
+@router.get(
+    "/recent-admissions",
+    response_model=RecentFeedAdmissions,
+    dependencies=[Depends(require_api_key)],
+)
+async def list_recent_admissions(
+    limit: int = Query(10, ge=1, le=50),
+    db: Client = Depends(get_client),
+) -> RecentFeedAdmissions:
+    """Read the newest catalog additions without starting discovery or reviews."""
+    return RecentFeedAdmissions(**recent_admissions(db, limit))
 
 # Terminal statuses a seed request may reset back to 'pending'. 'rejected' is
 # deliberately absent: an admin blocked that host, and re-seeding must not be a

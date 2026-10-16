@@ -139,6 +139,27 @@ describe('AdminService 409 handling', () => {
     expect(toastCalls).toEqual([{ tone: 'warning', text: '候選狀態已更新，請確認最新清單後再試' }]);
   });
 
+  it('fetches recent admissions with its limit and the verified management session', () => {
+    const service = TestBed.inject(AdminService);
+    let count = -1;
+    service.recentAdmissions().subscribe(({ items }) => (count = items.length));
+    const request = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/discovery/recent-admissions'),
+    );
+    expect(request.request.method).toBe('GET');
+    expect(request.request.params.get('limit')).toBe('10');
+    expect(request.request.headers.get('x-manage-session')).toBe('otp-token');
+    expect(request.request.headers.get('Authorization')).toBe('Bearer user-token');
+    request.flush({ items: [], limit: 10 });
+    expect(count).toBe(0);
+    service.recentAdmissions(5).subscribe();
+    const custom = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/discovery/recent-admissions'),
+    );
+    expect(custom.request.params.get('limit')).toBe('5');
+    custom.flush({ items: [], limit: 5 });
+  });
+
   it('fetches read-only operation and storage snapshots with the verified management session', () => {
     const service = TestBed.inject(AdminService);
     service.operations().subscribe();

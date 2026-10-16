@@ -159,6 +159,29 @@ export class AdminFeeds implements OnInit {
     return this.busy().has(id);
   }
 
+  protected fetchStatus(feed: Feed): string {
+    if (!feed.admitted_at && feed.last_failure_reason?.startsWith('Excluded before admission:')) {
+      return feed.last_failure_reason.includes('comment feed')
+        ? '未准入：留言來源' : '未准入：重複來源';
+    }
+    const result = feed.last_fetch_result;
+    if (feed.admitted_at && !feed.archived_at && result?.outcome === 'excluded') {
+      return '已人工核准，等待重新抓取';
+    }
+    const labels: Record<string, string> = {
+      in_progress: '抓取已開始，尚未記錄完成結果',
+      fetch_failed: '抓取失敗', fetch_timeout: '抓取逾時',
+      http_error: '來源 HTTP 錯誤', parse_failed: 'RSS／Atom 解析失敗',
+      ingest_failed: '文章寫入或統計失敗', excluded: '未通過來源准入檢查',
+      empty_feed: '來源回傳零篇文章', no_usable_entries: '所有項目都缺少文章網址',
+      not_modified: '來源回覆未變更（304）', unchanged: '沒有新增文章', updated: '文章已更新',
+    };
+    if (result) return labels[result.outcome] ?? '抓取結果未知';
+    if (feed.archived_at) return '已封存；歷史抓取結果未記錄';
+    if (!feed.last_fetched_at) return feed.last_fetch_at ? '已嘗試抓取，尚無完成結果' : '等待首次抓取';
+    return feed.article_count === 0 ? '尚無文章；歷史原因未記錄' : '歷史抓取結果未記錄';
+  }
+
   protected async archive(feed: Feed): Promise<void> {
     const ok = await this.confirm.ask({
       heading: `封存「${feed.title}」？`,
@@ -212,10 +235,11 @@ export class AdminFeeds implements OnInit {
         // returns both and documents the distinction at
         // backend/routers/admin.py::refresh_feed.
         this.toast.success(`${title}：新增 ${result.new_articles} 篇`);
+        this.reload();
       },
       // A 502 here means the remote feed did not answer — reported by
       // AdminService as a warning, and it must not stop the other rows.
-      error: () => this.setBusy(id, false),
+      error: () => { this.setBusy(id, false); this.reload(); },
     });
   }
 

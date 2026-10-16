@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 MAX_TITLE_LEN = 200
 MAX_URL_LEN = 2048
 
+
+def recent_admissions(db: "Client", limit: int = 10) -> dict:
+    """Return one bounded catalog page, including durable first-admission facts."""
+    if not 1 <= limit <= 50:
+        raise ValueError("Recent admission limit must be between 1 and 50")
+    return db.rpc("list_recent_feed_admissions", {"p_limit": limit}).execute().data
+
 # Zero-width characters and bidirectional overrides. A bidi override inside a
 # feed title can visually reverse a domain in the reviewer's list — "moc.dab" can
 # be made to read as "bad.com" — so a human approving from the queue could be

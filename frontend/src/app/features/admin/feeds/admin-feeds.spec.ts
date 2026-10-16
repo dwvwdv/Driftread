@@ -86,6 +86,7 @@ describe('AdminFeeds active paging', () => {
       saveSource: () => void;
       editing: () => Feed | null;
       savingSource: () => boolean;
+      fetchStatus: (feed: Feed) => string;
       sourceRole: string;
       signalGroup: string;
     };
@@ -159,5 +160,20 @@ describe('AdminFeeds active paging', () => {
     expect(reader.active()).toEqual([]);
     expect(reader.activeTotal()).toBe(0);
     expect(requests.length).toBe(before);
+  });
+
+  it('distinguishes an excluded source, an empty feed and an unfinished first fetch', () => {
+    const excluded = { ...feed(1), article_count: 0, archived_at: '2026-10-16T00:00:00Z',
+      last_failure_reason: 'Excluded before admission: duplicates existing source mirror' };
+    const { reader, fixture } = setup({ items: [excluded], total: 1, page: 1, page_size: 50 });
+    expect(fixture.nativeElement.textContent).toContain('未准入：重複來源');
+    expect(reader.fetchStatus({ ...feed(2), article_count: 0, last_fetch_result: {
+      outcome: 'empty_feed', at: '2026-10-16T00:00:00Z', entries_seen: 0,
+    } })).toBe('來源回傳零篇文章');
+    expect(reader.fetchStatus({ ...feed(3), article_count: 0, last_fetched_at: null })).toBe('等待首次抓取');
+    expect(reader.fetchStatus({ ...feed(4), article_count: 0, last_fetched_at: '2026-10-01T00:00:00Z' })).toContain('歷史原因未記錄');
+    expect(reader.fetchStatus({ ...excluded, archived_at: null, admitted_at: '2026-10-16T01:00:00Z',
+      last_fetch_result: { outcome: 'excluded', at: '2026-10-16T00:00:00Z' },
+    })).toBe('已人工核准，等待重新抓取');
   });
 });

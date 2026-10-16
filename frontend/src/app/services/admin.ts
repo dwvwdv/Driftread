@@ -22,6 +22,7 @@ import {
   PaginatedFeeds,
   RefreshDueSummary,
   RefreshFeedResult,
+  RecentAdmission,
   SeedTargetsResult,
 } from '../models';
 import { ToastService } from '../ui/toast/toast';
@@ -144,6 +145,14 @@ export class AdminService {
       '/admin/discovery/candidates',
       '讀取候選失敗',
       new HttpParams().set('status', status).set('page', page).set('page_size', pageSize),
+    );
+  }
+
+  recentAdmissions(limit = 10): Observable<{ items: RecentAdmission[]; limit: number }> {
+    return this.get<{ items: RecentAdmission[]; limit: number }>(
+      '/admin/discovery/recent-admissions',
+      '讀取近期收錄失敗',
+      new HttpParams().set('limit', limit),
     );
   }
 

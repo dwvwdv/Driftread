@@ -44,6 +44,7 @@ describe('AdminCandidates queue paging', () => {
     held = null;
 
     const admin = {
+      recentAdmissions: () => of({ items: [], limit: 10 }),
       latestSourceReviews: () => of({ items: [] }),
       listCandidates: (p: number, size: number) => {
         requests.push([p, size]);
@@ -87,6 +88,27 @@ describe('AdminCandidates queue paging', () => {
     if (page !== 1) reader.onPage(page);
     return { fixture, reader };
   }
+
+  it('scrolls to recent admissions locally without following the app base URL or reloading the queue', () => {
+    const { fixture } = setup({ items: [candidate(1)], total: 1, page: 1, page_size: 20 });
+    const region = fixture.nativeElement.querySelector('app-recent-admissions')
+      .parentElement as HTMLElement;
+    const options: (ScrollIntoViewOptions | boolean | undefined)[] = [];
+    region.scrollIntoView = (value) => {
+      options.push(value);
+    };
+    const before = requests.length;
+    const locationBefore = window.location.href;
+    const button = fixture.nativeElement.querySelector(
+      'button[aria-controls="recent-admissions"]',
+    ) as HTMLButtonElement;
+    expect(button.textContent).toContain('查看近期收錄');
+    button.click();
+    expect(options).toEqual([{ block: 'start' }]);
+    expect(window.location.href).toBe(locationBefore);
+    expect(requests).toHaveLength(before);
+    expect(fixture.nativeElement.querySelector('a[href="#recent-admissions"]')).toBeNull();
+  });
 
   it('backfills from the server even while rows remain on the page', () => {
     // The queue is paginated with .range(offset, …) over status='pending', so
@@ -209,9 +231,29 @@ describe('AdminCandidates source review', () => {
         }
       : {}),
   });
+  it('requeues stale or old missing-key work with the ordinary request and protects manual overrides', () => {
+    const { component, calls, fixture } = setup({
+      latestSourceReviews: () => of({ items: [task('stale')] }),
+    });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('依目前政策重新申請');
+    component.requestReview(candidate(1));
+    expect(calls.request).toBe(1);
+    expect(calls.retry).toBe(0);
+    component.sourceReviews.set({
+      'cand-1': { ...task('failed'), engine: 'jev', error_code: 'provider_key_missing' },
+    });
+    component.requestReview(candidate(1));
+    expect(calls.request).toBe(2);
+    component.sourceReviews.set({ 'cand-1': { ...task('stale'), manual_override: 'hold' } });
+    component.requestReview(candidate(1));
+    expect(calls.request).toBe(2);
+    expect(calls.retry).toBe(0);
+  });
   function setup(overrides: Record<string, unknown> = {}) {
     const calls = { request: 0, retry: 0, resolve: [] as string[], read: 0 };
     const admin = {
+      recentAdmissions: () => of({ items: [], limit: 10 }),
       listCandidates: () => of({ items: [candidate(1)], total: 1, page: 1, page_size: 20 }),
       latestSourceReviews: () => {
         calls.read++;
@@ -1022,6 +1064,108 @@ describe('AdminCandidates source review', () => {
     expect(calls.resolve).toEqual(['disagree']);
   });
 
+  it.each([
+    ['agree', 'accepted', true],
+    ['agree', 'rejected', false],
+    ['agree', 'overridden', false],
+    ['disagree', 'accepted', true],
+    ['disagree', 'rejected', false],
+  ] as const)(
+    'refreshes recent admissions only when %s returns %s',
+    async (assessment, status, refresh) => {
+      let reads = 0;
+      const { component, fixture } = setup({
+        recentAdmissions: () => {
+          reads++;
+          return of({ items: [], limit: 10 });
+        },
+        latestSourceReviews: () => of({ items: [task('awaiting_human')] }),
+        judgeSourceReview: () => of(task(status)),
+      });
+      expect(reads).toBe(1);
+      await component.judgeReview(candidate(1), assessment);
+      fixture.detectChanges();
+      expect(reads).toBe(refresh ? 2 : 1);
+    },
+  );
+
+  it('refreshes recent admissions once for a mixed batch with multiple accepted results', async () => {
+    let reads = 0;
+    const reviews = [1, 2, 3].map((i) => ({
+      ...task('awaiting_human'),
+      id: `r${i}`,
+      candidate_id: `cand-${i}`,
+    }));
+    const { component, fixture } = setup({
+      recentAdmissions: () => {
+        reads++;
+        return of({ items: [], limit: 10 });
+      },
+      listCandidates: () => of({ items: [1, 2, 3].map(candidate), total: 3 }),
+      latestSourceReviews: () => of({ items: reviews }),
+      judgeSourceReviews: () =>
+        of({
+          items: [
+            ...reviews.slice(0, 2).map((review) => ({
+              candidate_id: review.candidate_id,
+              review_id: review.id,
+              ok: true,
+              review: { ...review, status: 'accepted' },
+            })),
+            {
+              candidate_id: 'cand-3',
+              review_id: 'r3',
+              ok: false,
+              error: { status_code: 409, detail: 'changed' },
+            },
+          ],
+          succeeded: 2,
+          failed: 1,
+        }),
+    });
+    component.toggleGroup(component.candidates(), true);
+    await component.batchJudge('agree');
+    fixture.detectChanges();
+    expect(reads).toBe(2);
+  });
+
+  it('keeps the candidate queue usable when recent admissions fails and refreshes after a manual admission', () => {
+    let reads = 0;
+    const { component, fixture } = setup({
+      recentAdmissions: () => {
+        reads++;
+        return throwError(() => new Error('unavailable'));
+      },
+      approveCandidate: () => of({ id: 'feed-1', title: '來源' }),
+    });
+    expect(component.candidates()).toHaveLength(1);
+    expect(fixture.nativeElement.textContent).toContain('近期收錄暫時無法讀取');
+    component.approve(candidate(1));
+    fixture.detectChanges();
+    expect(reads).toBe(2);
+  });
+
+  it.each(['approve', 'hold', 'reject'] as const)(
+    'refreshes recent admissions once only for successful manual batch %s',
+    async (action) => {
+      let reads = 0;
+      const { component, fixture } = setup({
+        recentAdmissions: () => {
+          reads++;
+          return of({ items: [], limit: 10 });
+        },
+        listCandidates: () => of({ items: [candidate(1), candidate(2)], total: 2 }),
+        approveCandidate: () => of({ id: 'feed-1', title: '來源' }),
+        holdCandidate: () => of(candidate(1)),
+        rejectCandidate: () => of(candidate(1)),
+      });
+      component.toggleGroup(component.candidates(), true);
+      await component.bulk(action);
+      fixture.detectChanges();
+      expect(reads).toBe(action === 'approve' ? 2 : 1);
+    },
+  );
+
   it('retains the original AI result and human agreement on held sources, allowing a later manual adjustment', () => {
     const held = { ...candidate(1), status: 'held', manual_override: 'hold' } as FeedCandidate;
     const review = {
@@ -1069,6 +1213,7 @@ describe('AdminCandidates manual decision conflicts', () => {
                   page: 1,
                   page_size: 20,
                 }),
+              recentAdmissions: () => of({ items: [], limit: 10 }),
               latestSourceReviews: () => of({ items: [] }),
               holdCandidate: () => throwError(() => conflict),
               rejectCandidate: () => throwError(() => conflict),

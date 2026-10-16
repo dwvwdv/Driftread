@@ -85,7 +85,8 @@ async def test_success_record_survives_article_ingestion_failure():
     from services.feed_refresh import refresh_one
     db=DB();row=source();fetched=SimpleNamespace(not_modified=False,parsed=SimpleNamespace(articles=[]))
     with patch('services.feed_refresh.validate_fetch_url',new=AsyncMock(return_value=row['url'])),patch('services.feed_refresh.fetch_and_parse_conditional',new=AsyncMock(return_value=fetched)),patch('services.feed_refresh.upsert_articles',side_effect=RuntimeError('business write failed')):
-        with pytest.raises(RuntimeError): await refresh_one(db,row)
+        result = await refresh_one(db,row)
+    assert result.status == 'failed' and result.error == 'ingest_failed'
     assert [a['p_ok'] for _,a in db.rpcs]==[False,True]
 
 @pytest.mark.asyncio

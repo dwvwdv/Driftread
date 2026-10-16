@@ -48,6 +48,7 @@ async def test_official_sdk_source_review_workflow_and_annotations(mcp_app):
     policy = AppSetting(key="source.review", version=1, value=SourceReviewValue(enabled=True).model_dump())
     with patch.object(transport, "get_client", return_value=db), \
             patch.object(transport, "get_setting", return_value=policy), \
+            patch.object(transport.source_review, "_rpc", return_value={"latest_pending": {"stale": 2}, "provider_key_missing": 1}), \
             patch.object(transport.source_review, "request_review", return_value={"id": REVIEW_ID, "status": "queued"}) as enqueue, \
             patch.object(transport.source_review, "claim_review", return_value=packet) as claim, \
             patch.object(transport.source_review, "get_review_packet", return_value=packet) as read, \
@@ -68,6 +69,7 @@ async def test_official_sdk_source_review_workflow_and_annotations(mcp_app):
                         policy_result = await session.call_tool("review_policy")
                         assert policy_result.isError is False, policy_result
                         assert policy_result.structuredContent["runtime_available"] is True
+                        assert policy_result.structuredContent["queue"]["provider_key_missing"] == 1
                         queued = await session.call_tool("request_source_review", {"candidate_id": CANDIDATE_ID})
                         assert queued.isError is False
                         enqueue.assert_called_once_with(db, CANDIDATE_ID)

@@ -1192,7 +1192,22 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 先更新 API 套用 migration，healthy 後更新 frontend／worker，再刷新 ChatGPT 工具列表；不直接部署或合併 master。
 - GitHub review 事件 hook 工具不可用；依 AGENTS.md 既有 Codex 規範建立 PR #104 每小時追蹤，合併或關閉後停止，無新進展不通知。
 
-## 階段四十九：以同意／拒絕 AI 決策重新設計候選審核（PR #105，2026-10-16）
+## 階段四十九：來源管道診斷、AI 人工決策與近期收錄（PR #107、#105，2026-10-16）
+
+#106 的零文章、stale 與 provider 設定失敗屬於不同問題。本次先用正式唯讀 SQL 核對：214 個來源的文章快取與實際關聯數全部一致，零文章已從較早快照的 100 個降至 40 個，其中 36 個封存、3 個啟用且歷史原因不明、1 個啟用且抓取失敗但錯誤文字空白；不能把封存與准入排除當成新抓取故障。時間點、至少十個來源證據及可重跑的唯讀 SQL 見 [調查紀錄](ISSUE_106.md)。
+
+- 一般申請原本會沿用 stale／failed 任務，造成 MCP「申請成功」但未重新入列。現在在既有政策→候選→任務鎖內重建 stale／舊政策未完成任務，並允許舊 Jev 缺金鑰失敗轉交目前的 external_agent；以 `request_action` 區分新建、重排與沿用。保留舊任務、人工決定、租約隔離及 receipt，不建立普通恢復的 paid retry key；其他失敗與付費結果未知不自動重買。管理頁提供安全重新申請，`review_policy.queue` 以各 pending 候選最新任務提供積壓／缺金鑰訊號，沒有新增通知外送。
+- `last_fetch_result` 記錄嘗試中、逾時、HTTP／解析錯誤、空 feed、缺網址、准入排除、寫入失敗與文章變化，含解析／批內重複／新增／總數。原始外連與 DB 例外不進新診斷；後台區分歷史原因未知及等待抓取，顯示下次時間。保存／計數失敗會退避，不接受未知精確計數為 0、不保存未完成抓取的新 validator。零文章排程與管理單筆更新重新下載 body；管理更新成功時重算文章快取，未對正式資料執行修復。
+- 完整符合 WordPress 預設起始文章的樣本不滿足有效內容門檻，SQL 提交時再次確認實際證據，沒有提示的舊快照也適用；只剩示範內容時暫緩，不封鎖 host，保留人工核准。同標題真實文章與僅有摘要來源不一概當成垃圾。
+- 新 migration `20261016122206_source_diagnostics_recovery.sql` 可重跑；新增函式為 INVOKER 且僅 service_role 可執行。先停舊 worker，由 API 套 migration、healthy 後更新 worker／frontend，再刷新 MCP 說明；不新增環境變數或 Dashboard 設定。
+
+### 驗證與尚待驗收
+
+- 本機 PostgreSQL 17 完整後端 1433 passed、0 skipped；前端 38 files／441 tests 通過，production build 通過（既有 initial bundle warning：511.82 kB／500 kB），文件一致性與 `git diff --check` 通過。新增 SQL 測試包含 migration 重跑、角色權限、並行重排、政策升版、人工優先、跨引擎恢復、預設內容與候選→評審→准入→刷新→真實文章入庫→公開詳情的整合流程；第三方 HTTP 回應使用替身，資料庫操作經測試轉接器執行真實 SQL。
+- 正式 Supabase 僅執行唯讀查核，未更新 schema／來源／評審／receipt，也未觸發 Jev。正式網站網域未列入環境網路政策，正式 PostgREST／瀏覽器、三個歷史原因不明來源的重新抓取、Docker 部署及 ChatGPT 新版工具刷新均未驗證。#106 保持開啟追蹤；不批次刪除或合併歷史別名、不還原較早 100 個來源的歷史原因。
+- GitHub review 事件 hook 工具不可用；建立 PR 後檢查現有 review，並依既有 Codex 專案規範設定每小時追蹤，合併或關閉後停止，無新進展不通知。
+
+### PR #105：AI 人工決策與近期收錄
 
 舊頁面把 AI 已完成評審的候選同時放上「核准／拒絕」與「覆核通過／不通過」，混淆是否認同 AI 與最後收錄來源兩件事。評審結果也混在來源小字中，不易看出 MCP 已經做了什麼。改以 AI 建議為卡片主體，再由人工同意或拒絕該判定，清楚顯示即將發生的處置。
 
@@ -1201,10 +1216,12 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 新增管理單筆／批次 judgment API 與 `source_reviews.human_review`；AI `result` 不變，另存人工同意／不同意、原 AI 判定、最終處置與時間。新 SQL 在候選／評審鎖內驗證最新任務、候選版本、有效結果與人工覆寫；原 resolve 保留相容並推導同一人工紀錄，MCP 不取得人工決策權限。
 - 待複審視圖涵蓋最新且版本一致、尚無人工決策的 AI 拒收與暫緩；不把 result=null 的服務錯誤混為 AI 判定。AI 建議收錄但被政策暫緩時，UI／SQL 均不允許直接同意收錄。失效或在途結果禁止重複手動繞過，失敗／暫緩且無 AI 決策保留人工備援；已保留節點仍可透過獨立「調整人工決定」改為收錄。
 - 新 migration `20261016090000_review_human_judgment.sql` 僅擴充既有表與 service_role-only RPC，不修改已合併 migration，不新增環境變數，不回填歷史人工意圖、不重新評審或改動正式候選。
+- 候選頁新增「近期收錄」獨立區塊與頁首跳轉，顯示最新 10 個目錄來源、時間、AI 自動／人工同意或推翻 AI／人工直接／排程收錄方式與引擎；可收合、單獨重載，成功收錄後只刷新一次。錯誤保留上次清單，不影響候選操作。
+- 新 migration `20261016140000_recent_admissions.sql` 在候選真正新增 feed 的同一交易保存 service-only 首次收錄證據；重新發現／連結既有來源不覆寫，評審清理不丟失方式。管理唯讀清單最多 50 筆，以 `feeds.created_at` 表示進入目錄時間，不混用來源抓取檢查的 `feeds.admitted_at`。歷史及 JSON／URL／OPML 等其他匯入未記錄方式，標示「歷史／其他管道（未記錄）」，不以目前政策推測。
 
 ### 驗證與部署界限
 
-- 本機 PostgreSQL 17 完整 backend：1472 passed、0 skipped；frontend 38 files／461 tests 通過，production build 通過（既有 initial bundle warning：511.85 kB／500 kB，元件樣式預算通過）。文件檢查與 git diff --check 通過。
-- 實際 Chromium／Playwright 以本機假資料驗證桌機 1440px、手機 390px 與深／淺主題，無水平溢位或頁面錯誤；驗證拒絕 AI 拒收會提議收錄、取消不送寫入、abstain 明選與混合批次不帶硬編碼最終處置。模擬 409 走錯誤恢復，未對正式環境寫入，不能當作正式登入／API 已部署驗收。
+- 整合主分支來源診斷後，本機 PostgreSQL 17 完整 backend：1519 passed、0 skipped；frontend 39 files／480 tests 通過，production build 通過（既有 initial bundle warning：511.85 kB／500 kB，元件樣式預算通過）。文件檢查與 git diff --check 通過。
+- 實際 Chromium／Playwright 以本機假資料驗證桌機 1440px、手機 390px 與深／淺主題，無水平溢位或頁面錯誤；驗證拒絕 AI 拒收會提議收錄、取消不送寫入、abstain 明選與混合批次不帶硬編碼最終處置；近期收錄六種標記、頁內跳轉、收合不重查、讀取失敗保留舊清單與單獨重新整理均通過。模擬 409 走錯誤恢復，未對正式環境寫入，不能當作正式登入／API 已部署驗收。
 - 獨立 subagent 檢查決策語義、批次、鎖、權限與回歸測試，未發現新增阻擋問題。部署先更新 API 套用 migration，再更新 frontend；來源評審 MCP 九個工具與權限範圍保持不變。
 - GitHub review事件hook工具不可用；依AGENTS.md既有規範建立PR #105每小時追蹤，合併或關閉後停止，無新進展不通知。

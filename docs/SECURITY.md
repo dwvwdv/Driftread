@@ -378,6 +378,12 @@ public origin 只能來自環境設定，不能信任 Host／forwarded headers�
 
 匿名 DCR 使用 HMAC 簽名的公開 client metadata，不建立持久 client 記錄，避免免認證註冊耗盡全域 client 配額。只有管理員明確同意才保存 client；其身分保留供閒置後重新授權，token／grant 仍依原期限失效。唯一簽名金鑰存在同樣封鎖 Data API 的私有表，必須持久保存與備份；它是伺服器驗證簽名所需的私密金鑰，並非可只存 hash 的 bearer 憑證。
 
+### #36 — 來源恢復與抓取診斷（#106）
+
+新增佇列統計及預設樣本檢查函式皆為 INVOKER，撤銷 PUBLIC／anon／authenticated 執行權限，只授權 service_role。普通恢復沿用政策→候選→任務鎖，不解除人工決定、不接受 MCP 強制付費重試，跨引擎只允許缺金鑰舊任務轉交 external_agent。來源樣本的 `default_demo` 僅為提示；提交時 SQL 以不可變快照的實際標題／正文再次檢查，舊版快照沒有提示也適用。
+
+抓取診斷對公開來源只提供安全結果碼、時間及計數；原始外連／DB 例外不進結果、回應或批次錯誤日誌。舊 `last_failure_reason` 僅在管理列表提供，不擴大公開權限；最新抓取結果不含 URL、token、樣本或正文。部署與正式驗證邊界見 [#106 調查](ISSUE_106.md)。
+
 ## 目前的防線總覽
 
 | 層 | 機制 | 位置 |
@@ -415,3 +421,5 @@ public origin 只能來自環境設定，不能信任 Host／forwarded headers�
 ## 人工採納／不同意 AI 決策
 
 人工 judgment 沿用管理驗證，來源評審 MCP key／OAuth token 無人工處置權限。同意的最終處置由服務端依鎖內 AI 結果推導；不同意不能提交與 AI 相同的處置，AI abstain 需明確選擇。判定限最新、候選版本一致的有效完成任務，候選必須仍待處理且沒有人工覆寫；保留 AI 原始結果並獨立記錄 human_review，不允許工具提交偽造人工欄位。批次各自驗證及交易，過期頁面或混合狀態不能直接套用同一個收錄結果。
+
+近期收錄清單沿用管理驗證，最多 50 筆，不開放 MCP 人工處置權限。`feed_admissions` 開 RLS、無匿名／一般使用者 policy，僅 service_role 透過中央入庫交易記錄首次方式；回傳只有來源 metadata、時間、方式、引擎及候選／評審 ID，沒有樣本、原始 AI 回應或憑證。既有來源重連不得改寫首次證據，無證據的方式不從目前政策猜測。

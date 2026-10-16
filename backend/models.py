@@ -51,6 +51,8 @@ class Feed(SourceMetadata):
     last_fetched_at: datetime | None = None
     last_fetch_at: datetime | None = None
     last_ok_at: datetime | None = None
+    last_fetch_result: dict[str, Any] | None = None
+    admitted_at: datetime | None = None
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -158,6 +160,16 @@ class PaginatedFeeds(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class AdminFeed(Feed):
+    # Existing failure details are management-only; public diagnostics contain
+    # safe outcome codes and counts, never arbitrary exception strings.
+    last_failure_reason: str | None = None
+
+
+class PaginatedAdminFeeds(PaginatedFeeds):
+    items: list[AdminFeed]
 
 
 class FeedArticle(ArticleSummary):
@@ -443,6 +455,23 @@ class PaginatedFeedCandidates(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class RecentFeedAdmission(BaseModel):
+    feed_id: UUID
+    title: str
+    feed_url: str
+    website_url: str | None = None
+    admitted_at: datetime
+    method: Literal["ai_auto", "human_agree", "human_disagree", "manual", "referrer_auto", "unknown"]
+    engine: Literal["external_agent", "jev"] | None = None
+    candidate_id: UUID | None = None
+    review_id: UUID | None = None
+
+
+class RecentFeedAdmissions(BaseModel):
+    items: list[RecentFeedAdmission]
+    limit: int
 
 
 class DiscoverySource(BaseModel):

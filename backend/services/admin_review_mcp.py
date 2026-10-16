@@ -137,6 +137,7 @@ async def review_policy(ctx: Context) -> dict[str, Any]:
     engine = policy["value"].get("engine", REVIEWER_ID)
     runtime_available = discovery and enabled and (engine != "jev" or bool(os.getenv("JEV_API_KEY", "")))
     return {**policy, "discovery_enabled": discovery, "runtime_available": runtime_available,
+            "queue": await _call(source_review._rpc, db, 'source_review_queue_status', {}),
             "external_agent_available": runtime_available and engine == REVIEWER_ID,
             "workflow": {
                 "start": "Use list_source_review_candidates to inspect without claiming. Request missing reviews; samples are prepared asynchronously.",
@@ -168,7 +169,11 @@ async def list_source_review_candidates(
 
 @review_mcp.tool(annotations=ENQUEUE)
 async def request_source_review(ctx: Context, candidate_id: UUID) -> dict[str, Any]:
-    """Enqueue an existing candidate for review; does not fetch any URL inline."""
+    """Enqueue a candidate; request_action reports enqueued/requeued/reused.
+
+    Recovers stale work and missing-key failures from an old engine when the
+    current engine is external_agent. Never forces paid retries or fetches inline.
+    """
     _, db = _identity(ctx)
     return await _call(source_review.request_review, db, str(candidate_id))
 
@@ -180,7 +185,8 @@ async def request_source_reviews(
     """Enqueue 1–50 existing candidates, with ordered per-item success/errors.
 
     Duplicate IDs are processed once. Does not fetch URLs inline or force a paid
-    retry. Poll the read-only ready list after background preparation.
+    retry. Each review's request_action distinguishes new work from a reused
+    terminal result. Poll the read-only ready list after background preparation.
     """
     _, db = _identity(ctx)
     return await _call(source_review.request_reviews, db, candidate_ids)

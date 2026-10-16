@@ -113,6 +113,26 @@ def test_prune_integer_rpc_response_is_supported():
     assert _rpc(RPCDB(5), 'prune_source_reviews', {}) == 5
 
 
+@pytest.mark.asyncio
+async def test_snapshot_marks_complete_default_demo_without_marking_real_articles(monkeypatch):
+    @asynccontextmanager
+    async def client(**kwargs):
+        yield object()
+
+    async def fetch(*args, **kwargs):
+        demo = 'Welcome to WordPress! This is your first post. Edit or delete it to take the first step in your blogging journey.'
+        return ('<rss><channel><title>Test</title>'
+                f'<item><title>Hello world!</title><link>https://publisher.org/1</link><description>{demo}</description></item>'
+                '<item><title>Hello world!</title><link>https://publisher.org/2</link><description>My original writing.</description></item>'
+                '</channel></rss>'), 'application/rss+xml'
+    monkeypatch.setattr(service, 'ssrf_safe_client', client)
+    monkeypatch.setattr(service, 'fetch_with_cap', fetch)
+    packet = await _fetch_snapshot({'id': str(uuid4()), 'feed_url': 'https://publisher.org/feed'}, 5)
+    assert packet['samples'][0]['default_demo'] is True
+    assert packet['samples'][0]['text'].startswith('Welcome to WordPress!')
+    assert 'default_demo' not in packet['samples'][1]
+
+
 def test_model_cannot_assign_provider_identity_or_use_unknown_reviewer():
     db = RPCDB(None)
     with pytest.raises(ReviewError) as caught:

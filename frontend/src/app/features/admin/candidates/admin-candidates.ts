@@ -20,6 +20,7 @@ import { ObPaginator } from '../../../ui/paginator/paginator';
 import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
 import { clampPage } from '../../../shared/paging';
+import { RecentAdmissions } from './recent-admissions';
 
 /**
  * Review queue for feeds the platform discovered on its own.
@@ -30,7 +31,16 @@ import { clampPage } from '../../../shared/paging';
 @Component({
   selector: 'app-admin-candidates',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DatePipe, FormsModule, ObIcon, ObLoading, ObEmpty, ObPageHeader, ObPaginator],
+  imports: [
+    DatePipe,
+    FormsModule,
+    ObIcon,
+    ObLoading,
+    ObEmpty,
+    ObPageHeader,
+    ObPaginator,
+    RecentAdmissions,
+  ],
   templateUrl: './admin-candidates.html',
   styleUrl: './admin-candidates.scss',
 })
@@ -63,6 +73,7 @@ export class AdminCandidates implements OnInit {
   protected page = signal(1);
   protected pageSize = signal(20);
   protected loading = signal(true);
+  protected admissionsVersion = signal(0);
 
   /** Applied to whichever candidate is approved next. */
   protected category = '';
@@ -177,8 +188,8 @@ export class AdminCandidates implements OnInit {
     }
     if (
       !retry &&
-      (review ||
-        this.sourceReviews()[candidate.id] !== null ||
+      ((review && !this.canRequeue(review)) ||
+        (!review && this.sourceReviews()[candidate.id] !== null) ||
         this.reviewErrors().has(candidate.id))
     )
       return;
@@ -299,8 +310,11 @@ export class AdminCandidates implements OnInit {
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (review) => {
         this.sourceReviews.update((current) => ({ ...current, [id]: review }));
+        if (review.status === 'accepted') this.admissionsVersion.update((n) => n + 1);
         finished();
-        this.toast.info('來源評審作業已更新');
+        this.toast.info(
+          review.request_action === 'reused' ? '沿用既有評審，未建立新任務' : '來源評審作業已更新',
+        );
         this.load(true);
       },
       error: () => {
@@ -325,7 +339,7 @@ export class AdminCandidates implements OnInit {
       const review = this.sourceReviews()[candidate.id];
       if (action === 'manual') return this.canManual(candidate);
       if (candidate.manual_override || review?.manual_override) return false;
-      if (action === 'request') return review === null;
+      if (action === 'request') return review === null || (!!review && this.canRequeue(review));
       if (action === 'retry') return !!review && this.canRetry(review);
       return action === 'agree'
         ? this.canAgree(candidate)
@@ -390,6 +404,8 @@ export class AdminCandidates implements OnInit {
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (result) => {
         const failed = new Set<string>();
+        if (result.items.some((item) => item.ok && item.review?.status === 'accepted'))
+          this.admissionsVersion.update((n) => n + 1);
         this.sourceReviews.update((current) => {
           const next = { ...current };
           for (const item of result.items) {
@@ -425,6 +441,16 @@ export class AdminCandidates implements OnInit {
     );
   }
 
+  protected canRequeue(review: SourceReview): boolean {
+    return (
+      !review.manual_override &&
+      (review.status === 'stale' ||
+        (review.status === 'failed' &&
+          review.engine === 'jev' &&
+          review.error_code === 'provider_key_missing'))
+    );
+  }
+
   protected reviewStatus(review: SourceReview): string {
     const labels: Record<SourceReview['status'], string> = {
       requested: '已排入評審',
@@ -445,7 +471,9 @@ export class AdminCandidates implements OnInit {
   protected reviewProblem(review: SourceReview): string {
     if (!['failed', 'deferred', 'stale'].includes(review.status)) return '';
     const messages: Record<string, string> = {
-      provider_key_missing: '尚未設定 Jev 金鑰，請由部署管理者設定後重試。',
+      provider_key_missing:
+        '尚未設定 Jev 金鑰。已切換外部引擎時可重新申請；沿用 Jev 時請由部署管理者設定後明確重試。',
+      default_demo_content: '樣本只有預設示範文章，請等待實際內容或由管理員覆核。',
       budget_exceeded: '模型預算已達上限，請等待額度恢復或調整預算後重試。',
       provider_outcome_unknown: '請求逾時或中斷，付費結果尚未確認；重試受後台次數限制。',
       request_unknown_paused: '付費請求結果持續不明，已暫停；請檢查請求紀錄後處理。',
@@ -566,6 +594,7 @@ export class AdminCandidates implements OnInit {
       this.reviewing.set(false);
       this.reviewBusy.set(new Set());
       this.toast.info(`批量作業完成：${succeeded}/${items.length}`);
+      if (action === 'approve' && succeeded) this.admissionsVersion.update((n) => n + 1);
       this.load();
     };
     // Each legacy decision verifies management authentication separately; bound
@@ -625,6 +654,7 @@ export class AdminCandidates implements OnInit {
         next: (feed) => {
           this.reviewBusy.set(new Set());
           this.toast.success(`已入庫：${feed.title}`);
+          this.admissionsVersion.update((n) => n + 1);
           this.remove(candidate.id);
         },
         // A 409 means it was already rejected elsewhere, so the row on screen is
