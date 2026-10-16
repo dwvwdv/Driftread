@@ -58,6 +58,15 @@
                     ・最近抓取 {{ feed.last_fetched_at | date: 'yyyy-MM-dd HH:mm' }}
                   }
                 </span>
+                <span>{{ fetchStatus(feed) }}</span>
+                @if (feed.last_fetch_result; as result) {
+                  @if (result.entries_seen !== undefined) {
+                    <span>解析 {{ result.entries_seen }} 筆・缺少網址 {{ result.missing_url ?? 0 }} 筆・批內重複 {{ result.duplicate_entries ?? 0 }} 筆・新增 {{ result.new_articles ?? 0 }} 篇</span>
+                  }
+                }
+                @if (feed.next_fetch_at) {
+                  <span>下次抓取 {{ feed.next_fetch_at | date: 'yyyy-MM-dd HH:mm' }}</span>
+                }
               </div>
               <div rowMeta>
                 <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" [disabled]="savingSource()" (click)="editSource(feed)">來源設定</button>
@@ -106,6 +115,7 @@
                 @if (feed.archived_at) {
                   <span>封存於 {{ feed.archived_at | date: 'yyyy-MM-dd' }}</span>
                 }
+                <span>{{ feed.article_count }} 篇文章・{{ fetchStatus(feed) }}</span>
               </div>
               <div rowMeta>
                 <button

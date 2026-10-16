@@ -106,6 +106,8 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 `POST /api/admin/feeds/refresh-due` 手動踢，或由外部排程器驅動（此時可不啟用 worker）。
 單輪並發由 `asyncio.Semaphore` 限制，逐 feed 隔離例外 —— 一個壞源不會拖垮整批。
 
+單筆管理更新會無條件下載並重新計算文章總數；零文章來源的排程也重新下載，以取得診斷證據。最新抓取結果與欄位語義見 [來源抓取診斷](CRAWLER_OPERATIONS.md#來源抓取診斷106)。來源評審的 stale／舊引擎設定失敗恢復與最新佇列統計見 [評審恢復](SOURCE_REVIEW.md#恢復與佇列診斷106)。
+
 ## 2c. 主動發現管道
 
 增量版本抽取、中文種子優先名額、worker 狀態與正文縮減的現行行為及操作方式，見 [CRAWLER_OPERATIONS.md](CRAWLER_OPERATIONS.md)。文章以內容 hash 追蹤抽取，失敗保留待處理工作；正文縮減預設關閉，保留文章身份與使用者關聯。

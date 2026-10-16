@@ -130,6 +130,14 @@ Free plan 的資料庫上限是 500 MB，超過會被切成唯讀。`DELETE` 和
 
 回滾前先關閉 `source.review` 並停 worker；舊應用忽略新欄位，但不理解評審政策，可能重新使用原 referrer 自動入庫。因此回滾時保持 `FEED_DISCOVERY_AUTO_PROMOTE_MIN_REFERRERS=0` 或停用 discovery，不能把舊版視為仍有模型把關。新增資料保留，不移除人工覆寫與分析歷史。
 
+## 來源管道診斷與恢復（#106）
+
+先停止舊 worker，再由 API 開機套用 `20261016122206_source_diagnostics_recovery.sql`，healthy 後啟動同版 worker／frontend，最後刷新 ChatGPT MCP 工具說明。新欄位是 API／worker 必要依賴，不能先啟動新版 worker；不需要修改 Dashboard、環境變數或金鑰。migration 不批次重排、重抓或修復正式資料。
+
+驗收先讀 `review_policy.queue` 及一般候選清單，以少量 stale／舊 Jev 缺金鑰候選重新申請，確認 `request_action`、目前政策與引擎、舊紀錄保留及未建立 paid retry key；相同有效任務回 reused。只對原失敗做無付款的外部引擎轉交，不能用此步驟測試正式付費重送。後台逐一重抓歷史原因不明來源並比對診斷／精確文章數／公開列表、詳情與瀏覽器，參見 [調查紀錄](ISSUE_106.md)。
+
+回滾應用時保留新增欄位與 RPC。舊 worker 不寫 `last_fetch_result`，因此需將診斷視為歷史結果；新 SQL 的恢復與預設示範樣本門檻仍生效。不刪除評審或 receipt 歷史，也不解除既有封存／人工覆寫。
+
 ## 來源評審批次與待複審
 
 先更新 API，開機套用 `20261016033310_review_candidate_listing.sql`（最新評審索引、唯讀列表 RPC、人工覆核版本檢查），healthy 後更新同版 frontend／worker。沒有新增環境變數、資料表或 Dashboard 設定；既有候選／評審歷史保留。舊版 API 的 resolve 呼叫仍可用，但只能處理最新待人工覆核的結果。

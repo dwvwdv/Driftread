@@ -20,7 +20,7 @@ _FEED_COLUMNS = (
     "id,title,url,description,website_url,language,category,tags,article_count,"
     "last_fetched_at,archived_at,created_at,updated_at,fetch_interval_minutes,"
     "next_fetch_at,etag,last_modified,first_party,participation_mode,signal_group,"
-    "last_fetch_at,last_ok_at,fulltext_policy"
+    "last_fetch_at,last_ok_at,fulltext_policy,last_fetch_result,admitted_at"
 )
 
 

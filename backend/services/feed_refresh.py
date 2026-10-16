@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
+import httpx
+
 from env_utils import env_flag, env_int
 from rss_parser import fetch_and_parse_conditional
 from services.articles import upsert_articles
@@ -96,7 +98,10 @@ def count_articles(db: "Client", feed_id: str) -> int:
         .eq("feed_id", feed_id)
         .execute()
     )
-    return getattr(result, "count", None) or 0
+    count = getattr(result, "count", None)
+    if count is None:
+        raise RuntimeError("Article count unavailable")
+    return count
 
 
 def select_due_feeds(db: "Client", limit: int) -> list[dict]:
@@ -120,47 +125,67 @@ def _schedule(interval: int, now: datetime) -> dict:
     }
 
 
-async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
+async def refresh_one(db: "Client", feed: dict, *, force: bool = False) -> RefreshResult:
     """Re-fetch one feed, upsert articles, enrich language and update health."""
     feed_id = str(feed["id"])
     feed_url: str = feed["url"]
-    current_failures: int = feed.get("consecutive_failures") or 0
-    current_interval: int = feed.get("fetch_interval_minutes") or DEFAULT_INTERVAL_MINUTES
 
     # Persist the attempt before external I/O; a killed worker still leaves
     # evidence that an attempt started. Only successful fetch/parse advances ok.
     started = datetime.now(timezone.utc).isoformat()
     db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": started, "p_ok": False}).execute()
+    diagnostics = {"outcome": "in_progress", "at": started}
+    db.table("feeds").update({"last_fetch_result": diagnostics}, returning="minimal").eq("id", feed_id).execute()
     try:
         safe_url = await validate_fetch_url(feed_url)
         fetched = await fetch_and_parse_conditional(
             safe_url,
-            etag=feed.get("etag"),
-            last_modified=feed.get("last_modified"),
+            etag=feed.get("etag") if not force and feed.get("article_count") != 0 else None,
+            last_modified=feed.get("last_modified") if not force and feed.get("article_count") != 0 else None,
         )
-    except Exception as e:
-        now = datetime.now(timezone.utc)
-        failures = current_failures + 1
-        interval = next_interval(current_interval, "failed")
-        update = {
-            "consecutive_failures": failures,
-            "last_failure_at": now.isoformat(),
-            "last_failure_reason": str(e)[:500],
-            "health_score": max(0, 100 - failures * 10),
-            **_schedule(interval, now),
-        }
-        archived = failures >= AUTO_ARCHIVE_FAILURE_THRESHOLD
-        if archived:
-            update["archived_at"] = now.isoformat()
-        # returning="minimal" — this update's response is never read below, and
-        # migration 020's feeds.search_vector is a generated tsvector indexing
-        # up to 100,000 characters of description; without it, PostgREST's
-        # default representation=return serializes and ships that back on
-        # every refreshed feed for no reason (PR #59 review, P2).
-        db.table("feeds").update(update, returning="minimal").eq("id", feed_id).execute()
-        return RefreshResult(
-            feed_id=feed_id, status="failed", error=str(e)[:500], archived=archived
-        )
+    except Exception as exc:
+        outcome = "fetch_failed"
+        if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+            outcome = "fetch_timeout"
+        elif isinstance(exc, httpx.HTTPStatusError):
+            outcome = "http_error"
+            diagnostics["http_status"] = exc.response.status_code
+        elif isinstance(exc, ValueError):
+            outcome = "parse_failed"
+        return _record_failure(db, feed, diagnostics | {"outcome": outcome})
+
+    try:
+        return await _store_fetched(db, feed, fetched, diagnostics)
+    except Exception:
+        # A parsed HTTP response is not evidence that its articles were saved.
+        # Do not persist database/provider exception payloads or validators from
+        # an incomplete ingest; the next attempt must download the body again.
+        return _record_failure(db, feed, diagnostics | {"outcome": "ingest_failed"})
+
+
+def _record_failure(db, feed, diagnostics) -> RefreshResult:
+    now = datetime.now(timezone.utc)
+    failures = (feed.get("consecutive_failures") or 0) + 1
+    archived = failures >= AUTO_ARCHIVE_FAILURE_THRESHOLD
+    outcome = diagnostics["outcome"]
+    update = {
+        "consecutive_failures": failures,
+        "last_failure_at": now.isoformat(),
+        "last_failure_reason": outcome,
+        "last_fetch_result": diagnostics,
+        "health_score": max(0, 100 - failures * 10),
+        **_schedule(next_interval(feed.get("fetch_interval_minutes") or DEFAULT_INTERVAL_MINUTES, "failed"), now),
+    }
+    if archived:
+        update["archived_at"] = now.isoformat()
+    db.table("feeds").update(update, returning="minimal").eq("id", str(feed["id"])).execute()
+    return RefreshResult(feed_id=str(feed["id"]), status="failed", error=outcome, archived=archived)
+
+
+async def _store_fetched(db, feed, fetched, diagnostics) -> RefreshResult:
+    feed_id = str(feed["id"])
+    feed_url = feed["url"]
+    current_interval = feed.get("fetch_interval_minutes") or DEFAULT_INTERVAL_MINUTES
 
     now = datetime.now(timezone.utc)
     db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": now.isoformat(), "p_ok": True}).execute()
@@ -171,6 +196,7 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
             "consecutive_failures": 0,
             "health_score": 100,
             "last_failure_reason": None,
+            "last_fetch_result": diagnostics | {"outcome": "not_modified"},
             "etag": fetched.etag,
             "last_modified": fetched.last_modified,
             **_schedule(interval, now),
@@ -178,6 +204,10 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         return RefreshResult(feed_id=feed_id, status="not_modified")
 
     assert fetched.parsed is not None
+    urls = [article.url for article in fetched.parsed.articles if article.url]
+    diagnostics.update(entries_seen=len(fetched.parsed.articles),
+                       missing_url=len(fetched.parsed.articles) - len(urls),
+                       duplicate_entries=len(urls) - len(set(urls)))
     before = count_articles(db, feed_id)
     initial = not feed.get("last_fetched_at")
     # A row without the column comes from a database the migration has not
@@ -196,6 +226,7 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
                     "archived_at": now.isoformat(),
                     "last_fetched_at": now.isoformat(),
                     "last_failure_reason": rejection,
+                    "last_fetch_result": diagnostics | {"outcome": "excluded"},
                 }, returning="minimal").eq("id", feed_id).execute()
                 logger.info("Archived %s before admission: %s", feed_url, rejection)
                 return RefreshResult(feed_id=feed_id, status="failed", error=rejection, archived=True)
@@ -204,6 +235,11 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         upserted = await _ingest(db, feed_id, fetched.parsed, initial)
     total = count_articles(db, feed_id)
     new_articles = max(0, total - before)
+    outcome = "updated" if new_articles else "unchanged"
+    if not fetched.parsed.articles:
+        outcome = "empty_feed"
+    elif not urls:
+        outcome = "no_usable_entries"
     interval = next_interval(current_interval, "new" if new_articles else "unchanged")
 
     # Never overwrite an existing/manual classification with detector output.
@@ -217,6 +253,8 @@ async def refresh_one(db: "Client", feed: dict) -> RefreshResult:
         "consecutive_failures": 0,
         "health_score": 100,
         "last_failure_reason": None,
+        "last_fetch_result": diagnostics | {"outcome": outcome, "upserted": upserted,
+                                               "new_articles": new_articles, "total_articles": total},
         "etag": fetched.etag,
         "last_modified": fetched.last_modified,
         **_schedule(interval, now),
@@ -300,12 +338,10 @@ async def refresh_due(
     results: list[RefreshResult] = []
     for feed, outcome in zip(feeds, settled):
         if isinstance(outcome, BaseException):
-            logger.exception(
-                "Unexpected error refreshing feed %s", feed.get("id"), exc_info=outcome
-            )
+            logger.error("Unexpected error refreshing feed %s", feed.get("id"))
             results.append(
                 RefreshResult(
-                    feed_id=str(feed.get("id")), status="failed", error=str(outcome)[:500]
+                    feed_id=str(feed.get("id")), status="failed", error="refresh_failed"
                 )
             )
         else:

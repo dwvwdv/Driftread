@@ -24,7 +24,7 @@ from services.feed_discovery import (
 from services.link_harvest import is_denied_host, normalize_host
 from services.review_models import ReviewSubmission
 from services.settings import get_setting
-from services.source_identity import is_comment_feed
+from services.source_identity import is_comment_feed, is_default_demo_article
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +304,8 @@ async def _fetch_snapshot(candidate: dict, sample_size: int, *, db=None, review=
                         'url': sanitize_http_url(article.url), 'text': snippet,
                         'author': sanitize_text(article.author, 200),
                         'published_at': article.published_at.isoformat() if article.published_at else None})
+        if is_default_demo_article(article.title, _plain_text(raw) or ''):
+            samples[-1]['default_demo'] = True
     packet = {'source': {'candidate_id': str(candidate['id']), 'feed_url': candidate['feed_url'],
                        'title': sanitize_text(parsed.title, 200), 'description': sanitize_text(parsed.description, 1000),
                        'website_url': sanitize_http_url(parsed.website_url), 'language': sanitize_text(parsed.language, 35),

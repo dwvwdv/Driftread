@@ -9,6 +9,14 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [~] 進行中
 - [x] 已完成
 
+## issue #106：來源管道診斷與恢復
+
+- [x] 唯讀核對精確文章數、全部零文章來源及最新評審狀態，保留時間點與未驗證邊界：[調查紀錄](docs/ISSUE_106.md)。
+- [x] stale／舊 Jev 缺金鑰任務安全重新申請及實際入列結果：`backend/migrations/20261016122206_source_diagnostics_recovery.sql`。
+- [x] 抓取結果診斷、寫入失敗退避、管理端強制重抓並重算文章數：`backend/services/feed_refresh.py`，後台資訊源管理顯示。
+- [x] WordPress 完整預設示範內容不作有效評審樣本，保留人工覆寫：`backend/services/source_identity.py`、`backend/services/source_review.py`。
+- [ ] PR 合併、正式 migration／worker／前端部署，重抓三個歷史原因不明來源與正式網站／API 驗收；原 100 個零文章來源無法由事後快照重建。
+
 ## issue #100：ChatGPT Web 來源評審 OAuth
 
 - [x] DCR／OAuth discovery、S256 PKCE、窄權限 token／refresh、重放撤銷及管理員 session 綁定：`backend/services/review_oauth.py`。

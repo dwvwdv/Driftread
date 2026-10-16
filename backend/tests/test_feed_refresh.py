@@ -346,7 +346,7 @@ async def test_refresh_one_failure_records_health_and_backs_off():
     update = db.feed_updates[-1]
     assert update["consecutive_failures"] == 3
     assert update["health_score"] == 70  # 100 - 3*10
-    assert "connection reset" in update["last_failure_reason"]
+    assert update["last_failure_reason"] == "fetch_failed"
     assert update["fetch_interval_minutes"] == 120
     assert "archived_at" not in update
 
@@ -373,18 +373,19 @@ async def test_refresh_one_auto_archives_at_threshold():
 
 
 @pytest.mark.asyncio
-async def test_refresh_one_truncates_long_failure_reason():
+async def test_refresh_one_never_stores_raw_failure_details():
     db = _FakeDB()
     with (
         patch("services.feed_refresh.validate_fetch_url", side_effect=lambda u: u),
         patch(
             "services.feed_refresh.fetch_and_parse_conditional",
-            side_effect=RuntimeError("x" * 900),
+            side_effect=RuntimeError("https://private.example/?token=SECRET"),
         ),
     ):
         await refresh_one(db, _feed_row())
 
-    assert len(db.feed_updates[-1]["last_failure_reason"]) == 500
+    assert db.feed_updates[-1]["last_failure_reason"] == "fetch_failed"
+    assert "SECRET" not in str(db.feed_updates)
 
 
 @pytest.mark.asyncio
@@ -402,7 +403,7 @@ async def test_refresh_one_records_ssrf_rejection_as_failure():
         result = await refresh_one(db, _feed_row())
 
     assert result.status == "failed"
-    assert "private" in db.feed_updates[-1]["last_failure_reason"]
+    assert db.feed_updates[-1]["last_failure_reason"] == "fetch_failed"
 
 
 # --------------------------------------------------------------- refresh_due
@@ -683,3 +684,72 @@ async def test_rows_without_the_admission_column_keep_the_old_behavior():
     gate.assert_not_called()
     assert result.status == "updated"
     assert "admitted_at" not in db.feed_updates[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('articles,counts,outcome,missing,duplicates', [
+    ([], [0, 0], 'empty_feed', 0, 0),
+    ([ParsedArticle(title='no link', url='')], [0, 0], 'no_usable_entries', 1, 0),
+    ([ParsedArticle(title='one', url='https://e.test/a')] * 2, [1, 1], 'unchanged', 0, 1),
+    ([ParsedArticle(title='new', url='https://e.test/b')], [1, 2], 'updated', 0, 0),
+])
+async def test_refresh_diagnoses_empty_missing_duplicate_and_new_entries(articles, counts, outcome, missing, duplicates):
+    db = _FakeDB(articles_counts=counts)
+    with (
+        patch('services.feed_refresh.validate_fetch_url', side_effect=lambda u: u),
+        patch('services.feed_refresh.fetch_and_parse_conditional', return_value=_fetched(articles)),
+        patch('services.feed_refresh.upsert_articles', return_value=0),
+    ):
+        await refresh_one(db, _feed_row())
+    result = db.feed_updates[-1]['last_fetch_result']
+    assert result['outcome'] == outcome
+    assert result['entries_seen'] == len(articles)
+    assert result['missing_url'] == missing and result['duplicate_entries'] == duplicates
+    assert result['new_articles'] == (1 if outcome == 'updated' else 0)
+
+
+@pytest.mark.asyncio
+async def test_zero_article_source_downloads_body_and_ingest_failure_is_retriable():
+    db = _FakeDB(articles_counts=[0])
+    with (
+        patch('services.feed_refresh.validate_fetch_url', side_effect=lambda u: u),
+        patch('services.feed_refresh.fetch_and_parse_conditional', return_value=_fetched(_parsed(2).articles)) as fetch,
+        patch('services.feed_refresh.upsert_articles', side_effect=RuntimeError('token=SECRET')),
+    ):
+        result = await refresh_one(db, _feed_row(article_count=0, etag='old', last_modified='old'))
+    assert fetch.call_args.kwargs == {'etag': None, 'last_modified': None}
+    assert result.status == 'failed' and result.error == 'ingest_failed'
+    update = db.feed_updates[-1]
+    assert update['last_fetch_result']['entries_seen'] == 2
+    assert update['fetch_interval_minutes'] == 120
+    assert 'etag' not in update and 'article_count' not in update
+    assert 'SECRET' not in str(db.feed_updates) + str(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('exception,outcome', [(TimeoutError(), 'fetch_timeout'), (ValueError('bad XML'), 'parse_failed')])
+async def test_failures_have_safe_nonempty_diagnostics(exception, outcome):
+    db = _FakeDB()
+    with patch('services.feed_refresh.validate_fetch_url', side_effect=exception):
+        result = await refresh_one(db, _feed_row())
+    assert result.error == outcome
+    assert db.feed_updates[-1]['last_fetch_result']['outcome'] == outcome
+
+
+def test_missing_exact_count_cannot_silently_zero_the_cache():
+    db = _FakeDB(articles_counts=[None])
+    with pytest.raises(RuntimeError, match='Article count unavailable'):
+        feed_refresh.count_articles(db, 'source')
+
+
+@pytest.mark.asyncio
+async def test_forced_admin_refresh_recounts_even_with_existing_validators():
+    db = _FakeDB(articles_counts=[3, 3])
+    with (
+        patch('services.feed_refresh.validate_fetch_url', side_effect=lambda u: u),
+        patch('services.feed_refresh.fetch_and_parse_conditional', return_value=_fetched(_parsed(3).articles)) as fetch,
+        patch('services.feed_refresh.upsert_articles', return_value=0),
+    ):
+        result = await refresh_one(db, _feed_row(article_count=999, etag='old'), force=True)
+    assert fetch.call_args.kwargs['etag'] is None
+    assert result.total_articles == db.feed_updates[-1]['article_count'] == 3

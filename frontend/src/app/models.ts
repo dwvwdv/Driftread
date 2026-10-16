@@ -18,6 +18,20 @@ export interface Feed {
   fulltext_policy?: 'rss' | 'summary_only';
   last_fetch_at?: string | null;
   last_ok_at?: string | null;
+  admitted_at?: string | null;
+  next_fetch_at?: string | null;
+  last_failure_reason?: string | null;
+  last_fetch_result?: {
+    outcome: string;
+    at: string;
+    entries_seen?: number;
+    missing_url?: number;
+    duplicate_entries?: number;
+    upserted?: number;
+    new_articles?: number;
+    total_articles?: number;
+    http_status?: number;
+  } | null;
 }
 
 export interface ArticleSummary {
@@ -501,6 +515,7 @@ export interface SourceReview {
   engine: 'external_agent' | 'jev';
   model?: string;
   policy_version?: number;
+  request_action?: 'enqueued' | 'requeued' | 'reused';
   error_code?: string | null;
   result?: SourceReviewResult | null;
   manual_override?: 'approve' | 'reject' | 'hold' | null;

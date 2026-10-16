@@ -26,6 +26,8 @@ async def test_web_link_consent_token_tools_refresh_and_revoke(setup, monkeypatc
     monkeypatch.setattr(transport, 'get_client', lambda: Mock(spec=[]))
     monkeypatch.setattr(transport, 'get_setting', lambda db, key:
         AppSetting(key='source.review', version=1, value=SourceReviewValue(enabled=True).model_dump()))
+    monkeypatch.setattr(transport.source_review, '_rpc', lambda db, name, params:
+        {'latest_pending': {}, 'provider_key_missing': 0})
 
     @asynccontextmanager
     async def lifespan(app):

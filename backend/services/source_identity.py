@@ -6,6 +6,17 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 logger = logging.getLogger(__name__)
 
 
+def is_default_demo_article(title: str, text: str) -> bool:
+    """Recognize complete WordPress starter text, never a title alone."""
+    if title.strip().casefold().rstrip(".!！") != "hello world":
+        return False
+    normalized = " ".join(text.split()).casefold()
+    return normalized in {
+        "welcome to wordpress. this is your first post. edit or delete it, then start writing!",
+        "welcome to wordpress! this is your first post. edit or delete it to take the first step in your blogging journey.",
+    }
+
+
 def feed_url_aliases(url: str) -> tuple[str, ...]:
     """Only conventional feed endpoints get a trailing-slash alias.
 

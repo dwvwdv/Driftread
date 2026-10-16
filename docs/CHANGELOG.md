@@ -1191,3 +1191,18 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 正式 MCP 舊版唯讀測試成功；新工具以官方 SDK、本機隔離 PostgreSQL 17 與單元測試驗證。真實 ChatGPT／瀏覽器、正式 Supabase／PostgREST、Telegram 與正式部署尚未驗收。
 - 先更新 API 套用 migration，healthy 後更新 frontend／worker，再刷新 ChatGPT 工具列表；不直接部署或合併 master。
 - GitHub review 事件 hook 工具不可用；依 AGENTS.md 既有 Codex 規範建立 PR #104 每小時追蹤，合併或關閉後停止，無新進展不通知。
+
+## 階段四十九：來源管道診斷、安全重新申請與預設內容把關（PR #107，2026-10-16）
+
+#106 的零文章、stale 與 provider 設定失敗屬於不同問題。本次先用正式唯讀 SQL 核對：214 個來源的文章快取與實際關聯數全部一致，零文章已從較早快照的 100 個降至 40 個，其中 36 個封存、3 個啟用且歷史原因不明、1 個啟用且抓取失敗但錯誤文字空白；不能把封存與准入排除當成新抓取故障。時間點、至少十個來源證據及可重跑的唯讀 SQL 見 [調查紀錄](ISSUE_106.md)。
+
+- 一般申請原本會沿用 stale／failed 任務，造成 MCP「申請成功」但未重新入列。現在在既有政策→候選→任務鎖內重建 stale／舊政策未完成任務，並允許舊 Jev 缺金鑰失敗轉交目前的 external_agent；以 `request_action` 區分新建、重排與沿用。保留舊任務、人工決定、租約隔離及 receipt，不建立普通恢復的 paid retry key；其他失敗與付費結果未知不自動重買。管理頁提供安全重新申請，`review_policy.queue` 以各 pending 候選最新任務提供積壓／缺金鑰訊號，沒有新增通知外送。
+- `last_fetch_result` 記錄嘗試中、逾時、HTTP／解析錯誤、空 feed、缺網址、准入排除、寫入失敗與文章變化，含解析／批內重複／新增／總數。原始外連與 DB 例外不進新診斷；後台區分歷史原因未知及等待抓取，顯示下次時間。保存／計數失敗會退避，不接受未知精確計數為 0、不保存未完成抓取的新 validator。零文章排程與管理單筆更新重新下載 body；管理更新成功時重算文章快取，未對正式資料執行修復。
+- 完整符合 WordPress 預設起始文章的樣本不滿足有效內容門檻，SQL 提交時再次確認實際證據，沒有提示的舊快照也適用；只剩示範內容時暫緩，不封鎖 host，保留人工核准。同標題真實文章與僅有摘要來源不一概當成垃圾。
+- 新 migration `20261016122206_source_diagnostics_recovery.sql` 可重跑；新增函式為 INVOKER 且僅 service_role 可執行。先停舊 worker，由 API 套 migration、healthy 後更新 worker／frontend，再刷新 MCP 說明；不新增環境變數或 Dashboard 設定。
+
+### 驗證與尚待驗收
+
+- 本機 PostgreSQL 17 完整後端 1433 passed、0 skipped；前端 38 files／441 tests 通過，production build 通過（既有 initial bundle warning：511.82 kB／500 kB），文件一致性與 `git diff --check` 通過。新增 SQL 測試包含 migration 重跑、角色權限、並行重排、政策升版、人工優先、跨引擎恢復、預設內容與候選→評審→准入→刷新→真實文章入庫→公開詳情的整合流程；第三方 HTTP 回應使用替身，資料庫操作經測試轉接器執行真實 SQL。
+- 正式 Supabase 僅執行唯讀查核，未更新 schema／來源／評審／receipt，也未觸發 Jev。正式網站網域未列入環境網路政策，正式 PostgREST／瀏覽器、三個歷史原因不明來源的重新抓取、Docker 部署及 ChatGPT 新版工具刷新均未驗證。#106 保持開啟追蹤；不批次刪除或合併歷史別名、不還原較早 100 個來源的歷史原因。
+- GitHub review 事件 hook 工具不可用；建立 PR 後檢查現有 review，並依既有 Codex 專案規範設定每小時追蹤，合併或關閉後停止，無新進展不通知。
