@@ -132,6 +132,8 @@ Free plan 的資料庫上限是 500 MB，超過會被切成唯讀。`DELETE` 和
 
 ## 來源管道診斷與恢復（#106）
 
+文章計數後續修復新增 `20261017135504_atomic_feed_article_counts.sql`：先停舊 worker，由 API 開機套 migration，API healthy 後更新同版 worker；沒有前端或 Dashboard 設定變更。此 migration 不批次更新歷史計數，既有落差由刷新（含 304）或管理員明確執行 `reconcile_feed_article_count(uuid)` 修復。回滾應用保留 RPC；舊版 Python 仍可能寫回過時 COUNT，不能宣稱混跑時也有新版一致性保證。
+
 先停止舊 worker，再由 API 開機套用 `20261016122206_source_diagnostics_recovery.sql`，healthy 後啟動同版 worker／frontend，最後刷新 ChatGPT MCP 工具說明。新欄位是 API／worker 必要依賴，不能先啟動新版 worker；不需要修改 Dashboard、環境變數或金鑰。migration 不批次重排、重抓或修復正式資料。
 
 驗收先讀 `review_policy.queue` 及一般候選清單，以少量 stale／舊 Jev 缺金鑰候選重新申請，確認 `request_action`、目前政策與引擎、舊紀錄保留及未建立 paid retry key；相同有效任務回 reused。只對原失敗做無付款的外部引擎轉交，不能用此步驟測試正式付費重送。後台逐一重抓歷史原因不明來源並比對診斷／精確文章數／公開列表、詳情與瀏覽器，參見 [調查紀錄](ISSUE_106.md)。

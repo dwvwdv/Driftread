@@ -21,6 +21,8 @@ class Query:
     def maybe_single(self): return self
     def execute(self):
         self.db.calls.append((self.name,self.filters,self.operation))
+        if self.name=='reconcile_feed_article_count':
+            return SimpleNamespace(data=0)
         if self.name=='feeds':
             data=[r for r in self.db.rows if all(r.get(f)==v for f,v in self.filters)]
             if self.operation:
@@ -77,7 +79,7 @@ async def test_304_advances_ok_without_article_writes():
     from services.feed_refresh import refresh_one
     db=DB();row=source();fetched=SimpleNamespace(not_modified=True,etag='e',last_modified=None)
     with patch('services.feed_refresh.validate_fetch_url',new=AsyncMock(return_value=row['url'])),patch('services.feed_refresh.fetch_and_parse_conditional',new=AsyncMock(return_value=fetched)): result=await refresh_one(db,row)
-    assert result.status=='not_modified' and [a['p_ok'] for _,a in db.rpcs]==[False,True]
+    assert result.status=='not_modified' and [a['p_ok'] for n,a in db.rpcs if n=='record_source_fetch']==[False,True]
     assert not any(n=='articles' for n,_,_ in db.calls)
 
 @pytest.mark.asyncio
@@ -87,7 +89,7 @@ async def test_success_record_survives_article_ingestion_failure():
     with patch('services.feed_refresh.validate_fetch_url',new=AsyncMock(return_value=row['url'])),patch('services.feed_refresh.fetch_and_parse_conditional',new=AsyncMock(return_value=fetched)),patch('services.feed_refresh.upsert_articles',side_effect=RuntimeError('business write failed')):
         result = await refresh_one(db,row)
     assert result.status == 'failed' and result.error == 'ingest_failed'
-    assert [a['p_ok'] for _,a in db.rpcs]==[False,True]
+    assert [a['p_ok'] for n,a in db.rpcs if n=='record_source_fetch']==[False,True]
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('role',['signal_only','private'])
