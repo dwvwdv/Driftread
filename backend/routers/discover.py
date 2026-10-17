@@ -16,7 +16,7 @@ from models import (
 )
 from rate_limit import rate_limit
 from rss_parser import fetch_and_parse
-from services.articles import upsert_articles
+from services.articles import reconcile_article_count, upsert_articles
 from services.source_visibility import import_readable_source, screen_new_source
 from services.feed_discovery import DiscoveryError, discover_feeds, validate_fetch_url
 
@@ -132,13 +132,9 @@ async def discover_and_import(
     # Ingestion reports changed rows, which is zero for an unchanged reimport.
     # The catalog count must reflect every stored article, including old items
     # no longer present in the RSS document.
-    count_result = await asyncio.to_thread(
-        lambda: db.table("articles").select("id", count="exact", head=True)
-        .eq("feed_id", str(feed.id)).execute()
-    )
-    total_articles = count_result.count or 0
+    total_articles = await asyncio.to_thread(reconcile_article_count, db, str(feed.id))
     db.table("feeds").update(
-        {"last_fetched_at": now, "article_count": total_articles}
+        {"last_fetched_at": now}
     ).eq("id", str(feed.id)).execute()
 
     return feed.model_copy(update={

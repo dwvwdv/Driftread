@@ -14,8 +14,17 @@ SELECT now() AS observed_at,count(*) AS feeds,
  sum(article_count) AS cached_articles,sum(actual) AS actual_articles
 FROM sources;
 
+-- Show every mismatch, including nonzero caches; the zero-only list misses them.
+WITH counts AS (
+ SELECT feed_id,count(*) AS actual FROM driftread.articles GROUP BY feed_id
+)
+SELECT f.id,f.title,f.article_count,coalesce(c.actual,0) AS actual,
+ f.last_fetch_result,f.next_fetch_at
+FROM driftread.feeds f LEFT JOIN counts c ON c.feed_id=f.id
+WHERE f.article_count<>coalesce(c.actual,0) ORDER BY f.title,f.id;
+
 SELECT id,title,url,article_count,archived_at,last_fetch_at,last_ok_at,
- last_fetched_at,next_fetch_at,
+ last_fetched_at,next_fetch_at,admitted_at,last_fetch_result,
  CASE
   WHEN archived_at IS NOT NULL AND last_failure_reason LIKE 'Excluded before admission:%' THEN 'excluded'
   WHEN archived_at IS NOT NULL THEN 'archived_other'

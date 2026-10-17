@@ -17,7 +17,7 @@ import httpx
 
 from env_utils import env_flag, env_int
 from rss_parser import fetch_and_parse_conditional
-from services.articles import upsert_articles
+from services.articles import reconcile_article_count, upsert_articles
 from services.feed_discovery import validate_fetch_url
 from services.language import resolve_feed_language
 from services.source_identity import (
@@ -92,16 +92,7 @@ def next_interval(current: int, outcome: Outcome) -> int:
 
 
 def count_articles(db: "Client", feed_id: str) -> int:
-    result = (
-        db.table("articles")
-        .select("id", count="exact", head=True)
-        .eq("feed_id", feed_id)
-        .execute()
-    )
-    count = getattr(result, "count", None)
-    if count is None:
-        raise RuntimeError("Article count unavailable")
-    return count
+    return reconcile_article_count(db, feed_id)
 
 
 def select_due_feeds(db: "Client", limit: int) -> list[dict]:
@@ -138,10 +129,13 @@ async def refresh_one(db: "Client", feed: dict, *, force: bool = False) -> Refre
     db.table("feeds").update({"last_fetch_result": diagnostics}, returning="minimal").eq("id", feed_id).execute()
     try:
         safe_url = await validate_fetch_url(feed_url)
+        retry_ingest = (feed.get("last_failure_reason") == "ingest_failed"
+                        or (feed.get("last_fetch_result") or {}).get("outcome") == "ingest_failed")
+        conditional = not force and feed.get("article_count") != 0 and not retry_ingest
         fetched = await fetch_and_parse_conditional(
             safe_url,
-            etag=feed.get("etag") if not force and feed.get("article_count") != 0 else None,
-            last_modified=feed.get("last_modified") if not force and feed.get("article_count") != 0 else None,
+            etag=feed.get("etag") if conditional else None,
+            last_modified=feed.get("last_modified") if conditional else None,
         )
     except Exception as exc:
         outcome = "fetch_failed"
@@ -160,6 +154,7 @@ async def refresh_one(db: "Client", feed: dict, *, force: bool = False) -> Refre
         # A parsed HTTP response is not evidence that its articles were saved.
         # Do not persist database/provider exception payloads or validators from
         # an incomplete ingest; the next attempt must download the body again.
+        logger.warning("Feed refresh failed: feed_id=%s stage=%s", feed_id, diagnostics.get("stage"))
         return _record_failure(db, feed, diagnostics | {"outcome": "ingest_failed"})
 
 
@@ -188,26 +183,31 @@ async def _store_fetched(db, feed, fetched, diagnostics) -> RefreshResult:
     current_interval = feed.get("fetch_interval_minutes") or DEFAULT_INTERVAL_MINUTES
 
     now = datetime.now(timezone.utc)
+    diagnostics["stage"] = "record_fetch"
     db.rpc("record_source_fetch", {"p_feed_id": feed_id, "p_at": now.isoformat(), "p_ok": True}).execute()
     if fetched.not_modified:
+        diagnostics["stage"] = "count_reconcile"
+        total = count_articles(db, feed_id)
         interval = next_interval(current_interval, "unchanged")
+        diagnostics["stage"] = "completion_update"
         db.table("feeds").update({
             "last_fetched_at": now.isoformat(),
             "consecutive_failures": 0,
             "health_score": 100,
             "last_failure_reason": None,
-            "last_fetch_result": diagnostics | {"outcome": "not_modified"},
+            "last_fetch_result": diagnostics | {"outcome": "not_modified", "stage": "complete", "total_articles": total},
             "etag": fetched.etag,
             "last_modified": fetched.last_modified,
             **_schedule(interval, now),
         }, returning="minimal").eq("id", feed_id).execute()
-        return RefreshResult(feed_id=feed_id, status="not_modified")
+        return RefreshResult(feed_id=feed_id, status="not_modified", total_articles=total)
 
     assert fetched.parsed is not None
     urls = [article.url for article in fetched.parsed.articles if article.url]
     diagnostics.update(entries_seen=len(fetched.parsed.articles),
                        missing_url=len(fetched.parsed.articles) - len(urls),
                        duplicate_entries=len(urls) - len(set(urls)))
+    diagnostics["stage"] = "count_before"
     before = count_articles(db, feed_id)
     initial = not feed.get("last_fetched_at")
     # A row without the column comes from a database the migration has not
@@ -220,6 +220,7 @@ async def _store_fetched(db, feed, fetched, diagnostics) -> RefreshResult:
         # aliases promoted together and refreshed in the same batch cannot
         # both pass before either stores its items.
         async with _ADMISSION_LOCK:
+            diagnostics["stage"] = "admission"
             rejection = await asyncio.to_thread(_admission_rejection, db, feed_id, feed_url, fetched.parsed)
             if rejection:
                 db.table("feeds").update({
@@ -230,9 +231,12 @@ async def _store_fetched(db, feed, fetched, diagnostics) -> RefreshResult:
                 }, returning="minimal").eq("id", feed_id).execute()
                 logger.info("Archived %s before admission: %s", feed_url, rejection)
                 return RefreshResult(feed_id=feed_id, status="failed", error=rejection, archived=True)
+            diagnostics["stage"] = "ingest"
             upserted = await _ingest(db, feed_id, fetched.parsed, initial)
     else:
+        diagnostics["stage"] = "ingest"
         upserted = await _ingest(db, feed_id, fetched.parsed, initial)
+    diagnostics["stage"] = "count_after"
     total = count_articles(db, feed_id)
     new_articles = max(0, total - before)
     outcome = "updated" if new_articles else "unchanged"
@@ -246,14 +250,14 @@ async def _store_fetched(db, feed, fetched, diagnostics) -> RefreshResult:
     # Missing languages are filled from publisher metadata first, then from a
     # conservative text detector. Existing locale-ish values are canonicalized
     # to the same primary-language buckets used by filters and recommendations.
+    diagnostics["stage"] = "language"
     language = resolve_feed_language(fetched.parsed, existing=feed.get("language"))
     update = {
         "last_fetched_at": now.isoformat(),
-        "article_count": total,
         "consecutive_failures": 0,
         "health_score": 100,
         "last_failure_reason": None,
-        "last_fetch_result": diagnostics | {"outcome": outcome, "upserted": upserted,
+        "last_fetch_result": diagnostics | {"outcome": outcome, "stage": "complete", "upserted": upserted,
                                                "new_articles": new_articles, "total_articles": total},
         "etag": fetched.etag,
         "last_modified": fetched.last_modified,
@@ -268,6 +272,7 @@ async def _store_fetched(db, feed, fetched, diagnostics) -> RefreshResult:
     if gated and len(canonical_item_urls([a.url for a in fetched.parsed.articles])) >= MIRROR_MIN_ITEMS:
         update["admitted_at"] = now.isoformat()
     # returning="minimal" — same reason as the two update() calls above.
+    diagnostics["stage"] = "completion_update"
     db.table("feeds").update(update, returning="minimal").eq("id", feed_id).execute()
 
     return RefreshResult(

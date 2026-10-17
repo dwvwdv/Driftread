@@ -96,7 +96,11 @@ X-API-Key: <admin key>
 
 有 body 時記錄 `entries_seen`、`missing_url`、`duplicate_entries`（同批完全相同網址）；成功完成另外記 `upserted`（含更新）、`new_articles`（前後精確計數差值）與 `total_articles`。這些不是跨來源去重數；鏡像准入排除仍由來源身分檢查負責，不能把「無新增」都說成被判重。
 
-零文章來源的排程會略過 validator、重新下載 body，避免只有 304 而無法診斷；其他排程維持 conditional GET。後台單筆「更新文章」一律重新下載並做現有前後精確 COUNT，成功時重算 `article_count`，提供逐來源修復快取的入口。精確 COUNT 缺少結果時視為失敗，禁止把未知當 0 寫回；本次正式查核沒有發現快取落差，不執行批次修復。全目錄唯讀核對與歷史證據見 [#106 調查](ISSUE_106.md)。
+零文章來源或上次 `ingest_failed` 的排程會略過 validator、重新下載 body，避免 304 掩蓋未完成的入庫；其他排程維持 conditional GET。後台單筆「更新文章」一律重新下載。
+
+`20261017135504_atomic_feed_article_counts.sql` 將計數維護移到每批最多 200 篇的 `ingest_article_batch` 交易內：先鎖來源，再保存文章與 provenance，最後精確重算 `article_count`。後續批次、語言判定或完成狀態更新失敗，不會讓已提交文章留下舊計數。Python 不再將先前讀到的 COUNT 寫回；刷新及 discover/import 共用 service-only、INVOKER 的 `reconcile_feed_article_count`，以相同來源鎖重算並回傳整數。304 也會重算，讓歷史落差可隨正常排程修復；空 feed 同樣可修復。這不把 DB 錯誤偽裝成抓取成功，原失敗狀態與退避仍保留，未知計數不當 0。
+
+`last_fetch_result.stage` 使用固定階段碼：`record_fetch`、`count_before`、`admission`、`ingest`、`count_after`、`count_reconcile`、`language`、`completion_update`，成功為 `complete`。失敗日誌只記來源 ID 與階段，不記原始例外或憑證。舊版 `ingest_failed` 沒有階段，不能事後推斷其底層例外。全目錄唯讀核對與各時間點證據見 [#106 調查](ISSUE_106.md)。
 
 ## Worker 監控
 

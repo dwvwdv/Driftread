@@ -14,6 +14,7 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [x] 唯讀核對精確文章數、全部零文章來源及最新評審狀態，保留時間點與未驗證邊界：[調查紀錄](docs/ISSUE_106.md)。
 - [x] stale／舊 Jev 缺金鑰任務安全重新申請及實際入列結果：`backend/migrations/20261016122206_source_diagnostics_recovery.sql`。
 - [x] 抓取結果診斷、寫入失敗退避、管理端強制重抓並重算文章數：`backend/services/feed_refresh.py`，後台資訊源管理顯示。
+- [x] 每批入庫與文章快取計數同交易、304／匯入鎖內重算與失敗階段診斷：`backend/migrations/20261017135504_atomic_feed_article_counts.sql`；正式 MCP 三筆提交與兩筆缺金鑰轉交已驗證，細節見調查紀錄。
 - [x] WordPress 完整預設示範內容不作有效評審樣本，保留人工覆寫：`backend/services/source_identity.py`、`backend/services/source_review.py`。
 - [ ] PR 合併、正式 migration／worker／前端部署，重抓三個歷史原因不明來源與正式網站／API 驗收；原 100 個零文章來源無法由事後快照重建。
 

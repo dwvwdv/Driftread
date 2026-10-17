@@ -72,9 +72,16 @@ class _FakeDB:
         self.articles_ops: list = []
         self.feed_updates: list[dict] = []
         self.source_fetch_calls: list[dict] = []
+        self.count_calls: list[dict] = []
         self.subscribers = 0
 
     def rpc(self, name, args):
+        if name == "reconcile_feed_article_count":
+            self.count_calls.append(args)
+            value = self._articles_counts.pop(0) if self._articles_counts else 0
+            result = _FakeResult()
+            result.data = value
+            return _FakeTable(result).query()
         if name == "find_mirror_sources":
             return _FakeTable(_FakeResult()).query()
         assert name == "record_source_fetch"
@@ -241,7 +248,8 @@ async def test_refresh_one_not_modified_skips_articles():
 
     assert result.status == "not_modified"
     upsert.assert_not_called()
-    assert db.articles_ops == []  # no count queries either
+    assert db.articles_ops == []
+    assert len(db.count_calls) == 1  # 304 also repairs a historical stale cache
 
     update = db.feed_updates[-1]
     assert update["consecutive_failures"] == 0
@@ -295,7 +303,8 @@ async def test_refresh_one_new_articles_shortens_interval_and_stores_cumulative_
 
     update = db.feed_updates[-1]
     # article_count is the cumulative total, NOT the 5 rows the upsert touched.
-    assert update["article_count"] == 5
+    assert "article_count" not in update  # SQL owns the count; no stale client write
+    assert result.total_articles == 5
     assert update["fetch_interval_minutes"] == 30  # new content -> poll sooner
     assert update["etag"] == 'W/"new"'
 
@@ -752,4 +761,41 @@ async def test_forced_admin_refresh_recounts_even_with_existing_validators():
     ):
         result = await refresh_one(db, _feed_row(article_count=999, etag='old'), force=True)
     assert fetch.call_args.kwargs['etag'] is None
-    assert result.total_articles == db.feed_updates[-1]['article_count'] == 3
+    assert result.total_articles == 3
+    assert 'article_count' not in db.feed_updates[-1]
+
+
+@pytest.mark.asyncio
+async def test_partial_ingest_retry_downloads_body_even_with_a_nonzero_count():
+    db = _FakeDB(articles_counts=[1, 2])
+    with (
+        patch('services.feed_refresh.validate_fetch_url', side_effect=lambda u: u),
+        patch('services.feed_refresh.fetch_and_parse_conditional', return_value=_fetched(_parsed(2).articles)) as fetch,
+        patch('services.feed_refresh.upsert_articles', return_value=1),
+    ):
+        result = await refresh_one(db, _feed_row(article_count=1, etag='old', last_modified='old',
+            last_fetch_result={'outcome': 'ingest_failed'}))
+    assert fetch.call_args.kwargs == {'etag': None, 'last_modified': None}
+    assert result.total_articles == 2
+    assert db.feed_updates[-1]['last_failure_reason'] is None
+
+
+@pytest.mark.asyncio
+async def test_304_reconciles_count_without_downloading_or_ingesting():
+    db = _FakeDB(articles_counts=[20])
+    with (
+        patch('services.feed_refresh.validate_fetch_url', side_effect=lambda u: u),
+        patch('services.feed_refresh.fetch_and_parse_conditional', return_value=ConditionalFetch(not_modified=True)),
+        patch('services.feed_refresh.upsert_articles') as ingest,
+    ):
+        result = await refresh_one(db, _feed_row(article_count=999))
+    ingest.assert_not_called()
+    assert result.status == 'not_modified' and result.total_articles == 20
+    assert db.feed_updates[-1]['last_fetch_result']['total_articles'] == 20
+
+
+@pytest.mark.parametrize('value', [None, -1, True, '20', []])
+def test_reconcile_rejects_invalid_counts(value):
+    db = _FakeDB(articles_counts=[value])
+    with pytest.raises(RuntimeError, match='Article count unavailable'):
+        feed_refresh.count_articles(db, 'source')

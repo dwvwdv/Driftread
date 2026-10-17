@@ -77,6 +77,7 @@ def test_discover_import_succeeds_for_authenticated_user(client):
         patch("routers.discover.fetch_and_parse", new=fake_fetch),
         patch("routers.discover.screen_new_source", return_value=None),
         patch("routers.discover.upsert_articles", return_value=0),
+        patch("routers.discover.reconcile_article_count", return_value=37) as reconcile,
     ):
         resp = c.post(
             "/api/discover/import",
@@ -89,8 +90,8 @@ def test_discover_import_succeeds_for_authenticated_user(client):
     assert resp.json()["article_count"] == 37
     assert resp.json()["last_fetched_at"]
     catalog_update = mock_db.table.return_value.update.call_args.args[0]
-    assert catalog_update["article_count"] == 37
-    mock_db.table.return_value.select.assert_called_once_with("id", count="exact", head=True)
+    assert "article_count" not in catalog_update
+    reconcile.assert_called_once_with(mock_db, feed_row["id"])
     # Auto-subscribes the importer, unconditionally now that the caller is
     # always a real signed-in user.
     user_feeds_upsert = mock_db.table.return_value.upsert.call_args_list

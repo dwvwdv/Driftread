@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 200
 
 
+def reconcile_article_count(db: "Client", feed_id: str) -> int:
+    """Repair the catalog cache under the same feed lock as batch ingestion."""
+    total = db.rpc("reconcile_feed_article_count", {"p_feed_id": feed_id}).execute().data
+    if type(total) is not int or total < 0:
+        raise RuntimeError("Article count unavailable")
+    return total
+
+
 def upsert_articles(
     db: "Client", feed_id: str, articles: list["ParsedArticle"], *,
     origin: Literal["rss", "discover_import", "historical_import"] = "rss",
