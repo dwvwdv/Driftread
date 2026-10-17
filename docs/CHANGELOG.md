@@ -1226,7 +1226,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 獨立 subagent 檢查決策語義、批次、鎖、權限與回歸測試，未發現新增阻擋問題。部署先更新 API 套用 migration，再更新 frontend；來源評審 MCP 九個工具與權限範圍保持不變。
 - GitHub review事件hook工具不可用；依AGENTS.md既有規範建立PR #105每小時追蹤，合併或關閉後停止，無新進展不通知。
 
-## 階段五十：小批次 MCP 驗收與文章計數交易修復（PR 待定，2026-10-17）
+## 階段五十：小批次 MCP 驗收與文章計數交易修復（PR #108，2026-10-17）
 
 使用者要求對 #106 實際處理少量來源後確認。本次正式 MCP 僅提交三筆（收錄／拒收留言／暫緩各一），新收錄來源由 worker 成功入庫 10 篇且計數一致；兩筆舊 Jev 缺金鑰失敗普通申請成功轉 external_agent 並進入 ready，積壓 186→184，未建立 paid retry key。具體來源、時間點與界限見 [調查紀錄](ISSUE_106.md)。
 
@@ -1235,3 +1235,5 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 新 service_role-only／INVOKER 重算 RPC 供刷新（含 304）與 discover/import 修復歷史落差；未知計數禁止當 0。上輪入庫失敗時，已有文章也無條件下載，以免 validator 掩蓋未完成入庫。診斷與安全日誌記錄固定失敗階段，不保存原始例外。唯讀 audit 腳本另列所有非零／零計數落差及零文章來源診斷。
 - 本機 PostgreSQL 18.4 完整 backend：1531 passed、0 skipped；新增真 SQL 回歸覆蓋部分批次失敗、metadata 失敗後恢復、鎖等待、重算、重複入庫不膨脹、rollback、權限與 migration 重跑。原版／修正版對照分別為 0／1 與 1／1。未修改 frontend；文件檢查與 git diff --check 通過。
 - 未部署新 migration／API／worker，不直接合併 master。先停舊 worker，由 API 套 migration 並 healthy 後啟動同版 worker。舊正式 ingest_failed 無階段，尚無證據能定位每次底層例外；不把本機注入例外當作正式根因。其餘 184 筆缺金鑰任務、歷史留言／別名、零文章逐筆分類、正式網站與 API／瀏覽器驗收仍由 #106 追蹤。
+
+- GitHub review 事件 hook 工具不可用；依 AGENTS.md 的既有 Codex 規範設定 PR #108 每小時追蹤，合併或關閉後停止，無新進展不通知。
