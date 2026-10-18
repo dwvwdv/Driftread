@@ -198,7 +198,7 @@ def _record_failure(
             now + timedelta(hours=next_probe_delay_hours(attempts))
         ).isoformat(),
     }
-    db.table("discovery_targets").update(update).eq("id", str(target["id"])).execute()
+    db.table("discovery_targets").update(update).eq("id", str(target["id"])).eq("status", "pending").execute()
     return (exhausted, update)
 
 
@@ -208,7 +208,7 @@ def _record_terminal(db: "Client", target: dict, status: str, **extra) -> None:
         "last_probe_at": datetime.now(timezone.utc).isoformat(),
         **extra,
     }
-    db.table("discovery_targets").update(update).eq("id", str(target["id"])).execute()
+    db.table("discovery_targets").update(update).eq("id", str(target["id"])).eq("status", "pending").execute()
 
 
 async def probe_one(db: "Client", target: dict) -> ProbeResult:
@@ -216,6 +216,11 @@ async def probe_one(db: "Client", target: dict) -> ProbeResult:
     target_id = str(target["id"])
     host = target.get("host") or ""
     ua = user_agent()
+
+    # A batch may have been selected before an administrator cancelled this URL.
+    current = db.table('discovery_targets').select('id').eq('id', target_id).eq('status', 'pending').maybe_single().execute()
+    if not current or not current.data:
+        return ProbeResult(target_id, host, 'none')
 
     # 1. SSRF gate first, before any network request and before any DB write.
     #    A host that has since started resolving to a private address is a

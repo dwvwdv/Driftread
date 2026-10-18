@@ -23,6 +23,7 @@ from auth import AuthUser
 from services import manage_auth
 
 SCOPE = "source:review"
+MANAGE_SCOPE = "catalog:manage"
 REQUEST_SECONDS = 600
 CODE_SECONDS = 120
 ACCESS_SECONDS = 900
@@ -72,12 +73,12 @@ def oauth_metadata() -> dict:
             'token_endpoint_auth_methods_supported': ['none'],
             'revocation_endpoint_auth_methods_supported': ['none'],
             'code_challenge_methods_supported': ['S256'],
-            'scopes_supported': [SCOPE, 'offline_access']}
+            'scopes_supported': [SCOPE, MANAGE_SCOPE, 'offline_access']}
 
 
 def resource_metadata() -> dict:
     return {'resource': resource_url(), 'authorization_servers': [base_url()],
-            'scopes_supported': [SCOPE, 'offline_access'], 'bearer_methods_supported': ['header']}
+            'scopes_supported': [SCOPE, MANAGE_SCOPE, 'offline_access'], 'bearer_methods_supported': ['header']}
 
 
 def _digest(value: str) -> str:
@@ -123,9 +124,9 @@ def _resource(params):
 
 def _scope(value):
     pieces = value.split(' ')
-    if SCOPE not in pieces or set(pieces) - {SCOPE, 'offline_access'} or len(pieces) != len(set(pieces)):
-        raise OAuthError('invalid_scope', description='Only source review permission is supported')
-    return ' '.join([SCOPE] + (['offline_access'] if 'offline_access' in pieces else []))
+    if SCOPE not in pieces or set(pieces) - {SCOPE, MANAGE_SCOPE, 'offline_access'} or len(pieces) != len(set(pieces)):
+        raise OAuthError('invalid_scope', description='Unsupported management permission')
+    return ' '.join(s for s in (SCOPE, MANAGE_SCOPE, 'offline_access') if s in pieces)
 
 
 def _cleanup(cur):
@@ -448,7 +449,7 @@ def validate_access_token(token: str) -> dict:
         if grant['token_expires_at'] <= _now():
             raise OAuthError('invalid_token', 401)
         cur.execute("UPDATE driftread.review_oauth_grants SET last_used_at=now() WHERE id=%s", (grant['id'],))
-    return {'owner_user_id':str(grant['owner_user_id']),'scope':SCOPE,'grant_id':str(grant['id'])}
+    return {'owner_user_id':str(grant['owner_user_id']),'scope':grant['scope'],'grant_id':str(grant['id'])}
 
 
 def list_grants(user: AuthUser, manage_token: str) -> list:

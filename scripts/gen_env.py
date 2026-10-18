@@ -113,6 +113,10 @@ def main():
             f.write("\nSOURCE_REVIEW_MCP_KEY=" + generated["SOURCE_REVIEW_MCP_KEY"]() + "\n")
         print("  generated SOURCE_REVIEW_MCP_KEY")
 
+    if "CATALOG_MANAGEMENT_MCP_KEY" not in existing:
+        with open(ENV_FILE, "a") as f:
+            f.write("\nCATALOG_MANAGEMENT_MCP_KEY=\n")
+
     if not existing.get("JEV_API_KEY", "").strip():
         print("\nℹ JEV_API_KEY 未設定；只有啟用 Jev 來源評審時才需要，external agent 不需要此 key。")
 

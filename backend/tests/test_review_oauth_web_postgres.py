@@ -78,7 +78,7 @@ async def test_web_link_consent_token_tools_refresh_and_revoke(setup, monkeypatc
                     async with ClientSession(receive, send) as session:
                         await session.initialize()
                         tools = (await session.list_tools()).tools
-                        assert len(tools) == 9 and all(t.meta['securitySchemes'][0]['type'] == 'oauth2' for t in tools)
+                        assert len(tools) == 13 and all(t.meta['securitySchemes'][0]['type'] == 'oauth2' for t in tools)
                         result = await session.call_tool('review_policy')
                         assert result.structuredContent['runtime_available'] is True
             rotated = await browser.post(metadata['token_endpoint'], data={

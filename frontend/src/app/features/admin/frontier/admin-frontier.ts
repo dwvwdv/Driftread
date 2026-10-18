@@ -12,7 +12,7 @@ import { ConfirmService } from '../../../ui/confirm/confirm';
 import { ToastService } from '../../../ui/toast/toast';
 import { clampPage } from '../../../shared/paging';
 
-const TARGET_STATUSES = ['pending', 'done', 'blocked', 'exhausted', 'rejected'] as const;
+const TARGET_STATUSES = ['pending', 'done', 'blocked', 'exhausted', 'rejected', 'removed'] as const;
 
 /**
  * The crawl frontier: seed URLs, the probe queue, and the directory sources that

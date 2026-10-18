@@ -1,0 +1,32 @@
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.toolbar label {
+  display: grid;
+}
+.grow {
+  flex: 1;
+  min-width: 180px;
+}
+.hint,
+.url {
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.hint {
+  margin-bottom: var(--sp-4);
+}
+.list {
+  border: var(--border-width) solid var(--border);
+  background: var(--surface-raised);
+}

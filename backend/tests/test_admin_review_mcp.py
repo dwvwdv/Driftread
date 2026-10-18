@@ -14,6 +14,7 @@ from services import admin_review_mcp as transport
 from services.settings import AppSetting, SourceReviewValue
 
 KEY = "test-source-review-dedicated-key"
+MANAGEMENT_KEY = 'test-catalog-management-dedicated-key'
 REVIEW_ID = "10000000-0000-4000-8000-000000000001"
 CANDIDATE_ID = "10000000-0000-4000-8000-000000000002"
 LEASE = "10000000-0000-4000-8000-000000000003"
@@ -27,6 +28,7 @@ SUBMISSION = {
 @pytest.fixture
 def mcp_app(monkeypatch):
     monkeypatch.setenv("SOURCE_REVIEW_MCP_KEY", KEY)
+    monkeypatch.setenv('CATALOG_MANAGEMENT_MCP_KEY', MANAGEMENT_KEY)
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
     monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
 
@@ -61,8 +63,8 @@ async def test_official_sdk_source_review_workflow_and_annotations(mcp_app):
                         assert init.serverInfo.name == "Driftread Source Review"
                         tools = {t.name: t for t in (await session.list_tools()).tools}
                         assert set(tools) == {"review_policy", "request_source_review", "claim_source_review", "source_review_packet", "submit_source_review",
-                                              "list_source_review_candidates", "request_source_reviews", "claim_source_reviews", "submit_source_reviews"}
-                        assert {name for name, tool in tools.items() if tool.annotations.readOnlyHint} == {"review_policy", "source_review_packet", "list_source_review_candidates"}
+                                              "list_source_review_candidates", "request_source_reviews", "claim_source_reviews", "submit_source_reviews"} | transport.MANAGEMENT_TOOLS
+                        assert {name for name, tool in tools.items() if tool.annotations.readOnlyHint} == {"review_policy", "source_review_packet", "list_source_review_candidates", "list_cleanup_items", "list_pending_discovery_targets"}
                         assert all(not tool.annotations.openWorldHint for tool in tools.values())
                         assert tools["claim_source_review"].annotations.idempotentHint is False
                         assert all(t.inputSchema["additionalProperties"] is False for t in tools.values())
@@ -247,7 +249,8 @@ async def test_oauth_official_sdk_works_without_machine_key_and_advertises_scope
                         await session.initialize()
                         tools = (await session.list_tools()).tools
                         for tool in tools:
-                            assert tool.meta['securitySchemes'] == [{'type': 'oauth2', 'scopes': ['source:review', 'offline_access']}]
+                            expected = ['source:review', 'catalog:manage', 'offline_access'] if tool.name in transport.MANAGEMENT_TOOLS else ['source:review', 'offline_access']
+                            assert tool.meta['securitySchemes'] == [{'type': 'oauth2', 'scopes': expected}]
                             assert tool.model_dump()['securitySchemes'] == tool.meta['securitySchemes']
                         result = await session.call_tool('claim_source_review')
                         assert result.structuredContent == {'review': None}
@@ -352,3 +355,49 @@ async def test_malformed_oauth_bearer_never_dispatches_verification(mcp_app, tok
             assert response.status_code == 401
         validate.assert_not_called()
         db.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('credential', ['review', 'management', 'oauth_review', 'oauth_management'])
+async def test_catalog_tools_enforce_separate_permission(mcp_app, credential):
+    scope = 'source:review catalog:manage offline_access' if credential == 'oauth_management' else 'source:review'
+    headers = {'X-API-Key': MANAGEMENT_KEY if credential == 'management' else KEY}
+    if credential.startswith('oauth'):
+        headers = {'Authorization': 'Bearer droa_' + 'a' * 43}
+    db = Mock(spec=[])
+    allowed = credential in {'management', 'oauth_management'}
+    with patch.object(transport, 'get_client', return_value=db), \
+            patch.object(transport.review_oauth, 'validate_access_token', return_value={'grant_id': 'g', 'scope': scope}), \
+            patch.object(transport.cleanup, 'list_items', return_value={'items': [], 'total': 0}) as listing, \
+            patch.object(transport.cleanup, 'apply_batch', return_value={'items': [], 'dry_run': True}) as apply, \
+            patch.object(transport.cleanup, 'list_pending_targets', return_value={'items': [], 'total': 0}) as pending, \
+            patch.object(transport.cleanup, 'remove_targets', return_value={'items': []}) as remove:
+        async with mcp_app.router.lifespan_context(mcp_app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), headers=headers) as http:
+                async with streamable_http_client('http://testserver/api/admin/mcp/', http_client=http) as (receive, send, _):
+                    async with ClientSession(receive, send) as session:
+                        await session.initialize()
+                        schemas = {tool.name: tool for tool in (await session.list_tools()).tools}
+                        assert schemas['apply_cleanup_batch'].annotations.destructiveHint is True
+                        assert schemas['remove_pending_discovery_targets'].annotations.destructiveHint is True
+                        for name, arguments in (
+                            ('list_cleanup_items', {'kind': 'articles', 'rule': 'title'}),
+                            ('apply_cleanup_batch', {'batch': {'kind': 'articles', 'ids': [CANDIDATE_ID], 'action': 'stage'}}),
+                            ('list_pending_discovery_targets', {}),
+                            ('remove_pending_discovery_targets', {'ids': [CANDIDATE_ID]}),
+                        ):
+                            result = await session.call_tool(name, arguments)
+                            assert result.isError is not allowed, result
+                            if not allowed:
+                                assert result.structuredContent['error_code'] == 'FORBIDDEN'
+                        if allowed:
+                            assert listing.call_count == apply.call_count == pending.call_count == remove.call_count == 1
+                            assert apply.call_args.args[1].dry_run is True
+                            # Invalid destructive requests never reach the shared service.
+                            result = await session.call_tool('apply_cleanup_batch', {'batch': {
+                                'kind': 'feeds', 'ids': [CANDIDATE_ID], 'action': 'delete', 'dry_run': False}})
+                            assert result.isError is True and apply.call_count == 1
+                        else:
+                            listing.assert_not_called(); apply.assert_not_called(); pending.assert_not_called(); remove.assert_not_called()
+                        if credential == 'management':
+                            assert (await session.call_tool('review_policy')).isError is True

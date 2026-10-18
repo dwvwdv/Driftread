@@ -14,7 +14,7 @@ def test_metadata():
     assert oauth.oauth_metadata()['code_challenge_methods_supported']==['S256']
     assert oauth.oauth_metadata()['token_endpoint_auth_methods_supported']==['none']
     assert oauth.resource_metadata()['resource']=='https://reader.example/api/admin/mcp/'
-    assert oauth.resource_metadata()['scopes_supported']==['source:review','offline_access']
+    assert oauth.resource_metadata()['scopes_supported']==['source:review','catalog:manage','offline_access']
 
 
 @pytest.mark.parametrize('value',['','http://reader.example','https://reader.example/api',

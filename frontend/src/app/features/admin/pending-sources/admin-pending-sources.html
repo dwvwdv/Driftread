@@ -1,0 +1,75 @@
+<ob-page-header
+  kicker="EXPLORATION QUEUE"
+  heading="待探索來源"
+  subtitle="檢視等待探索或重試的網址，隨時移除不需要的項目"
+/>
+<p class="hint">依引用證據與下次探索時間排序。移除以單一網址為範圍，同網域的其他來源仍可探索。</p>
+<div class="toolbar">
+  <button class="ob-btn ob-btn--ghost ob-btn--sm" [disabled]="busy()" (click)="load()">
+    重新整理
+  </button>
+  <button
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    [disabled]="busy() || loading() || !items().length"
+    (click)="all()"
+  >
+    全選／取消當頁
+  </button>
+  <span>共 {{ total() }} 項 · 已選 {{ selected().size }} 項</span>
+  <button
+    class="ob-btn ob-btn--primary ob-btn--sm"
+    [disabled]="busy() || loading() || !selected().size"
+    (click)="remove()"
+  >
+    移除所選
+  </button>
+  @if (busy()) {
+    <span role="status">正在處理…</span>
+  }
+</div>
+@if (loading()) {
+  <ob-loading label="讀取待探索來源中" />
+} @else if (!items().length) {
+  <ob-empty message="目前沒有等待探索的來源。" />
+} @else {
+  <div class="list">
+    @for (item of items(); track item.id) {
+      <ob-list-row>
+        <label rowTitle
+          ><input
+            type="checkbox"
+            [checked]="selected().has(item.id)"
+            (change)="toggle(item.id)"
+            [disabled]="busy()"
+          />
+          {{ item.host }}</label
+        >
+        <div rowLines>
+          <span class="url">{{ item.url }}</span
+          ><span
+            >發現方式 {{ item.source }} · {{ item.referring_feed_count }} 個來源引用 · 已嘗試
+            {{ item.attempts }} 次</span
+          ><span>下次探索：{{ item.next_probe_at | date: 'yyyy/MM/dd HH:mm' }}</span>
+          @if (item.last_failure_reason) {
+            <span>{{ item.last_failure_reason }}</span>
+          }
+        </div>
+        <button
+          rowMeta
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [disabled]="busy()"
+          (click)="remove([item.id])"
+        >
+          移除
+        </button>
+      </ob-list-row>
+    }
+  </div>
+  <ob-paginator
+    [total]="total()"
+    [page]="page()"
+    [pageSize]="50"
+    [pageSizeOptions]="[50]"
+    (pageChange)="go($event)"
+  />
+}

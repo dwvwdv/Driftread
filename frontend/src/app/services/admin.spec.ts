@@ -52,6 +52,41 @@ describe('AdminService 409 handling', () => {
 
   afterEach(() => httpMock.verify());
 
+  it('previews cleanup by default and requires the explicit apply call to send deletion confirmation', () => {
+    const service = TestBed.inject(AdminService);
+    service.cleanupBatch('articles', ['a'], 'delete').subscribe();
+    const preview = httpMock.expectOne((req) => req.url.endsWith('/admin/cleanup/batch'));
+    expect(preview.request.headers.get('x-manage-session')).toBe('otp-token');
+    expect(preview.request.body).toEqual({
+      kind: 'articles',
+      ids: ['a'],
+      action: 'delete',
+      dry_run: true,
+      confirm_delete: false,
+    });
+    preview.flush({ items: [], dry_run: true });
+    service.cleanupBatch('articles', ['a'], 'delete', false).subscribe();
+    const apply = httpMock.expectOne((req) => req.url.endsWith('/admin/cleanup/batch'));
+    expect(apply.request.body.dry_run).toBe(false);
+    expect(apply.request.body.confirm_delete).toBe(true);
+    apply.flush({ items: [], dry_run: false });
+  });
+
+  it('uses bounded pagination and structured IDs for exploration management', () => {
+    const service = TestBed.inject(AdminService);
+    service.pendingTargets(50).subscribe();
+    const listing = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/discovery/pending-targets'),
+    );
+    expect(listing.request.params.get('limit')).toBe('50');
+    expect(listing.request.params.get('offset')).toBe('50');
+    listing.flush({ items: [], total: 0 });
+    service.removeTargets(['target-a']).subscribe();
+    const remove = httpMock.expectOne((req) => req.url.endsWith('/admin/discovery/targets/remove'));
+    expect(remove.request.body).toEqual({ ids: ['target-a'] });
+    remove.flush({ items: [] });
+  });
+
   it('shows the candidate-rejected message for approveCandidate', () => {
     const service = TestBed.inject(AdminService);
 

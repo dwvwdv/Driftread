@@ -1,5 +1,7 @@
 # TODO
 
+- [x] 後台批量清理相似來源／文章、暫存／還原／刪除，待探索清單與移除，並提供 MCP（`services/cleanup.py`、管理 cleanup／pending-sources 頁；見 [操作文件](docs/ADMIN_CLEANUP.md)）。
+
 Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回饋推薦」的核心閉環為主。
 先完成 Supabase schema 遷移，再依 P0、P1、P2 逐步開發；暫不引入 embedding 或 AI 推薦。
 

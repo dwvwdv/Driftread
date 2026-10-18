@@ -97,7 +97,7 @@ def test_authorization_ignores_extensions_without_changing_grant_or_callback(set
     assert set(values)=={'code','state'} and values['state']==['opaque/client+state']
     tokens=exchange(setup,values['code'][0])
     assert tokens['scope']=='source:review offline_access'
-    assert oauth.validate_access_token(tokens['access_token'])['scope']=='source:review'
+    assert oauth.validate_access_token(tokens['access_token'])['scope']=='source:review offline_access'
 
 
 def test_one_use_code_and_hashed_secrets(setup):
@@ -105,7 +105,7 @@ def test_one_use_code_and_hashed_secrets(setup):
     code=parse_qs(urlsplit(oauth.decide_authorization(rid,True,setup[0],setup[1])['redirect_url']).query)['code'][0]
     tokens=exchange(setup,code)
     identity=oauth.validate_access_token(tokens['access_token'])
-    assert identity['owner_user_id']==setup[0].id and identity['scope']=='source:review'
+    assert identity['owner_user_id']==setup[0].id and identity['scope']=='source:review offline_access'
     assert tokens['expires_in']==900
     with pytest.raises(oauth.OAuthError):
         exchange(setup,code)
@@ -417,3 +417,14 @@ def test_consent_racing_logout_never_leaves_live_grant(setup,logout_token):
         one.result(timeout=5)
         two.result(timeout=5)
     assert not query('SELECT id FROM driftread.review_oauth_grants WHERE owner_user_id=%s AND revoked_at IS NULL',(setup[0].id,))
+
+
+def test_catalog_scope_requires_new_consent_and_survives_refresh(setup):
+    narrow = exchange(setup)
+    assert 'catalog:manage' not in oauth.validate_access_token(narrow['access_token'])['scope'].split()
+    code = authorization(setup, scope='source:review catalog:manage offline_access')
+    broad = exchange(setup, code)
+    assert oauth.validate_access_token(broad['access_token'])['scope'] == 'source:review catalog:manage offline_access'
+    rotated = refresh(setup, broad['refresh_token'])
+    assert 'catalog:manage' in oauth.validate_access_token(rotated['access_token'])['scope'].split()
+    assert 'catalog:manage' not in oauth.validate_access_token(narrow['access_token'])['scope'].split()

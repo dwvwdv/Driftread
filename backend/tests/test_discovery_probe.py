@@ -121,6 +121,17 @@ def test_select_due_targets_skips_terminal_and_future_rows():
 # ── gates run before anything else ───────────────────────────────────────────
 
 @pytest.mark.asyncio
+async def test_removed_target_selected_by_old_batch_never_fetches():
+    target = _target(status='removed')
+    db = _db([target])
+    with patch('services.discovery_probe.validate_fetch_url') as validate, \
+            patch('services.discovery_probe.discover_feeds') as discover:
+        result = await probe_one(db, {**target, 'status': 'pending'})
+    validate.assert_not_called()
+    discover.assert_not_called()
+    assert result.candidates_new == 0 and target['status'] == 'removed'
+
+@pytest.mark.asyncio
 async def test_ssrf_rejection_happens_before_any_network_or_candidate_write():
     """A host that has started resolving to a private address is a failure, and
     nothing may be fetched or stored on the way to finding that out."""
