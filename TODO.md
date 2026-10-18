@@ -1,5 +1,7 @@
 # TODO
 
+- [x] 自動探索管道持久化暫停／啟用、在途取消與 MCP 控制（見 [探索控制](docs/GLOBAL_SETTINGS.md#自動探索暫停與啟用)）。
+
 - [x] 後台批量清理相似來源／文章、暫存／還原／刪除，待探索清單與移除，並提供 MCP（`services/cleanup.py`、管理 cleanup／pending-sources 頁；見 [操作文件](docs/ADMIN_CLEANUP.md)）。
 
 Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回饋推薦」的核心閉環為主。

@@ -3,6 +3,7 @@
   heading="待探索來源"
   subtitle="檢視等待探索或重試的網址，隨時移除不需要的項目"
 />
+<app-discovery-control />
 <p class="hint">依引用證據與下次探索時間排序。移除以單一網址為範圍，同網域的其他來源仍可探索。</p>
 <div class="toolbar">
   <button class="ob-btn ob-btn--ghost ob-btn--sm" [disabled]="busy()" (click)="load()">

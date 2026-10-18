@@ -27,7 +27,7 @@ from starlette.responses import JSONResponse
 
 from database import get_client
 from rate_limit import rate_limit
-from services import source_review, review_oauth, cleanup
+from services import source_review, review_oauth, cleanup, discovery_control
 from services.discovery_config import discovery_enabled
 from services.discovery_candidates import list_review_candidates
 from services.review_models import BatchReviewSubmission, ReviewSubmission
@@ -111,7 +111,8 @@ CLAIM = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
 SUBMIT = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
                          idempotentHint=True, openWorldHint=False)
 MANAGEMENT_TOOLS = {'list_cleanup_items', 'apply_cleanup_batch',
-                    'list_pending_discovery_targets', 'remove_pending_discovery_targets'}
+                    'list_pending_discovery_targets', 'remove_pending_discovery_targets',
+                    'get_discovery_control', 'set_discovery_enabled'}
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
                              idempotentHint=True, openWorldHint=False)
 
@@ -126,7 +127,7 @@ def _identity(ctx: Context, required_scope: str = 'source:review'):
 async def _call(operation, *args, **kwargs):
     try:
         return await run_in_threadpool(operation, *args, **kwargs)
-    except source_review.ReviewError as exc:
+    except (source_review.ReviewError, discovery_control.ControlError) as exc:
         # MCP reports business errors as tool errors, not HTTP responses.
         raise ReviewToolError(exc.status_code, exc.detail) from None
     except Exception:
@@ -142,10 +143,11 @@ async def review_policy(ctx: Context) -> dict[str, Any]:
     setting = await _call(get_setting, db, "source.review")
     policy = setting.model_dump(mode="json")
     discovery = discovery_enabled()
+    runtime_enabled = await _call(discovery_control.runtime_enabled, db)
     enabled = policy["value"].get("enabled", False)
     engine = policy["value"].get("engine", REVIEWER_ID)
-    runtime_available = discovery and enabled and (engine != "jev" or bool(os.getenv("JEV_API_KEY", "")))
-    return {**policy, "discovery_enabled": discovery, "runtime_available": runtime_available,
+    runtime_available = discovery and runtime_enabled and enabled and (engine != "jev" or bool(os.getenv("JEV_API_KEY", "")))
+    return {**policy, "discovery_enabled": discovery, "discovery_paused": not runtime_enabled, "runtime_available": runtime_available,
             "queue": await _call(source_review._rpc, db, 'source_review_queue_status', {}),
             "external_agent_available": runtime_available and engine == REVIEWER_ID,
             "workflow": {
@@ -258,6 +260,35 @@ async def submit_source_reviews(
     """
     reviewer, db = _identity(ctx)
     return await _call(source_review.submit_reviews, db, submissions, reviewer_id=reviewer)
+
+
+@review_mcp.tool(annotations=READ_ONLY)
+async def get_discovery_control(ctx: Context) -> dict[str, Any]:
+    """Read the persisted exploration switch, deployment ceiling and version."""
+    _, db = _identity(ctx, 'catalog:manage')
+    return await _call(discovery_control.read_control, db)
+
+
+@review_mcp.tool(annotations=DESTRUCTIVE)
+async def set_discovery_enabled(
+    ctx: Context, enabled: Annotated[bool, Field(strict=True)],
+    expected_version: Annotated[int, Field(ge=0, strict=True)],
+) -> dict[str, Any]:
+    """Pause or enable automatic exploration using the last observed version.
+
+    Read get_discovery_control first. Pausing preserves queues and existing RSS
+    refresh; active discovery cancels within a polling interval (normally 1s).
+    Already-started network/DB work can finish. Enabling resumes the schedule
+    only when deployment_enabled is true. Does not alter other global settings.
+    """
+    _, db = _identity(ctx, 'catalog:manage')
+    try:
+        return await discovery_control.update_control(db, enabled, expected_version)
+    except discovery_control.ControlError as exc:
+        raise ReviewToolError(exc.status_code, exc.detail) from None
+    except Exception:
+        logger.error('Discovery control update failed')
+        raise ReviewToolError(503, 'Discovery control operation failed') from None
 
 
 @review_mcp.tool(annotations=READ_ONLY)
@@ -400,7 +431,7 @@ class AuthenticatedReviewMCP:
     async def unauthorized(scope, receive, send):
         challenge = 'Bearer'
         try:
-            challenge += ' resource_metadata="' + review_oauth.base_url() + '/.well-known/oauth-protected-resource/api/admin/mcp", scope="source:review offline_access"'
+            challenge += ' resource_metadata="' + review_oauth.base_url() + '/.well-known/oauth-protected-resource/api/admin/mcp", scope="' + review_oauth.DEFAULT_SCOPE + '"'
         except review_oauth.OAuthError:
             pass  # Machine-key-only deployments do not advertise OAuth.
         await JSONResponse({"detail": "Source review authorization is required"}, 401,

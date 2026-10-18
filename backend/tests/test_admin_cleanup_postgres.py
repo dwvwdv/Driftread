@@ -82,3 +82,26 @@ def test_article_delete_serializes_with_ingestion(pg_database):
             assert future.result(timeout=5) == 0
         assert scalar(observer, 'SELECT count(*) FROM driftread.articles WHERE feed_id=%s', (feed,)) == 0
         assert scalar(observer, 'SELECT article_count FROM driftread.feeds WHERE id=%s', (feed,)) == 0
+
+
+def test_remove_waits_for_inflight_candidate_then_reports_completed(pg_database):
+    from concurrent.futures import ThreadPoolExecutor
+    from tests.test_postgres_lifecycle import assert_blocked
+    with connection(pg_database) as setup:
+        target = scalar(setup, "INSERT INTO driftread.discovery_targets(url,host) VALUES('https://finding-first.invalid/','finding-first.invalid') RETURNING id")
+        setup.commit()
+    with connection(pg_database, 'service_role') as worker, connection(pg_database, 'service_role') as admin, connection(pg_database) as observer:
+        with worker.cursor() as cur:
+            cur.execute("INSERT INTO driftread.discovery_candidates(target_id,feed_url) VALUES(%s,'https://finding-first.invalid/rss')", (target,))
+        def remove():
+            result = scalar(admin, 'SELECT driftread.remove_discovery_targets(ARRAY[%s]::uuid[])', (target,))
+            admin.commit()
+            return result
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            task = pool.submit(remove)
+            try:
+                assert_blocked(observer, admin.get_backend_pid(), task)
+            finally:
+                worker.commit()
+            assert task.result(timeout=5)['items'][0]['error'] == 'target_completed'
+        assert scalar(observer, 'SELECT status FROM driftread.discovery_targets WHERE id=%s', (target,)) == 'pending'

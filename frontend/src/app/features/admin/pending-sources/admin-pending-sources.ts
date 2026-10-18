@@ -16,11 +16,20 @@ import { ObPageHeader } from '../../../ui/page-header/page-header';
 import { ObPaginator } from '../../../ui/paginator/paginator';
 import { ObEmpty, ObLoading } from '../../../ui/state/state';
 import { ObListRow } from '../../../ui/list-row/list-row';
+import { DiscoveryControlPanel } from '../discovery-control/discovery-control';
 
 @Component({
   selector: 'app-admin-pending-sources',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DatePipe, ObPageHeader, ObPaginator, ObEmpty, ObLoading, ObListRow],
+  imports: [
+    DatePipe,
+    ObPageHeader,
+    ObPaginator,
+    ObEmpty,
+    ObLoading,
+    ObListRow,
+    DiscoveryControlPanel,
+  ],
   templateUrl: './admin-pending-sources.html',
   styleUrl: '../cleanup/admin-cleanup.scss',
 })

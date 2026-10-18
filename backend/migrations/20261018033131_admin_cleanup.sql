@@ -132,6 +132,13 @@ BEGIN
  PERFORM 1 FROM driftread.discovery_targets WHERE id=ANY(p_ids) ORDER BY id FOR UPDATE;
  FOR item IN SELECT DISTINCT unnest(p_ids) ORDER BY 1 LOOP
   SELECT status INTO current_status FROM driftread.discovery_targets WHERE id=item;
+  -- Probe INSERT and terminal update are separate transactions. The target
+  -- lock serializes with candidate INSERT; recheck committed findings before
+  -- claiming cancellation succeeded in the gap between those transactions.
+  IF current_status='pending' AND EXISTS(SELECT 1 FROM driftread.discovery_candidates WHERE target_id=item) THEN
+   results:=results||jsonb_build_array(jsonb_build_object('id',item,'ok',false,'error','target_completed'));
+   CONTINUE;
+  END IF;
   IF current_status IN ('pending','removed') THEN
    UPDATE driftread.discovery_targets SET status='removed' WHERE id=item AND status='pending';
    results:=results||jsonb_build_array(jsonb_build_object('id',item,'ok',true));

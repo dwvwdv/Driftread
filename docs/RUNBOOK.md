@@ -172,7 +172,7 @@ ChatGPT 刷新 MCP 工具列表後應有九個工具。先呼叫唯讀 `list_sou
 
 ## 回滾
 
-批量清理與待探索管理需先套用 `20261018033131_admin_cleanup.sql`，再部署 worker／frontend；MCP 新權限須重新同意。部署順序、可選 key 與資料處置語義見 [後台清理](ADMIN_CLEANUP.md#部署與驗證)。回滾應用不會還原永久刪除資料；保留新 schema 與 migration ledger，勿回放舊 publication view 蓋掉文章暫存條件。
+批量清理與待探索管理需先停止舊 worker，再套用 `20261018033131_admin_cleanup.sql` 與 `20261018034910_discovery_control.sql`，然後部署 worker／frontend；MCP 新權限須重新同意。部署順序、可選 key 與資料處置語義見 [後台清理](ADMIN_CLEANUP.md#部署與驗證)。回滾應用不會還原永久刪除資料；保留新 schema 與 migration ledger，勿回放舊 publication view 蓋掉文章暫存條件。
 
 Image 只有兩種 tag：`latest`（永遠指向最後一次成功的 push）與
 `sha-<40 字元 commit sha>`（每次 push 到 `main`/`master` 都會多一個，永久保留、不會被覆寫）。

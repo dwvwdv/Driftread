@@ -67,5 +67,9 @@ BEGIN
  ASSERT (SELECT status FROM driftread.discovery_targets WHERE id=target)='rejected', 'explicit host block was ignored';
  INSERT INTO driftread.discovery_candidates(target_id,feed_url) VALUES(target,'https://cleanup-target.invalid/blocked-rss');
  ASSERT NOT EXISTS(SELECT 1 FROM driftread.discovery_candidates WHERE target_id=target), 'blocked probe created candidate';
+ INSERT INTO driftread.discovery_candidates(target_id,feed_url) VALUES(sibling,'https://cleanup-target.invalid/existing-rss');
+ report:=driftread.remove_discovery_targets(ARRAY[sibling]);
+ ASSERT report->'items'->0->>'error'='target_completed', 'committed finding was ignored';
+ ASSERT (SELECT status FROM driftread.discovery_targets WHERE id=sibling)='pending', 'completed probe was reported cancelled';
 END $$;
 ROLLBACK;

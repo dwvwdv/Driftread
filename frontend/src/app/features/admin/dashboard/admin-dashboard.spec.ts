@@ -35,6 +35,8 @@ function dashboard(overrides: Record<string, unknown> = {}) {
         provide: AdminService,
         useValue: {
           stats: () => of({ candidates_pending: 12 }),
+          discoveryControl: () =>
+            of({ enabled: true, deployment_enabled: true, effective_enabled: true, version: 1 }),
           listUnhealthy: () => of([]),
           operations: () => of(operations),
           storageStats: () => of(storage),

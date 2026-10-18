@@ -23,6 +23,7 @@ from services.discovery_probe import probe_due, summarize_probes
 from services.feed_discovery import user_agent
 from services.link_harvest import build_host_index, harvest_due, summarize_harvest
 from services.settings import load_source_review_settings
+from services.discovery_control import DiscoveryPaused, while_enabled
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -44,6 +45,7 @@ _EMPTY_PROBE = {
 
 @dataclass(frozen=True)
 class CycleSummary:
+    paused: bool = False
     directory: dict = field(default_factory=lambda: dict(_EMPTY_DIRECTORY))
     harvest: dict = field(default_factory=lambda: dict(_EMPTY_HARVEST))
     probe: dict = field(default_factory=lambda: dict(_EMPTY_PROBE))
@@ -58,6 +60,18 @@ async def run_cycle(
     probe_limit: int | None = None,
     max_concurrency: int | None = None,
     directory_limit: int | None = None,
+) -> CycleSummary:
+    try:
+        return await while_enabled(db, lambda: _run_cycle(
+            db, harvest_limit, probe_limit, max_concurrency, directory_limit,
+        ))
+    except DiscoveryPaused:
+        return CycleSummary(paused=True)
+
+
+async def _run_cycle(
+    db: "Client", harvest_limit=None, probe_limit=None,
+    max_concurrency=None, directory_limit=None,
 ) -> CycleSummary:
     """One full pass: directories → article harvest → probe → promote.
 
@@ -134,13 +148,13 @@ async def run_cycle(
         # fail closed rather than restoring the legacy bypass.
         review_settings = await asyncio.to_thread(load_source_review_settings, db)
         if not review_settings.enabled:
-            auto_promoted = len(auto_promote_due(db))
+            auto_promoted = len(await asyncio.to_thread(auto_promote_due, db))
     except Exception:
         errors.append("auto_promote")
         logger.exception("Auto-promote stage failed")
 
     try:
-        imported = len(promote_approved(db))
+        imported = len(await asyncio.to_thread(promote_approved, db))
     except Exception:
         errors.append("promote")
         logger.exception("Approved-candidate promotion stage failed")

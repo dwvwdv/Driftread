@@ -24,6 +24,7 @@ from services.feed_discovery import (
 from services.link_harvest import is_denied_host, normalize_host
 from services.review_models import ReviewSubmission
 from services.settings import get_setting
+from services.discovery_control import runtime_enabled
 from services.source_identity import is_comment_feed, is_default_demo_article
 
 logger = logging.getLogger(__name__)
@@ -277,6 +278,8 @@ def claim_reviews(db, limit=3, *, reviewer_id='external_agent') -> dict:
 
 def _crawl_database_allowed(db, candidate: dict, host: str, review: dict) -> bool:
     """Recheck operator decisions before every HTTP hop, including redirects."""
+    if not runtime_enabled(db):
+        return False
     setting = get_setting(db, 'source.review')
     if not setting.value['enabled'] or setting.version != review['policy_version']:
         return False
@@ -341,12 +344,14 @@ async def prepare_due_reviews(db, limit=10) -> dict:
     await asyncio.to_thread(_rpc, db, 'prune_source_reviews', {})
     settings = await asyncio.to_thread(get_setting, db, 'source.review')
     counts = {'requested': 0, 'prepared': 0, 'failed': 0, 'submitted': 0}
-    if not settings.value['enabled'] or not discovery_enabled():
+    if not settings.value['enabled'] or not discovery_enabled() or not await asyncio.to_thread(runtime_enabled, db):
         return counts
     requested = await asyncio.to_thread(_rpc, db, 'request_due_source_reviews', {'p_limit': limit})
     counts['requested'] = requested['requested'] if requested else 0
     evaluated = 0
     for _ in range(limit):
+        if not await asyncio.to_thread(runtime_enabled, db):
+            break
         row = await asyncio.to_thread(_rpc, db, 'claim_source_review', {'p_reviewer_id': 'preparer', 'p_preparing': True})
         if not row:
             break
@@ -359,6 +364,10 @@ async def prepare_due_reviews(db, limit=10) -> dict:
             })
             counts['prepared'] += 1
         except Exception as exc:
+            if not await asyncio.to_thread(runtime_enabled, db):
+                # Operator pause is not a source failure. Leave the current
+                # preparation lease for normal recovery after it expires.
+                break
             logger.warning('Source review preparation failed: %s', type(exc).__name__)
             await asyncio.to_thread(_rpc, db, 'prepare_source_review', {
                 'p_review_id': row['id'], 'p_token': row['lease_token'], 'p_snapshot': None,
@@ -380,6 +389,8 @@ async def prepare_due_reviews(db, limit=10) -> dict:
 async def _run_jev_review(db, review_id, counts) -> bool:
     from services.review_provider import evaluate_jev
     from services.settings import load_source_review_settings
+    if not await asyncio.to_thread(runtime_enabled, db):
+        return False
     row = await asyncio.to_thread(_rpc, db, 'claim_source_review', {
         'p_reviewer_id': 'jev', 'p_review_id': review_id,
     })

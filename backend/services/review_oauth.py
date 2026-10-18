@@ -24,6 +24,7 @@ from services import manage_auth
 
 SCOPE = "source:review"
 MANAGE_SCOPE = "catalog:manage"
+DEFAULT_SCOPE = f'{SCOPE} {MANAGE_SCOPE} offline_access'
 REQUEST_SECONDS = 600
 CODE_SECONDS = 120
 ACCESS_SECONDS = 900
@@ -229,7 +230,7 @@ def register_client(body: dict) -> dict:
     if not isinstance(uris, list) or not 1 <= len(uris) <= 5 or any(not isinstance(x,str) or len(x)>256 for x in uris):
         raise OAuthError('invalid_client_metadata', description='Invalid redirect URLs')
     uris = list(dict.fromkeys(_redirect(x) for x in uris))
-    scope = _scope(_text(body, 'scope', 100, required=False) or SCOPE+' offline_access')
+    scope = _scope(_text(body, 'scope', 100, required=False) or DEFAULT_SCOPE)
     with manage_auth.connection() as cur:
         client_id = _encode_client(name,uris,_registration_key(cur))
     return {'client_id':client_id,'client_name':name,'redirect_uris':uris,

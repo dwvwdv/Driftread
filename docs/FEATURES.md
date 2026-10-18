@@ -117,6 +117,8 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 > `FEED_DISCOVERY_ENABLED=false` 時 worker 不跑這個迴圈，且 `POST /api/admin/discovery/run`
 > 直接回 **503** —— 這個 flag 是真的 kill switch，與只管 worker 的 `FEED_REFRESH_ENABLED` 不同。
 
+後台總覽與待探索頁另提供持久化暫停／啟用，不需重啟；暫停保留佇列、取消在途探索，阻擋自動收錄，仍保留部署開關上限。REST／MCP 及執行語義見 [探索控制](GLOBAL_SETTINGS.md#自動探索暫停與啟用)。
+
 四個階段，由 `services/discovery.py::run_cycle()` 依序驅動，worker 與
 `POST /api/admin/discovery/run` 共用同一個入口。
 
@@ -334,13 +336,14 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 ### Admin（管理 session 或機器 API Key）
 
-批量清理、分組證據、暫存／還原與刪除、待探索管理及四個新 MCP 工具見 [後台清理](ADMIN_CLEANUP.md)。
+批量清理、分組證據、暫存／還原與刪除、待探索管理及六個新 MCP 工具見 [後台清理](ADMIN_CLEANUP.md)。
 
 | Method | 路徑 | 說明 |
 |--------|------|------|
 | GET | `/admin/feeds` | 分頁列出**全部** feed（含已封存），依 `next_fetch_at` 排序。`archived` 可選 true / false 過濾；`page_size` 預設 50、上限 200 |
 | GET | `/admin/cleanup/items` | 來源／文章分組清單、搜尋及狀態；最多 50 筆 |
 | POST | `/admin/cleanup/batch` | 1–50 個明確 ID 的預覽、暫存、還原或永久刪除；預設 dry-run |
+| GET／PATCH | `/admin/discovery/control` | 查看／暫停／啟用探索；帶 expected_version，部署主開關仍為上限 |
 | GET | `/admin/discovery/pending-targets` | 待探索來源及精確總數，最多 50 筆 |
 | POST | `/admin/discovery/targets/remove` | 單筆／批次取消待探索 URL，保留 removed 標記 |
 | POST | `/admin/feeds` | 批次匯入 feed（JSON）。只寫 metadata 並設 `next_fetch_at = now()` |

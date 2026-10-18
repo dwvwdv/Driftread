@@ -52,6 +52,13 @@ export interface DiscoverySourceInput {
 }
 
 export type CleanupKind = 'feeds' | 'articles';
+export interface DiscoveryControl {
+  enabled: boolean;
+  effective_enabled: boolean;
+  deployment_enabled: boolean;
+  version: number;
+  updated_at: string | null;
+}
 export type CleanupAction = 'stage' | 'restore' | 'delete';
 export interface CleanupItem {
   id: string;
@@ -94,6 +101,18 @@ export class AdminService {
   private toast = inject(ToastService);
   private router = inject(Router);
   private base = environment.apiUrl;
+
+  discoveryControl(): Observable<DiscoveryControl> {
+    return this.get('/admin/discovery/control', '讀取探索開關失敗');
+  }
+
+  setDiscoveryEnabled(enabled: boolean, expectedVersion: number): Observable<DiscoveryControl> {
+    return this.patch(
+      '/admin/discovery/control',
+      { enabled, expected_version: expectedVersion },
+      '更新探索開關失敗',
+    );
+  }
 
   listCleanup(
     kind: CleanupKind,

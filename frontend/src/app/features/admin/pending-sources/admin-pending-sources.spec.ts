@@ -12,7 +12,14 @@ describe('AdminPendingSources', () => {
     TestBed.configureTestingModule({
       imports: [AdminPendingSources],
       providers: [
-        { provide: AdminService, useValue: admin },
+        {
+          provide: AdminService,
+          useValue: {
+            discoveryControl: () =>
+              of({ enabled: true, deployment_enabled: true, effective_enabled: true, version: 1 }),
+            ...admin,
+          },
+        },
         { provide: ConfirmService, useValue: { ask: () => Promise.resolve(true) } },
         { provide: ToastService, useValue: { success: vi.fn() } },
       ],

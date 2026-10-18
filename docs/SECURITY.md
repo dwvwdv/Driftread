@@ -386,6 +386,8 @@ public origin 只能來自環境設定，不能信任 Host／forwarded headers�
 
 ## 目前的防線總覽
 
+自動探索增加版本化 runtime 開關，與部署主開關同時成立才可執行；設定損壞／讀取失敗不繼續採集。自動收錄 RPC 用設定列鎖與暫停序列化，不跨外連持鎖。管理 MCP 只可控制此單一設定，OAuth 初始 challenge／DCR 預設明確要求管理 scope 並由同意頁列權限；舊 grant 不自動升權。
+
 後台清理使用 service_role-only／INVOKER RPC，選取 ID 有界且預設 dry-run；永久刪除需暫存及明確確認。管理 MCP 另驗 `catalog:manage`，既有評審憑證不擴權。取消探索及刪文防重新入庫的交易／鎖、OAuth 同意與部署契約見 [後台清理](ADMIN_CLEANUP.md)。
 
 文章計數修復 RPC `reconcile_feed_article_count(uuid)` 為 `SECURITY INVOKER`，撤銷 PUBLIC／anon／authenticated EXECUTE，僅 service_role 可執行；與批次入庫共用來源列鎖，不擴大公開寫入權限。失敗階段只保存固定碼，日誌不加入原始 DB／外連例外。

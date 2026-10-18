@@ -27,6 +27,7 @@ SUBMISSION = {
 
 @pytest.fixture
 def mcp_app(monkeypatch):
+    monkeypatch.setattr(transport.discovery_control, 'runtime_enabled', lambda db: True)
     monkeypatch.setenv("SOURCE_REVIEW_MCP_KEY", KEY)
     monkeypatch.setenv('CATALOG_MANAGEMENT_MCP_KEY', MANAGEMENT_KEY)
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
@@ -64,7 +65,7 @@ async def test_official_sdk_source_review_workflow_and_annotations(mcp_app):
                         tools = {t.name: t for t in (await session.list_tools()).tools}
                         assert set(tools) == {"review_policy", "request_source_review", "claim_source_review", "source_review_packet", "submit_source_review",
                                               "list_source_review_candidates", "request_source_reviews", "claim_source_reviews", "submit_source_reviews"} | transport.MANAGEMENT_TOOLS
-                        assert {name for name, tool in tools.items() if tool.annotations.readOnlyHint} == {"review_policy", "source_review_packet", "list_source_review_candidates", "list_cleanup_items", "list_pending_discovery_targets"}
+                        assert {name for name, tool in tools.items() if tool.annotations.readOnlyHint} == {"review_policy", "source_review_packet", "list_source_review_candidates", "list_cleanup_items", "list_pending_discovery_targets", "get_discovery_control"}
                         assert all(not tool.annotations.openWorldHint for tool in tools.values())
                         assert tools["claim_source_review"].annotations.idempotentHint is False
                         assert all(t.inputSchema["additionalProperties"] is False for t in tools.values())
@@ -274,7 +275,7 @@ async def test_oauth_challenge_revocation_and_mixed_credentials_fail_before_busi
                 result = await http.post('/api/admin/mcp/', headers=headers, json={})
                 assert result.status_code == 401
                 assert 'https://reader.example/.well-known/oauth-protected-resource/api/admin/mcp' in result.headers['www-authenticate']
-                assert 'source:review offline_access' in result.headers['www-authenticate']
+                assert 'source:review catalog:manage offline_access' in result.headers['www-authenticate']
             db.assert_not_called()
             validate.assert_called_once_with(token)
 
@@ -371,7 +372,9 @@ async def test_catalog_tools_enforce_separate_permission(mcp_app, credential):
             patch.object(transport.cleanup, 'list_items', return_value={'items': [], 'total': 0}) as listing, \
             patch.object(transport.cleanup, 'apply_batch', return_value={'items': [], 'dry_run': True}) as apply, \
             patch.object(transport.cleanup, 'list_pending_targets', return_value={'items': [], 'total': 0}) as pending, \
-            patch.object(transport.cleanup, 'remove_targets', return_value={'items': []}) as remove:
+            patch.object(transport.cleanup, 'remove_targets', return_value={'items': []}) as remove, \
+            patch.object(transport.discovery_control, 'read_control', return_value={'enabled': False, 'version': 3}) as control_read, \
+            patch.object(transport.discovery_control, 'update_control', return_value={'enabled': True, 'version': 4}) as control_update:
         async with mcp_app.router.lifespan_context(mcp_app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), headers=headers) as http:
                 async with streamable_http_client('http://testserver/api/admin/mcp/', http_client=http) as (receive, send, _):
@@ -385,6 +388,8 @@ async def test_catalog_tools_enforce_separate_permission(mcp_app, credential):
                             ('apply_cleanup_batch', {'batch': {'kind': 'articles', 'ids': [CANDIDATE_ID], 'action': 'stage'}}),
                             ('list_pending_discovery_targets', {}),
                             ('remove_pending_discovery_targets', {'ids': [CANDIDATE_ID]}),
+                            ('get_discovery_control', {}),
+                            ('set_discovery_enabled', {'enabled': True, 'expected_version': 3}),
                         ):
                             result = await session.call_tool(name, arguments)
                             assert result.isError is not allowed, result
@@ -393,11 +398,16 @@ async def test_catalog_tools_enforce_separate_permission(mcp_app, credential):
                         if allowed:
                             assert listing.call_count == apply.call_count == pending.call_count == remove.call_count == 1
                             assert apply.call_args.args[1].dry_run is True
+                            control_read.assert_called_once_with(db)
+                            control_update.assert_awaited_once_with(db, True, 3)
+                            assert (await session.call_tool('set_discovery_enabled', {'enabled': 'false', 'expected_version': 3})).isError is True
+                            assert control_update.await_count == 1
                             # Invalid destructive requests never reach the shared service.
                             result = await session.call_tool('apply_cleanup_batch', {'batch': {
                                 'kind': 'feeds', 'ids': [CANDIDATE_ID], 'action': 'delete', 'dry_run': False}})
                             assert result.isError is True and apply.call_count == 1
                         else:
                             listing.assert_not_called(); apply.assert_not_called(); pending.assert_not_called(); remove.assert_not_called()
+                            control_read.assert_not_called(); control_update.assert_not_awaited()
                         if credential == 'management':
                             assert (await session.call_tool('review_policy')).isError is True

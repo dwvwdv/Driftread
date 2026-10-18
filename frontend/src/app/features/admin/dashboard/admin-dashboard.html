@@ -9,6 +9,7 @@
     重新整理
   </button>
 </ob-page-header>
+<app-discovery-control (activeChange)="discoveryAllowed.set($event)" />
 
 @if (loading()) {
   <ob-loading label="讀取統計中" />
@@ -231,9 +232,7 @@
       }
       <p class="hint">
         每日保留一筆，最多保存
-        {{
-          h.retention_days
-        }}
+        {{ h.retention_days }}
         天；停機期間不補造紀錄。容量包含資料庫其他資料，不能用來推算清理後可回收空間。
       </p>
     } @else {
@@ -252,7 +251,7 @@
       <button
         type="button"
         class="ob-btn ob-btn--primary ob-btn--sm"
-        [disabled]="running()"
+        [disabled]="running() || !discoveryAllowed()"
         (click)="runCycle()"
       >
         {{ running() ? '執行中…' : '執行一輪自主發現' }}

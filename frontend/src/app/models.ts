@@ -381,6 +381,7 @@ export interface DiscoveryStats {
 }
 
 export interface DiscoveryCycleSummary {
+  paused?: boolean;
   directory: Record<string, number>;
   harvest: Record<string, number>;
   probe: Record<string, number>;
