@@ -50,7 +50,7 @@ async def test_list_settings_defaults(settings_app):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(BASE, headers=KEY)
     assert response.status_code == 200
-    setting = response.json()["settings"][0]
+    setting = next(item for item in response.json()["settings"] if item['key'] == DISCOVERY_PROFILES_KEY)
     assert setting["key"] == DISCOVERY_PROFILES_KEY and setting["version"] == 0
     assert len(setting["value"]["profiles"]) == 7
     review = next(item for item in response.json()["settings"] if item["key"] == SOURCE_REVIEW_KEY)

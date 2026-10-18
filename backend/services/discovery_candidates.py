@@ -193,8 +193,9 @@ def record_candidates(
             payload["reviewed_at"] = _now()
         else:
             payload["status"] = "pending"
+        inserted = db.table("discovery_candidates").insert(payload).execute()
+        if not already_a_feed and inserted.data:
             new += 1
-        db.table("discovery_candidates").insert(payload).execute()
 
     return (new, seen)
 

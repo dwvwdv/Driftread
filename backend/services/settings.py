@@ -18,6 +18,7 @@ from services.feed_discovery import DiscoveryError, validate_fetch_url
 from services.link_harvest import is_denied_host, normalize_host, origin_of
 
 DISCOVERY_PROFILES_KEY = "discovery.profiles"
+DISCOVERY_CONTROL_KEY = "discovery.control"
 SOURCE_REVIEW_KEY = "source.review"
 DEFAULT_SOURCE_REVIEW_POLICY = (
     "Assess source quality using the supplied article samples. Prefer substantive, "
@@ -107,6 +108,13 @@ class AppSetting(BaseModel):
     updated_at: str | None = None
 
 
+class DiscoveryControlValue(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    # Preserve existing deployments; the deployment master switch remains off
+    # by default and cannot be enabled through application settings.
+    enabled: bool
+
+
 class SourceReviewValue(BaseModel):
     """Hot-reloaded admission policy; provider credentials stay in deployment env."""
 
@@ -194,6 +202,7 @@ class SettingDefinition:
 
 
 SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
+    DISCOVERY_CONTROL_KEY: SettingDefinition(DiscoveryControlValue, lambda: DiscoveryControlValue(enabled=True)),
     DISCOVERY_PROFILES_KEY: SettingDefinition(
         DiscoveryProfilesValue, default_discovery_profiles, _prepare_discovery_seeds,
     ),

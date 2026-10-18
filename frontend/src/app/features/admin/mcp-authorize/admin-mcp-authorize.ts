@@ -102,7 +102,7 @@ export class AdminMcpAuthorize implements OnInit, OnDestroy {
     const scopes = scope.split(' ');
     return (
       scopes.includes('source:review') &&
-      scopes.every((value) => value === 'source:review' || value === 'offline_access')
+      scopes.every((value) => ['source:review', 'catalog:manage', 'offline_access'].includes(value))
     );
   }
 

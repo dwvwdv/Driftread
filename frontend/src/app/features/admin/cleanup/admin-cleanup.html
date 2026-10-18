@@ -1,0 +1,128 @@
+<ob-page-header
+  kicker="HOUSEKEEPING"
+  heading="批量清理"
+  subtitle="檢視相同性質的來源與文章，勾選後暫存、還原或移除"
+/>
+<p class="hint">分組是整理線索，不代表低品質。每次最多處理當頁 50 項，先暫存再永久刪除。</p>
+<div class="toolbar">
+  <label
+    >整理對象<select
+      class="ob-select"
+      [(ngModel)]="kind"
+      (ngModelChange)="changeKind()"
+      [disabled]="busy()"
+    >
+      <option value="feeds">來源</option>
+      <option value="articles">文章</option>
+    </select></label
+  >
+  <label
+    >分組依據<select
+      class="ob-select"
+      [(ngModel)]="rule"
+      (ngModelChange)="reset()"
+      [disabled]="busy()"
+    >
+      <option value="all">全部項目</option>
+      <option value="category">相同來源分類</option>
+      @if (kind === 'feeds') {
+        <option value="host">相同網域</option>
+      } @else {
+        <option value="url">相同文章網址</option>
+        <option value="content">相同正文雜湊（至少 100 字）</option>
+      }
+      <option value="title">相同標題</option>
+    </select></label
+  >
+  <label
+    >狀態<select
+      class="ob-select"
+      [(ngModel)]="state"
+      (ngModelChange)="reset()"
+      [disabled]="busy()"
+    >
+      <option value="active">使用中</option>
+      <option value="staged">已暫存／封存</option>
+      <option value="all">全部</option>
+    </select></label
+  >
+  <label class="grow"
+    >搜尋<input
+      class="ob-input"
+      maxlength="200"
+      [(ngModel)]="query"
+      (keydown.enter)="reset()"
+      [disabled]="busy()"
+      placeholder="標題、分類或網址"
+  /></label>
+  <button class="ob-btn ob-btn--ghost" (click)="reset()" [disabled]="busy()">查詢／重新整理</button>
+</div>
+<div class="toolbar">
+  <button
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    (click)="all()"
+    [disabled]="busy() || loading() || !items().length"
+  >
+    全選／取消當頁
+  </button>
+  <span>已選 {{ selected().size }} 項 · 共 {{ total() }} 項</span>
+  <button
+    class="ob-btn ob-btn--primary ob-btn--sm"
+    (click)="apply('stage')"
+    [disabled]="busy() || loading() || !selected().size"
+  >
+    暫存
+  </button>
+  <button
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    (click)="apply('restore')"
+    [disabled]="busy() || loading() || !selected().size"
+  >
+    還原
+  </button>
+  <button
+    class="ob-btn ob-btn--ghost ob-btn--sm"
+    (click)="apply('delete')"
+    [disabled]="busy() || loading() || !selected().size"
+  >
+    永久刪除
+  </button>
+  @if (busy()) {
+    <span role="status">正在處理…</span>
+  }
+</div>
+@if (loading()) {
+  <ob-loading label="讀取清理清單中" />
+} @else if (!items().length) {
+  <ob-empty message="沒有符合條件的項目；可切換「全部項目」或其他分組依據。" />
+} @else {
+  <div class="list">
+    @for (item of items(); track item.id) {
+      <ob-list-row>
+        <label rowTitle
+          ><input
+            type="checkbox"
+            [checked]="selected().has(item.id)"
+            (change)="toggle(item.id)"
+            [disabled]="busy()"
+          />
+          {{ item.title || item.url }}</label
+        >
+        <div rowLines>
+          <span class="url">{{ item.url }}</span
+          ><span
+            >{{ item.feed_title || item.category || '未分類' }} ·
+            {{ item.staged_at ? '已暫存／封存' : '使用中' }}</span
+          ><span class="url">分組：{{ item.group_key }} · {{ item.group_size }} 項</span>
+        </div>
+      </ob-list-row>
+    }
+  </div>
+  <ob-paginator
+    [total]="total()"
+    [page]="page()"
+    [pageSize]="50"
+    [pageSizeOptions]="[50]"
+    (pageChange)="go($event)"
+  />
+}

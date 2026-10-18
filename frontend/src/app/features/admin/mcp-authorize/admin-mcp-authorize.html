@@ -1,7 +1,7 @@
 <ob-page-header
   kicker="MCP AUTHORIZATION"
-  heading="授權來源評審"
-  subtitle="允許 ChatGPT 使用來源評審工具"
+  heading="授權管理 MCP"
+  subtitle="確認 ChatGPT 請求的管理權限"
 />
 @if (loading()) {
   <ob-loading label="讀取授權請求中" />
@@ -24,9 +24,14 @@
       <li>讀取來源收錄政策。</li>
       <li>提出、領取來源評審任務，讀取候選樣本。</li>
       <li>提交評審結果；若後台已開啟「跳過人工覆核」，符合門檻的來源會自動收錄。</li>
+      @if (request.scope.split(' ').includes('catalog:manage')) {
+        <li>檢視相似來源及文章，批量暫存、還原與永久刪除（包含文章及使用者關聯）。</li>
+        <li>查看待探索來源，隨時移除選定的待探索網址。</li>
+        <li>讀取自動探索狀態，暫停或啟用探索管道（仍受部署限制）。</li>
+      }
     </ul>
     <p class="hint">
-      授權僅涵蓋五個來源評審工具，不能修改全域設定或人工覆寫評審。之後可到「MCP 連線」撤銷。
+      權限以此頁列出的項目為限，不能修改全域設定或人工覆寫評審。之後可到「MCP 連線」撤銷。
     </p>
     <p class="hint">連線最多 30 天，後台登出或撤銷即失效。</p>
     <div cardActions>

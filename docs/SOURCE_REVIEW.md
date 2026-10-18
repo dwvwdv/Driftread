@@ -4,7 +4,7 @@
 
 ## 啟用與人工覆核
 
-在 `/manage/settings` 的來源評審區塊設定 `source.review`，預設 `enabled=false`、`skip_human_review=false`、引擎 `external_agent`。採樣與背景評審仍受部署主開關 `FEED_DISCOVERY_ENABLED` 約束；只有兩個開關皆啟用才會對候選來源採樣。設定每輪重新載入，無需重啟 worker；部署主開關則需依部署方式重啟。
+在 `/manage/settings` 的來源評審區塊設定 `source.review`，預設 `enabled=false`、`skip_human_review=false`、引擎 `external_agent`。採樣與背景評審仍受部署主開關 `FEED_DISCOVERY_ENABLED` 約束；還需通過 [自動探索開關](GLOBAL_SETTINGS.md#自動探索暫停與啟用) 才會採樣；暫停時回傳的有效 AI accept 保存為待人工覆核，不自動入庫。設定每輪重新載入，無需重啟 worker；部署主開關則需依部署方式重啟。
 
 開啟「跳過人工覆核」後，新的有效通過結果直接收錄，不等待管理員。未通過者不收錄；資料不足、模型無法判斷、暫時錯誤或付費請求結果未知，保持暫緩或重試，不以失敗冒充通過。既有 `awaiting_human` 不因切換設定批次放行，需要明確處理。
 
@@ -82,6 +82,8 @@ AI 已完成判定的候選只提供「同意決策／拒絕決策」，不再�
 Jev 使用官方固定 API endpoint，問題拆分為品質、主題相關性與垃圾內容機率。模型輸出提供判斷訊號，後台仍檢查樣本可用性、政策門檻、租約、快照及人工覆寫。Jev 不生成文字理由；後台從量化結果與規則產生的說明不宣稱為模型推理。不同引擎的信心與概率須以本地樣本各自驗證，不直接混用門檻。
 
 ## 管理 MCP 與權限
+
+來源評審以外另有六個清理／待探索與探索控制工具，要求獨立 `catalog:manage` 或新的專用機器 key；既有評審憑證不擴權。工具與部署見 [後台清理](ADMIN_CLEANUP.md#管理-mcp-與權限)。下文九個評審工具仍要求 `source:review`。
 
 個人 `/api/mcp/` 保持原五個唯讀閱讀工具。來源評審使用獨立 `/api/admin/mcp/`，支援專用 `X-API-Key: <SOURCE_REVIEW_MCP_KEY>` 或由本服務發出的窄權限 OAuth `Authorization: Bearer <access_token>`；每次請求只能選一種。普通 `ADMIN_API_KEY`、Supabase JWT 與瀏覽器管理 session 都不能替代它們。空白 key 停用機器認證，空白 `SOURCE_REVIEW_OAUTH_BASE_URL` 停用 OAuth；兩個開關互相獨立，key 不進前端 runtime config。
 

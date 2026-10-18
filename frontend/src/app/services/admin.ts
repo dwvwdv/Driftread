@@ -51,6 +51,48 @@ export interface DiscoverySourceInput {
   label?: string | null;
 }
 
+export type CleanupKind = 'feeds' | 'articles';
+export interface DiscoveryControl {
+  enabled: boolean;
+  effective_enabled: boolean;
+  deployment_enabled: boolean;
+  version: number;
+  updated_at: string | null;
+}
+export type CleanupAction = 'stage' | 'restore' | 'delete';
+export interface CleanupItem {
+  id: string;
+  title: string;
+  url: string;
+  feed_id: string | null;
+  feed_title: string | null;
+  category: string | null;
+  group_key: string;
+  group_size: number;
+  staged_at: string | null;
+  article_count: number;
+}
+export interface ManagementPage<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+export interface ManagementBatch {
+  items: {
+    id: string;
+    ok: boolean;
+    error?: string;
+    impact?: {
+      articles: number;
+      bookmarks: number;
+      reads: number;
+      subscriptions: number;
+    };
+  }[];
+  dry_run?: boolean;
+}
+
 /** Management calls carry both the Supabase login and the verified Telegram session. */
 @Injectable({ providedIn: 'root' })
 export class AdminService {
@@ -59,6 +101,66 @@ export class AdminService {
   private toast = inject(ToastService);
   private router = inject(Router);
   private base = environment.apiUrl;
+
+  discoveryControl(): Observable<DiscoveryControl> {
+    return this.get('/admin/discovery/control', '讀取探索開關失敗');
+  }
+
+  setDiscoveryEnabled(enabled: boolean, expectedVersion: number): Observable<DiscoveryControl> {
+    return this.patch(
+      '/admin/discovery/control',
+      { enabled, expected_version: expectedVersion },
+      '更新探索開關失敗',
+    );
+  }
+
+  listCleanup(
+    kind: CleanupKind,
+    rule: string,
+    state: string,
+    query: string,
+    offset = 0,
+  ): Observable<ManagementPage<CleanupItem>> {
+    const params = new HttpParams()
+      .set('kind', kind)
+      .set('rule', rule)
+      .set('state', state)
+      .set('query', query)
+      .set('limit', 50)
+      .set('offset', offset);
+    return this.get('/admin/cleanup/items', '讀取清理清單失敗', params);
+  }
+
+  cleanupBatch(
+    kind: CleanupKind,
+    ids: string[],
+    action: CleanupAction,
+    dryRun = true,
+  ): Observable<ManagementBatch> {
+    return this.post(
+      '/admin/cleanup/batch',
+      {
+        kind,
+        ids,
+        action,
+        dry_run: dryRun,
+        confirm_delete: action === 'delete' && !dryRun,
+      },
+      '批量清理失敗',
+    );
+  }
+
+  pendingTargets(offset = 0): Observable<ManagementPage<import('../models').DiscoveryTarget>> {
+    return this.get(
+      '/admin/discovery/pending-targets',
+      '讀取待探索清單失敗',
+      new HttpParams().set('limit', 50).set('offset', offset),
+    );
+  }
+
+  removeTargets(ids: string[]): Observable<ManagementBatch> {
+    return this.post('/admin/discovery/targets/remove', { ids }, '移除待探索來源失敗');
+  }
 
   // ── Feeds ─────────────────────────────────────────────────────────────────
 

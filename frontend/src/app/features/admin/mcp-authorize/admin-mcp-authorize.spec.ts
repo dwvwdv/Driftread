@@ -28,14 +28,12 @@ describe('management OAuth consent page', () => {
   beforeEach(() => {
     request = id;
     consent = vi.fn().mockReturnValue(of(dto()));
-    decide = vi
-      .fn()
-      .mockReturnValue(
-        of({
-          redirect_url:
-            'https://chatgpt.com/connector_platform_oauth_redirect?code=opaque&state=s%2Fx',
-        }),
-      );
+    decide = vi.fn().mockReturnValue(
+      of({
+        redirect_url:
+          'https://chatgpt.com/connector_platform_oauth_redirect?code=opaque&state=s%2Fx',
+      }),
+    );
     TestBed.configureTestingModule({
       imports: [AdminMcpAuthorize],
       providers: [
@@ -116,6 +114,11 @@ describe('management OAuth consent page', () => {
     consent.mockReturnValue(of({ ...dto(), scope: 'source:review offline_access' }));
     const { page } = await setup();
     expect(page.consent()).not.toBeNull();
+  });
+  it('shows explicit cleanup and exploration permissions when requested', async () => {
+    consent.mockReturnValue(of({ ...dto(), scope: 'source:review catalog:manage offline_access' }));
+    const { page } = await setup();
+    expect(page.consent()?.scope).toContain('catalog:manage');
   });
   it('rejects mismatched request IDs and excessive scopes', async () => {
     consent.mockReturnValue(of({ ...dto(), request_id: 'wrong-request' }));

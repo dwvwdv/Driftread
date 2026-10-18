@@ -15,6 +15,7 @@ import { ObLoading, ObEmpty } from '../../../ui/state/state';
 import { ObPageHeader } from '../../../ui/page-header/page-header';
 import { ObStat } from '../../../ui/stat/stat';
 import { ToastService } from '../../../ui/toast/toast';
+import { DiscoveryControlPanel } from '../discovery-control/discovery-control';
 
 /**
  * Console overview: the ten discovery counters, the two on-demand pipeline
@@ -39,6 +40,7 @@ import { ToastService } from '../../../ui/toast/toast';
     ObEmpty,
     ObPageHeader,
     ObStat,
+    DiscoveryControlPanel,
   ],
   templateUrl: './admin-dashboard.html',
   styleUrl: './admin-dashboard.scss',
@@ -51,6 +53,7 @@ export class AdminDashboard implements OnInit {
   protected unhealthy = signal<FeedHealthSummary[]>([]);
   protected loading = signal(true);
   protected running = signal(false);
+  protected discoveryAllowed = signal(false);
   protected refreshing = signal(false);
   protected operations = signal<OperationsStatus | null>(null);
   protected storage = signal<ArticleStorageStats | null>(null);
@@ -148,10 +151,16 @@ export class AdminDashboard implements OnInit {
   }
 
   protected runCycle(): void {
+    if (!this.discoveryAllowed() || this.running()) return;
     this.running.set(true);
     this.admin.runCycle().subscribe({
       next: (summary) => {
         this.running.set(false);
+        if (summary.paused) {
+          this.toast.info('探索已暫停，待探索佇列已保留');
+          this.load();
+          return;
+        }
         // Bracket access: DiscoveryCycleSummary's stage fields are
         // Record<string, number>, and noPropertyAccessFromIndexSignature rejects
         // dotted access on an index signature.

@@ -4,6 +4,8 @@
 
 ## 身份與版本
 
+文章暫存保留 ID／版本／使用者資料，永久刪除則 cascade 清除，並以 feed＋URL 標記阻止自動重建；操作見 [後台清理](ADMIN_CLEANUP.md#預覽暫存與刪除)。
+
 `articles.id`、`UNIQUE(feed_id,url)` 與所有使用者關聯保持原樣。不同 feed 對同一 URL 的描述／HTML 仍有各自的文章列，互不覆寫。`canonical_url` 僅移除 URL fragment，以精確 URL 分組 provenance；不猜測同站其他路徑、追蹤 query、syndication 或語意相同文章，也不合併已收藏的舊 ID。
 
 每次建立文章，或正文 hash、標題、摘要、作者、發布日期改變，資料庫 trigger 在同一 transaction 新增一筆私有 `article_revisions`，並更新 `revision_number` 與 `current_revision_id`。版本編號對單篇文章單調遞增。重抓相同內容、抽取進度更新、正文縮減均不建立假版本。即使 concurrent ingestion，唯一鍵和文章 row lock 仍保護版本序列。

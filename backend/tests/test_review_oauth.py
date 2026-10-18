@@ -14,7 +14,7 @@ def test_metadata():
     assert oauth.oauth_metadata()['code_challenge_methods_supported']==['S256']
     assert oauth.oauth_metadata()['token_endpoint_auth_methods_supported']==['none']
     assert oauth.resource_metadata()['resource']=='https://reader.example/api/admin/mcp/'
-    assert oauth.resource_metadata()['scopes_supported']==['source:review','offline_access']
+    assert oauth.resource_metadata()['scopes_supported']==['source:review','catalog:manage','offline_access']
 
 
 @pytest.mark.parametrize('value',['','http://reader.example','https://reader.example/api',
@@ -110,3 +110,19 @@ def test_largest_supported_registration_fits_index_and_surrogate_is_rejected():
     with pytest.raises(oauth.OAuthError) as exc:
         oauth._encode_client('\ud800',uris,b'k'*32)
     assert exc.value.error=='invalid_client_metadata'
+
+
+def test_default_registration_requests_catalog_scope_but_explicit_review_scope_stays_narrow(monkeypatch):
+    # Registration signs public metadata through a short local connection;
+    # its input validation and selected scope do not require a live database.
+    from contextlib import contextmanager
+    from unittest.mock import Mock
+    @contextmanager
+    def connection():
+        yield Mock()
+    monkeypatch.setattr(oauth.manage_auth, 'connection', connection)
+    monkeypatch.setattr(oauth, '_registration_key', lambda cur: b'x' * 32)
+    default = oauth.register_client({'redirect_uris': ['https://chatgpt.com/connector_platform_oauth_redirect']})
+    assert default['scope'] == 'source:review catalog:manage offline_access'
+    narrow = oauth.register_client({'redirect_uris': ['https://chatgpt.com/connector_platform_oauth_redirect'], 'scope': 'source:review'})
+    assert narrow['scope'] == 'source:review'

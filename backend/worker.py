@@ -41,6 +41,7 @@ from services.operations import OperationsRecorder
 from services.storage_history import record_storage_snapshot, SAMPLE_CHECK_SECONDS
 from services.job_queue import JobQueue, POLL_SECONDS, RENEW_SECONDS
 from services.settings import load_source_review_settings
+from services.discovery_control import can_start as discovery_can_start
 from services.retention import (
     retention_enabled, scheduled_compaction, tick_seconds as retention_tick_seconds,
 )
@@ -199,7 +200,8 @@ async def run_forever(stop: asyncio.Event | None = None) -> None:
 
 async def run_discovery_forever(stop: asyncio.Event | None = None) -> None:
     """Discovery is independent of refresh, including its ledger and heartbeat."""
-    await _run_loop(stop or asyncio.Event(), "discovery", discovery_tick_seconds(), run_cycle, asdict)
+    await _run_loop(stop or asyncio.Event(), "discovery", discovery_tick_seconds(), run_cycle, asdict,
+                    can_start=discovery_can_start)
 
 
 async def run_retention_forever(stop: asyncio.Event | None = None) -> None:
@@ -216,7 +218,7 @@ async def run_storage_forever(stop: asyncio.Event) -> None:
 
 
 async def _source_review_enabled(db) -> bool:
-    if not discovery_enabled():
+    if not await discovery_can_start(db):
         return False
     settings = await asyncio.to_thread(load_source_review_settings, db)
     return settings.enabled

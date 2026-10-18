@@ -326,7 +326,7 @@ export interface DiscoveryTarget {
   source: 'article_link' | 'blogroll' | 'seed' | 'directory' | 'opml';
   source_feed_id: string | null;
   referring_feed_count: number;
-  status: 'pending' | 'done' | 'blocked' | 'exhausted' | 'rejected';
+  status: 'pending' | 'done' | 'blocked' | 'exhausted' | 'rejected' | 'removed';
   attempts: number;
   feeds_found: number;
   next_probe_at: string | null;
@@ -381,6 +381,7 @@ export interface DiscoveryStats {
 }
 
 export interface DiscoveryCycleSummary {
+  paused?: boolean;
   directory: Record<string, number>;
   harvest: Record<string, number>;
   probe: Record<string, number>;

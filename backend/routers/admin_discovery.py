@@ -38,10 +38,24 @@ from services.discovery_candidates import (
     stats,
 )
 from services.discovery_config import discovery_enabled
+from services import discovery_control
 from services.feed_discovery import DiscoveryError, validate_fetch_url
 from services.link_harvest import is_denied_host, normalize_host, origin_of
 
 router = APIRouter(prefix="/admin/discovery", tags=["admin", "discovery"])
+
+
+@router.get('/control', dependencies=[Depends(require_api_key)])
+def read_discovery_control(db: Client = Depends(get_client)):
+    return discovery_control.read_control(db)
+
+
+@router.patch('/control', dependencies=[Depends(require_api_key)])
+async def update_discovery_control(body: discovery_control.ControlUpdate, db: Client = Depends(get_client)):
+    try:
+        return await discovery_control.update_control(db, body.enabled, body.expected_version)
+    except discovery_control.ControlError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from None
 
 
 @router.get(
@@ -418,6 +432,8 @@ async def run_discovery_cycle(
     endpoint and worker behave identically unless deliberately overridden.
     """
     _require_enabled()
+    if not await discovery_control.can_start(db):
+        raise HTTPException(503, 'Autonomous discovery is paused')
     summary = await run_cycle(
         db,
         harvest_limit=harvest_limit,
@@ -431,6 +447,7 @@ async def run_discovery_cycle(
         probe=summary.probe,
         auto_promoted=summary.auto_promoted,
         imported=summary.imported,
+        paused=summary.paused,
     )
 
 

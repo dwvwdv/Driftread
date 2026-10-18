@@ -23,6 +23,7 @@ async def test_web_link_consent_token_tools_refresh_and_revoke(setup, monkeypatc
     monkeypatch.setattr(manage_auth, 'get_current_user', lambda _: setup[0])
     monkeypatch.delenv('SOURCE_REVIEW_MCP_KEY', raising=False)
     monkeypatch.setenv('FEED_DISCOVERY_ENABLED', 'true')
+    monkeypatch.setattr(transport.discovery_control, 'runtime_enabled', lambda db: True)
     monkeypatch.setattr(transport, 'get_client', lambda: Mock(spec=[]))
     monkeypatch.setattr(transport, 'get_setting', lambda db, key:
         AppSetting(key='source.review', version=1, value=SourceReviewValue(enabled=True).model_dump()))
@@ -78,7 +79,7 @@ async def test_web_link_consent_token_tools_refresh_and_revoke(setup, monkeypatc
                     async with ClientSession(receive, send) as session:
                         await session.initialize()
                         tools = (await session.list_tools()).tools
-                        assert len(tools) == 9 and all(t.meta['securitySchemes'][0]['type'] == 'oauth2' for t in tools)
+                        assert len(tools) == 15 and all(t.meta['securitySchemes'][0]['type'] == 'oauth2' for t in tools)
                         result = await session.call_tool('review_policy')
                         assert result.structuredContent['runtime_available'] is True
             rotated = await browser.post(metadata['token_endpoint'], data={

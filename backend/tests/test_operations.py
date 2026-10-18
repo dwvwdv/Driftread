@@ -153,6 +153,7 @@ async def test_discovery_caught_exception_survives_in_ledger_summary():
     from services.settings import SourceReviewValue
 
     with (
+        patch("services.discovery_control.runtime_enabled", return_value=True),
         patch("services.discovery.build_host_index", side_effect=RuntimeError("private details")),
         patch("services.discovery.probe_due", return_value=[]),
         patch("services.discovery.auto_promote_due", return_value=[]),

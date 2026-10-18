@@ -566,6 +566,7 @@ class ProbeSummary(BaseModel):
 
 
 class DiscoveryCycleSummary(BaseModel):
+    paused: bool = False
     directory: DirectorySummary
     harvest: HarvestSummary
     probe: ProbeSummary

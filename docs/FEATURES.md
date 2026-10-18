@@ -117,6 +117,8 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 > `FEED_DISCOVERY_ENABLED=false` 時 worker 不跑這個迴圈，且 `POST /api/admin/discovery/run`
 > 直接回 **503** —— 這個 flag 是真的 kill switch，與只管 worker 的 `FEED_REFRESH_ENABLED` 不同。
 
+後台總覽與待探索頁另提供持久化暫停／啟用，不需重啟；暫停保留佇列、取消在途探索，阻擋自動收錄，仍保留部署開關上限。REST／MCP 及執行語義見 [探索控制](GLOBAL_SETTINGS.md#自動探索暫停與啟用)。
+
 四個階段，由 `services/discovery.py::run_cycle()` 依序驅動，worker 與
 `POST /api/admin/discovery/run` 共用同一個入口。
 
@@ -334,9 +336,16 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 
 ### Admin（管理 session 或機器 API Key）
 
+批量清理、分組證據、暫存／還原與刪除、待探索管理及六個新 MCP 工具見 [後台清理](ADMIN_CLEANUP.md)。
+
 | Method | 路徑 | 說明 |
 |--------|------|------|
 | GET | `/admin/feeds` | 分頁列出**全部** feed（含已封存），依 `next_fetch_at` 排序。`archived` 可選 true / false 過濾；`page_size` 預設 50、上限 200 |
+| GET | `/admin/cleanup/items` | 來源／文章分組清單、搜尋及狀態；最多 50 筆 |
+| POST | `/admin/cleanup/batch` | 1–50 個明確 ID 的預覽、暫存、還原或永久刪除；預設 dry-run |
+| GET／PATCH | `/admin/discovery/control` | 查看／暫停／啟用探索；帶 expected_version，部署主開關仍為上限 |
+| GET | `/admin/discovery/pending-targets` | 待探索來源及精確總數，最多 50 筆 |
+| POST | `/admin/discovery/targets/remove` | 單筆／批次取消待探索 URL，保留 removed 標記 |
 | POST | `/admin/feeds` | 批次匯入 feed（JSON）。只寫 metadata 並設 `next_fetch_at = now()` |
 | POST | `/admin/feeds/from-url` | 從網址匯入單一 feed（開放 API 入口）。同上，文章交給排程器；留言 feed 回 422，與既有來源內容相同回 409 |
 | POST | `/admin/feeds/{feed_id}/refresh` | 重抓該 feed，更新文章、健康度與排程 |
@@ -419,6 +428,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/manage/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示 |
 | `/manage/candidates` | `admin-candidates` | 候選審核 |
 | `/manage/feeds` | `admin-feeds` | 使用中 / 已封存 / 健康度偏低 |
+| `/manage/cleanup` | `admin-cleanup` | 相似來源／文章分組與批量暫存、還原、刪除 |
+| `/manage/pending-sources` | `admin-pending-sources` | 待探索來源、重試時間與單筆／批次移除 |
 | `/manage/frontier` | `admin-frontier` | 種子網址、待探測佇列與封鎖、目錄來源 |
 | `/manage/import` | `admin-import` | 單一網址匯入、JSON 批次匯入 |
 | `/manage/mcp-authorize` | `admin-mcp-authorize` | 管理員確認 ChatGPT 來源評審 OAuth 授權；登入回跳保留 request |
@@ -490,6 +501,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
+| `article_cleanup_tombstones` | 20261018033131 | 私有 feed＋URL 刪除標記，防止文章重新入庫；同 migration 新增 `articles.staged_at` 與 discovery target 的 `removed` 狀態，見 [後台清理](ADMIN_CLEANUP.md) |
 | `manage_login_state` / `manage_sessions` | 20261012020000 | OTP bcrypt hash、嘗試／冷卻與管理 token SHA-256 hash；RLS 無 policy，所有 Data API roles（含 service_role）均撤銷存取，只由 backend 直連 PostgreSQL 使用 |
 | `review_oauth_registration_key` / `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | 持久 DCR 簽名金鑰、管理員同意後保留的 ChatGPT client、待同意請求、窄權限 grant 與 token hash／重放 fencing；grant／refresh 的 null 到期表示管理員明確設定永久，access 仍短效；匿名 DCR 不新增 client 記錄；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |

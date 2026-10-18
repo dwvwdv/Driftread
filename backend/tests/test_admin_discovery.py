@@ -447,7 +447,7 @@ def test_run_forwards_bounds(client, monkeypatch):
         fake_cycle.kwargs = kwargs
         return CycleSummary()
 
-    with patch("routers.admin_discovery.run_cycle", side_effect=fake_cycle):
+    with patch("routers.admin_discovery.run_cycle", side_effect=fake_cycle), patch('routers.admin_discovery.discovery_control.can_start', return_value=True):
         resp = c.post(
             f"{BASE}/run?harvest_limit=5&probe_limit=7&max_concurrency=2", headers=KEY
         )
@@ -468,7 +468,7 @@ def test_run_falls_back_to_env_defaults_when_bounds_are_omitted(client, monkeypa
         fake_cycle.kwargs = kwargs
         return CycleSummary()
 
-    with patch("routers.admin_discovery.run_cycle", side_effect=fake_cycle):
+    with patch("routers.admin_discovery.run_cycle", side_effect=fake_cycle), patch('routers.admin_discovery.discovery_control.can_start', return_value=True):
         c.post(f"{BASE}/run", headers=KEY)
 
     assert fake_cycle.kwargs == {

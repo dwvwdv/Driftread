@@ -18,6 +18,7 @@ from services.mcp_server import AuthenticatedMCP, reset_transport
 from services.admin_review_mcp import AuthenticatedReviewMCP, reset_review_transport
 from routers import (
     admin,
+    admin_cleanup,
     admin_discovery,
     admin_operations,
     admin_retention,
@@ -219,6 +220,7 @@ app.include_router(recommendations.router, prefix="/api")
 app.include_router(manage_auth.router, prefix="/api")
 app.include_router(review_oauth.router)
 app.include_router(admin.router, prefix="/api")
+app.include_router(admin_cleanup.router, prefix="/api")
 app.include_router(admin_discovery.router, prefix="/api")
 app.include_router(admin_operations.router, prefix="/api")
 app.include_router(admin_retention.router, prefix="/api")
