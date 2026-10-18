@@ -1238,7 +1238,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 - GitHub review 事件 hook 工具不可用；依 AGENTS.md 的既有 Codex 規範設定 PR #108 每小時追蹤，合併或關閉後停止，無新進展不通知。
 
-## 階段五十一：後台批量清理、待探索來源管理與 MCP（PR 待定，2026-10-18）
+## 階段五十一：後台批量清理、待探索來源管理與 MCP（PR #109，2026-10-18）
 
 來源及文章累積相同性質內容後，原後台只能逐筆封存來源，待探索前沿也只有封鎖整個網域，缺少集中整理與單一網址取消。新增兩個管理頁與共用 REST／MCP 操作，處理前先顯示可檢查的分組證據及影響範圍。
 
@@ -1249,4 +1249,4 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - migration `20261018033131_admin_cleanup.sql` 由 Supabase CLI 建立檔名，再放入專案既有 migration runner；新表 RLS 零公開 policy，RPC 為 INVOKER 且僅授權 service_role。先 API 套 migration，再更新 worker／frontend；沒有對正式資料執行清理或啟用額外爬取。操作、限制及部署見 [後台清理](ADMIN_CLEANUP.md)。
 - 未加入語意模型、背景自動刪除或跨來源資料合併；分類／同網域只是整理證據，不代表低品質。來源暫存保留既有文章可讀，文章計數仍含暫存實體列。沒有解除 removed 的操作，未阻止管理員未來明確重新匯入已刪來源。
 
-驗證：本地 PostgreSQL 17 完整 backend（1545 passed；最後追加的取消探測測試與狀態轉換另跑通過）、frontend 41 files／488 tests 與 production build 通過；另驗證 service_role 真實寫入、migration 重跑、刪除 cascade、取消與在途 INSERT／文章 ingestion 的鎖競跑、官方 MCP SDK 的 key／OAuth 權限分隔、前端舊回應及確認取消／失敗選取。自行檢查時補上 removed 後仍可明確封鎖網域的狀態轉換，避免前沿頁顯示封鎖成功卻無效；晚到候選同樣拒絕。文件與 diff 檢查通過。Build 保留既有 initial bundle 警告（511.85 kB／500 kB）；實際瀏覽器畫面未驗證（環境未安裝 Chromium），正式 Supabase／部署與 ChatGPT 重新授權未驗證。GitHub API 存取目前受阻，PR 號碼待建立；review 事件 hook 工具不可用。
+驗證：本地 PostgreSQL 17 完整 backend 1546 passed、frontend 41 files／488 tests 與 production build 通過；另驗證 service_role 真實寫入、migration 重跑、刪除 cascade、取消與在途 INSERT／文章 ingestion 的鎖競跑、官方 MCP SDK 的 key／OAuth 權限分隔、前端舊回應及確認取消／失敗選取。自行檢查時補上 removed 後仍可明確封鎖網域的狀態轉換，避免前沿頁顯示封鎖成功卻無效；晚到候選同樣拒絕。文件與 diff 檢查通過。Build 保留既有 initial bundle 警告（511.85 kB／500 kB）；實際瀏覽器畫面未驗證（環境未安裝 Chromium），正式 Supabase／部署與 ChatGPT 重新授權未驗證。review 事件 hook 工具不可用，依 AGENTS.md 建立每小時追蹤，合併／關閉後停止，無新進展不通知。
