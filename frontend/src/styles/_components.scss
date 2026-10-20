@@ -93,14 +93,17 @@
 
 .ob-btn--ghost {
   @include offset-shadow(var(--border));
-  background: transparent;
+  // Paints its own raised surface instead of being transparent: border-control
+  // only holds 3:1 on base／raised (2.6:1 on sunken), and ghost buttons do sit
+  // inside sunken panels (admin AI results). With its own fill the outline is
+  // measured against raised wherever the button is placed.
+  background: var(--surface-raised);
   color: var(--text);
   // Shadow stays the decorative --border (offset-shadow-ghost); the outline is
   // what tells the user this is pressable, so it needs ≥3:1.
   border-color: var(--border-control);
 
-  // border-control only holds 3:1 on base／raised; on the sunken hover fill the
-  // outline switches to accent (4.63／4.64:1 on sunken) so it stays visible.
+  // The hover fill is sunken, so the outline switches to accent (4.63／4.64:1).
   &:hover:not(:disabled) {
     background: var(--surface-sunken);
     color: var(--text-strong);
