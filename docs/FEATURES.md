@@ -342,7 +342,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 |--------|------|------|
 | GET | `/admin/feeds` | 分頁列出**全部** feed（含已封存），依 `next_fetch_at` 排序。`archived` 可選 true / false 過濾；`page_size` 預設 50、上限 200 |
 | GET | `/admin/cleanup/items` | 來源／文章分組清單、搜尋及狀態；最多 50 筆 |
-| POST | `/admin/cleanup/batch` | 1–50 個明確 ID 的預覽、暫存、還原或永久刪除；預設 dry-run |
+| POST | `/admin/cleanup/batch` | 1–50 個明確 ID 的預覽、暫存、還原或永久刪除；預設 dry-run，正式刪除走 DATABASE_URL、service_role 與 45 秒交易上限 |
 | GET／PATCH | `/admin/discovery/control` | 查看／暫停／啟用探索；帶 expected_version，部署主開關仍為上限 |
 | GET | `/admin/discovery/pending-targets` | 待探索來源及精確總數，最多 50 筆 |
 | POST | `/admin/discovery/targets/remove` | 單筆／批次取消待探索 URL，保留 removed 標記 |

@@ -1287,3 +1287,13 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - Review 修正（P2）：README 與 .env.example 仍誤稱 FEED_REFRESH_ENABLED=false 會讓 worker 退出，RUNBOOK 每日容量段也保留三排程全關即退出的舊契約。同步改為只停 refresh，說明評審監看與容量採樣仍存取 DB；完全停用使用 docker compose stop worker，後續部署使用 --scale worker=0，並註明單次 stop 會被後續完整 up 重新啟動。Compose 與 gen_env 註解同步，沒有變更設定值或執行行為。文件檢查、diff 檢查與 gen_env Python 語法檢查通過；本次僅文件／註解，未重跑既有程式測試、未操作正式容器或資料。
 
 - 主分支同步：納入已合併 PR #110 的 Offbeat token／控制項對比修正，完整保留其歷史條目與樣式；只解決雙方於 changelog 檔尾追加的衝突。#110 已使用階段五十二，因此本 PR 原條目順延為五十三，仍維持一個 PR 一個條目，不新增第二份修復紀錄。來源評審、歷史修復資格與正式開關均未變更。同步後前端 42 files／492 tests 與 production build 通過（initial bundle 512.45 kB／500 kB，延續主分支既有警告），文件與 diff 檢查通過；backend 與先前通過 1610 tests 的版本逐字相同，未重跑後端或 Docker 測試。
+
+## 階段五十四：大量文章來源永久刪除逾時修復（PR #113，2026-10-20）
+
+正式「Українська правда」的永久刪除在 REST 顯示 500，管理 MCP 也失敗。Supabase postgres logs 確認 `apply_cleanup_batch` 的來源 cascade 遇到 statement timeout；回滾量測刪除剩餘 4,990 篇與版本／探索關聯約 7.5 秒，逼近 PostgREST 預設短逾時。清單快取原顯示 5,990 篇，以 dry-run 實際計數作準。
+
+- REST／MCP 共用 cleanup adapter 的正式刪除改透過既有 DATABASE_URL 呼叫同一 INVOKER RPC，SET LOCAL ROLE service_role 保持原權限。連線 5 秒、SQL 45 秒、等鎖 3 秒；逾時／死鎖或連線問題回安全的 503，失敗整批回滾並關閉連線。預覽、暫存、還原、明確 ID／確認與來源列鎖維持原契約。
+- 新增 `20261020132503_cleanup_cascade_indexes.sql`（Supabase CLI 產生檔名），補七個來源／文章外鍵索引。保留舊 migration，不改 RLS／公開權限，不調高全域或 Data API 角色逾時。
+- 已以 Supabase MCP、service_role 與原 RPC 成功永久刪除指定來源及剩餘 4,990 篇，零訂閱／收藏／已讀受影響；管理 MCP 搜尋為 0，資料庫確認來源、文章與來源探索證據均為 0。七個索引已直接套用正式資料庫；API 部署時 runner 可冪等補記專案 ledger。
+
+驗證：本地 PostgreSQL 18.4 同步 PR #112 後全部 backend **1618 passed**；包含短逾時失敗／回滾後以新 adapter 成功、未暫存仍拒絕、service_role cascade／匿名拒絕、索引重跑、錯誤訊息不洩漏與連線收尾。文件檢查與 diff 檢查通過。正式 security／performance advisors 已讀取，本次七個外鍵未再列缺索引；其餘既有及其他 schema 的告警未擴大處理，參見 [外鍵索引診斷](https://supabase.com/docs/guides/database/database-linter?lint=0001_unindexed_foreign_keys)。未更動 frontend，未執行瀏覽器驗收；API image 尚未部署，須合併並更新 API 才啟用新 adapter。未加入背景刪除、改寫同步 ledger 或修復全站文章計數快取；極大量單批仍受 45 秒上限，逾時需縮小批次。GitHub review 事件 hook 工具不可用，依既有 Codex 規範另設每小時追蹤。

@@ -17,7 +17,7 @@ services:
       JEV_API_KEY: ${JEV_API_KEY:-}
       MANAGE_OWNER_USER_ID: ${MANAGE_OWNER_USER_ID:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL} # migration、後台驗證與永久刪除（可 SET ROLE service_role）
       DISCOVERY_USER_AGENT: ${DISCOVERY_USER_AGENT:-Driftread/1.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # api reads these too: POST /api/admin/feeds/refresh-due drives the same

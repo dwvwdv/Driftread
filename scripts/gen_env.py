@@ -151,6 +151,7 @@ def main():
     if is_unset("DATABASE_URL"):
         print("\n⚠ 請手動填入 .env 中的：DATABASE_URL")
         print("  Supabase Dashboard → Settings → Database → Connection string (URI)")
+        print("  用於 migration、後台驗證與永久刪除；連線角色需可 SET ROLE service_role。")
 
     if is_unset("SUPABASE_JWT_SECRET"):
         print("\n⚠ 請手動填入 .env 中的：SUPABASE_JWT_SECRET")

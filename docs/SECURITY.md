@@ -390,6 +390,8 @@ public origin 只能來自環境設定，不能信任 Host／forwarded headers�
 
 後台清理使用 service_role-only／INVOKER RPC，選取 ID 有界且預設 dry-run；永久刪除需暫存及明確確認。管理 MCP 另驗 `catalog:manage`，既有評審憑證不擴權。取消探索及刪文防重新入庫的交易／鎖、OAuth 同意與部署契約見 [後台清理](ADMIN_CLEANUP.md)。
 
+正式永久刪除使用既有 DATABASE_URL，連線後 SET LOCAL ROLE service_role 執行原 INVOKER RPC；不以 migration 角色的額外權限刪資料。SQL／等鎖分別限 45／3 秒，錯誤回滾整筆、日誌僅記 SQLSTATE，不輸出連線字串或原始例外。預覽、暫存與還原保留 Data API 路徑。
+
 文章計數修復 RPC `reconcile_feed_article_count(uuid)` 為 `SECURITY INVOKER`，撤銷 PUBLIC／anon／authenticated EXECUTE，僅 service_role 可執行；與批次入庫共用來源列鎖，不擴大公開寫入權限。失敗階段只保存固定碼，日誌不加入原始 DB／外連例外。
 
 | 層 | 機制 | 位置 |
