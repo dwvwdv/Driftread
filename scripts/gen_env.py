@@ -167,6 +167,7 @@ def main():
         print("  ${SUPABASE_URL}/auth/v1/.well-known/jwks.json")
         print("  （只有自架或非標準網域的 Supabase Auth 才需要覆寫）")
 
+    # FEED_REFRESH_ENABLED only gates refresh; it does not stop the worker.
     # Feed refresh scheduler settings. All have code-level defaults (see
     # backend/services/feed_refresh.py), so they're deliberately not part of the
     # missing check above — an unset .env still runs. Just report the effective

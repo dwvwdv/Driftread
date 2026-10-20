@@ -92,6 +92,7 @@ services:
       DISCOVERY_USER_AGENT: ${DISCOVERY_USER_AGENT:-Driftread/1.0}
       JEV_API_KEY: ${JEV_API_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # This gates refresh only; stop/scale worker to zero to disable the service.
       FEED_REFRESH_ENABLED: ${FEED_REFRESH_ENABLED:-true}
       FEED_REFRESH_TICK_SECONDS: ${FEED_REFRESH_TICK_SECONDS:-300}
       FEED_REFRESH_BATCH_SIZE: ${FEED_REFRESH_BATCH_SIZE:-50}

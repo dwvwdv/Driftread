@@ -69,7 +69,7 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 #64 新增 `20261013115249_article_storage_history.sql`，由 API 啟動時的 runner 套用；沒有新 exposed schema、Dashboard 設定或環境變數。先備份並停舊 worker，更新 API 並確認 ledger／healthy，再啟動同版 worker／frontend。
 
-確認管理首頁「容量成長趨勢」收到第一筆每日紀錄、`storage` 工作與 heartbeat 正常；任一既有 scheduler 啟用才會啟動容量採樣，三者全關仍退出。`GET /api/admin/retention/history?days=30` 必須由管理 session 或既有機器 API Key 授權，不登入不能讀。觀察至少 24 小時、兩筆不同日採樣後再驗證成長率；同日重啟不得覆寫採樣，不應手動清 ledger 或補造歷史。部署驗收仍由 #83 追蹤，正文縮減繼續維持 `ARTICLE_RETENTION_ENABLED=false`，直到備份／dry-run 驗證完成。
+確認管理首頁「容量成長趨勢」收到第一筆每日紀錄、`storage` 工作與 heartbeat 正常；worker 隨常駐的來源評審設定監看執行容量採樣，refresh／discovery／retention 全關也不退出；完全停用 worker 的操作見 [README 部署步驟](../README.md#步驟)。`GET /api/admin/retention/history?days=30` 必須由管理 session 或既有機器 API Key 授權，不登入不能讀。觀察至少 24 小時、兩筆不同日採樣後再驗證成長率；同日重啟不得覆寫採樣，不應手動清 ledger 或補造歷史。部署驗收仍由 #83 追蹤，正文縮減繼續維持 `ARTICLE_RETENTION_ENABLED=false`，直到備份／dry-run 驗證完成。
 
 ## 收錄前來源身分檢查
 

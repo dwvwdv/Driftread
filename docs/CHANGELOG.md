@@ -1267,3 +1267,5 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 - Docker 補充驗證：原 Dockerfile 的線上安裝受容器 DNS／proxy 解析限制而未成功；使用相同 Python 3.12 base、相同 requirements 與原始碼，在暫存 context 以預下載 wheel 離線建置測試 image。容器內 140 項評審／探索／MCP／API／歷史修復 PostgreSQL 測試通過；另兩次重新建立容器並重跑正式 migration runner，確認同一隔離測試 DB 的探索暫停、評審政策、版本與時間戳逐字保留。不是正式部署或正式資料庫重啟驗收。
 - GitHub review 事件 hook 工具不可用；已建立 PR #112 每小時追蹤，合併／關閉後停止，無實質新進展不通知。初次查核無 review／未解決 thread，GitHub 自動 review 正在執行。
+
+- Review 修正（P2）：README 與 .env.example 仍誤稱 FEED_REFRESH_ENABLED=false 會讓 worker 退出，RUNBOOK 每日容量段也保留三排程全關即退出的舊契約。同步改為只停 refresh，說明評審監看與容量採樣仍存取 DB；完全停用使用 docker compose stop worker，後續部署使用 --scale worker=0，並註明單次 stop 會被後續完整 up 重新啟動。Compose 與 gen_env 註解同步，沒有變更設定值或執行行為。文件檢查、diff 檢查與 gen_env Python 語法檢查通過；本次僅文件／註解，未重跑既有程式測試、未操作正式容器或資料。

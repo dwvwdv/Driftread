@@ -103,10 +103,23 @@ docker compose up -d worker frontend
 仍須等 API healthcheck 成功才啟動。migration 保留的 `public._migrations` view 只供舊 migration
 runner 安全重試，不是舊版 runtime 的 table 相容層。
 
-不想跑 `worker` 的話，設 `FEED_REFRESH_ENABLED=false` 並改由外部排程器定期呼叫
-`POST /api/admin/feeds/refresh-due`（需 `X-API-Key`）即可，抓取邏輯完全相同。
-主動發現同理，對應端點是 `POST /api/admin/discovery/run` —— 但那條路徑要求
-`FEED_DISCOVERY_ENABLED=true`，停用時直接回 503（見下方環境變數說明）。
+只想關閉 RSS 自動刷新時，設 `FEED_REFRESH_ENABLED=false`；外部排程器仍可呼叫
+`POST /api/admin/feeds/refresh-due`（需 `X-API-Key`），抓取邏輯相同。此開關只停用 refresh
+迴圈，不停止 worker。即使 refresh／discovery／retention 都關閉、來源評審也停用，worker
+仍常駐監看評審設定並執行容量採樣，需要可用的資料庫設定。
+
+完全不跑 worker 時，停止該服務，後續部署也維持零個 worker：
+
+```bash
+docker compose stop worker
+docker compose up -d --scale worker=0
+```
+
+單獨 `stop worker` 只停止目前容器；之後不帶 `--scale worker=0` 的完整 `docker compose up -d`
+會再次啟動 worker。停用整個服務會一併停止自動刷新、探索、評審準備／Jev 執行、正文縮減與容量採樣；API 仍可服務。
+
+手動探索端點 `POST /api/admin/discovery/run` 仍要求 `FEED_DISCOVERY_ENABLED=true`
+且探索未暫停，否則回 503；來源評審政策與探索開關獨立（見下方環境變數說明）。
 
 ### 停止
 
@@ -131,7 +144,7 @@ docker compose down
 | `MANAGE_OWNER_USER_ID` | 後台必填 | 唯一管理員的 Supabase `auth.users.id`；空白拒絕後台登入。部署順序見 [RUNBOOK](docs/RUNBOOK.md#後台-telegram-兩步驟驗證) |
 | `CORS_ORIGINS` | | 逗號分隔的允許來源，預設 `*` |
 | `DISCOVERY_USER_AGENT` | | 所有對外抓取（discover 與 feed 匯入 / refresh）的 User-Agent，預設 `Driftread/1.0` |
-| `FEED_REFRESH_ENABLED` | | 是否啟用自動抓取，預設 `true`。設 `false` 時 `worker` 記一行 log 後退出（`api` 不受影響）|
+| `FEED_REFRESH_ENABLED` | | 是否啟用 RSS 自動刷新迴圈，預設 `true`。設 `false` 只停用 refresh；worker 仍監看評審設定並執行容量採樣，不影響手動刷新 API。停用整個服務見上方操作說明|
 | `FEED_REFRESH_TICK_SECONDS` | | 多久掃一次到期佇列，預設 `300`。**這不是抓取頻率** —— 個別 feed 的間隔由 `feeds.fetch_interval_minutes` 自適應決定 |
 | `FEED_REFRESH_BATCH_SIZE` | | 單輪最多處理幾個到期 feed，預設 `50` |
 | `FEED_REFRESH_CONCURRENCY` | | 單輪同時對外抓取的上限，預設 `5` |
