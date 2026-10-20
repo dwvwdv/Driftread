@@ -44,7 +44,10 @@ def mcp_app(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_official_sdk_source_review_workflow_and_annotations(mcp_app):
+@pytest.mark.parametrize('discovery,paused', [(False, False), (False, True), (True, False), (True, True)])
+async def test_official_sdk_source_review_workflow_and_annotations(mcp_app, monkeypatch, discovery, paused):
+    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', str(discovery).lower())
+    monkeypatch.setattr(transport.discovery_control, 'runtime_enabled', lambda db: not paused)
     db = Mock(spec=[])
     packet = {"id": REVIEW_ID, "candidate_id": CANDIDATE_ID, "snapshot_hash": "a" * 64,
               "lease_token": LEASE, "samples": [{"id": "sample-1", "text": "untrusted article"}]}
@@ -411,3 +414,24 @@ async def test_catalog_tools_enforce_separate_permission(mcp_app, credential):
                             control_read.assert_not_called(); control_update.assert_not_awaited()
                         if credential == 'management':
                             assert (await session.call_tool('review_policy')).isError is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('discovery,paused', [(False, True), (True, True), (True, False)])
+async def test_mcp_review_policy_remains_available_without_exploration(mcp_app, monkeypatch, discovery, paused):
+    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', str(discovery).lower())
+    monkeypatch.setattr(transport.discovery_control, 'runtime_enabled', lambda db: not paused)
+    policy = AppSetting(key='source.review', version=1, value=SourceReviewValue(enabled=True).model_dump())
+    with patch.object(transport, 'get_client', return_value=Mock(spec=[])), \
+         patch.object(transport, 'get_setting', return_value=policy), \
+         patch.object(transport.source_review, '_rpc', return_value={}):
+        async with mcp_app.router.lifespan_context(mcp_app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mcp_app), headers={'X-API-Key': KEY}) as http:
+                async with streamable_http_client('http://testserver/api/admin/mcp/', http_client=http) as (receive, send, _):
+                    async with ClientSession(receive, send) as session:
+                        await session.initialize()
+                        result = await session.call_tool('review_policy')
+                        assert not result.isError
+                        assert result.structuredContent['runtime_available'] is True
+                        assert result.structuredContent['external_agent_available'] is True
+                        assert result.structuredContent['discovery_runtime_available'] is (discovery and not paused)

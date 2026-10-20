@@ -179,6 +179,7 @@ async def test_retention_runs_when_other_schedulers_disabled(monkeypatch):
         patch.object(worker, "run_discovery_forever") as discovery,
         patch.object(worker, "run_retention_forever", side_effect=immediate) as retention,
         patch.object(worker, "run_storage_forever", side_effect=immediate),
+        patch.object(worker, "run_source_review_forever", side_effect=immediate),
     ):
         assert await worker.main() == 0
     retention.assert_called_once()
@@ -199,6 +200,7 @@ async def test_retention_disabled_does_not_run_with_refresh(monkeypatch):
         patch.object(worker, "run_forever", side_effect=immediate),
         patch.object(worker, "run_retention_forever") as retention,
         patch.object(worker, "run_storage_forever", side_effect=immediate),
+        patch.object(worker, "run_source_review_forever", side_effect=immediate),
     ):
         assert await worker.main() == 0
     retention.assert_not_called()

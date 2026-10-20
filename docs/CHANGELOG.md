@@ -1269,3 +1269,21 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 沒做的事：元件結構、圓角（已是 0）、偏移陰影、字族與字級都已符合設計系統，不動；只改色值，不改語意 token 名稱。
 
 驗證：`npm test`（42 files／492 tests）與 `npm run build` 通過；build 的 initial bundle 預算警告（512 kB／500 kB）在本 PR 之前就存在，與色值無關。未在瀏覽器實際目視比對。
+
+## 階段五十三：來源評審與探索開關解耦（PR #112，2026-10-20）
+
+#111 的根因是探索暫停同時阻擋評審排程、採樣與 AI metadata 准入，SQL 還將有效 accept 改為 awaiting_human，覆蓋 skip_human_review 的語義。新增 migration `20261020080000_review_independence.sql`，僅讓 referrer_auto 探索收錄遵守 discovery pause；AI 收錄與人工覆核政策獨立，保留有效樣本、品質／信心／相關性／垃圾門檻、租約、快照、候選版本、人工覆寫及冪等交易。
+
+- worker 常駐監看 source.review，即使 FEED_DISCOVERY_ENABLED=false 也能準備既有候選及執行獨立評審；評審停用時不啟動新採樣或付費，skip 不啟動評審或探索。每 hop 仍驗證政策及來源安全防線，首次抓取沿用 refresh。其他部署排程全關時仍有評審監看及本地容量工作，需要可用 DB；不新增環境變數。
+- MCP review_policy 的評審可用性改由 source.review 與引擎憑證決定，探索部署／暫停僅作獨立診斷；探索狀態讀取錯誤不阻止讀取評審政策。後台設定與探索面板說明同步更新。
+- 新提交記錄 gate_reason。歷史不自動回填；reconcile_source_review 預設 dry-run，只有舊 policy skip=true／AI accept 與 migration ledger 提交時段等證據明確，且目前政策、候選版本、最新任務、無人工處置、有效快照與原始 analysis_results、品質門檻均通過，才允許逐筆修復。保留原結果，另記 reconciled_discovery_pause；重跑不重複收錄、不重送模型請求。預覽／逐筆 apply 腳本見 scripts/reconcile_source_review_holds.py。
+- 2026-10-20 15:11–15:12（UTC+8）正式 Supabase 僅 SELECT 查核：source.review v5 enabled=true／skip=true，discovery.control v2 enabled=false。99 筆 awaiting_human 中，68 筆依舊 SQL 與 ledger 證據屬探索暫停，68 筆均通過目前修復資格預檢；其餘 31 筆為原 policy skip=false，政策版本較舊，不列入修復。沒有人工覆寫、候選變更或過期／缺失快照混入那 68 筆。此為升級前等價查詢預覽，部署後必須再以新 RPC 重新檢查；未更新正式 schema、評審或來源，未將 99 筆無差別放行。
+- 本機 PostgreSQL 17.11 完整 backend：1610 passed、0 skipped；frontend 42 files／492 tests 與 production build 通過（既有 initial bundle warning：511.85 kB／500 kB）。覆蓋探索／skip 四格、部署開關與 review.enabled／skip 組合、MCP 官方 SDK 及 REST、品質與租約保護、service_role-only 權限、migration 重跑不改設定、真實舊 SQL 產生 hold 的 dry-run／逐筆 apply 與原始結果冪等、CLI 原因統計及保留人工覆核。文件檢查與 git diff --check 通過。
+- 正式部署、Supabase 新 migration／RPC、實際瀏覽器與 Jev 付費請求未驗證；不自動變更正式開關或修復那 68 筆。部署先停舊 worker，由 API 套 migration 並 healthy 後啟動同版 worker／frontend。
+
+- Docker 補充驗證：原 Dockerfile 的線上安裝受容器 DNS／proxy 解析限制而未成功；使用相同 Python 3.12 base、相同 requirements 與原始碼，在暫存 context 以預下載 wheel 離線建置測試 image。容器內 140 項評審／探索／MCP／API／歷史修復 PostgreSQL 測試通過；另兩次重新建立容器並重跑正式 migration runner，確認同一隔離測試 DB 的探索暫停、評審政策、版本與時間戳逐字保留。不是正式部署或正式資料庫重啟驗收。
+- GitHub review 事件 hook 工具不可用；已建立 PR #112 每小時追蹤，合併／關閉後停止，無實質新進展不通知。初次查核無 review／未解決 thread，GitHub 自動 review 正在執行。
+
+- Review 修正（P2）：README 與 .env.example 仍誤稱 FEED_REFRESH_ENABLED=false 會讓 worker 退出，RUNBOOK 每日容量段也保留三排程全關即退出的舊契約。同步改為只停 refresh，說明評審監看與容量採樣仍存取 DB；完全停用使用 docker compose stop worker，後續部署使用 --scale worker=0，並註明單次 stop 會被後續完整 up 重新啟動。Compose 與 gen_env 註解同步，沒有變更設定值或執行行為。文件檢查、diff 檢查與 gen_env Python 語法檢查通過；本次僅文件／註解，未重跑既有程式測試、未操作正式容器或資料。
+
+- 主分支同步：納入已合併 PR #110 的 Offbeat token／控制項對比修正，完整保留其歷史條目與樣式；只解決雙方於 changelog 檔尾追加的衝突。#110 已使用階段五十二，因此本 PR 原條目順延為五十三，仍維持一個 PR 一個條目，不新增第二份修復紀錄。來源評審、歷史修復資格與正式開關均未變更。同步後前端 42 files／492 tests 與 production build 通過（initial bundle 512.45 kB／500 kB，延續主分支既有警告），文件與 diff 檢查通過；backend 與先前通過 1610 tests 的版本逐字相同，未重跑後端或 Docker 測試。

@@ -177,8 +177,8 @@
 <section class="review-settings">
   <ob-card heading="AI 來源評審" meta="SOURCE REVIEW">
     <p class="hint">
-      啟用後，候選先經評審再決定收錄。背景準備與執行仍受服務的 FEED_DISCOVERY_ENABLED
-      主開關約束；此處啟用不會開啟主動發現。
+      啟用後，候選先經評審再決定收錄。背景準備與執行由來源評審開關獨立控制，不受自動探索暫停或部署開關影響。
+      此處啟用不會開啟主動發現。
     </p>
     @if (reviewConflict()) {
       <p class="conflict" role="alert">

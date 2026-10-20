@@ -4,9 +4,9 @@
 
 後台「總覽」及「待探索來源」頁有共用的自動探索開關，不需重啟 API／worker。`discovery.control` 存 `{ "enabled": true|false }`，預設 true 以保留既有部署意圖；真正執行仍須部署主開關 `FEED_DISCOVERY_ENABLED=true`，後台與 MCP 都不能繞過它。部署未開放時顯示原因，不能透過按鈕啟用爬取。
 
-暫停保留候選、待探索 URL 與背景 queued 工作；worker 不再啟動 discovery／source_review 工作。執行中的探索 cycle 每秒重讀開關，關閉或讀取失敗即取消 coroutine，不把暫停計成來源抓取失敗。已送出的網路請求、已提交到 thread 的同步資料庫操作仍可能完成；暫停回應表示設定已儲存，不代表所有遠端 I/O 已停止。啟用後依既有排程接續，不清空佇列，也不強制立即跑一輪。
+暫停保留候選、待探索 URL 與背景 queued 工作；worker 不再啟動 discovery 工作。執行中的探索 cycle 每秒重讀開關，關閉或讀取失敗即取消 coroutine，不把暫停計成來源抓取失敗。已送出的網路請求、已提交到 thread 的同步資料庫操作仍可能完成；暫停回應表示設定已儲存，不代表所有遠端 I/O 已停止。啟用後依既有排程接續，不清空佇列，也不強制立即跑一輪。
 
-背景評審在採樣的每個 HTTP hop、每個新採樣與 Jev 任務前重查開關；已送出的付費請求可完成，避免取消後製造未知付款／重送。暫停造成的採樣中止不增加 sample failure，未完成租約依原流程到期恢復。SQL 自動收錄與暫停共用設定列鎖，鎖只涵蓋本地交易，不跨外連。暫停時外部 agent 已有租約的有效 accept 結果仍可保存，但改為 awaiting_human；恢復不批次放行既有 awaiting_human。既有來源 RSS 更新與管理員明確人工收錄／覆核不受影響。
+來源評審、採樣、外部 MCP 提交與 AI metadata 准入只受獨立 `source.review` 政策控制；探索開關及 `FEED_DISCOVERY_ENABLED` 不改寫評審決策，也不強制人工覆核。引用證據自動收錄（`referrer_auto`）仍屬探索管線，SQL 與暫停共用設定列鎖；AI 准入不取得該鎖。既有 RSS 更新及管理員操作照常。評審停用不啟動採樣或付費，skip 只控制有效決策是否需人工覆核，詳見 [來源評審](SOURCE_REVIEW.md#啟用與人工覆核)。
 
 `GET /api/admin/discovery/control` 回傳 `enabled`、`deployment_enabled`、`effective_enabled`、`version`、`updated_at`；`PATCH` 接受 `{enabled,expected_version}`，版本衝突回 409。既有 settings PUT 也可儲存此已註冊 key。`POST /api/admin/discovery/run` 在暫停時回 503，在途手動探索遇暫停回 `paused=true`；後台同步停用手動執行按鈕。MCP `get_discovery_control`／`set_discovery_enabled` 提供相同版本與部署限制，要求 `catalog:manage`，只開放此控制項、不接受任意全域設定 key。
 

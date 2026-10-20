@@ -139,14 +139,15 @@ async def test_review_loop_disabled_then_hot_enabled_preserves_queue(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_corrupt_settings_and_master_switch_fail_closed(monkeypatch):
+async def test_corrupt_review_settings_fail_closed_independently_of_discovery(monkeypatch):
     monkeypatch.setenv('FEED_DISCOVERY_ENABLED', 'true')
     db = FakeDB(app_settings=[{'key': SOURCE_REVIEW_KEY, 'version': 1,
                               'value': {'enabled': 'true'}}])
     with pytest.raises(ValidationError):
         await worker._source_review_enabled(db)
     monkeypatch.setenv('FEED_DISCOVERY_ENABLED', 'false')
-    assert await worker._source_review_enabled(db) is False
+    with pytest.raises(ValidationError):
+        await worker._source_review_enabled(db)
 
 
 @pytest.mark.asyncio
@@ -182,16 +183,60 @@ async def test_corrupt_hot_settings_do_not_enqueue_or_claim(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_main_starts_review_monitor_while_master_on(monkeypatch):
-    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', 'true')
+@pytest.mark.parametrize('discovery_enabled', [False, True])
+async def test_main_always_starts_independent_review_monitor(monkeypatch, discovery_enabled):
+    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', str(discovery_enabled).lower())
     monkeypatch.setenv('FEED_REFRESH_ENABLED', 'false')
     monkeypatch.setenv('ARTICLE_RETENTION_ENABLED', 'false')
     with patch.object(worker, 'run_discovery_forever', AsyncMock()) as discovery, \
          patch.object(worker, 'run_source_review_forever', AsyncMock()) as review, \
          patch.object(worker, 'run_storage_forever', AsyncMock()) as storage:
         assert await worker.main() == 0
-    discovery.assert_awaited_once()
+    assert discovery.await_count == int(discovery_enabled)
     review.assert_awaited_once()
     storage.assert_awaited_once()
-    assert discovery.call_args.args[0] is review.call_args.args[0]
-    assert discovery.call_args.args[0] is storage.call_args.args[0]
+    assert review.call_args.args[0] is storage.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('discovery,paused,review,skip', [
+    (d, p, r, s) for d in (False, True) for p in (False, True)
+    for r in (False, True) for s in (False, True)
+])
+async def test_only_review_enabled_controls_scheduling(monkeypatch, discovery, paused, review, skip):
+    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', str(discovery).lower())
+    db = FakeDB(app_settings=[
+        {'key': 'discovery.control', 'version': 3, 'value': {'enabled': not paused}},
+        {'key': SOURCE_REVIEW_KEY, 'version': 8, 'value': {'enabled': review, 'skip_human_review': skip}},
+    ])
+    assert await worker._source_review_enabled(db) is review
+    assert await worker.discovery_can_start(db) is (discovery and not paused)
+
+
+@pytest.mark.asyncio
+async def test_paused_discovery_prepares_existing_candidate_but_disabled_review_does_not(monkeypatch):
+    from services import source_review as service
+    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', 'false')
+    db = FakeDB(app_settings=[
+        {'key': 'discovery.control', 'version': 1, 'value': {'enabled': False}},
+        {'key': SOURCE_REVIEW_KEY, 'version': 1, 'value': {'enabled': True}},
+    ])
+    preparing = {'id': 'review', 'candidate_id': 'candidate', 'policy': {'sample_size': 5}, 'lease_token': 'lease'}
+    calls = []
+
+    def rpc(_db, name, params):
+        calls.append(name)
+        return {'prune_source_reviews': {}, 'request_due_source_reviews': {'requested': 1},
+                'claim_source_review': preparing if params.get('p_preparing') else None,
+                'prepare_source_review': {'status': 'ready', 'engine': 'external_agent'}}[name]
+
+    with patch.object(service, '_rpc', side_effect=rpc), \
+         patch.object(service, 'get_candidate', return_value={'id': 'candidate'}), \
+         patch.object(service, '_fetch_snapshot', AsyncMock(return_value={'samples': []})) as fetch:
+        result = await service.prepare_due_reviews(db, limit=1)
+        assert result == {'requested': 1, 'prepared': 1, 'failed': 0, 'submitted': 0}
+        fetch.assert_awaited_once()
+        calls.clear()
+        db.rows('app_settings')[1]['value']['enabled'] = False
+        assert (await service.prepare_due_reviews(db))['prepared'] == 0
+        assert calls == ['prune_source_reviews']

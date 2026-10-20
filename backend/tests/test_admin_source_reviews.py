@@ -36,7 +36,9 @@ def test_rest_admin_auth_and_management_session_precedence(review_client):
         read.assert_called_once_with(db, candidate_id=None, limit=50)
 
 
-def test_rest_request_packet_retry_and_human_resolution(review_client):
+@pytest.mark.parametrize('discovery', [False, True])
+def test_rest_request_packet_retry_and_human_resolution(review_client, monkeypatch, discovery):
+    monkeypatch.setenv('FEED_DISCOVERY_ENABLED', str(discovery).lower())
     client, db = review_client
     headers = {"X-API-Key": "test-admin-key"}
     with patch.object(reviews.source_review, "request_review", return_value={"id": REVIEW_ID, "status": "queued"}) as enqueue, \

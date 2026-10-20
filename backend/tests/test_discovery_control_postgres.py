@@ -21,29 +21,40 @@ def test_control_migration_replay_and_version_fencing(pg_database):
             cur.execute((root/'tests/sql/test_discovery_control.sql').read_text())
     with connection(pg_database) as conn:
         set_control(conn, False)
+        scalar(conn, "SELECT driftread.save_app_setting('source.review',%s::jsonb,0)", (json.dumps(POLICY),))
+        policy = scalar(conn, "SELECT to_jsonb(s) FROM driftread.app_settings s WHERE key='source.review'")
         migration = (root/'migrations/20261018034910_discovery_control.sql').read_text()
         with conn.cursor() as cur:
             cur.execute(migration)
             cur.execute(migration)
+            latest = (root/'migrations/20261020080000_review_independence.sql').read_text()
+            cur.execute(latest)
+            cur.execute(latest)
         assert not scalar(conn, 'SELECT driftread.discovery_runtime_enabled()'), 'migration resumed operator-paused pipeline'
+        assert scalar(conn, "SELECT to_jsonb(s) FROM driftread.app_settings s WHERE key='source.review'") == policy
 
 
-def test_paused_ai_submission_preserved_for_human_and_manual_admission_allowed(pg_database):
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('skip', [False, True])
+def test_discovery_and_review_switches_are_independent(pg_database, enabled, skip):
     with connection(pg_database, 'service_role') as conn:
-        scalar(conn, "SELECT driftread.save_app_setting('source.review',%s::jsonb,coalesce((SELECT version FROM driftread.app_settings WHERE key='source.review'),0))", (json.dumps(POLICY),))
+        policy = {**POLICY, 'skip_human_review': skip}
+        scalar(conn, "SELECT driftread.save_app_setting('source.review',%s::jsonb,coalesce((SELECT version FROM driftread.app_settings WHERE key='source.review'),0))", (json.dumps(policy),))
         cid = candidate(conn)
+        set_control(conn, enabled)
+        review_setting = scalar(conn, "SELECT to_jsonb(s) FROM driftread.app_settings s WHERE key='source.review'")
         review = ready(conn, cid)
-        set_control(conn, False)
         result = submit(conn, review)
-        assert result['status'] == 'awaiting_human'
-        assert result['result']['decision'] == 'accept'
-        assert scalar(conn, 'SELECT feed_id FROM driftread.discovery_candidates WHERE id=%s', (cid,)) is None
-        assert scalar(conn, "SELECT driftread.admit_source_review(%s,NULL,NULL,'referrer_auto',NULL,NULL)", (cid,)) is None
-        assert scalar(conn, 'SELECT feed_id FROM driftread.discovery_candidates WHERE id=%s', (cid,)) is None
-        # Explicit administrator intent remains available while paused.
-        result = scalar(conn, "SELECT driftread.judge_source_review(%s,'agree')", (review['id'],))
-        assert result['status'] == 'accepted'
-        assert scalar(conn, 'SELECT feed_id IS NOT NULL FROM driftread.discovery_candidates WHERE id=%s', (cid,))
+        assert result['status'] == ('accepted' if skip else 'awaiting_human')
+        assert result['gate_reason'] == (None if skip else 'human_review_required')
+        assert scalar(conn, 'SELECT feed_id IS NOT NULL FROM driftread.discovery_candidates WHERE id=%s', (cid,)) is skip
+        assert scalar(conn, "SELECT to_jsonb(s) FROM driftread.app_settings s WHERE key='source.review'") == review_setting
+        assert scalar(conn, 'SELECT driftread.discovery_runtime_enabled()') is enabled
+        other = candidate(conn)
+        imported = scalar(conn, "SELECT driftread.admit_source_review(%s,NULL,NULL,'referrer_auto',NULL,NULL)", (other,))
+        assert (imported is not None) is enabled
+        if not skip:
+            assert scalar(conn, "SELECT driftread.judge_source_review(%s,'agree')", (review['id'],))['status'] == 'accepted'
 
 
 def test_pause_serializes_with_local_admission_only(pg_database):
