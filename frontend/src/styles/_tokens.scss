@@ -24,8 +24,11 @@
 //   * borders / icons  ≥ 3:1    (WCAG AA, 1.4.11)
 //
 // Notable consequences, so nobody "corrects" these back to the reference values:
-//   * frost3 #5E81AC behind snow2 text measures 3.47:1 — it FAILS as a button
-//     fill. Primary buttons use frost1 with polar0 text (6.25:1) in both themes.
+//   * frost3 #5E81AC behind snow2 text measures 3.50:1 — it FAILS as a button
+//     fill. Primary buttons use frost1 with polar0 text (6.24:1) in both themes.
+//   * Every text token is held ≥4.5:1 on all three surfaces of its theme (base,
+//     raised, sunken), not just on the page background — card meta text and
+//     header bars sit on raised／sunken. Values follow Offbeat tokens v1.
 //   * aurora_red #BF616A is mid-tone: it fails as text on polar0 (3.06:1) AND on
 //     snow2 (3.53:1). Aurora colours therefore come in two forms — the raw swatch
 //     for fills, dots and borders, and a per-theme "-ink" variant for text.
@@ -59,23 +62,38 @@
   --nord-green: #a3be8c;
   --nord-purple: #b48ead;
 
-  // Contrast-safe dim text for dark surfaces. Not part of the original Nord
-  // palette, because Nord has no swatch that both reads as "quiet" and passes AA
-  // on polar0. Measures 4.76:1.
-  --nord-dim: #9aa0ad;
+  // Dim text for dark surfaces (Offbeat tokens v1 `nord-dim-ink`). Nord has no
+  // swatch that reads as "quiet" and passes AA on every dark layer; the old
+  // #9aa0ad held on polar0 (4.76) but fell to 3.84 on polar1 and 3.29 on polar2,
+  // i.e. exactly where card meta text sits. polar0 6.63／polar1 5.34／polar2 4.58.
+  --nord-dim: #b8bdc8;
+  // frost1 lifted one step for dark-theme accent TEXT: frost1 itself drops to
+  // 4.31 on polar2. polar0 6.70／polar1 5.40／polar2 4.63. Fills keep frost1.
+  --nord-frost-ink: #93c6d4;
 
   // ── Derived values ────────────────────────────────────────────────────────
   // Every one of these exists because a raw Nord swatch failed a contrast check.
   // Hues are taken from the palette member they stand in for.
   --nord-frost-deep: #456287; // darkened frost3 — 5.40:1 as text on snow2
   --nord-border-light: #b8c0cc; // 2px borders need to be visible on snow2 too
-  --nord-red-deep: #a54049; // danger fill — 5.28:1 behind snow2 text
-  --nord-red-ink-dark: #e08b93; // danger text on polar0 — 4.93:1
-  --nord-red-ink-light: #96434b; // danger text on snow2 — 5.66:1
-  --nord-green-ink-light: #4f6b3b; // aurora_green is 1.76:1 on snow2
-  --nord-yellow-ink-light: #7a5e1e;
-  --nord-orange-ink-light: #8a5330;
-  --nord-purple-ink-light: #7a5b75;
+  --nord-red-deep: #a54049; // danger fill — 5.31:1 behind snow2 text
+  --nord-red-hover: #8f3a42; // danger fill on hover — 6.39:1 (aurora_red was 3.55)
+  // Control outlines (checkbox, ghost / icon buttons): ≥3:1 on all three surfaces,
+  // because controls also sit in sunken header bars (admin domain groups).
+  // dark 4.48／3.61／3.09, light 3.57／3.38／3.04 (Offbeat tokens v1).
+  --nord-control-dark: #919bb1;
+  --nord-control-light: #707e95;
+  // Aurora as dark-theme text, each held ≥4.5:1 on polar0／polar1／polar2.
+  --nord-red-ink-dark: #f4abb2; // 6.73／5.42／4.65
+  --nord-green-ink-dark: #b0cb98; // 7.04／5.67／4.87
+  --nord-orange-ink-dark: #f3ae95; // 6.72／5.42／4.64
+  --nord-purple-ink-dark: #d9b2d3; // 6.70／5.39／4.63
+  // Aurora as light-theme text, each held ≥4.5:1 on snow2／snow1／snow0.
+  --nord-red-ink-light: #96434b; // 5.69／5.39／4.86
+  --nord-green-ink-light: #4d683a; // 5.43／5.14／4.63
+  --nord-yellow-ink-light: #7a5e1e; // 5.29／5.00／4.51
+  --nord-orange-ink-light: #8a5330; // 5.42／5.13／4.63
+  --nord-purple-ink-light: #755770; // 5.43／5.14／4.64
 
   // ── Semantic aliases — dark is the default theme ──────────────────────────
   --surface-base: var(--nord-polar0);
@@ -85,12 +103,13 @@
 
   --border: var(--nord-polar3);
   --border-strong: var(--nord-frost3);
+  --border-control: var(--nord-control-dark);
 
-  --text: var(--nord-snow0); // 9.25:1 on polar0
+  --text: var(--nord-snow0); // 9.25／7.45／6.39 on base／raised／sunken
   --text-strong: var(--nord-snow2);
-  --text-dim: var(--nord-dim); // 4.76:1 on polar0
+  --text-dim: var(--nord-dim); // 6.63／5.34／4.58
 
-  --accent: var(--nord-frost1); // links, focus rings — 6.25:1 on polar0
+  --accent: var(--nord-frost-ink); // links, focus rings — 6.70／5.40／4.63
   --accent-soft: var(--nord-frost0);
   --accent-muted: var(--nord-frost2);
 
@@ -115,19 +134,22 @@
   --special: var(--nord-purple);
   --info: var(--nord-frost1);
 
-  // Aurora as text (≥4.5:1 needed). On polar0 the light Aurora swatches already
-  // pass, so only red needs substituting.
-  --success-ink: var(--nord-green);
+  // Aurora as text (≥4.5:1 needed on all three surfaces). Raw green／orange／
+  // purple pass on polar0 but not on polar2, so each has a lifted -ink; only
+  // yellow passes as is.
+  --success-ink: var(--nord-green-ink-dark);
   --warning-ink: var(--nord-yellow);
   --danger-ink: var(--nord-red-ink-dark);
-  --caution-ink: var(--nord-orange);
-  --special-ink: var(--nord-purple);
-  --info-ink: var(--nord-frost1);
+  --caution-ink: var(--nord-orange-ink-dark);
+  --special-ink: var(--nord-purple-ink-dark);
+  --info-ink: var(--nord-frost-ink);
 
-  // Destructive button: raw aurora_red behind snow2 is 3.53:1, so the fill is
-  // darkened to reach 5.28:1.
+  // Destructive button: raw aurora_red behind snow2 is 3.55:1, so the fill is
+  // darkened to reach 5.31:1, and hover goes darker still (6.39:1) instead of
+  // back up to aurora_red.
   --danger-fill: var(--nord-red-deep);
   --danger-fill-ink: var(--nord-snow2);
+  --danger-fill-hover: var(--nord-red-hover);
 
   // ── Typography ────────────────────────────────────────────────────────────
   // Zero webfont requests. The UI is Traditional Chinese throughout, so every
@@ -224,13 +246,14 @@
 
   --border: var(--nord-border-light);
   --border-strong: var(--nord-frost3);
+  --border-control: var(--nord-control-light);
 
-  --text: var(--nord-polar1); // 8.67:1 on snow2
+  --text: var(--nord-polar1); // 8.73／8.26／7.45 on base／raised／sunken
   --text-strong: var(--nord-polar0);
-  --text-dim: var(--nord-polar3); // 6.70:1 on snow2 — legal here, unlike on polar0
+  --text-dim: var(--nord-polar3); // 6.40／6.06／5.46 — legal here, unlike on polar0
 
-  // frost1 is a pale cyan: ~1.9:1 on snow2, unusable as light-mode text.
-  --accent: var(--nord-frost-deep); // 5.40:1 on snow2
+  // frost1 is a pale cyan: 1.74:1 on snow2, unusable as light-mode text.
+  --accent: var(--nord-frost-deep); // 5.44／5.15／4.64
   --accent-soft: var(--nord-frost2);
   --accent-muted: var(--nord-frost2);
 
@@ -260,24 +283,25 @@
 
   --border: var(--nord-polar3);
   --border-strong: var(--nord-frost3);
+  --border-control: var(--nord-control-dark);
 
   --text: var(--nord-snow0);
   --text-strong: var(--nord-snow2);
   --text-dim: var(--nord-dim);
 
-  --accent: var(--nord-frost1);
+  --accent: var(--nord-frost-ink);
   --accent-soft: var(--nord-frost0);
   --accent-muted: var(--nord-frost2);
 
   --shadow-offset: var(--nord-frost3);
   --shadow-offset-soft: var(--nord-frost2);
 
-  --success-ink: var(--nord-green);
+  --success-ink: var(--nord-green-ink-dark);
   --warning-ink: var(--nord-yellow);
   --danger-ink: var(--nord-red-ink-dark);
-  --caution-ink: var(--nord-orange);
-  --special-ink: var(--nord-purple);
-  --info-ink: var(--nord-frost1);
+  --caution-ink: var(--nord-orange-ink-dark);
+  --special-ink: var(--nord-purple-ink-dark);
+  --info-ink: var(--nord-frost-ink);
 
   color-scheme: dark;
 }

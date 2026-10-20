@@ -1253,3 +1253,19 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - Review 修正：初始 OAuth challenge 與省略 scope 的註冊預設同步要求 `catalog:manage`，明確指定的窄 scope 及舊 grant 不自動擴權。移除前在目標列鎖內檢查既有候選，已完成探測但尚未更新狀態時回報逐筆衝突；真 PostgreSQL 雙連線驗證候選先寫入與取消先鎖定兩種順序，避免假成功。
 
 驗證：本地 PostgreSQL 17 完整 backend 1563 passed、frontend 42 files／492 tests 與 production build 通過；另驗證 service_role 真實寫入、migration 重跑、刪除 cascade、取消與在途 INSERT／文章 ingestion 的鎖競跑、官方 MCP SDK 的 key／OAuth 權限分隔、控制設定失敗即停止與並行版本衝突、暫停與自動准入／AI 結果的 SQL 鎖，以及前端舊回應與確認取消／失敗選取。自行檢查時補上 removed 後仍可明確封鎖網域的狀態轉換，避免前沿頁顯示封鎖成功卻無效；晚到候選同樣拒絕。文件與 diff 檢查通過。Build 保留既有 initial bundle 警告（511.85 kB／500 kB）；實際瀏覽器畫面未驗證（環境未安裝 Chromium），正式 Supabase／部署與 ChatGPT 重新授權未驗證。review 事件 hook 工具不可用，依 AGENTS.md 建立每小時追蹤，合併／關閉後停止，無新進展不通知。
+
+## 階段五十二：Offbeat token 對齊設計系統 v1（PR #110，2026-10-20）
+
+五個專案（Driftread、Lazyrhythm、WorldPane、LazyEmbed、無感記帳）各自沿用不同時期的 Offbeat 色值，這一輪以 lazyrhythm 的 Offbeat 設計系統（tokens v1）為唯一標準統一。Driftread 是最接近的一個，差在文字 token 只量了 `surface-base`，卡片內（raised）與標題欄（sunken）的小字掉到 AA 以下。
+
+- `_tokens.scss`：深色 `--text-dim` 由舊 dim `#9aa0ad`（sunken 3.29:1）改為 `#b8bdc8`（6.63／5.34／4.58）；深色 `--accent`／`--info-ink` 由 frost1（sunken 4.31:1）改為提亮一階的 `#93c6d4`，frost1 仍是主按鈕與 checkbox 的填色。
+- 深色 `--success-ink`／`--caution-ink`／`--special-ink` 不再直接用 Aurora 原色，改為各自提亮的 `*-ink-dark`；`--danger-ink` 由 `#e08b93` 改為 `#f4abb2`。淺色 `success-ink`、`special-ink` 修正為 `#4d683a`、`#755770`。
+- 新增 `--border-control`（深 `#838ea6`／淺 `#76859c`，≥ 3:1），幽靈按鈕與 checkbox 外框改用它；`--border` 維持裝飾性的低對比。
+- 新增 `--danger-fill-hover`（`#8f3a42`，6.39:1）：危險按鈕 hover 原本換回 aurora_red，snow2 字只剩 3.55:1。
+- `frontend/README.md` 的「對比度」補上標準來源與三層底色原則。
+
+- Review 修正：`--border-control` 只在 base／raised 上 ≥ 3:1，幽靈按鈕 hover 換到 sunken 底時外框掉到 2.6:1，hover 時外框改用 `--accent`（sunken 上 4.63:1）；後台 AI 結果區塊本身是 sunken 底，靜止的幽靈按鈕一樣掉到 2.6:1，因此幽靈按鈕改為自帶 `--surface-raised` 底，不再透明，外框對比不再取決於所在容器。後台網域群組的標題欄也是 sunken 底、裡面有 checkbox，問題的根因是設計系統的 `border-control`（`#838ea6`／`#76859c`）只保證 base／raised，因此把它各調一階為 `#919bb1`／`#707e95`，三層底色都 ≥ 3:1；這組值已回寫到 Offbeat 設計系統，五個專案同步更新。
+
+沒做的事：元件結構、圓角（已是 0）、偏移陰影、字族與字級都已符合設計系統，不動；只改色值，不改語意 token 名稱。
+
+驗證：`npm test`（42 files／492 tests）與 `npm run build` 通過；build 的 initial bundle 預算警告（512 kB／500 kB）在本 PR 之前就存在，與色值無關。未在瀏覽器實際目視比對。
