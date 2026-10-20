@@ -1254,7 +1254,23 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 驗證：本地 PostgreSQL 17 完整 backend 1563 passed、frontend 42 files／492 tests 與 production build 通過；另驗證 service_role 真實寫入、migration 重跑、刪除 cascade、取消與在途 INSERT／文章 ingestion 的鎖競跑、官方 MCP SDK 的 key／OAuth 權限分隔、控制設定失敗即停止與並行版本衝突、暫停與自動准入／AI 結果的 SQL 鎖，以及前端舊回應與確認取消／失敗選取。自行檢查時補上 removed 後仍可明確封鎖網域的狀態轉換，避免前沿頁顯示封鎖成功卻無效；晚到候選同樣拒絕。文件與 diff 檢查通過。Build 保留既有 initial bundle 警告（511.85 kB／500 kB）；實際瀏覽器畫面未驗證（環境未安裝 Chromium），正式 Supabase／部署與 ChatGPT 重新授權未驗證。review 事件 hook 工具不可用，依 AGENTS.md 建立每小時追蹤，合併／關閉後停止，無新進展不通知。
 
-## 階段五十二：來源評審與探索開關解耦（PR #112，2026-10-20）
+## 階段五十二：Offbeat token 對齊設計系統 v1（PR #110，2026-10-20）
+
+五個專案（Driftread、Lazyrhythm、WorldPane、LazyEmbed、無感記帳）各自沿用不同時期的 Offbeat 色值，這一輪以 lazyrhythm 的 Offbeat 設計系統（tokens v1）為唯一標準統一。Driftread 是最接近的一個，差在文字 token 只量了 `surface-base`，卡片內（raised）與標題欄（sunken）的小字掉到 AA 以下。
+
+- `_tokens.scss`：深色 `--text-dim` 由舊 dim `#9aa0ad`（sunken 3.29:1）改為 `#b8bdc8`（6.63／5.34／4.58）；深色 `--accent`／`--info-ink` 由 frost1（sunken 4.31:1）改為提亮一階的 `#93c6d4`，frost1 仍是主按鈕與 checkbox 的填色。
+- 深色 `--success-ink`／`--caution-ink`／`--special-ink` 不再直接用 Aurora 原色，改為各自提亮的 `*-ink-dark`；`--danger-ink` 由 `#e08b93` 改為 `#f4abb2`。淺色 `success-ink`、`special-ink` 修正為 `#4d683a`、`#755770`。
+- 新增 `--border-control`（深 `#838ea6`／淺 `#76859c`，≥ 3:1），幽靈按鈕與 checkbox 外框改用它；`--border` 維持裝飾性的低對比。
+- 新增 `--danger-fill-hover`（`#8f3a42`，6.39:1）：危險按鈕 hover 原本換回 aurora_red，snow2 字只剩 3.55:1。
+- `frontend/README.md` 的「對比度」補上標準來源與三層底色原則。
+
+- Review 修正：`--border-control` 只在 base／raised 上 ≥ 3:1，幽靈按鈕 hover 換到 sunken 底時外框掉到 2.6:1，hover 時外框改用 `--accent`（sunken 上 4.63:1）；後台 AI 結果區塊本身是 sunken 底，靜止的幽靈按鈕一樣掉到 2.6:1，因此幽靈按鈕改為自帶 `--surface-raised` 底，不再透明，外框對比不再取決於所在容器。後台網域群組的標題欄也是 sunken 底、裡面有 checkbox，問題的根因是設計系統的 `border-control`（`#838ea6`／`#76859c`）只保證 base／raised，因此把它各調一階為 `#919bb1`／`#707e95`，三層底色都 ≥ 3:1；這組值已回寫到 Offbeat 設計系統，五個專案同步更新。
+
+沒做的事：元件結構、圓角（已是 0）、偏移陰影、字族與字級都已符合設計系統，不動；只改色值，不改語意 token 名稱。
+
+驗證：`npm test`（42 files／492 tests）與 `npm run build` 通過；build 的 initial bundle 預算警告（512 kB／500 kB）在本 PR 之前就存在，與色值無關。未在瀏覽器實際目視比對。
+
+## 階段五十三：來源評審與探索開關解耦（PR #112，2026-10-20）
 
 #111 的根因是探索暫停同時阻擋評審排程、採樣與 AI metadata 准入，SQL 還將有效 accept 改為 awaiting_human，覆蓋 skip_human_review 的語義。新增 migration `20261020080000_review_independence.sql`，僅讓 referrer_auto 探索收錄遵守 discovery pause；AI 收錄與人工覆核政策獨立，保留有效樣本、品質／信心／相關性／垃圾門檻、租約、快照、候選版本、人工覆寫及冪等交易。
 
@@ -1269,3 +1285,5 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - GitHub review 事件 hook 工具不可用；已建立 PR #112 每小時追蹤，合併／關閉後停止，無實質新進展不通知。初次查核無 review／未解決 thread，GitHub 自動 review 正在執行。
 
 - Review 修正（P2）：README 與 .env.example 仍誤稱 FEED_REFRESH_ENABLED=false 會讓 worker 退出，RUNBOOK 每日容量段也保留三排程全關即退出的舊契約。同步改為只停 refresh，說明評審監看與容量採樣仍存取 DB；完全停用使用 docker compose stop worker，後續部署使用 --scale worker=0，並註明單次 stop 會被後續完整 up 重新啟動。Compose 與 gen_env 註解同步，沒有變更設定值或執行行為。文件檢查、diff 檢查與 gen_env Python 語法檢查通過；本次僅文件／註解，未重跑既有程式測試、未操作正式容器或資料。
+
+- 主分支同步：納入已合併 PR #110 的 Offbeat token／控制項對比修正，完整保留其歷史條目與樣式；只解決雙方於 changelog 檔尾追加的衝突。#110 已使用階段五十二，因此本 PR 原條目順延為五十三，仍維持一個 PR 一個條目，不新增第二份修復紀錄。來源評審、歷史修復資格與正式開關均未變更。同步後前端 42 files／492 tests 與 production build 通過（initial bundle 512.45 kB／500 kB，延續主分支既有警告），文件與 diff 檢查通過；backend 與先前通過 1610 tests 的版本逐字相同，未重跑後端或 Docker 測試。

@@ -95,7 +95,7 @@ python scripts/reconcile_source_review_holds.py
 python scripts/reconcile_source_review_holds.py --apply REVIEW_ID POLICY_VERSION CANDIDATE_VERSION
 ```
 
-`reconcile_source_review(...,p_dry_run=true)` 僅 service_role 可用，沿用政策→候選→任務鎖。apply 時再驗證目前政策與任務政策版本一致、enabled／skip 皆 true、候選版本、最新任務、無人工覆寫／human_review、有效未過期快照、有效非 demo 樣本、原始 analysis_results 及品質門檻；任一不符回 `eligible=false`。不重送付費請求、不產生新的 AI 決策，完成後保留 result／analysis_results，記 `gate_reason=reconciled_discovery_pause` 作為審計標記。重跑不重複准入或排程抓取。升級前的正式唯讀成因統計記於 CHANGELOG 的階段五十二；部署後仍須以新 RPC 重跑預覽，本 PR 不直接處理正式候選。
+`reconcile_source_review(...,p_dry_run=true)` 僅 service_role 可用，沿用政策→候選→任務鎖。apply 時再驗證目前政策與任務政策版本一致、enabled／skip 皆 true、候選版本、最新任務、無人工覆寫／human_review、有效未過期快照、有效非 demo 樣本、原始 analysis_results 及品質門檻；任一不符回 `eligible=false`。不重送付費請求、不產生新的 AI 決策，完成後保留 result／analysis_results，記 `gate_reason=reconciled_discovery_pause` 作為審計標記。重跑不重複准入或排程抓取。升級前的正式唯讀成因統計記於 CHANGELOG 的階段五十三；部署後仍須以新 RPC 重跑預覽，本 PR 不直接處理正式候選。
 
 ## 評審資料與模型介面
 
