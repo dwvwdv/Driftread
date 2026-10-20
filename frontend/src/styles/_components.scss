@@ -95,7 +95,9 @@
   @include offset-shadow(var(--border));
   background: transparent;
   color: var(--text);
-  border-color: var(--border);
+  // Shadow stays the decorative --border (offset-shadow-ghost); the outline is
+  // what tells the user this is pressable, so it needs ≥3:1.
+  border-color: var(--border-control);
 
   &:hover:not(:disabled) {
     background: var(--surface-sunken);
@@ -109,8 +111,10 @@
   color: var(--danger-fill-ink);
   border-color: var(--danger-fill);
 
+  // Hover goes darker, not back to aurora_red: snow2 on aurora_red is 3.55:1.
   &:hover:not(:disabled) {
-    background: var(--danger);
+    background: var(--danger-fill-hover);
+    border-color: var(--danger-fill-hover);
   }
 }
 
@@ -194,7 +198,7 @@
     height: 18px;
     margin: 0;
     background: var(--surface-raised);
-    border: var(--border-width) solid var(--border);
+    border: var(--border-width) solid var(--border-control);
     border-radius: var(--radius);
     cursor: pointer;
     display: grid;

@@ -81,7 +81,12 @@ script 的 storage key 與屬性名要同步。
 
 Nord 是為語法高亮設計的低對比色票，數個自然搭配在 UI 文字上達不到 WCAG AA。
 `_tokens.scss` 裡每個衍生值旁邊都記了量測結果與它存在的理由。動色票之前先讀那段註解——
-最容易踩的是把主要按鈕「改回」frost3，那是 3.47:1，不合格。
+最容易踩的是把主要按鈕「改回」frost3，那是 3.50:1，不合格。
+
+色值以 lazyrhythm 的 Offbeat 設計系統（tokens v1）為準，與 Lazyrhythm、WorldPane、LazyEmbed、
+無感記帳共用同一組：每個文字 token 在同一主題的 `surface-base`／`surface-raised`／`surface-sunken`
+三層上都 ≥ 4.5:1（舊的 dim `#9aa0ad` 與當字用的 frost1 在 sunken 上都不到），控制項外框
+（checkbox、幽靈按鈕）用 `--border-control`（≥ 3:1），裝飾性的 `--border` 只畫卡片與分隔線。
 
 ## 無障礙
 
