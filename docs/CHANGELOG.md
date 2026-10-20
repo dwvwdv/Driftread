@@ -1254,7 +1254,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 驗證：本地 PostgreSQL 17 完整 backend 1563 passed、frontend 42 files／492 tests 與 production build 通過；另驗證 service_role 真實寫入、migration 重跑、刪除 cascade、取消與在途 INSERT／文章 ingestion 的鎖競跑、官方 MCP SDK 的 key／OAuth 權限分隔、控制設定失敗即停止與並行版本衝突、暫停與自動准入／AI 結果的 SQL 鎖，以及前端舊回應與確認取消／失敗選取。自行檢查時補上 removed 後仍可明確封鎖網域的狀態轉換，避免前沿頁顯示封鎖成功卻無效；晚到候選同樣拒絕。文件與 diff 檢查通過。Build 保留既有 initial bundle 警告（511.85 kB／500 kB）；實際瀏覽器畫面未驗證（環境未安裝 Chromium），正式 Supabase／部署與 ChatGPT 重新授權未驗證。review 事件 hook 工具不可用，依 AGENTS.md 建立每小時追蹤，合併／關閉後停止，無新進展不通知。
 
-## 階段五十二：Offbeat token 對齊設計系統 v1（PR 待定，2026-10-20）
+## 階段五十二：Offbeat token 對齊設計系統 v1（PR #110，2026-10-20）
 
 五個專案（Driftread、Lazyrhythm、WorldPane、LazyEmbed、無感記帳）各自沿用不同時期的 Offbeat 色值，這一輪以 lazyrhythm 的 Offbeat 設計系統（tokens v1）為唯一標準統一。Driftread 是最接近的一個，差在文字 token 只量了 `surface-base`，卡片內（raised）與標題欄（sunken）的小字掉到 AA 以下。
 
