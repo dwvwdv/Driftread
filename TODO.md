@@ -464,3 +464,5 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [ ] 新 migration 在乾淨資料庫與現有資料升級路徑都驗證。
 - [ ] 部署設定、必要環境變數與操作文件已更新。
 - [ ] 手動走過「發現 → 訂閱 → 閱讀 → 回饋」受影響的完整流程。
+
+- [x] #111 來源評審／探索解耦：SQL 准入、worker、MCP 可用性、歷史 hold 成因預覽與版本保護修復（`backend/migrations/20261020080000_review_independence.sql`、`scripts/reconcile_source_review_holds.py`）。

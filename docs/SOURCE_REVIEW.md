@@ -4,7 +4,7 @@
 
 ## 啟用與人工覆核
 
-在 `/manage/settings` 的來源評審區塊設定 `source.review`，預設 `enabled=false`、`skip_human_review=false`、引擎 `external_agent`。採樣與背景評審仍受部署主開關 `FEED_DISCOVERY_ENABLED` 約束；還需通過 [自動探索開關](GLOBAL_SETTINGS.md#自動探索暫停與啟用) 才會採樣；暫停時回傳的有效 AI accept 保存為待人工覆核，不自動入庫。設定每輪重新載入，無需重啟 worker；部署主開關則需依部署方式重啟。
+在 `/manage/settings` 的來源評審區塊設定 `source.review`，預設 `enabled=false`、`skip_human_review=false`、引擎 `external_agent`。採樣、背景評審、手動申請／MCP 評審與 metadata 准入均由此獨立政策控制，不受 `FEED_DISCOVERY_ENABLED` 或 [自動探索開關](GLOBAL_SETTINGS.md#自動探索暫停與啟用) 影響。worker 永遠監看來源評審開關，設定每輪及每個新採樣／Jev 工作前重新載入，無需重啟；停用時不 enqueue／claim、不採樣或付費，skip 本身不啟動評審。每個 HTTP hop 仍驗證評審政策版本、租約、候選、SSRF、robots 與封鎖。
 
 開啟「跳過人工覆核」後，新的有效通過結果直接收錄，不等待管理員。未通過者不收錄；資料不足、模型無法判斷、暫時錯誤或付費請求結果未知，保持暫緩或重試，不以失敗冒充通過。既有 `awaiting_human` 不因切換設定批次放行，需要明確處理。
 
@@ -68,6 +68,34 @@ AI 已完成判定的候選只提供「同意決策／拒絕決策」，不再�
 `review_policy.queue` 另回各 pending、無人工覆寫候選**最新任務**的狀態總數、`outdated_active` 與 `provider_key_missing`。它是可觀測的佇列積壓／設定告警訊號，不是歷史任務總數，也沒有新增通知外送。快照過期與政策升版都可產生 stale；不從舊資料的空白錯誤碼猜測唯一根因。
 
 採樣時只有標題為 Hello world 且全文完整符合已知 WordPress 預設起始文章，才標記 `default_demo`。SQL 的有效樣本門檻排除這種樣本；只有預設內容時，模型 accept 仍暫緩並記 `default_demo_content`，不封鎖 host，管理員可照原流程覆寫。相同標題的真實文章、含其他原創文字的文章不套此規則。只有標題或過短摘要仍沿用至少一篇 100 字有效樣本門檻，不一概當垃圾來源。
+
+## 探索解耦與歷史待覆核修復（#111）
+
+通過品質與完整性檢查的 accept，僅由 `skip_human_review` 決定結果：
+
+| 自動探索 | skip | 評審結果 | 探索排程 |
+|---|---|---|---|
+| 開 | true | accepted，原子准入 metadata | 部署允許才執行 |
+| 關 | true | accepted，原子准入 metadata | 停止 |
+| 開 | false | awaiting_human | 部署允許才執行 |
+| 關 | false | awaiting_human | 停止 |
+
+`review_policy.runtime_available`／`external_agent_available` 表示評審可用性，Jev 仍需金鑰；`discovery_enabled`、`discovery_paused` 與新增 `discovery_runtime_available` 僅描述探索。探索狀態讀取失敗時診斷為 null，不阻止讀取評審政策。新提交記錄 `gate_reason=human_review_required` 或 `policy_deferred`；通過者為 null，不更改原始 AI result。首次抓取仍依 refresh 的獨立政策執行，skip 不會啟動探索或額外的抓取迴圈。
+
+新增 `20261020080000_review_independence.sql`，不改已合併 migration，也不批次放行歷史任務。先停舊 worker，API 套 migration 並 healthy 後，啟動同版 worker／frontend。所有 refresh／discovery／retention 部署開關皆關時，worker 仍保持評審設定監看與本地容量排程，需要可用的資料庫設定；評審預設關閉不變。
+
+歷史任務沒有記錄探索開關當時值。僅當保存的 policy 明確 skip=true、AI accept、awaiting_human 且提交時間位於舊探索控制 migration 與本次 migration 的 ledger 時間之間，才依舊 SQL 契約辨識為 `discovery_paused_legacy`。skip=false 歸 `human_review_required`，其餘 `legacy_unknown` 留待人工；ledger 遺失／重建造成時間不確定時也不放行。
+
+使用 backend Python 依賴執行：
+
+```bash
+# 使用目標資料庫的 DATABASE_URL；預設僅預覽並統計原因，不提交變更
+python scripts/reconcile_source_review_holds.py
+# 逐筆採用預覽的 review_id、policy_version、candidate_version
+python scripts/reconcile_source_review_holds.py --apply REVIEW_ID POLICY_VERSION CANDIDATE_VERSION
+```
+
+`reconcile_source_review(...,p_dry_run=true)` 僅 service_role 可用，沿用政策→候選→任務鎖。apply 時再驗證目前政策與任務政策版本一致、enabled／skip 皆 true、候選版本、最新任務、無人工覆寫／human_review、有效未過期快照、有效非 demo 樣本、原始 analysis_results 及品質門檻；任一不符回 `eligible=false`。不重送付費請求、不產生新的 AI 決策，完成後保留 result／analysis_results，記 `gate_reason=reconciled_discovery_pause` 作為審計標記。重跑不重複准入或排程抓取。升級前的正式唯讀成因統計記於 CHANGELOG 的階段五十二；部署後仍須以新 RPC 重跑預覽，本 PR 不直接處理正式候選。
 
 ## 評審資料與模型介面
 

@@ -12,7 +12,7 @@ Scheduler loops share one event loop and one stop signal:
   hosts for feeds, and fills the review queue;
 - **source_review** prepares bounded candidate samples and runs the selected
   review engine; it stays idle until the hot-reloaded review setting is enabled,
-  and is bounded by discovery's deployment master switch;
+  independently of discovery's deployment and runtime switches;
 - **retention**, opt-in only, compacts a bounded batch of eligible old bodies.
 - **storage** records daily aggregate history while any scheduler is enabled.
 
@@ -218,15 +218,12 @@ async def run_storage_forever(stop: asyncio.Event) -> None:
 
 
 async def _source_review_enabled(db) -> bool:
-    if not await discovery_can_start(db):
-        return False
     settings = await asyncio.to_thread(load_source_review_settings, db)
     return settings.enabled
 
 
 async def _prepare_source_reviews(db):
-    # Import lazily: the worker's fully-disabled path has no database or
-    # provider initialization. The core also checks both switches per action.
+    # Import lazily; review policy is checked again before each new action.
     from services.source_review import prepare_due_reviews
     from services.ai_runtime import prune_receipts
     await prune_receipts(db)
@@ -234,7 +231,7 @@ async def _prepare_source_reviews(db):
 
 
 async def run_source_review_forever(stop: asyncio.Event | None = None) -> None:
-    """Stay ready for a settings toggle, bounded by discovery's master switch."""
+    """Observe source.review independently of discovery deployment and pause."""
     await _run_loop(
         stop or asyncio.Event(), "source_review", SOURCE_REVIEW_TICK_SECONDS,
         _prepare_source_reviews, lambda result: result, can_start=_source_review_enabled,
@@ -242,25 +239,16 @@ async def run_source_review_forever(stop: asyncio.Event | None = None) -> None:
 
 
 async def main() -> int:
-    if not refresh_enabled() and not discovery_enabled() and not retention_enabled():
-        logger.info(
-            "Refresh, discovery and article retention are disabled — "
-            "worker exiting without polling"
-        )
-        return 0
-
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
-    # get_client() is called inside each loop, not here, so the fully-disabled
-    # path above still constructs no Supabase client. Storage telemetry follows
-    # enabled schedulers, so a fully-disabled worker still needs no credentials.
-    loops = [run_storage_forever(stop)]
+    # Review has a persisted enable flag. Always monitor it so an operator can
+    # enable review without also enabling discovery or restarting the worker.
+    loops = [run_storage_forever(stop), run_source_review_forever(stop)]
     if refresh_enabled():
         loops.append(run_forever(stop))
     if discovery_enabled():
         loops.append(run_discovery_forever(stop))
-        loops.append(run_source_review_forever(stop))
     if retention_enabled():
         loops.append(run_retention_forever(stop))
 

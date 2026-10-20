@@ -2,11 +2,11 @@
 
 ## 工作與排程
 
-Discovery 與 source_review 另遵守持久化探索暫停開關，暫停保留 queued 工作與 heartbeat，啟用後依原排程接續；在途 discovery cycle 有輪詢取消。已開始的 DB thread／付費請求不假稱能撤回。細節見 [探索控制](GLOBAL_SETTINGS.md#自動探索暫停與啟用)。
+Discovery 另遵守持久化探索暫停開關，暫停保留 queued 工作與 heartbeat，啟用後依原排程接續；在途 discovery cycle 有輪詢取消。已開始的 DB thread／付費請求不假稱能撤回。細節見 [探索控制](GLOBAL_SETTINGS.md#自動探索暫停與啟用)。
 
 `backend/services/job_queue.py` 使用 scoped Supabase client 呼叫 PostgreSQL RPC。佇列失敗時不退回記憶體執行。`refresh`、`discovery`、`retention` 以完整 cycle 為工作單位，沿用各自 enable flag、tick、抓取限制與內部並發。discovery／retention 的預設關閉狀態不變。
 
-`source_review` 新增獨立週期（預設每 60 秒、單輪最多 10 個候選、900 秒 timeout、並發上限 1），在 discovery 主開關啟用時監看後台 `source.review`。評審停用時不 enqueue／claim、不抓取或付費；重新啟用不需重啟。來源評審另有資料包／模型租約與版本 fencing，不以背景 queue ack 代替業務交易保護；詳見 [來源評審](SOURCE_REVIEW.md)。
+`source_review` 新增獨立週期（預設每 60 秒、單輪最多 10 個候選、900 秒 timeout、並發上限 1），永遠監看後台 `source.review`，獨立於 discovery 的部署／暫停開關。評審停用時不 enqueue／claim、不抓取或付費；重新啟用不需重啟。來源評審另有資料包／模型租約與版本 fencing，不以背景 queue ack 代替業務交易保護；詳見 [來源評審](SOURCE_REVIEW.md)。
 
 `background_jobs` 保存 payload、到期時間、attempt、worker ID、lease token 與結果；`background_job_kinds` 保存每種工作的全域並發上限，五種 cycle 預設各一。部分唯一索引確保相同 kind／singleton key 最多一個 queued 或 running 工作。每輪以 `scheduler` singleton enqueue；重啟會沿用既有待辦與排程時間。成功或耗盡重試時，終態與下一輪入列在同一個交易提交。未捕捉例外重試最多三次，以 15、30 秒退避；通用 RPC 的最大重試次數為 20，退避上限一小時。已回傳 partial 的 cycle 沿用其 feed／target 退避，不再次重跑整輪增加失敗計數。
 
@@ -22,7 +22,7 @@ claim 在交易內序列化該 kind 的容量判斷，再以 `FOR UPDATE SKIP LO
 
 ## 停機與部署
 
-`storage` 是第五種週期工作（全域並發上限 1、timeout 300 秒、每小時檢查），僅在任一既有 scheduler 啟用時啟動。沿用相同 singleton、租約、重试、heartbeat 與停機規則；每日去重和 90 天保存期見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史)。沒有新增開關，也不改變 refresh／discovery／retention 的 enable flag。
+`storage` 是第五種週期工作（全域並發上限 1、timeout 300 秒、每小時檢查），隨常駐的來源評審監看啟動。沿用相同 singleton、租約、重试、heartbeat 與停機規則；每日去重和 90 天保存期見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史)。沒有新增開關，也不改變 refresh／discovery／retention 的 enable flag。
 
 SIGTERM／SIGINT 立即停止新 enqueue／claim；若 signal 與已提交 claim 競跑，亦不啟動新 action。正在執行的 cycle 最多排空 20 秒，之後取消 coroutine；最終 heartbeat 最多等五秒。未完成工作不立即釋放，讓租約到期後回收，避免仍在執行的資料庫 thread 與新 attempt 過早重疊。Compose `stop_grace_period: 30s` 為容器程序提供停止期限；同步執行緒／無法即時取消的既有同步 I/O 仍可能需要容器最終終止。沒有新增環境變數。
 

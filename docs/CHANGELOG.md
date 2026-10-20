@@ -1253,3 +1253,14 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - Review 修正：初始 OAuth challenge 與省略 scope 的註冊預設同步要求 `catalog:manage`，明確指定的窄 scope 及舊 grant 不自動擴權。移除前在目標列鎖內檢查既有候選，已完成探測但尚未更新狀態時回報逐筆衝突；真 PostgreSQL 雙連線驗證候選先寫入與取消先鎖定兩種順序，避免假成功。
 
 驗證：本地 PostgreSQL 17 完整 backend 1563 passed、frontend 42 files／492 tests 與 production build 通過；另驗證 service_role 真實寫入、migration 重跑、刪除 cascade、取消與在途 INSERT／文章 ingestion 的鎖競跑、官方 MCP SDK 的 key／OAuth 權限分隔、控制設定失敗即停止與並行版本衝突、暫停與自動准入／AI 結果的 SQL 鎖，以及前端舊回應與確認取消／失敗選取。自行檢查時補上 removed 後仍可明確封鎖網域的狀態轉換，避免前沿頁顯示封鎖成功卻無效；晚到候選同樣拒絕。文件與 diff 檢查通過。Build 保留既有 initial bundle 警告（511.85 kB／500 kB）；實際瀏覽器畫面未驗證（環境未安裝 Chromium），正式 Supabase／部署與 ChatGPT 重新授權未驗證。review 事件 hook 工具不可用，依 AGENTS.md 建立每小時追蹤，合併／關閉後停止，無新進展不通知。
+
+## 階段五十二：來源評審與探索開關解耦（PR 待定，2026-10-20）
+
+#111 的根因是探索暫停同時阻擋評審排程、採樣與 AI metadata 准入，SQL 還將有效 accept 改為 awaiting_human，覆蓋 skip_human_review 的語義。新增 migration `20261020080000_review_independence.sql`，僅讓 referrer_auto 探索收錄遵守 discovery pause；AI 收錄與人工覆核政策獨立，保留有效樣本、品質／信心／相關性／垃圾門檻、租約、快照、候選版本、人工覆寫及冪等交易。
+
+- worker 常駐監看 source.review，即使 FEED_DISCOVERY_ENABLED=false 也能準備既有候選及執行獨立評審；評審停用時不啟動新採樣或付費，skip 不啟動評審或探索。每 hop 仍驗證政策及來源安全防線，首次抓取沿用 refresh。其他部署排程全關時仍有評審監看及本地容量工作，需要可用 DB；不新增環境變數。
+- MCP review_policy 的評審可用性改由 source.review 與引擎憑證決定，探索部署／暫停僅作獨立診斷；探索狀態讀取錯誤不阻止讀取評審政策。後台設定與探索面板說明同步更新。
+- 新提交記錄 gate_reason。歷史不自動回填；reconcile_source_review 預設 dry-run，只有舊 policy skip=true／AI accept 與 migration ledger 提交時段等證據明確，且目前政策、候選版本、最新任務、無人工處置、有效快照與原始 analysis_results、品質門檻均通過，才允許逐筆修復。保留原結果，另記 reconciled_discovery_pause；重跑不重複收錄、不重送模型請求。預覽／逐筆 apply 腳本見 scripts/reconcile_source_review_holds.py。
+- 2026-10-20 15:11–15:12（UTC+8）正式 Supabase 僅 SELECT 查核：source.review v5 enabled=true／skip=true，discovery.control v2 enabled=false。99 筆 awaiting_human 中，68 筆依舊 SQL 與 ledger 證據屬探索暫停，68 筆均通過目前修復資格預檢；其餘 31 筆為原 policy skip=false，政策版本較舊，不列入修復。沒有人工覆寫、候選變更或過期／缺失快照混入那 68 筆。此為升級前等價查詢預覽，部署後必須再以新 RPC 重新檢查；未更新正式 schema、評審或來源，未將 99 筆無差別放行。
+- 本機 PostgreSQL 17.11 完整 backend：1610 passed、0 skipped；frontend 42 files／492 tests 與 production build 通過（既有 initial bundle warning：511.85 kB／500 kB）。覆蓋探索／skip 四格、部署開關與 review.enabled／skip 組合、MCP 官方 SDK 及 REST、品質與租約保護、service_role-only 權限、migration 重跑不改設定、真實舊 SQL 產生 hold 的 dry-run／逐筆 apply 與原始結果冪等、CLI 原因統計及保留人工覆核。文件檢查與 git diff --check 通過。
+- 正式部署、Supabase 新 migration／RPC、實際瀏覽器與 Jev 付費請求未驗證；不自動變更正式開關或修復那 68 筆。部署先停舊 worker，由 API 套 migration 並 healthy 後啟動同版 worker／frontend。
