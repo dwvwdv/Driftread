@@ -1,8 +1,14 @@
 """Bounded administrator housekeeping shared by REST and management MCP."""
+import logging
+import os
 from typing import Literal
 from uuid import UUID
 
+import psycopg2
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 Kind = Literal['feeds', 'articles']
 Rule = Literal['all', 'category', 'host', 'title', 'url', 'content']
@@ -38,11 +44,46 @@ def list_items(db, kind: Kind, rule: Rule = 'all', state: State = 'active',
 
 
 def apply_batch(db, body: CleanupBatch) -> dict:
+    if body.action == 'delete' and not body.dry_run:
+        return _delete_batch(body)
     return db.rpc('apply_cleanup_batch', {
         'p_kind': body.kind, 'p_ids': list(dict.fromkeys(map(str, body.ids))),
         'p_action': body.action, 'p_dry_run': body.dry_run,
         'p_confirm_delete': body.confirm_delete,
     }).execute().data
+
+
+def _delete_batch(body: CleanupBatch) -> dict:
+    # A feed can cascade to thousands of articles/revisions. Keep the same RPC
+    # and atomic transaction, without PostgREST's short request timeout.
+    dsn = os.getenv('DATABASE_URL', '').strip()
+    if not dsn:
+        raise HTTPException(503, '永久刪除需要設定資料庫連線')
+    conn = None
+    try:
+        conn = psycopg2.connect(dsn, connect_timeout=5)
+        with conn:
+            with conn.cursor() as cur:
+                # Match the Data API role instead of using migration privileges.
+                cur.execute('SET LOCAL ROLE service_role')
+                cur.execute("SET LOCAL statement_timeout = '45s'")
+                cur.execute("SET LOCAL lock_timeout = '3s'")
+                cur.execute(
+                    'SELECT driftread.apply_cleanup_batch(%s,%s::uuid[],%s,%s,%s)',
+                    (body.kind, list(dict.fromkeys(map(str, body.ids))),
+                     body.action, body.dry_run, body.confirm_delete),
+                )
+                result = cur.fetchone()[0]
+        return result
+    except psycopg2.Error as exc:
+        # SQLSTATE is safe to log; exception text can contain connection secrets.
+        logger.error('Cleanup deletion database operation failed (sqlstate=%s)', exc.pgcode)
+        if exc.pgcode in ('57014', '55P03', '40P01'):
+            raise HTTPException(503, '批量刪除逾時或資料使用中，請減少每批數量後重試') from None
+        raise HTTPException(503, '批量刪除暫時無法完成，請稍後重試') from None
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def list_pending_targets(db, limit: int = 50, offset: int = 0) -> dict:

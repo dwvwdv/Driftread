@@ -1269,3 +1269,13 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 沒做的事：元件結構、圓角（已是 0）、偏移陰影、字族與字級都已符合設計系統，不動；只改色值，不改語意 token 名稱。
 
 驗證：`npm test`（42 files／492 tests）與 `npm run build` 通過；build 的 initial bundle 預算警告（512 kB／500 kB）在本 PR 之前就存在，與色值無關。未在瀏覽器實際目視比對。
+
+## 階段五十三：大量文章來源永久刪除逾時修復（PR 待定，2026-10-20）
+
+正式「Українська правда」的永久刪除在 REST 顯示 500，管理 MCP 也失敗。Supabase postgres logs 確認 `apply_cleanup_batch` 的來源 cascade 遇到 statement timeout；回滾量測刪除剩餘 4,990 篇與版本／探索關聯約 7.5 秒，逼近 PostgREST 預設短逾時。清單快取原顯示 5,990 篇，以 dry-run 實際計數作準。
+
+- REST／MCP 共用 cleanup adapter 的正式刪除改透過既有 DATABASE_URL 呼叫同一 INVOKER RPC，SET LOCAL ROLE service_role 保持原權限。連線 5 秒、SQL 45 秒、等鎖 3 秒；逾時／死鎖或連線問題回安全的 503，失敗整批回滾並關閉連線。預覽、暫存、還原、明確 ID／確認與來源列鎖維持原契約。
+- 新增 `20261020132503_cleanup_cascade_indexes.sql`（Supabase CLI 產生檔名），補七個來源／文章外鍵索引。保留舊 migration，不改 RLS／公開權限，不調高全域或 Data API 角色逾時。
+- 已以 Supabase MCP、service_role 與原 RPC 成功永久刪除指定來源及剩餘 4,990 篇，零訂閱／收藏／已讀受影響；管理 MCP 搜尋為 0，資料庫確認來源、文章與來源探索證據均為 0。七個索引已直接套用正式資料庫；API 部署時 runner 可冪等補記專案 ledger。
+
+驗證：本地 PostgreSQL 18.4 全部 backend **1571 passed**；包含短逾時失敗／回滾後以新 adapter 成功、未暫存仍拒絕、service_role cascade／匿名拒絕、索引重跑、錯誤訊息不洩漏與連線收尾。文件檢查與 diff 檢查通過。正式 security／performance advisors 已讀取，本次七個外鍵未再列缺索引；其餘既有及其他 schema 的告警未擴大處理，參見 [外鍵索引診斷](https://supabase.com/docs/guides/database/database-linter?lint=0001_unindexed_foreign_keys)。未更動 frontend，未執行瀏覽器驗收；API image 尚未部署，須合併並更新 API 才啟用新 adapter。未加入背景刪除、改寫同步 ledger 或修復全站文章計數快取；極大量單批仍受 45 秒上限，逾時需縮小批次。GitHub review 事件 hook 工具不可用，依既有 Codex 規範另設每小時追蹤。
