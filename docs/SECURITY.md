@@ -386,7 +386,7 @@ public origin 只能來自環境設定，不能信任 Host／forwarded headers�
 
 ## 目前的防線總覽
 
-自動探索增加版本化 runtime 開關，與部署主開關同時成立才可執行；設定損壞／讀取失敗不繼續採集。自動收錄 RPC 用設定列鎖與暫停序列化，不跨外連持鎖。管理 MCP 只可控制此單一設定，OAuth 初始 challenge／DCR 預設明確要求管理 scope 並由同意頁列權限；舊 grant 不自動升權。
+自動探索增加版本化 runtime 開關，與部署主開關同時成立才可執行；設定損壞／讀取失敗不繼續採集。引用證據自動收錄 RPC 用設定列鎖與暫停序列化；來源評審由獨立且預設關閉的 source.review 控制，AI 准入不受探索暫停影響，不跨外連持鎖。管理 MCP 只可控制此單一設定，OAuth 初始 challenge／DCR 預設明確要求管理 scope 並由同意頁列權限；舊 grant 不自動升權。
 
 後台清理使用 service_role-only／INVOKER RPC，選取 ID 有界且預設 dry-run；永久刪除需暫存及明確確認。管理 MCP 另驗 `catalog:manage`，既有評審憑證不擴權。取消探索及刪文防重新入庫的交易／鎖、OAuth 同意與部署契約見 [後台清理](ADMIN_CLEANUP.md)。
 
@@ -431,3 +431,7 @@ public origin 只能來自環境設定，不能信任 Host／forwarded headers�
 人工 judgment 沿用管理驗證，來源評審 MCP key／OAuth token 無人工處置權限。同意的最終處置由服務端依鎖內 AI 結果推導；不同意不能提交與 AI 相同的處置，AI abstain 需明確選擇。判定限最新、候選版本一致的有效完成任務，候選必須仍待處理且沒有人工覆寫；保留 AI 原始結果並獨立記錄 human_review，不允許工具提交偽造人工欄位。批次各自驗證及交易，過期頁面或混合狀態不能直接套用同一個收錄結果。
 
 近期收錄清單沿用管理驗證，最多 50 筆，不開放 MCP 人工處置權限。`feed_admissions` 開 RLS、無匿名／一般使用者 policy，僅 service_role 透過中央入庫交易記錄首次方式；回傳只有來源 metadata、時間、方式、引擎及候選／評審 ID，沒有樣本、原始 AI 回應或憑證。既有來源重連不得改寫首次證據，無證據的方式不從目前政策猜測。
+
+## 來源評審與探索的獨立控制（#111）
+
+來源評審採樣及 Jev 工作改由預設關閉的 `source.review.enabled` 獨立授權；保留原每 hop SSRF／robots／denylist、大小、租約及品質檢查。探索關閉不改寫 skip 或 AI 決策，首次抓取仍走 refresh 政策。歷史修復 RPC 為 service_role-only／INVOKER，預設 dry-run，版本、人工決策、有效樣本與 ledger 證據不符均不准入，不擴權管理 MCP。詳見 [歷史待覆核修復](SOURCE_REVIEW.md#探索解耦與歷史待覆核修復111)。

@@ -267,7 +267,7 @@ describe('AdminSettings source review', () => {
     });
     expect(component.reviewDirty()).toBe(false);
     expect(fixture.nativeElement.textContent).toContain('既有待人工覆核的結果不會批次放行');
-    expect(fixture.nativeElement.textContent).toContain('FEED_DISCOVERY_ENABLED');
+    expect(fixture.nativeElement.textContent).toContain('不受自動探索暫停或部署開關影響');
   });
 
   it('keeps the source review draft on conflict and blocks repeated writes', () => {

@@ -68,7 +68,7 @@ X-API-Key: <admin key>
 
 ## 每日容量歷史
 
-任一 refresh／discovery／retention 排程啟用時，worker 另跑 `storage` 佇列工作，每小時檢查一次；資料庫只保存 UTC 每天第一筆成功的採樣。三種排程全部關閉時仍維持 worker 直接退出，不另建 Supabase client。沒有新增開關或環境變數，也不會因此啟用正文縮減。
+worker 隨常駐的來源評審設定監看另跑 `storage` 佇列工作，每小時檢查一次；資料庫只保存 UTC 每天第一筆成功的採樣。即使 refresh／discovery／retention 三種排程全部關閉，worker 仍監看獨立評審設定並需要 Supabase client。沒有新增開關或環境變數，也不會因此啟用正文縮減。
 
 `record_article_storage_snapshot` 在交易 advisory lock 下去重，當天已有採樣就不再掃描文章。成功採樣與去重都是安全可重跑；資料庫故障沿用 queue 的三次重試／退避，失敗不停止採集。`article_storage_snapshots` 僅保存日期、採樣時間與既有即時快照的九項 aggregate，不留正文、URL 或使用者資料。保留最近 90 個 UTC 日，每次檢查刪除更早紀錄；停機不補造歷史。
 

@@ -17,7 +17,7 @@
 | **我的閱讀流** | ✅ | 跨所有已訂閱來源聚合的文章時間流，主要閱讀入口（`/me/stream`）。cursor 分頁（不一次載入全部）、總未讀數與各來源未讀數、「只看未讀」／「隱藏已讀」／來源篩選、單篇標記已讀／未讀（樂觀更新 + 失敗回滾）、目前頁面全部已讀與明確範圍（單一來源／整個閱讀流，帶確認對話框）全部已讀。「我的訂閱」保留來源管理（訂閱清單、OPML）| `routers/me.py`、`migrations/015_reading_stream.sql`、`services/reading-stream.ts`、`components/reading-stream` |
 | Auto-discover | ✅ | 貼任意網址自動找出 RSS / Atom feed（使用者觸發） | `services/feed_discovery.py`、`routers/discover.py` |
 | **主動發現新的 RSS 源** | ✅ | 平台自己挖：文章外連 / blogroll / 目錄頁 → 待探測佇列 → 探測 → 候選審核佇列 → 入庫。**預設關閉**（`FEED_DISCOVERY_ENABLED`）| `services/link_harvest.py`、`directory_sources.py`、`discovery_probe.py`、`discovery_candidates.py`、`discovery.py`、`robots.py` |
-| **來源收錄評審** | ✅ | 外部 agent 管理 MCP 或 Jev 評審有限候選樣本；後台可開啟跳過人工覆核直接收錄，人工覆寫優先。預設關閉，見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md) | `services/source_review.py`、`review_provider.py`、`admin_review_mcp.py` |
+| **來源收錄評審** | ✅ | 外部 agent 管理 MCP 或 Jev 評審有限候選樣本；後台可開啟跳過人工覆核直接收錄，人工覆寫優先；評審與探索部署／暫停開關完全獨立。預設關閉，見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md) | `services/source_review.py`、`review_provider.py`、`admin_review_mcp.py` |
 | OPML 匯入 / 匯出 | ✅ | 與 Feedly / Inoreader 互通 | `routers/opml.py` |
 | **自動定期抓取** | ✅ | `next_fetch_at` 驅動的到期佇列 + 自適應間隔 + conditional GET；由獨立 `worker` 容器輪詢 | `services/feed_refresh.py`、`worker.py` |
 | Feed 健康度與自動封存 | ✅ | 連續失敗計數 + 原因；達 10 次自動封存 | `services/feed_refresh.py` |

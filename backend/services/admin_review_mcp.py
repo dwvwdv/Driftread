@@ -143,11 +143,18 @@ async def review_policy(ctx: Context) -> dict[str, Any]:
     setting = await _call(get_setting, db, "source.review")
     policy = setting.model_dump(mode="json")
     discovery = discovery_enabled()
-    runtime_enabled = await _call(discovery_control.runtime_enabled, db)
+    try:
+        runtime_enabled = await _call(discovery_control.runtime_enabled, db)
+    except ReviewToolError:
+        # Exploration diagnostics must not make the independent review unavailable.
+        runtime_enabled = None
     enabled = policy["value"].get("enabled", False)
     engine = policy["value"].get("engine", REVIEWER_ID)
-    runtime_available = discovery and runtime_enabled and enabled and (engine != "jev" or bool(os.getenv("JEV_API_KEY", "")))
-    return {**policy, "discovery_enabled": discovery, "discovery_paused": not runtime_enabled, "runtime_available": runtime_available,
+    runtime_available = enabled and (engine != "jev" or bool(os.getenv("JEV_API_KEY", "")))
+    return {**policy, "discovery_enabled": discovery,
+            "discovery_paused": None if runtime_enabled is None else not runtime_enabled,
+            "discovery_runtime_available": discovery and runtime_enabled,
+            "runtime_available": runtime_available,
             "queue": await _call(source_review._rpc, db, 'source_review_queue_status', {}),
             "external_agent_available": runtime_available and engine == REVIEWER_ID,
             "workflow": {

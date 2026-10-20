@@ -27,7 +27,7 @@ from services.feed_refresh import RefreshResult
 
 
 @pytest.mark.asyncio
-async def test_main_exits_without_polling_when_disabled(monkeypatch):
+async def test_main_still_monitors_review_when_refresh_disabled(monkeypatch):
     monkeypatch.setenv("FEED_REFRESH_ENABLED", "false")
     with (
         patch.object(worker, "get_client") as get_client,
@@ -35,8 +35,7 @@ async def test_main_exits_without_polling_when_disabled(monkeypatch):
     ):
         assert await worker.main() == 0
 
-    # Must not even construct a Supabase client — a deployment that disables the
-    # scheduler shouldn't require SUPABASE_* to be set for the worker to start.
+    # Independent review/storage loops are mocked; no refresh client is needed.
     get_client.assert_not_called()
     refresh.assert_not_called()
 
@@ -113,9 +112,8 @@ async def test_run_forever_survives_a_failing_cycle(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_main_exits_when_both_loops_are_disabled(monkeypatch):
-    """Exit 0 rather than idling, so compose's `restart: on-failure` leaves a
-    deliberately-disabled worker down instead of looping it."""
+async def test_main_monitors_review_when_refresh_and_discovery_disabled(monkeypatch):
+    """The independent review monitor is registered even with other loops off."""
     monkeypatch.setenv("FEED_REFRESH_ENABLED", "false")
     monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
 

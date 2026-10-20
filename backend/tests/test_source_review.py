@@ -376,7 +376,7 @@ async def test_jev_adapter_metadata_is_removed_before_submission_validation(monk
     from datetime import datetime, timedelta, timezone
     from unittest.mock import AsyncMock, Mock
     import services.source_review as service
-    monkeypatch.setattr(service, 'runtime_enabled', lambda db: True)
+    monkeypatch.setattr(service, 'get_setting', lambda db, key: SimpleNamespace(value={'enabled': True}))
     import services.review_provider as provider
     import services.settings as settings
 
