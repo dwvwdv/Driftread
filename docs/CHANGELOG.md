@@ -1264,7 +1264,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 新增 `--danger-fill-hover`（`#8f3a42`，6.39:1）：危險按鈕 hover 原本換回 aurora_red，snow2 字只剩 3.55:1。
 - `frontend/README.md` 的「對比度」補上標準來源與三層底色原則。
 
-- Review 修正：`--border-control` 只在 base／raised 上 ≥ 3:1，幽靈按鈕 hover 換到 sunken 底時外框掉到 2.6:1，hover 時外框改用 `--accent`（sunken 上 4.63:1）；後台 AI 結果區塊本身是 sunken 底，靜止的幽靈按鈕一樣掉到 2.6:1，因此幽靈按鈕改為自帶 `--surface-raised` 底，不再透明，外框對比不再取決於所在容器。
+- Review 修正：`--border-control` 只在 base／raised 上 ≥ 3:1，幽靈按鈕 hover 換到 sunken 底時外框掉到 2.6:1，hover 時外框改用 `--accent`（sunken 上 4.63:1）；後台 AI 結果區塊本身是 sunken 底，靜止的幽靈按鈕一樣掉到 2.6:1，因此幽靈按鈕改為自帶 `--surface-raised` 底，不再透明，外框對比不再取決於所在容器。後台網域群組的標題欄也是 sunken 底、裡面有 checkbox，問題的根因是設計系統的 `border-control`（`#838ea6`／`#76859c`）只保證 base／raised，因此 Driftread 把它各調一階為 `#919bb1`／`#707e95`，三層底色都 ≥ 3:1；這是與設計系統 tokens v1 唯一不同的值，應回寫到設計系統。
 
 沒做的事：元件結構、圓角（已是 0）、偏移陰影、字族與字級都已符合設計系統，不動；只改色值，不改語意 token 名稱。
 

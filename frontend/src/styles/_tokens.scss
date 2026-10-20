@@ -78,10 +78,13 @@
   --nord-border-light: #b8c0cc; // 2px borders need to be visible on snow2 too
   --nord-red-deep: #a54049; // danger fill — 5.31:1 behind snow2 text
   --nord-red-hover: #8f3a42; // danger fill on hover — 6.39:1 (aurora_red was 3.55)
-  // Control outlines (checkbox, ghost / icon buttons): ≥3:1 on base and raised,
-  // which the decorative --border (1.69 dark / 1.59 light) is not.
-  --nord-control-dark: #838ea6;
-  --nord-control-light: #76859c;
+  // Control outlines (checkbox, ghost / icon buttons). The design system's
+  // #838ea6／#76859c only hold 3:1 on base and raised (2.62／2.77 on sunken), and
+  // Driftread puts checkboxes in sunken header bars (admin domain groups), so these
+  // are nudged one step to hold ≥3:1 on all three surfaces:
+  // dark 4.48／3.61／3.09, light 3.57／3.38／3.04.
+  --nord-control-dark: #919bb1;
+  --nord-control-light: #707e95;
   // Aurora as dark-theme text, each held ≥4.5:1 on polar0／polar1／polar2.
   --nord-red-ink-dark: #f4abb2; // 6.73／5.42／4.65
   --nord-green-ink-dark: #b0cb98; // 7.04／5.67／4.87

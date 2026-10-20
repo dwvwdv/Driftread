@@ -86,7 +86,7 @@ Nord 是為語法高亮設計的低對比色票，數個自然搭配在 UI 文�
 色值以 lazyrhythm 的 Offbeat 設計系統（tokens v1）為準，與 Lazyrhythm、WorldPane、LazyEmbed、
 無感記帳共用同一組：每個文字 token 在同一主題的 `surface-base`／`surface-raised`／`surface-sunken`
 三層上都 ≥ 4.5:1（舊的 dim `#9aa0ad` 與當字用的 frost1 在 sunken 上都不到），控制項外框
-（checkbox、幽靈按鈕）用 `--border-control`（≥ 3:1），裝飾性的 `--border` 只畫卡片與分隔線。
+（checkbox、幽靈按鈕）用 `--border-control`（三層底色都 ≥ 3:1；比設計系統的值深一階，因為 checkbox 也出現在 sunken 標題欄），裝飾性的 `--border` 只畫卡片與分隔線。
 
 ## 無障礙
 
