@@ -6,6 +6,8 @@
 
 暫停保留候選、待探索 URL 與背景 queued 工作；worker 不再啟動 discovery 工作。執行中的探索 cycle 每秒重讀開關，關閉或讀取失敗即取消 coroutine，不把暫停計成來源抓取失敗。已送出的網路請求、已提交到 thread 的同步資料庫操作仍可能完成；暫停回應表示設定已儲存，不代表所有遠端 I/O 已停止。啟用後依既有排程接續，不清空佇列，也不強制立即跑一輪。
 
+暫停同樣作用於文章入庫路徑（#114）：排程 RSS refresh、`/admin/feeds/refresh-due` 與使用者 discover/import 照常保存文章，但不解析外連、不建立或更新 `discovery_targets`／referrer。`upsert_articles()` 以 200 篇為一批，每批寫入前讀一次開關（不逐篇查詢）；已讀到「啟用」的那一批可以完成，下一批起生效；讀取失敗視同暫停，不讓 refresh 失敗。這些版本留在待抽取佇列，恢復後由 backlog 補抽。代價：尚未抽取的版本不符合正文縮減條件，暫停越久，可縮減的正文越少（見 [CRAWLER_OPERATIONS.md](CRAWLER_OPERATIONS.md#預覽與縮減正文)）。管理員手動 seed 網站種子（`POST /api/admin/discovery/targets`）屬明確的人工操作，不受暫停限制。
+
 來源評審、採樣、外部 MCP 提交與 AI metadata 准入只受獨立 `source.review` 政策控制；探索開關及 `FEED_DISCOVERY_ENABLED` 不改寫評審決策，也不強制人工覆核。引用證據自動收錄（`referrer_auto`）仍屬探索管線，SQL 與暫停共用設定列鎖；AI 准入不取得該鎖。既有 RSS 更新及管理員操作照常。評審停用不啟動採樣或付費，skip 只控制有效決策是否需人工覆核，詳見 [來源評審](SOURCE_REVIEW.md#啟用與人工覆核)。
 
 `GET /api/admin/discovery/control` 回傳 `enabled`、`deployment_enabled`、`effective_enabled`、`version`、`updated_at`；`PATCH` 接受 `{enabled,expected_version}`，版本衝突回 409。既有 settings PUT 也可儲存此已註冊 key。`POST /api/admin/discovery/run` 在暫停時回 503，在途手動探索遇暫停回 `paused=true`；後台同步停用手動執行按鈕。MCP `get_discovery_control`／`set_discovery_enabled` 提供相同版本與部署限制，要求 `catalog:manage`，只開放此控制項、不接受任意全域設定 key。

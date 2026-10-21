@@ -8,7 +8,7 @@
 
 `articles.id`、`UNIQUE(feed_id,url)` 與所有使用者關聯保持原樣。不同 feed 對同一 URL 的描述／HTML 仍有各自的文章列，互不覆寫。`canonical_url` 僅移除 URL fragment，以精確 URL 分組 provenance；不猜測同站其他路徑、追蹤 query、syndication 或語意相同文章，也不合併已收藏的舊 ID。
 
-每次建立文章，或正文 hash、標題、摘要、作者、發布日期改變，資料庫 trigger 在同一 transaction 新增一筆私有 `article_revisions`，並更新 `revision_number` 與 `current_revision_id`。版本編號對單篇文章單調遞增。重抓相同內容、抽取進度更新、正文縮減均不建立假版本。即使 concurrent ingestion，唯一鍵和文章 row lock 仍保護版本序列。
+每次建立文章，或正文 hash、標題、摘要、作者、發布日期改變，資料庫 trigger 在同一 transaction 新增一筆私有 `article_revisions`（只有發布日期改變的來源重送不會寫入文章，見下方「發布時間與寫入放大」），並更新 `revision_number` 與 `current_revision_id`。版本編號對單篇文章單調遞增。重抓相同內容、抽取進度更新、正文縮減均不建立假版本。即使 concurrent ingestion，唯一鍵和文章 row lock 仍保護版本序列。
 
 歷史版本保存來源 hash 與當時中繼資料，**不另存永久 HTML**。歷史正文內容無法由 hash 還原，全文仍由 `articles.content` 與現有 retention 管理。metadata 更正不重設正文抽取／保存期；真正 content hash 改變才重設。已縮減的相同 hash 再被抓到也不會還原正文。Legacy migration 建立現存 snapshot 的第一版，不宣稱還原之前已遺失的歷史；來源 hash 之後完成初始化時會記錄新版本。
 
@@ -18,13 +18,13 @@
 
 ## Discovery provenance
 
-私有 `article_discoveries` 保存 `article_id`、`feed_id`、`canonical_url`、入口 `origin`、來源 feed URL、首次／最近看見時間，以及最近觀測 hash。`(article_id,origin,source_url)` 冪等去重；相同入口重抓只更新最近時間與觀測 hash。兩個 feed 指向同一 URL 時，可依 canonical URL 找到兩個獨立來源；同一 feed 經 RSS 與登入使用者 discover/import 進入時，兩個入口都留下證據。文章寫入與證據保存同 transaction，失敗一起 rollback。
+私有 `article_discoveries` 保存 `article_id`、`feed_id`、`canonical_url`、入口 `origin`、來源 feed URL、首次／最近看見時間，以及最近觀測 hash。`(article_id,origin,source_url)` 冪等去重；相同入口重抓時，觀測 hash 改變立即更新，`last_seen_at` 則最多每 6 小時更新一次（#114），所以它是「最近看見時間」的 6 小時精度，不是每次 refresh 的紀錄。兩個 feed 指向同一 URL 時，可依 canonical URL 找到兩個獨立來源；同一 feed 經 RSS 與登入使用者 discover/import 進入時，兩個入口都留下證據。文章寫入與證據保存同 transaction，失敗一起 rollback。
 
 目前入口為 `rss`、`discover_import`、`historical_import`。沒有公開 provenance API，沒有新增任意 URL 抓取入口。`services.articles.upsert_articles()` 提供明確 ingestion context，未指定時沿用 RSS；不接受任意 origin 或超過 100 字元的 historical reason。
 
 ## 發布、發現與時間流
 
-- `published_at`：來源聲稱的發布時間，保留原值供診斷。
+- `published_at`：來源聲稱的發布時間，保留原值供診斷。第一次取得的值為準，規則見下節。
 - `discovered_at`：系統首次保存這筆 source-specific 文章的時間；往後 refresh 或 metadata 更新不改寫。
 - `timeline_at`：存在且未晚於首次發現的發布時間；缺少或不合理的未來日期改用首次發現時間。日期更正時重算，同版本 refresh 不變。
 - `backfill`／`backfill_reason`：首次保存時決定的歷史身份，後續 refresh 不會默默洗成 realtime。
@@ -36,3 +36,15 @@
 ## 驗證
 
 `backend/tests/test_article_revisions.py` 與 SQL fixture 使用實際 migration chain、隔離 PostgreSQL 17 資料庫，驗證版本、不同入口、不同 feed rendering、rollback、legacy baseline、migration 重跑、權限、相同版本縮減與並發 ingestion；`backend/tests/test_article_revision_retention.py` 驗證版本上限、其他文章不受影響、清理函式不可呼叫，以及既有超量版本在 migration 時一次清掉、重跑安全。Python ingestion 測試驗證 context 與輸入限制。測試只使用 localhost 的 `*_test` 入口，從不使用正式資料庫。
+
+## 發布時間與寫入放大
+
+#114（migration `20261021100000_ingest_write_amplification.sql`）：有些來源每次輸出都重新產生 `pubDate`，內容、標題、摘要、作者都沒變。正式環境 24 小時內 1,704 次版本只差發布時間，其中單一來源每 15 分鐘 refresh 就占 1,589 次。過去每次都會 UPDATE 文章列（MVCC 舊列、`search_vector`／GIN 維護）、新增一個 `article_revisions`，並觸發 `sync_changes` 的全域失效。
+
+`ingest_article_batch` 現在的規則：
+
+- 正文 hash、標題、摘要、作者都沒變，只有 `published_at` 改變 → 不寫入，保留第一次取得的發布時間。來源把日期拿掉（變成 NULL）也一樣。
+- 原本沒有發布時間、來源後來補上 → 寫入一次（產生一個版本），之後同樣以此為準。
+- 正文 hash、標題、摘要或作者任一改變 → 照舊寫入新版本，`published_at` 一併採用來源當下的值。真正的更正幾乎都伴隨內容或標題變動，因此仍保留。
+
+代價：來源只改日期、其他完全不變的「純日期更正」不會反映。`timeline_at` 本來就取 `least(published_at, discovered_at)`，往後挪的日期不會改變時間流排序，所以這類更新對閱讀端沒有可見收益。若之後要改成接受純日期更正（例如只接受往前修正、或超過某個差距），新增一支 migration 調整這個 `CASE` 即可，不影響既有資料。
