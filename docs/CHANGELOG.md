@@ -1298,7 +1298,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 驗證：本地 PostgreSQL 18.4 同步 PR #112 後全部 backend **1618 passed**；包含短逾時失敗／回滾後以新 adapter 成功、未暫存仍拒絕、service_role cascade／匿名拒絕、索引重跑、錯誤訊息不洩漏與連線收尾。文件檢查與 diff 檢查通過。正式 security／performance advisors 已讀取，本次七個外鍵未再列缺索引；其餘既有及其他 schema 的告警未擴大處理，參見 [外鍵索引診斷](https://supabase.com/docs/guides/database/database-linter?lint=0001_unindexed_foreign_keys)。未更動 frontend，未執行瀏覽器驗收；API image 尚未部署，須合併並更新 API 才啟用新 adapter。未加入背景刪除、改寫同步 ledger 或修復全站文章計數快取；極大量單批仍受 45 秒上限，逾時需縮小批次。GitHub review 事件 hook 工具不可用，依既有 Codex 規範另設每小時追蹤。
 
-## 階段五十五：探索暫停涵蓋文章入庫，並停止 pubDate 重送的寫入放大（PR 待定，issue #114，2026-10-21）
+## 階段五十五：探索暫停涵蓋文章入庫，並停止 pubDate 重送的寫入放大（PR #115，issue #114，2026-10-21）
 
 #114 的唯讀診斷指出：後台已暫停自動探索（`discovery.control.enabled=false`），`discovery_targets` 仍持續新增 `article_link`；`article_revisions` 24 小時內 1,704 筆只差 `published_at`，單一來源（Korea Times，15 分鐘間隔）就占 1,589 筆。本 PR 依 issue 建議先修 A、B，並順手處理同一支 SQL 函式裡的 C；D、E 的政策與容量治理需要使用者決定，留給後續。
 
