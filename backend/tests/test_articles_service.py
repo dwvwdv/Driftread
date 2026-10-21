@@ -2,7 +2,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import pytest
+
 from services.articles import CHUNK_SIZE, upsert_articles
+
+
+@pytest.fixture(autouse=True)
+def _runtime_discovery_on(monkeypatch):
+    # The persisted switch is exercised explicitly below; the fake DB has no
+    # app_settings table, so default it to "on" for the deployment-flag tests.
+    monkeypatch.setattr("services.articles.runtime_enabled", lambda db: True)
 
 
 @dataclass
@@ -235,3 +244,51 @@ def test_invalid_discovery_context_cannot_reach_database():
     with pytest.raises(ValueError):
         upsert_articles(db, 'feed-1', [], backfill_reason='archive')
     assert db.articles.calls == []
+
+
+def test_persisted_discovery_pause_still_stores_articles_without_frontier_work(monkeypatch):
+    # #114: the deployment flag alone let every RSS refresh keep writing
+    # discovery_targets after an administrator paused discovery.
+    from unittest.mock import patch
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    monkeypatch.setattr("services.articles.runtime_enabled", lambda db: False)
+    db = _FakeDB()
+    db.pending = [{"url": "https://a"}]
+    with (
+        patch("services.articles.extract_document_hosts", side_effect=AssertionError("parse")),
+        patch("services.articles.build_host_index", side_effect=AssertionError("index")),
+        patch("services.articles.harvest_pending_articles", side_effect=AssertionError("harvest")),
+    ):
+        assert upsert_articles(db, "feed-1", [_FakeArticle(url="https://a", content="<a href='https://b.example.org'>b</a>")]) == 1
+    assert len(db.articles.calls) == 1
+    assert db.pending_checks == 0
+
+
+def test_unreadable_discovery_switch_defers_discovery_not_ingestion(monkeypatch):
+    from unittest.mock import patch
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    def broken(db):
+        raise RuntimeError("settings offline")
+    monkeypatch.setattr("services.articles.runtime_enabled", broken)
+    db = _FakeDB()
+    with patch("services.articles.harvest_pending_articles", side_effect=AssertionError("harvest")):
+        assert upsert_articles(db, "feed-1", [_FakeArticle(url="https://a")]) == 1
+    assert db.pending_checks == 0
+
+
+def test_discovery_switch_is_read_once_per_chunk_and_pause_applies_to_next_chunk(monkeypatch):
+    from unittest.mock import patch
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    reads = []
+    def switch(db):
+        reads.append(1)
+        return len(reads) == 1
+    monkeypatch.setattr("services.articles.runtime_enabled", switch)
+    db = _FakeDB()
+    articles = [_FakeArticle(url=f"https://example.org/{i}") for i in range(CHUNK_SIZE + 1)]
+    with patch("services.articles.extract_document_hosts") as extract:
+        upsert_articles(db, "feed-1", articles)
+    assert len(reads) == 2
+    assert len(db.articles.calls) == 2
+    assert extract.call_count == CHUNK_SIZE
+    assert db.pending_checks == 1

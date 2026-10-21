@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING, Literal
 
 from services.discovery_config import discovery_enabled
+from services.discovery_control import runtime_enabled
 from services.link_harvest import (
     build_host_index,
     content_fingerprint,
@@ -26,6 +27,22 @@ def reconcile_article_count(db: "Client", feed_id: str) -> int:
     if type(total) is not int or total < 0:
         raise RuntimeError("Article count unavailable")
     return total
+
+
+def _discovery_active(db: "Client", feed_id: str) -> bool:
+    """Both switches gate frontier writes; ingestion itself never depends on them.
+
+    Read once per chunk, not per article. An unreadable switch defers discovery
+    rather than failing the refresh: unmarked rows stay in the retry queue. See
+    docs/CRAWLER_OPERATIONS.md「文章與 discovery 分開完成」.
+    """
+    if not discovery_enabled():
+        return False
+    try:
+        return runtime_enabled(db)
+    except Exception:
+        logger.warning("Discovery control unavailable; deferring discovery for feed %s", feed_id)
+        return False
 
 
 def upsert_articles(
@@ -70,7 +87,7 @@ def upsert_articles(
         # Pure local parsing; never fetch a linked page here, even when discovery
         # is enabled. Hash keys keep a concurrent source revision separate.
         prepared = {}
-        enabled = discovery_enabled()
+        enabled = _discovery_active(db, feed_id)
         if enabled:
             for row in chunk:
                 try:

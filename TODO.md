@@ -466,3 +466,5 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [ ] 手動走過「發現 → 訂閱 → 閱讀 → 回饋」受影響的完整流程。
 
 - [x] #111 來源評審／探索解耦：SQL 准入、worker、MCP 可用性、歷史 hold 成因預覽與版本保護修復（`backend/migrations/20261020080000_review_independence.sql`、`scripts/reconcile_source_review_holds.py`）。
+- [x] #114 第一階段：持久化探索暫停涵蓋文章入庫的外連採集（`backend/services/articles.py`）；純 `pubDate` 重送不寫文章／版本、來源證據 `last_seen_at` 每 6 小時節流（`backend/migrations/20261021100000_ingest_write_amplification.sql`）。
+- [ ] #114 後續：部署後 24–72 小時比對每小時新增文章／更新／版本／探索 target／各表 heap、TOAST、index 與 DB 用量；每來源每日入庫預算與告警、異常 revision-rate 偵測、retention 排程是否啟用與保存天數（需使用者決定），以及探索暫停期間未抽取版本無法縮減正文的政策。

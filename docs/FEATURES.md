@@ -117,7 +117,7 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 > `FEED_DISCOVERY_ENABLED=false` 時 worker 不跑這個迴圈，且 `POST /api/admin/discovery/run`
 > 直接回 **503** —— 這個 flag 是真的 kill switch，與只管 worker 的 `FEED_REFRESH_ENABLED` 不同。
 
-後台總覽與待探索頁另提供持久化暫停／啟用，不需重啟；暫停保留佇列、取消在途探索，阻擋自動收錄，仍保留部署開關上限。REST／MCP 及執行語義見 [探索控制](GLOBAL_SETTINGS.md#自動探索暫停與啟用)。
+後台總覽與待探索頁另提供持久化暫停／啟用，不需重啟；暫停保留佇列、取消在途探索，阻擋自動收錄，仍保留部署開關上限。暫停也涵蓋 RSS refresh／匯入時的文章外連採集（#114）：文章照常入庫，但不寫 `discovery_targets`／referrer。REST／MCP 及執行語義見 [探索控制](GLOBAL_SETTINGS.md#自動探索暫停與啟用)。
 
 四個階段，由 `services/discovery.py::run_cycle()` 依序驅動，worker 與
 `POST /api/admin/discovery/run` 共用同一個入口。
@@ -521,7 +521,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 | `background_job_kinds` / `background_jobs` / `worker_alerts` | 20261009000000 / 20261009000100 | service-only 的佇列與 watchdog；見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |
 | `article_storage_snapshots` | 20261013115249 | UTC 每日第一筆 aggregate，保留 90 天；RLS 零 policy、service-only；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史) |
-| `article_revisions` / `article_discoveries` | 20261009000100、20261012000000 | service-only 版本 metadata／hash 與多入口證據，每篇最多保留 10 個版本；`articles` 同時新增 canonical_url、discovered_at、timeline_at、backfill；見 [CONTENT_MODEL.md](CONTENT_MODEL.md) |
+| `article_revisions` / `article_discoveries` | 20261009000100、20261012000000、20261021100000 | service-only 版本 metadata／hash 與多入口證據，每篇最多保留 10 個版本；只有 `pubDate` 改變的重送不建立版本；`articles` 同時新增 canonical_url、discovered_at、timeline_at、backfill；見 [CONTENT_MODEL.md](CONTENT_MODEL.md) |
 | `article_publications`（view） | 20261009000300 | security_invoker、service-only 的閱讀 projection；見 [PUBLICATION.md](PUBLICATION.md) |
 | `event_objects` / `fact_articles` / `story_facts` / `event_relations` | 20261009000500 | service-only 人工集合、永久排除、關係與別名；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
 | `user_heat_snapshots` | 20261009000650 | RLS 零 policy、service-only、沒有全文的本人熱度證據；最多 100 筆、30 日讀取／修復範圍，過期實體於本人下次 capture 清除；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
@@ -646,6 +646,7 @@ DELETE FROM discovery_targets
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
 | 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
+| 來源證據 `last_seen_at` 更新頻率 | 同一入口最多每 6 小時一次；觀測 hash 改變時立即更新 | `migrations/20261021100000_ingest_write_amplification.sql` |
 | **主動發現總開關** | **關**（`FEED_DISCOVERY_ENABLED`）| `services/discovery_config.py` |
 | 發現週期間隔 | 900 秒（`FEED_DISCOVERY_TICK_SECONDS`）| `discovery_config.py::tick_seconds()` |
 | 單輪收割 feed 數 | 10（`..._HARVEST_BATCH_SIZE`）| `discovery_config.py` |

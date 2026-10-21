@@ -1297,3 +1297,32 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 已以 Supabase MCP、service_role 與原 RPC 成功永久刪除指定來源及剩餘 4,990 篇，零訂閱／收藏／已讀受影響；管理 MCP 搜尋為 0，資料庫確認來源、文章與來源探索證據均為 0。七個索引已直接套用正式資料庫；API 部署時 runner 可冪等補記專案 ledger。
 
 驗證：本地 PostgreSQL 18.4 同步 PR #112 後全部 backend **1618 passed**；包含短逾時失敗／回滾後以新 adapter 成功、未暫存仍拒絕、service_role cascade／匿名拒絕、索引重跑、錯誤訊息不洩漏與連線收尾。文件檢查與 diff 檢查通過。正式 security／performance advisors 已讀取，本次七個外鍵未再列缺索引；其餘既有及其他 schema 的告警未擴大處理，參見 [外鍵索引診斷](https://supabase.com/docs/guides/database/database-linter?lint=0001_unindexed_foreign_keys)。未更動 frontend，未執行瀏覽器驗收；API image 尚未部署，須合併並更新 API 才啟用新 adapter。未加入背景刪除、改寫同步 ledger 或修復全站文章計數快取；極大量單批仍受 45 秒上限，逾時需縮小批次。GitHub review 事件 hook 工具不可用，依既有 Codex 規範另設每小時追蹤。
+
+## 階段五十五：探索暫停涵蓋文章入庫，並停止 pubDate 重送的寫入放大（PR #115，issue #114，2026-10-21）
+
+#114 的唯讀診斷指出：後台已暫停自動探索（`discovery.control.enabled=false`），`discovery_targets` 仍持續新增 `article_link`；`article_revisions` 24 小時內 1,704 筆只差 `published_at`，單一來源（Korea Times，15 分鐘間隔）就占 1,589 筆。本 PR 依 issue 建議先修 A、B，並順手處理同一支 SQL 函式裡的 C；D、E 的政策與容量治理需要使用者決定，留給後續。
+
+**A：探索暫停沒有涵蓋文章入庫路徑（已修）**
+
+- 根因成立：`upsert_articles()` 只看部署開關 `FEED_DISCOVERY_ENABLED`，沒看持久化的 `discovery.control`。worker 的 discovery cycle 有被 `can_start()`／`while_enabled()` 擋下，但 RSS refresh 與 discover/import 走的是文章入庫路徑，照常解析外連並經 `harvest_pending_articles()` 寫入 frontier。逐一檢查其他寫 `discovery_targets`／referrer／候選的入口（`link_harvest.harvest_one`、`directory_sources`、`discovery_probe.record_candidates`）都在 discovery cycle 內，已受暫停控制；唯一的例外是管理員手動 seed（`POST /admin/discovery/targets`），屬明確的人工操作，維持不擋。
+- 修法：新增 `_discovery_active()`，部署開關與持久化開關都開才做外連解析與採集。每 200 篇一批讀一次開關（不逐篇查詢），已讀到啟用的那一批可以完成、下一批起生效；讀取失敗視同暫停並記 warning，不讓 refresh 失敗。文章本身照常保存，`FEED_REFRESH_ENABLED` 與 `source.review` 都不受影響。
+- 副作用（已寫進 GLOBAL_SETTINGS／CRAWLER_OPERATIONS）：暫停期間入庫的版本留在待抽取佇列，恢復後由 backlog 補抽；但正文縮減要求「完整抽取過目前版本」，所以暫停越久，能縮減的正文越少。這和 `FEED_DISCOVERY_ENABLED=false` 的既有行為一致，本 PR 沒有改變縮減條件，列為待決策。
+
+**B：純 `published_at` 變動造成寫入放大（已修）**
+
+- 根因成立：`ingest_article_batch` 的 `ON CONFLICT ... WHERE` 與 `prepare_article_revision()` 都把 `published_at` 算進「有變動」。每次 restamp 都會 UPDATE 文章列（MVCC 舊列、`search_vector`／GIN 維護）、新增版本，並觸發 `sync_articles` → `sync_changes` 的全域失效（`user_id` 為 NULL，所有使用者的增量同步都會被判定有變更）。
+- 新 migration `20261021100000_ingest_write_amplification.sql` 只替換 `ingest_article_batch`：正文 hash／標題／摘要／作者都沒變時，`published_at` 的改變（含變成 NULL）不寫入，保留第一次取得的值；原本 NULL、來源補上日期則寫入一次；其他欄位有真正變動時，`published_at` 一併採用來源當下的值。revision trigger 沒改，因為非入庫路徑（抽取標記、正文縮減）本來就不動 `published_at`。
+- 代價：只改日期、其他完全不變的純日期更正不再反映。`timeline_at` 取 `least(published_at, discovered_at)`，往後挪的日期本來就不影響時間流排序；往前修正則會遺失。是否接受純日期更正列為待決策，要改只需新增一支 migration 調整 `CASE`。
+- `feed_refresh` 的自適應間隔是用文章數差計算 `new_articles`，不看 `touched`，所以 Korea Times 的 15 分鐘間隔來自真實的新文章，本 PR 不影響排程。
+
+**C：`article_discoveries` 每次 refresh 都更新（已修寫入面）**
+
+- 同一支函式的 provenance upsert 改成：觀測 hash 改變立即更新；否則 `last_seen_at` 超過 6 小時才更新。查過 repo 內沒有程式或文件讀 `article_discoveries.last_seen_at`，`(article_id,origin,source_url)` 唯一性與多入口證據不變。15 分鐘間隔的來源寫入量約降為 1/24。
+
+**沒做的事（D、E 與決策清單）**
+
+- 沒有刪除任何文章、索引，也沒有改正文保存語意或縮減條件。沒有加每來源每日入庫上限、異常 revision-rate 偵測或自動封存；issue 的數據顯示近期新增主要是真實新聞（2,800 篇中 2,618 篇發布與入庫相差不到一天），限額屬產品政策。
+- 沒有啟用 retention 排程，也沒動 `ARTICLE_RETENTION_ENABLED` 預設值；正式容器的實際值本 PR 無法確認。`VACUUM FULL` 不應成為例行任務的說明與每表 heap／TOAST／index 監控留給後續。
+- 待使用者決定：是否接受純日期更正、每來源每日入庫預算與告警、正文保存天數與是否啟用定時 retention、探索暫停期間未抽取版本是否允許縮減（代價是那些正文的外連永遠不會被探勘）。
+
+驗證：本地 PostgreSQL 16 跑完整 backend **1625 passed**（含真 PostgreSQL 測試）。新增 `tests/test_ingest_write_amplification_postgres.py`：先在移除新 migration 的情況下確認 4 個測試中 3 個失敗（重現根因），套用後全過；涵蓋連續 20 次 restamp 不改文章 ctid／版本數／`sync_changes`、標題／正文／摘要／作者變動仍建立版本並帶入新日期、NULL 日期補一次、provenance hash 立即更新與 `last_seen_at` 6 小時節流。`tests/test_articles_service.py` 新增持久化暫停仍入庫但不碰 frontier、開關讀取失敗不影響入庫、每批讀一次開關三個測試。文件檢查通過。**未驗證**：正式環境部署後的寫入量變化（需部署後 24–72 小時比對每小時新增文章、更新、版本、探索 target 與各表容量），未動 frontend。
