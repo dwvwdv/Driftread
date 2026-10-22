@@ -356,4 +356,71 @@ describe('OfflineReadingService dormant mode', () => {
     expect(svc.record()).toBeNull();
     expect(svc.expired()).toBe(true);
   });
+
+  it('hides a shown cache once it passes the TTL while the page stays open', async () => {
+    globalThis.indexedDB = new IDBFactory();
+    const seed = new OfflineStore();
+    await seed.claim('user-a');
+    // Expires in 400ms: the page is open (and offline) across the boundary.
+    await seed.update('user-a', () => ({
+      userId: 'user-a',
+      items: [],
+      pending: [],
+      cursor: 'c',
+      updatedAt: Date.now() - CACHE_TTL_MS + 400,
+    }));
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: AuthService, useValue: { session: signal(null), accessToken: null } },
+        { provide: NetworkStatusService, useValue: { online: signal(false) } },
+        { provide: ReadingStreamService, useValue: { loadCounts: vi.fn() } },
+      ],
+    });
+    const svc = TestBed.inject(OfflineReadingService);
+    TestBed.flushEffects();
+    await vi.waitFor(() => expect(svc.record()).not.toBeNull());
+    expect(svc.expired()).toBe(false);
+    TestBed.flushEffects(); // the app's change detection runs the expiry effect
+    // Nothing else changes (no record, mode or network update): only the
+    // expiry timer can make the computed values re-evaluate.
+    await vi.waitFor(() => expect(svc.record()).toBeNull(), { timeout: 2000 });
+    expect(svc.expired()).toBe(true);
+  });
+
+  it('re-checks the TTL when the page becomes visible again (resumed PWA)', async () => {
+    globalThis.indexedDB = new IDBFactory();
+    const seed = new OfflineStore();
+    await seed.claim('user-a');
+    await seed.update('user-a', () => ({
+      userId: 'user-a',
+      items: [],
+      pending: [],
+      cursor: 'c',
+      updatedAt: Date.now() - CACHE_TTL_MS + 60_000,
+    }));
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: AuthService, useValue: { session: signal(null), accessToken: null } },
+        { provide: NetworkStatusService, useValue: { online: signal(false) } },
+        { provide: ReadingStreamService, useValue: { loadCounts: vi.fn() } },
+      ],
+    });
+    const svc = TestBed.inject(OfflineReadingService);
+    TestBed.flushEffects();
+    await vi.waitFor(() => expect(svc.record()).not.toBeNull());
+    // Simulate the device sleeping past the TTL: the clock jumps, timers have
+    // not fired yet, then the page becomes visible.
+    const realNow = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 2 * 60_000);
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(svc.record()).toBeNull();
+    expect(svc.expired()).toBe(true);
+    spy.mockRestore();
+  });
 });

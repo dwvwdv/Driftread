@@ -1,11 +1,13 @@
 import { HttpClient, HttpErrorResponse, HttpHeaders, HttpParams } from '@angular/common/http';
-import { Injectable, computed, effect, inject, signal, untracked } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+import { DestroyRef, Injectable, computed, effect, inject, signal, untracked } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { environment } from '../../environments/environment';
 import { AuthService } from '../services/auth';
 import { ReadingStreamService } from '../services/reading-stream';
 import { NetworkStatusService } from './network-status';
 import {
+  CACHE_TTL_MS,
   SyncSnapshot,
   acknowledge,
   applySnapshot,
@@ -72,6 +74,10 @@ export class OfflineReadingService {
   private readonly _syncing = signal(false);
   private readonly _error = signal<string | null>(null);
   private readonly _loaded = signal(false);
+  /** Wall clock for the TTL. Date.now() is not reactive, so this is bumped
+   * when the shown cache expires and whenever the page becomes visible again
+   * (a suspended PWA or a tab left open must not keep showing an expired cache). */
+  private readonly _now = signal(Date.now());
 
   readonly mode = this._mode.asReadonly();
   readonly syncing = this._syncing.asReadonly();
@@ -84,14 +90,14 @@ export class OfflineReadingService {
    * nothing older than the 24-hour TTL. */
   readonly record = computed(() => {
     const record = this._record();
-    if (!record || !isFresh(record)) return null;
+    if (!record || !isFresh(record, this._now())) return null;
     if (this._mode() === 'dormant' && this.network.online()) return null;
     return record;
   });
   /** A cache exists but is past its TTL — "connect and sync" instead of items. */
   readonly expired = computed(() => {
     const record = this._record();
-    return !!record && record.updatedAt > 0 && !isFresh(record);
+    return !!record && record.updatedAt > 0 && !isFresh(record, this._now());
   });
   readonly items = computed(() => {
     const record = this.record();
@@ -109,6 +115,30 @@ export class OfflineReadingService {
   private wasOnline = this.network.online();
 
   constructor() {
+    const destroyRef = inject(DestroyRef);
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    effect(() => {
+      // Re-evaluate the TTL exactly when the current cache expires.
+      const updatedAt = this._record()?.updatedAt ?? 0;
+      clearTimeout(expiryTimer);
+      expiryTimer = undefined;
+      if (updatedAt <= 0) return;
+      const delay = updatedAt + CACHE_TTL_MS - Date.now();
+      if (delay <= 0) {
+        untracked(() => this._now.set(Date.now()));
+        return;
+      }
+      expiryTimer = setTimeout(() => this._now.set(Date.now()), delay + 1);
+    });
+    const document = inject(DOCUMENT);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') this._now.set(Date.now());
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    destroyRef.onDestroy(() => {
+      clearTimeout(expiryTimer);
+      document.removeEventListener('visibilitychange', onVisible);
+    });
     effect(() => {
       const userId = this.auth.session()?.user?.id ?? null;
       untracked(() => this.onIdentity(userId));
