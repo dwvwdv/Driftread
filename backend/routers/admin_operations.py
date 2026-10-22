@@ -6,7 +6,7 @@ from supabase import Client
 
 from database import get_client
 from routers.admin import require_api_key
-from services.ingest_activity import IngestActivity, MAX_LIMIT, WINDOW_CHOICES, ingest_activity
+from services.ingest_activity import IngestActivity, MAX_LIMIT, WINDOW_HOURS, ingest_activity, window_error
 from services.operations import operations_status
 
 router = APIRouter(prefix="/admin/operations", tags=["admin"])
@@ -23,10 +23,10 @@ async def get_operations(
 @router.get("/ingest", response_model=IngestActivity, dependencies=[Depends(require_api_key)])
 async def get_ingest_activity(
     limit: int = Query(10, ge=1, le=MAX_LIMIT),
-    hours: int = Query(24),
+    hours: int = Query(WINDOW_HOURS),
     db: Client = Depends(get_client),
 ) -> IngestActivity:
     """Last 24 hours or 7 days of per-source ingest and revision rates; display only."""
-    if hours not in WINDOW_CHOICES:
-        raise HTTPException(status_code=422, detail="hours must be 24 or 168")
+    if error := window_error(hours):
+        raise HTTPException(status_code=422, detail=error)
     return await ingest_activity(db, limit, hours)

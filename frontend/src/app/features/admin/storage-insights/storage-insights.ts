@@ -55,6 +55,14 @@ export class StorageInsights implements OnInit {
   protected readonly windowTabs = WINDOWS.map((w) => w.tab);
   protected windowIndex = signal(0);
   protected readonly window = computed(() => WINDOWS[this.windowIndex()]);
+  /**
+   * Labels follow the window the server answered for, not the tab: an older
+   * API ignores `hours` and returns 24 hours, which must not read as 7 days.
+   */
+  protected readonly shown = computed(() => {
+    const hours = this.activity()?.window_hours;
+    return WINDOWS.find((w) => w.hours === hours) ?? this.window();
+  });
   // Separate counters: switching the window must not drop a table response.
   private activityRequest = 0;
   private tablesRequest = 0;

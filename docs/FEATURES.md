@@ -652,8 +652,8 @@ DELETE FROM discovery_targets
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
 | 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
 | 來源入庫觀察視窗 | 最近 24 小時（預設）或 7 天；列出前 `limit`（1–50，預設 10）個來源 | `services/ingest_activity.py::WINDOW_HOURS`、`WINDOW_CHOICES` |
-| 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇（7 天視窗 ×7；只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
-| 版本更新標示門檻 | 單一來源 24 小時版本更新 ≥ 200 次，或至少 30 次且每篇平均 ≥ 3 次（只標示，不節流或封存；版本數為下限） | `services/ingest_activity.py::REVISION_ALERT_*` |
+| 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇；7 天視窗為 ≥ 3,500 篇（只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
+| 版本更新標示門檻 | 單一來源在視窗內版本更新 ≥ 200 次，或至少 30 次且每篇平均 ≥ 3 次；24 小時與 7 天視窗相同，不隨視窗放大（每篇只保留 10 版，放大會讓 7 天漏掉 24 小時已標示的來源），所以 7 天也會標示較慢但持續的重送（只標示，不節流或封存；版本數為下限） | `services/ingest_activity.py::REVISION_ALERT_*` |
 | 每表容量快照範圍 | `driftread` 依總量前 25 大的表，另固定包含 articles、article_revisions、article_discoveries、sync_changes、discovery_targets、background_jobs；與每日容量同樣保存 90 天 | `migrations/20261022020000_storage_observability.sql` |
 | 來源證據 `last_seen_at` 更新頻率 | 同一入口最多每 6 小時一次；觀測 hash 改變時立即更新 | `migrations/20261021100000_ingest_write_amplification.sql` |
 | **主動發現總開關** | **關**（`FEED_DISCOVERY_ENABLED`）| `services/discovery_config.py` |

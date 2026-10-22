@@ -1,5 +1,5 @@
 <section class="block">
-  <ob-card heading="來源入庫量與版本更新" [meta]="window().meta">
+  <ob-card heading="來源入庫量與版本更新" [meta]="activityLoading() ? window().meta : shown().meta">
     <ob-tabs [tabs]="windowTabs" [selected]="windowIndex()" (selectedChange)="onWindow($event)">
       @if (activityLoading()) {
         <ob-loading label="讀取來源入庫量中" />
@@ -26,7 +26,7 @@
         }
         <h3 class="ob-label sub">新增文章最多</h3>
         @if (a.top_ingest.length === 0) {
-          <ob-empty [message]="window().label + '沒有新增文章。'" />
+          <ob-empty [message]="shown().label + '沒有新增文章。'" />
         } @else {
           <ul class="sources" aria-label="新增文章最多的來源">
             @for (s of a.top_ingest; track s.feed_id) {
@@ -47,7 +47,7 @@
         }
         <h3 class="ob-label sub">版本更新最多</h3>
         @if (a.top_revisions.length === 0) {
-          <ob-empty [message]="window().label + '沒有文章版本更新。'" />
+          <ob-empty [message]="shown().label + '沒有文章版本更新。'" />
         } @else {
           <ul class="sources" aria-label="版本更新最多的來源">
             @for (s of a.top_revisions; track s.feed_id) {
@@ -71,7 +71,7 @@
         }
         <p class="hint">
           每篇文章只保留最近 10 個版本，單篇在視窗內超過 10 次更新時，版本數為下限。7
-          天視窗的數量門檻是 24 小時門檻的 7 倍，每篇平均門檻不變。
+          天視窗只有新增篇數門檻放大 7 倍；版本門檻不變，所以也會標示較慢但持續的重送。
           正文變更與僅中繼資料以前一個版本比較，前一版已清除者不計入兩者。
         </p>
       } @else {

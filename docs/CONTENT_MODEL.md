@@ -14,7 +14,7 @@
 
 `article_revisions` 開 RLS，anon／authenticated 無權限，service_role 只有 SELECT／INSERT，且 UPDATE trigger 拒绝原地修改。刪除原文章／來源會透過 FK cascade 清除其歷史，因此 append-only 指存續文章的版本記錄，不是永久保存已刪除來源。
 
-**歷史有上限：每篇文章只保留最近 10 個版本（含 current）**（#82，migration `20261012000000_article_revision_retention.sql`）。摘要帶動態數字的 feed（例如 hnrss 的 points／comments）或每次輸出都改 `pubDate` 的 generator，每次 refresh 都會產生新版本；不設上限時這張表只增不減，跟 #64 控制 DB 容量的目標衝突。清理由 `article_revisions` 的 AFTER INSERT trigger 在寫入版本的同一 transaction 內完成，只刪同一篇文章 `revision_number <= 新版本 - 10` 的列，所以不依賴預設關閉的 `ARTICLE_RETENTION_ENABLED`，也不需要另外排程。trigger 函式是窄範圍的 `SECURITY DEFINER` 例外：service_role 仍沒有 DELETE 權限，函式回傳 trigger、沒有參數、撤銷所有角色的 EXECUTE。上限寫死為產品限制，沒有開放設定：日後的分析只需要比對 current revision；需要更長歷史時再新增 migration 調整。
+**歷史有上限：每篇文章只保留最近 10 個版本（含 current）**（#82，migration `20261012000000_article_revision_retention.sql`）。摘要帶動態數字的 feed（例如 hnrss 的 points／comments）或每次輸出都改 `pubDate` 的 generator，每次 refresh 都會產生新版本；不設上限時這張表只增不減，跟 #64 控制 DB 容量的目標衝突。清理由 `article_revisions` 的 AFTER INSERT trigger 在寫入版本的同一 transaction 內完成，只刪同一篇文章 `revision_number <= 新版本 - 10` 的列，所以不依賴 `ARTICLE_RETENTION_ENABLED`（Compose 預設開啟、程式碼層預設關閉，可由部署關掉），也不需要另外排程。trigger 函式是窄範圍的 `SECURITY DEFINER` 例外：service_role 仍沒有 DELETE 權限，函式回傳 trigger、沒有參數、撤銷所有角色的 EXECUTE。上限寫死為產品限制，沒有開放設定：日後的分析只需要比對 current revision；需要更長歷史時再新增 migration 調整。
 
 ## Discovery provenance
 

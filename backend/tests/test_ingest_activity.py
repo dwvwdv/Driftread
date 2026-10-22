@@ -80,19 +80,22 @@ async def test_empty_window_and_unrevised_sources():
 
 
 @pytest.mark.asyncio
-async def test_seven_day_window_scales_count_thresholds_only():
+async def test_seven_day_window_scales_only_the_new_article_threshold():
+    # Revision counts are capped at 10 kept versions per article; scaling the
+    # update thresholds would hide in 7d a source the 24h view flags.
     db = RPC({'observed_at': '2026-10-22T00:00:00Z', 'since': '2026-10-15T00:00:00Z',
               'top_ingest': [], 'top_revisions': []})
     result = await activity.ingest_activity(db, 5, 168)
     assert db.calls == [('source_ingest_activity', {
         'p_hours': 168, 'p_limit': 5,
         'p_alert_new_articles': activity.INGEST_ALERT_NEW_ARTICLES * 7,
-        'p_alert_revision_updates': activity.REVISION_ALERT_UPDATES * 7,
+        'p_alert_revision_updates': activity.REVISION_ALERT_UPDATES,
         'p_alert_per_article': activity.REVISION_ALERT_PER_ARTICLE,
-        'p_alert_min_updates': activity.REVISION_ALERT_PER_ARTICLE_MIN_UPDATES * 7})]
+        'p_alert_min_updates': activity.REVISION_ALERT_PER_ARTICLE_MIN_UPDATES})]
     assert result.window_hours == 168
     assert result.thresholds.new_articles == activity.INGEST_ALERT_NEW_ARTICLES * 7
     assert result.thresholds.revisions_per_article == activity.REVISION_ALERT_PER_ARTICLE
+    assert result.thresholds.revision_updates == activity.REVISION_ALERT_UPDATES
 
 
 @pytest.mark.asyncio
@@ -115,6 +118,7 @@ def test_ingest_endpoint_requires_admin_and_bounds_limit():
     db = object()
     app.dependency_overrides[get_client] = lambda: db
     payload = {'observed_at': '2026-10-21T00:00:00Z', 'since': '2026-10-20T00:00:00Z',
+               'window_hours': 24, 'thresholds': activity.thresholds_for(24).model_dump(),
                'top_ingest': [], 'top_revisions': [], 'flagged': [], 'flagged_sources': 0}
     with TestClient(app) as client, patch('routers.admin_operations.ingest_activity',
                                           return_value=payload) as call:

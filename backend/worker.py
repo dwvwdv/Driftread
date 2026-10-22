@@ -13,7 +13,9 @@ Scheduler loops share one event loop and one stop signal:
 - **source_review** prepares bounded candidate samples and runs the selected
   review engine; it stays idle until the hot-reloaded review setting is enabled,
   independently of discovery's deployment and runtime switches;
-- **retention**, opt-in only, compacts a bounded batch of eligible old bodies.
+- **retention** compacts a bounded batch of eligible old bodies. It runs only
+  when ARTICLE_RETENTION_ENABLED is explicitly true; docker-compose.yml supplies
+  true by default (#117), the code default without Compose stays off.
 - **storage** records daily aggregate history while any scheduler is enabled.
 
 Network waits yield to other loops and a separate heartbeat task. Synchronous

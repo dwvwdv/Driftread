@@ -75,8 +75,14 @@ def _load_gen_env():
 
 @pytest.mark.parametrize("existing, expected", [
     (None, "ARTICLE_RETENTION_ENABLED=true"),
+    ("", "ARTICLE_RETENTION_ENABLED=true"),  # `${VAR:-true}` treats empty as unset
     ("false", "已停用（ARTICLE_RETENTION_ENABLED=false）"),
     ("true", "已啟用（ARTICLE_RETENTION_ENABLED=true）"),
+    # Compose strips quotes and a whitespace-led comment; the report must too.
+    ('"true"', "已啟用（ARTICLE_RETENTION_ENABLED=true）"),
+    ("'yes'", "已啟用（ARTICLE_RETENTION_ENABLED=yes）"),
+    ("true  # keep compaction", "已啟用（ARTICLE_RETENTION_ENABLED=true）"),
+    ('"false" # off', "已停用（ARTICLE_RETENTION_ENABLED=false）"),
 ])
 def test_gen_env_reports_but_never_writes_retention_flag(tmp_path, monkeypatch, capsys, existing, expected):
     gen_env = _load_gen_env()
@@ -95,3 +101,11 @@ def test_gen_env_reports_but_never_writes_retention_flag(tmp_path, monkeypatch, 
     lines = [l for l in env_file.read_text().splitlines() if l.startswith("ARTICLE_RETENTION_ENABLED=")]
     assert lines == ([] if existing is None else [f"ARTICLE_RETENTION_ENABLED={existing}"])
     assert "ARTICLE_RETENTION_ENABLED" not in gen_env.OPTIONAL_MISC_DEFAULTS
+
+
+def test_gen_env_truthy_values_match_the_worker(monkeypatch):
+    gen_env = _load_gen_env()
+    candidates = {*gen_env.RETENTION_TRUE_VALUES, "TRUE", "On", "enabled", "y", "0", "false", "ture", ""}
+    for value in candidates:
+        monkeypatch.setenv("ARTICLE_RETENTION_ENABLED", value)
+        assert retention.retention_enabled() == (value.lower() in gen_env.RETENTION_TRUE_VALUES), value

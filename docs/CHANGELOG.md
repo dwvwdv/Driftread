@@ -1410,4 +1410,15 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - 沒有每來源位元組的 API（需逐來源 `pg_column_size`，成本高，留待決定是否需要每日快照）；沒有改 retention 的天數、批次或間隔。
 - 正式環境的 `.env` 實際值本 PR 無法確認；若正式 `.env` 沒有這個變數，部署本版後就會開始縮減。部署時同時會套用尚未上線的 PR #115、#116 migration。
 
+**`/code-review` 修正（兩輪合計 14 項，去重後修 11 項）**
+
+- `gen_env.py` 原本直接讀 `.env` 原文判斷：`ARTICLE_RETENTION_ENABLED="true"`、`'yes'` 或 `true  # 註解` 在 Compose 都解析成啟用，腳本卻回報「已停用」，等於對不可逆的縮減報錯狀態。新增 `compose_value()`，依 Compose 的規則去引號、去掉前面有空白的 `#` 註解（以 `docker compose config` 逐一實測對照）；啟用值集中為 `RETENTION_TRUE_VALUES`，測試逐值比對 `retention_enabled()`，避免兩邊定義漂移。
+- 7 天視窗原本把三個次數門檻都乘以 7：版本更新數受每篇 10 版上限約束，同一個持續重送的來源在 24 小時被標示、7 天卻消失；每篇平均門檻不放大則讓 7 天對較慢的重送更敏感。改為只放大新增篇數門檻，版本門檻在兩個視窗相同，7 天的標示是 24 小時的超集合，並在 FEATURES、CRAWLER_OPERATIONS 與後台說明寫明語意。
+- 後台標題與空狀態原本跟著使用者點的分頁：先部署前端、API 仍是舊版（忽略 `hours`、回 24 小時）時會把一天的資料標成「最近 7 天」。改為依回應的 `window_hours` 標示，載入中才用分頁值。
+- 允許視窗的規則只留一份：`ingest_activity.window_error()`，router 與 service 共用，訊息由 `WINDOW_CHOICES` 產生。沒有改用 `Literal[24, 168]`：實測 FastAPI 不會把查詢字串 `"168"` 轉成 Literal 整數，合法請求會被 422。也沒有在 router 攔 `ValueError`，因為 pydantic 的 `ValidationError` 是它的子類，RPC 回傳格式錯誤會被誤報成 422 並帶出內容。
+- `IngestActivity.window_hours`／`thresholds` 改為必填，不再與 `thresholds_for()` 各自維護一份 24 小時預設。
+- 新增的 worker 測試與既有測試幾乎相同，改為參數化既有測試（discovery 開／關），並多驗證 refresh 與評審照常啟動。
+- 文件：`worker.py` docstring、`docs/BACKGROUND_JOBS.md`、`docs/CONTENT_MODEL.md` 仍寫 retention「預設關閉／opt-in only」，與 Compose 新預設不符，已更新；FEATURES 的版本更新門檻列補上 7 天語意。
+- 不修：切換 24 小時／7 天時每次重抓。只有管理員手動切換才會觸發，7 天查詢走 `article_revisions(recorded_at)` 索引範圍；加每個視窗的快取還要處理快取失效與「重新整理」語意，成本高於收益。
+
 驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1663 passed**（含真 PostgreSQL）。新增 `tests/test_deploy_defaults.py`（Compose 兩個服務的預設與排程參數、`.env.example` 不寫死值、程式碼預設仍關閉、`gen_env.py` 在未設定／false／true 下只回報不寫入）；`tests/test_operations.py` 新增明確 false 時 refresh／discovery／評審仍啟動而 retention 不啟動；`tests/test_ingest_activity.py` 新增 7 天視窗門檻、非法視窗在 service 與 endpoint 皆拒絕。retention 對訂閱／收藏／已讀、待抽取與同 hash 競爭的保護沿用既有的 `tests/test_postgres_lifecycle.py` 與 `tests/sql/test_crawler_lifecycle.sql`，未改 SQL。`docker compose config` 實測：無 `.env` 與 `.env` 無此變數時 `api`／`worker` 皆為 `"true"`，`.env` 或 shell 設 `false` 時皆為 `"false"`。frontend **54 files／567 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器運行、正式 Supabase 部署後的縮減與 24–72 小時容量變化、瀏覽器實機。

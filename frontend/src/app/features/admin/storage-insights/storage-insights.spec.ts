@@ -244,9 +244,27 @@ describe('StorageInsights', () => {
     expect(element.textContent).toContain('最近 168 小時');
     expect(element.textContent).not.toContain('超過觀察門檻');
 
+    // An older API ignores `hours` and answers for 24 hours: labels follow
+    // the server's window, never the tab.
+    element.querySelectorAll<HTMLButtonElement>('[role="tab"]')[0].click();
+    fixture.detectChanges();
+    element.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
+    fixture.detectChanges();
+    responses[3].next({
+      ...activity,
+      top_ingest: [],
+      top_revisions: [],
+      flagged: [],
+      flagged_sources: 0,
+    });
+    fixture.detectChanges();
+    expect(element.textContent).toContain('LAST 24H');
+    expect(element.textContent).toContain('最近 24 小時沒有新增文章');
+    expect(element.textContent).not.toContain('最近 7 天沒有新增文章');
+
     // Selecting the active tab again does not refetch.
     element.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
-    expect(calls).toEqual([24, 168]);
+    expect(calls).toEqual([24, 168, 24, 168]);
   });
 
   it('drops a stale response after a reload', () => {
