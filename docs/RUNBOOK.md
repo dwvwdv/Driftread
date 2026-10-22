@@ -71,6 +71,16 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 確認管理首頁「容量成長趨勢」收到第一筆每日紀錄、`storage` 工作與 heartbeat 正常；worker 隨常駐的來源評審設定監看執行容量採樣，refresh／discovery／retention 全關也不退出；完全停用 worker 的操作見 [README 部署步驟](../README.md#步驟)。`GET /api/admin/retention/history?days=30` 必須由管理 session 或既有機器 API Key 授權，不登入不能讀。觀察至少 24 小時、兩筆不同日採樣後再驗證成長率；同日重啟不得覆寫採樣，不應手動清 ledger 或補造歷史。部署驗收仍由 #83 追蹤，正文縮減繼續維持 `ARTICLE_RETENTION_ENABLED=false`，直到備份／dry-run 驗證完成。
 
+## 每表容量與來源入庫觀測（#114）
+
+`20261022020000_storage_observability.sql` 只新增欄位、唯讀 RPC 與兩個索引，由 API 啟動時的 runner 套用；沒有 Dashboard 設定或環境變數。照一般順序先更新 API、確認 ledger 後再更新 worker：新版 worker 的 heartbeat 會寫入新欄位 `config`，若 worker 先於 migration 啟動，heartbeat 寫入失敗只記 log、不停止抓取，但後台會顯示心跳過期，套用 migration 後即恢復。
+
+`article_revisions(recorded_at)` 以一般 `CREATE INDEX` 建立，建立期間會短暫擋住該表寫入（也就是文章更新），表越大越久；在離峰時段部署。新索引約占「版本列數 × 數十 bytes」，可在後台「每表容量與 MVCC」確認。部署後確認：
+
+1. 管理首頁「排程器狀態」顯示「正文縮減排程（worker 實際設定）」；顯示「狀態未知」代表 worker 尚未更新或沒有心跳，不代表已停用。
+2. 「每表容量與 MVCC」即時表有資料；下一次每小時採樣後當天的表快照補上，隔一個 UTC 日才有第一個區間增量。
+3. 「來源入庫量與版本更新」列出最近 24 小時的來源；超過門檻只是提示，處置（限額、節流、封存、retention）需另行決定。
+
 ## 收錄前來源身分檢查
 
 `20261015040607_source_mirror_gate.sql` 新增 `feeds.admitted_at`（已抓取過的既有來源回填為已收錄）與 service-only RPC `find_mirror_sources`，由 API 啟動時的 runner 套用；沒有 Dashboard 設定或環境變數。照一般順序先更新 API、確認 ledger 後再更新 worker。worker 先於 migration 啟動時，讀到的來源沒有 `admitted_at` 欄位，排程維持原本行為、不做檢查，也不會寫入不存在的欄位。行為見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。

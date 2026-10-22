@@ -37,7 +37,7 @@ from services.discovery import run_cycle
 from services.discovery_config import discovery_enabled
 from services.discovery_config import tick_seconds as discovery_tick_seconds
 from services.feed_refresh import refresh_due, refresh_enabled, summarize, tick_seconds
-from services.operations import OperationsRecorder
+from services.operations import OperationsRecorder, scheduler_config
 from services.storage_history import record_storage_snapshot, SAMPLE_CHECK_SECONDS
 from services.job_queue import JobQueue, POLL_SECONDS, RENEW_SECONDS
 from services.settings import load_source_review_settings
@@ -102,7 +102,9 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
 async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summary_of,
                     can_start=None) -> None:
     db = get_client()
-    recorder = OperationsRecorder(db, kind)
+    # Every loop reports the parsed env so the admin sees the worker's real
+    # ARTICLE_RETENTION_ENABLED even while the retention loop is not running.
+    recorder = OperationsRecorder(db, kind, scheduler_config())
     queue = JobQueue(db)
     done = asyncio.Event()
     pulse = asyncio.create_task(recorder.pulse(done))

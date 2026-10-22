@@ -1,0 +1,180 @@
+<section class="block">
+  <ob-card heading="來源入庫量與版本更新" meta="LAST 24H">
+    @if (activityLoading()) {
+      <ob-loading label="讀取來源入庫量中" />
+    } @else if (activity(); as a) {
+      <p class="hint">
+        {{ a.since | date: 'yyyy/MM/dd HH:mm' }} 至
+        {{ a.observed_at | date: 'yyyy/MM/dd HH:mm' }}（最近 {{ a.window_hours }} 小時）。 新增 ≥
+        {{ a.thresholds.new_articles }} 篇、版本更新 ≥ {{ a.thresholds.revision_updates }} 次，
+        或至少 {{ a.thresholds.revisions_per_article_min_updates }} 次更新且每篇平均 ≥
+        {{ a.thresholds.revisions_per_article }} 次時標示。只供觀察，不會節流、限額或封存來源。
+      </p>
+      @if (a.flagged_sources > 0) {
+        <ob-callout tone="warning" heading="{{ a.flagged_sources }} 個來源超過觀察門檻">
+          請確認是真實新聞量，還是來源反覆重送相同項目。
+        </ob-callout>
+      }
+      <h3 class="ob-label sub">新增文章最多</h3>
+      @if (a.top_ingest.length === 0) {
+        <ob-empty message="最近 24 小時沒有新增文章。" />
+      } @else {
+        <ul class="sources" aria-label="新增文章最多的來源">
+          @for (s of a.top_ingest; track s.feed_id) {
+            <li>
+              <!-- Third-party title/URL: interpolation only. -->
+              <span class="name">{{ s.title || s.url }}</span>
+              <span class="url">{{ s.url }}</span>
+              <span
+                >新增 {{ s.new_articles | number }} 篇，其中舊文回填
+                {{ s.backfill_articles | number }} 篇{{ s.archived ? '（已封存）' : '' }}</span
+              >
+              @if (s.alerts.length) {
+                <span class="warning">{{ alertLabels(s.alerts) }}</span>
+              }
+            </li>
+          }
+        </ul>
+      }
+      <h3 class="ob-label sub">版本更新最多</h3>
+      @if (a.top_revisions.length === 0) {
+        <ob-empty message="最近 24 小時沒有文章版本更新。" />
+      } @else {
+        <ul class="sources" aria-label="版本更新最多的來源">
+          @for (s of a.top_revisions; track s.feed_id) {
+            <li>
+              <span class="name">{{ s.title || s.url }}</span>
+              <span class="url">{{ s.url }}</span>
+              <span
+                >更新 {{ s.revision_updates | number }} 次／{{ s.revised_articles | number }} 篇
+                @if (s.revisions_per_article !== null) {
+                  （平均 {{ s.revisions_per_article | number: '1.1-1' }} 次）
+                }
+                ；正文變更 {{ s.content_changes | number }}、僅中繼資料
+                {{ s.metadata_only_changes | number }}</span
+              >
+              @if (s.alerts.length) {
+                <span class="warning">{{ alertLabels(s.alerts) }}</span>
+              }
+            </li>
+          }
+        </ul>
+      }
+      <p class="hint">
+        每篇文章只保留最近 10 個版本，單篇一天內超過 10 次更新時，版本數為下限。
+        正文變更與僅中繼資料以前一個版本比較，前一版已清除者不計入兩者。
+      </p>
+    } @else {
+      <ob-empty message="來源入庫量未知：目前無法取得統計資料。" />
+    }
+  </ob-card>
+</section>
+
+<section class="block">
+  <ob-card heading="每表容量與 MVCC" meta="TABLES">
+    @if (tablesLoading()) {
+      <ob-loading label="讀取每表容量中" />
+    } @else if (tables(); as t) {
+      <p class="hint">
+        即時讀取：{{ t.current.observed_at | date: 'yyyy/MM/dd HH:mm:ss' }}。dead tuples 是 VACUUM
+        可在表內重用的空間，回收後檔案不一定縮小；不要把它當成例行 VACUUM FULL 的理由。
+      </p>
+      <div class="scroll" tabindex="0" role="region" aria-label="每表容量，可水平捲動">
+        <table>
+          <caption>
+            各表 heap／TOAST／索引與 tuple 統計
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">表</th>
+              <th scope="col">heap</th>
+              <th scope="col">TOAST</th>
+              <th scope="col">索引</th>
+              <th scope="col">合計</th>
+              <th scope="col">live</th>
+              <th scope="col">dead</th>
+              <th scope="col">最近 autovacuum</th>
+              <th scope="col">次數</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of t.current.tables; track row.name) {
+              <tr>
+                <th scope="row">{{ row.name }}</th>
+                <td>{{ bytes(row.heap_bytes) }}</td>
+                <td>{{ bytes(row.toast_bytes) }}</td>
+                <td>{{ bytes(row.index_bytes) }}</td>
+                <td>{{ bytes(row.total_bytes) }}</td>
+                <td>{{ row.n_live_tup ?? '—' }}</td>
+                <td>
+                  {{ row.n_dead_tup ?? '—' }}
+                  @if (row.dead_ratio !== null) {
+                    （{{ percent(row.dead_ratio) }}）
+                  }
+                </td>
+                <td>{{ (row.last_autovacuum | date: 'MM/dd HH:mm') ?? '尚無' }}</td>
+                <td>{{ row.autovacuum_count ?? '—' }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      @if (t.intervals.length === 0) {
+        <p class="hint">
+          區間增量需要兩筆每日採樣；部署後由 worker 每日採樣，最多保存 {{ t.retention_days }} 天。
+        </p>
+      } @else {
+        @for (iv of t.intervals; track iv.end_at; let first = $first) {
+          <details class="interval" [open]="first">
+            <summary>
+              {{ iv.start_at | date: 'MM/dd HH:mm' }} → {{ iv.end_at | date: 'MM/dd HH:mm' }}（{{
+                iv.elapsed_hours | number: '1.0-1'
+              }}
+              小時）
+              @if (iv.stats_reset_changed) {
+                ・統計已重設
+              }
+            </summary>
+            <div class="scroll" tabindex="0" role="region" aria-label="區間增量，可水平捲動">
+              <table>
+                <caption>
+                  相鄰兩次採樣的 INSERT／UPDATE／DELETE 增量
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">表</th>
+                    <th scope="col">INSERT</th>
+                    <th scope="col">UPDATE</th>
+                    <th scope="col">其中 HOT</th>
+                    <th scope="col">DELETE</th>
+                    <th scope="col">容量變化</th>
+                    <th scope="col">dead</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (d of iv.tables; track d.name) {
+                    <tr>
+                      <th scope="row">{{ d.name }}</th>
+                      <td [class.warning]="!d.comparable">{{ count(d, d.inserted) }}</td>
+                      <td [class.warning]="!d.comparable">{{ count(d, d.updated) }}</td>
+                      <td [class.warning]="!d.comparable">{{ count(d, d.hot_updated) }}</td>
+                      <td [class.warning]="!d.comparable">{{ count(d, d.deleted) }}</td>
+                      <td>{{ signedBytes(d.total_bytes_delta) }}</td>
+                      <td>{{ d.n_dead_tup ?? '—' }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </details>
+        }
+        <p class="hint">
+          累積統計遇到重設（或該表剛出現）時無法相減，顯示「無法計算」而非負數。
+          容量變化是期間淨變化，包含可重用但尚未歸還的空間。
+        </p>
+      }
+    } @else {
+      <ob-empty message="每表容量未知：目前無法取得統計資料。" />
+    }
+  </ob-card>
+</section>

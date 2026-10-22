@@ -13,6 +13,35 @@ HEARTBEAT_SECONDS = 30
 STALE_SECONDS = 90
 RETENTION_DAYS = 30
 PRUNE_SECONDS = 3600
+RUN_KINDS = ("refresh", "discovery", "retention", "source_review", "storage")
+
+
+def scheduler_config() -> dict:
+    """What this worker process actually parsed from its own environment.
+
+    The API container's environment can differ from the worker's, so the
+    admin reads this from heartbeats instead of the API's os.environ. Values
+    are booleans/integers only, never secrets. See docs/CRAWLER_OPERATIONS.md
+    「Worker 監控」.
+    """
+    # Lazy imports: these modules are heavier and some import this one's peers.
+    from services import retention
+    from services.discovery_config import discovery_enabled
+    from services.feed_refresh import refresh_enabled
+
+    enabled = retention.retention_enabled()
+    return {
+        "refresh_enabled": refresh_enabled(),
+        "discovery_deployment_enabled": discovery_enabled(),
+        "retention": {
+            "enabled": enabled,
+            # The scheduler never previews: when enabled it compacts a batch.
+            "mode": "apply" if enabled else "disabled",
+            "days": retention.retention_days(),
+            "batch_size": retention.batch_size(),
+            "interval_minutes": retention.tick_seconds() // 60,
+        },
+    }
 
 
 def utcnow() -> datetime:
@@ -20,9 +49,10 @@ def utcnow() -> datetime:
 
 
 class OperationsRecorder:
-    def __init__(self, db, kind: str):
+    def __init__(self, db, kind: str, config: dict | None = None):
         self.db = db
         self.kind = kind
+        self.config = config
         self.worker_id = str(uuid4())
         self.started_at = utcnow().isoformat()
         self.active_run: str | None = None
@@ -48,6 +78,8 @@ class OperationsRecorder:
             "status": status,
             "active_runs": {self.kind: self.active_run} if self.active_run else {},
         }
+        if self.config is not None:
+            row["config"] = self.config
         await self._write(lambda: self.db.table("worker_heartbeats").upsert(
             row, on_conflict="worker_id"
         ).execute())
@@ -107,12 +139,27 @@ def operations_status(db, limit: int = 20) -> dict:
         worker["age_seconds"] = round(_age_seconds(worker["heartbeat_at"], now), 1)
         worker["stale"] = worker["age_seconds"] > STALE_SECONDS
         by_worker[worker["worker_id"]] = worker
-    for run in runs:
+    # The recent window is dominated by frequent refresh runs; a daily
+    # retention or storage run needs its own lookup to stay visible.
+    latest_runs = {}
+    for kind in RUN_KINDS:
+        rows = db.table("worker_runs").select("*").eq("kind", kind).order(
+            "started_at", desc=True
+        ).limit(1).execute().data or []
+        latest_runs[kind] = rows[0] if rows else None
+    for run in [*runs, *(r for r in latest_runs.values() if r)]:
         worker = by_worker.get(run["worker_id"])
         if run["status"] == "running" and (
             not worker or worker["stale"] or worker["status"] == "stopped"
         ):
             run["status"] = "interrupted"
+    # Newest heartbeat that carries a config; an older worker image reports none.
+    reporter = next((w for w in workers if w.get("config")), None)
+    worker_config = None if reporter is None else {
+        "worker_id": reporter["worker_id"], "hostname": reporter.get("hostname"),
+        "reported_at": reporter["heartbeat_at"], "stale": reporter["stale"],
+        "status": reporter["status"], "config": reporter["config"],
+    }
     alerts = db.table("worker_alerts").select("*").order(
         "created_at", desc=True
     ).limit(limit).execute().data or []
@@ -123,5 +170,6 @@ def operations_status(db, limit: int = 20) -> dict:
     return {"alerts": alerts, "queue": queue, "recent_jobs": jobs,
             "observed_at": now.isoformat(), "stale_after_seconds": STALE_SECONDS,
             "retention_days": RETENTION_DAYS, "workers": workers, "recent_runs": runs,
+            "latest_runs": latest_runs, "worker_config": worker_config,
             "recent_failures": sum(r["status"] in {"failed", "partial", "interrupted"}
                                    for r in runs)}

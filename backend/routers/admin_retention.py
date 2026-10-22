@@ -6,6 +6,7 @@ from supabase import Client
 from database import get_client
 from routers.admin import require_api_key
 from services.storage_history import StorageHistory, storage_history
+from services.table_storage import TableStorageHistory, table_storage_history
 from services.retention import (
     ArticleStorageStats,
     RetentionSummary,
@@ -23,6 +24,18 @@ async def retention_history(
 ) -> StorageHistory:
     """Read saved daily aggregates and elapsed-time growth; never sample on GET."""
     return await storage_history(db, days)
+
+
+@router.get("/tables", response_model=TableStorageHistory, dependencies=[Depends(require_api_key)])
+async def retention_tables(
+    days: int = Query(7, ge=1, le=90),
+    db: Client = Depends(get_client),
+) -> TableStorageHistory:
+    """Live per-table sizes/MVCC counters plus deltas between saved daily samples.
+
+    Catalog statistics only; never scans table contents or samples on GET.
+    """
+    return await table_storage_history(db, days)
 
 
 @router.get(

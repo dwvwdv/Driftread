@@ -1,4 +1,11 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnInit,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { AdminService } from '../../../services/admin';
@@ -16,6 +23,7 @@ import { ObPageHeader } from '../../../ui/page-header/page-header';
 import { ObStat } from '../../../ui/stat/stat';
 import { ToastService } from '../../../ui/toast/toast';
 import { DiscoveryControlPanel } from '../discovery-control/discovery-control';
+import { StorageInsights } from '../storage-insights/storage-insights';
 
 /**
  * Console overview: the ten discovery counters, the two on-demand pipeline
@@ -41,6 +49,7 @@ import { DiscoveryControlPanel } from '../discovery-control/discovery-control';
     ObPageHeader,
     ObStat,
     DiscoveryControlPanel,
+    StorageInsights,
   ],
   templateUrl: './admin-dashboard.html',
   styleUrl: './admin-dashboard.scss',
@@ -62,6 +71,9 @@ export class AdminDashboard implements OnInit {
   protected history = signal<StorageHistory | null>(null);
   protected historyLoading = signal(true);
   private snapshotRequest = 0;
+  private insights = viewChild(StorageInsights);
+  /** Kinds whose latest run stays visible even when refresh fills the recent list. */
+  protected readonly latestKinds = ['retention', 'storage'];
 
   protected bytes(value: number): string {
     return `${(value / 1024 / 1024).toFixed(1)} MiB`;
@@ -89,11 +101,13 @@ export class AdminDashboard implements OnInit {
   }
 
   ngOnInit(): void {
-    this.load();
+    // The insights panel loads itself on init; only later refreshes reach it.
+    this.load(false);
   }
 
-  protected load(): void {
+  protected load(reloadInsights = true): void {
     const request = ++this.snapshotRequest;
+    if (reloadInsights) this.insights()?.load();
     this.operationsLoading.set(true);
     this.storageLoading.set(true);
     this.historyLoading.set(true);
