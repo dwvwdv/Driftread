@@ -1383,7 +1383,7 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 
 合併與 review 修正後整體驗證：backend **1648 passed**（含真 PostgreSQL）；frontend **54 files／565 tests** 通過，production build 成功，initial bundle 514.41 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。
 
-## 階段五十七：Compose 範例預設開啟正文縮減，並量化高流量來源的容量模型（PR 待定，issue #117，2026-10-22）
+## 階段五十七：Compose 範例預設開啟正文縮減，並量化高流量來源的容量模型（PR #118，issue #117，2026-10-22）
 
 #117 指出來源數上限（300）不等於寫入與儲存預算：2026-10-22 最近 24 小時約 3,900 篇新文章、全部來自正常 RSS refresh，前三名來源佔 36%，資料庫已逼近 Free Plan 500 MB。使用者明確指定的產品決策是 Compose 範例預設開啟既有的 article retention；收錄限額等政策要求先評估、不擅自決定。
 
