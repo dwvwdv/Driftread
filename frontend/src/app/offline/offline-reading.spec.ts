@@ -11,7 +11,7 @@ import { authInterceptor } from '../interceptors/auth.interceptor';
 import { AuthService } from '../services/auth';
 import { ReadingStreamService } from '../services/reading-stream';
 import { NetworkStatusService } from './network-status';
-import { OfflineReadingService } from './offline-reading';
+import { AUTO_REFRESH_MS, OfflineReadingService } from './offline-reading';
 import { CACHE_TTL_MS, SyncSnapshot } from './offline-state';
 import { OfflineStore } from './offline-store';
 
@@ -256,6 +256,38 @@ describe('OfflineReadingService', () => {
     await new Promise((r) => setTimeout(r, 20));
     http.expectNone(isReplay);
     expect(await store.read('user-a')).toBeNull();
+  });
+
+  it('background-syncs a stale cache when the page becomes visible again (still online)', async () => {
+    const svc = setup();
+    await initialSync(svc);
+    // Fresh cache: becoming visible does not sync.
+    document.dispatchEvent(new Event('visibilitychange'));
+    http.expectNone(isSync);
+    // The device slept past the refresh threshold without going offline.
+    const realNow = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(realNow + AUTO_REFRESH_MS + 1000);
+    document.dispatchEvent(new Event('visibilitychange'));
+    const req = await next(isSync);
+    expect(req.request.headers.get('Authorization')).toBe('Bearer token-user-a');
+    spy.mockRestore();
+    req.flush(snapshot('user-a', { changed: false, items: null, cursor: 'c2' }));
+    await vi.waitFor(async () => expect((await store.read('user-a'))?.cursor).toBe('c2'));
+  });
+
+  it('background-syncs a page left open once the cache passes the refresh threshold', async () => {
+    const svc = setup();
+    // Make the first snapshot look like it was taken just under 15 minutes ago.
+    const realNow = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(realNow - AUTO_REFRESH_MS + 300);
+    await initialSync(svc);
+    spy.mockRestore();
+    TestBed.flushEffects(); // the app's change detection runs the timer effect
+    http.expectNone(isSync);
+    // No visibility, network or record change: only the refresh timer fires.
+    const req = await vi.waitFor(() => http.expectOne(isSync), { timeout: 2000 });
+    req.flush(snapshot('user-a', { changed: false, items: null, cursor: 'c3' }));
+    await vi.waitFor(async () => expect((await store.read('user-a'))?.cursor).toBe('c3'));
   });
 
   it('signing out in this runtime clears every cached account', async () => {

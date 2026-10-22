@@ -1365,9 +1365,10 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - 頁尾 ONLINE／OFFLINE 與待同步數；nginx 對 index.html、env.js、ngsw.json、SW 檔與 manifest 回 no-cache，manifest 補 MIME（location 層重寫安全 header）。
 
 - review 修正（Codex P2）：`record`／`expired` 是 `computed`，`Date.now()` 不是 reactive dependency；離線頁一直開著或已安裝的 PWA 暫停後恢復時，若快取、模式與網路狀態都沒變，超過 24 小時的摘要仍會繼續顯示。改用時間 signal：快取到期時由計時器更新，頁面回到前景（`visibilitychange`）時也更新。新增兩個測試，修正前皆失敗。
+- review 修正（Codex P2）：背景同步原本只在載入快取與離線→線上時判斷，頁面一直在線或休眠後恢復時 `navigator.onLine` 仍為 true，快取會一直停在舊版本直到 24 小時被隱藏。改為回到前景時與頁面在前景時快取滿 15 分鐘的計時器也會背景同步；計時器只在 `updatedAt` 數值改變時重排，同步失敗不會立即重試，已有同步進行時也不重複排入（喚醒時計時器與 visibility 事件會同時觸發）。新增兩個測試，修正前皆失敗。
 
 沒做什麼／已知未處理：離線不含正文、沒有應用內新版提示、沒有 server push 撤權（同 extension，24 小時 TTL）。token 在離線期間過期時 Supabase 無法恢復 session，此時只在離線狀態唯讀顯示上次帳號的快取，連線後隱藏、不刪除；共用裝置需先登出。nginx 沒有 CSP，日後加 CSP 需允許 `worker-src`／`manifest-src 'self'`。
 
 驗證（PWA）：新增 55 項 frontend 測試（含 fake-indexeddb 的帳號分隔、切帳號、重送、回滾與 ngsw 設定）。以 Playwright Chromium 對 production build 的 fake API 於 390×844 走查 manifest、SW 註冊、離線重新載入、重新連線重送（原 token）、Cache Storage 無 `/api/`、登出清空 IndexedDB 與無水平溢出。未驗證：nginx 設定（沙箱無 Docker daemon）、真手機安裝（Android／iOS）、真 Supabase 登入與正式部署。
 
-合併與 review 修正後整體驗證：frontend **53 files／556 tests** 通過，production build 成功，initial bundle 514.25 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。backend 未受 PWA 部分影響，沿用上方 1646 passed 結果。
+合併與 review 修正後整體驗證：frontend **53 files／558 tests** 通過，production build 成功，initial bundle 514.25 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。backend 未受 PWA 部分影響，沿用上方 1646 passed 結果。

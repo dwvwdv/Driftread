@@ -64,7 +64,7 @@ frontend nginx 對 `index.html`、`env.js`、`ngsw.json`、`ngsw-worker.js`、`s
 
 `/me/offline` 列出本機快取、`/me/offline/:id` 顯示單篇摘要（`[innerHTML]` 經 Angular sanitizer，不使用 `bypassSecurityTrustHtml`），連線時提供「線上閱讀全文」與原文連結。語意照 extension（`extension/offline.js`）：
 
-- 第一次按「同步」才建立本機快取（opt-in）。之後登入且連線時，若快取超過 15 分鐘或有待送操作，會在背景同步；`online` 事件也會觸發重送。
+- 第一次按「同步」才建立本機快取（opt-in）。之後登入且連線時，若快取超過 15 分鐘或有待送操作，會在背景同步：觸發時機是載入帳號快取、`online` 事件、頁面回到前景（`visibilitychange`，涵蓋休眠後恢復但 `navigator.onLine` 一直為 true 的 PWA），以及頁面在前景時快取滿 15 分鐘的計時器；已有同步進行時不重複排入。
 - `changed` 時以最近 100 篇整批替換（只保留白名單摘要欄位，不保存正文／search_vector），否則只推進 cursor。快取 24 小時後不再顯示，須連線重新同步，以免顯示已撤權內容。
 - 已讀／收藏／稍後讀先樂觀疊加在快照上並 coalesce 寫入佇列（同一篇同一種只留最後期望狀態，最多 100 篇）。同步順序同 extension：先帶 `pending_ids` 拉 snapshot 剔除已失權的操作（只剔除本次有詢問的文章），逐筆 `POST /api/me/sync/operations`，最後再拉 authoritative snapshot。404／409 丟棄該操作並回到伺服器狀態（等同回滾，畫面提示）；503、網路失敗、401／403 保留佇列等下次同步。IndexedDB 寫入失敗立即回滾樂觀狀態。
 - 頁尾狀態列顯示 ONLINE／OFFLINE 與待同步數量。

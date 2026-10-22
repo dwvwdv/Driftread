@@ -116,13 +116,25 @@ export class OfflineReadingService {
 
   constructor() {
     const destroyRef = inject(DestroyRef);
+    const document = inject(DOCUMENT);
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     effect(() => {
-      // Re-evaluate the TTL exactly when the current cache expires.
-      const updatedAt = this._record()?.updatedAt ?? 0;
+      // Re-evaluate the TTL exactly when the current cache expires, and
+      // background-sync a page left open once the cache passes AUTO_REFRESH_MS.
+      // The `updatedAt` computed only notifies when the timestamp changes, so a
+      // failed sync that rewrites the record cannot re-arm an immediate retry.
+      const updatedAt = this.updatedAt() ?? 0;
       clearTimeout(expiryTimer);
-      expiryTimer = undefined;
+      clearTimeout(refreshTimer);
+      expiryTimer = refreshTimer = undefined;
       if (updatedAt <= 0) return;
+      refreshTimer = setTimeout(
+        () => {
+          if (document.visibilityState === 'visible') this.autoSync();
+        },
+        Math.max(0, updatedAt + AUTO_REFRESH_MS - Date.now()) + 1,
+      );
       const delay = updatedAt + CACHE_TTL_MS - Date.now();
       if (delay <= 0) {
         untracked(() => this._now.set(Date.now()));
@@ -130,13 +142,16 @@ export class OfflineReadingService {
       }
       expiryTimer = setTimeout(() => this._now.set(Date.now()), delay + 1);
     });
-    const document = inject(DOCUMENT);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') this._now.set(Date.now());
+      if (document.visibilityState !== 'visible') return;
+      this._now.set(Date.now());
+      // A resumed PWA may never see an offline→online transition.
+      this.autoSync();
     };
     document.addEventListener('visibilitychange', onVisible);
     destroyRef.onDestroy(() => {
       clearTimeout(expiryTimer);
+      clearTimeout(refreshTimer);
       document.removeEventListener('visibilitychange', onVisible);
     });
     effect(() => {
@@ -290,9 +305,19 @@ export class OfflineReadingService {
     return record.pending.length > 0 || Date.now() - record.updatedAt >= AUTO_REFRESH_MS;
   }
 
-  private onReconnect(): void {
+  /** Background sync when signed in, online and the cache is stale or has a queue.
+   * Skipped while a sync runs: on wake the overdue refresh timer and the
+   * visibility event fire together and must not queue a second run. */
+  private autoSync(): void {
+    if (this.inFlight) return;
     const record = this._record();
-    if (this._mode() === 'session' && record && this.needsSync(record)) void this.sync();
+    if (this._mode() === 'session' && record && this.network.online() && this.needsSync(record)) {
+      void this.sync();
+    }
+  }
+
+  private onReconnect(): void {
+    this.autoSync();
   }
 
   private async runSync(): Promise<SyncResult> {
