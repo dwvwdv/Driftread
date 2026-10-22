@@ -13,6 +13,13 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [~] 進行中
 - [x] 已完成
 
+## issue #92：行動裝置閱讀出口
+
+- [x] 形式決定為 PWA（沿用 Angular 前端與 `/me/sync`，不另建 Flutter），理由與快取策略：[行動裝置閱讀出口](docs/CONSUMPTION_SURFACES.md#行動裝置閱讀出口pwa)。
+- [x] Manifest、icon 與只快取 app shell 的 service worker（`/api/` 不進快取、`env.js` network-first）：`frontend/ngsw-config.json`、`frontend/public/manifest.webmanifest`、`frontend/src/app/offline/sw-registration.ts`、`frontend/nginx.conf`。
+- [x] 依帳號分隔的 IndexedDB 離線閱讀、離線操作排隊與重新連線重送、切換帳號／登出清除：`frontend/src/app/offline/`、`/me/offline` 頁面。
+- [ ] 真手機安裝（Android Chrome、iOS Safari）、真 Supabase 登入與正式部署的 nginx header 驗收。
+
 ## issue #106：來源管道診斷與恢復
 
 - [x] 唯讀核對精確文章數、全部零文章來源及最新評審狀態，保留時間點與未驗證邊界：[調查紀錄](docs/ISSUE_106.md)。

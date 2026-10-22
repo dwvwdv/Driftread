@@ -1,0 +1,48 @@
+@use 'mixins' as *;
+
+:host {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+.is-online {
+  color: var(--success-ink);
+}
+
+.is-offline {
+  color: var(--warning-ink);
+}
+
+.list {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+}
+
+.list a {
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+
+  &:hover {
+    color: var(--accent);
+  }
+}
+
+.is-read a {
+  color: var(--text-dim);
+}
+
+.summary {
+  @include line-clamp(2);
+  color: var(--text-dim);
+}

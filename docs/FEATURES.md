@@ -24,6 +24,7 @@
 | 後台手動匯入（JSON） | ✅ | `POST /api/admin/feeds`，需 admin key。只寫 metadata，排入到期佇列由排程器抓文章 | `routers/admin.py`、`components/admin` |
 | 開放 API 匯入 | ✅ | `POST /api/admin/feeds/from-url`，供外部腳本 / 擴充使用 | `routers/admin.py` |
 | 瀏覽器擴充 | ✅ | 任何網站一鍵加入 feed（Chromium 系，開發版載入） | `extension/` |
+| **行動裝置閱讀出口（PWA）** | ✅ | 可安裝到主畫面（manifest + `@angular/service-worker`，SW 只快取 app shell、不快取 `/api/`）；`/me/offline` 依帳號在 IndexedDB 保存 `/me/sync` 最近 100 篇摘要，離線閱讀與已讀／收藏／稍後讀排隊，重新連線經 `/me/sync/operations` 重送；切換帳號／登出清空私人快取（[設計](CONSUMPTION_SURFACES.md#行動裝置閱讀出口pwa)）| `frontend/ngsw-config.json`、`frontend/src/app/offline/`、`components/offline-reading` |
 | 全文搜尋 | ✅ | 文章（標題／摘要／作者／全文）與 Feed（名稱／描述）分開搜尋，PostgreSQL tsvector + GIN index，cursor 分頁依相關度排序，附命中摘要片段 | `routers/search.py`、`migrations/020_full_text_search.sql`、`components/search` |
 
 ## 1b. 非 AI 功能與操作索引
@@ -416,6 +417,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/me/feeds` | `my-feeds`（來源管理：訂閱清單、OPML；不再是主要閱讀入口）|
 | `/me/bookmarks` | `bookmarks` |
 | `/me/digest` | `daily-digest`（登入後的每日摘要） |
+| `/me/offline` | `offline-reading`（PWA 離線閱讀：本機快取的最近 100 篇摘要、離線標記排隊，見 [行動裝置閱讀出口](CONSUMPTION_SURFACES.md#行動裝置閱讀出口pwa)）|
+| `/me/offline/:id` | `offline-article`（單篇離線摘要，連線時連到 `/articles/:id`）|
 | `/me/preferences` | `preferences` |
 | `**` | 轉回 `/` |
 
@@ -671,7 +674,7 @@ DELETE FROM discovery_targets
 
 | 層 | 內容 |
 |----|------|
-| Frontend | Angular 21（**僅 `@angular/cdk`**：overlay / a11y；UI 為自建 Offbeat 元件庫，見 `frontend/src/app/ui/` 與 `frontend/src/styles/`）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
+| Frontend | Angular 21（**僅 `@angular/cdk`**：overlay / a11y；UI 為自建 Offbeat 元件庫，見 `frontend/src/app/ui/` 與 `frontend/src/styles/`）、`@angular/service-worker`（PWA app shell）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
 | 測試 | Backend：pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試）。Frontend：Vitest（`@angular/build:unit-test`，jsdom，無需瀏覽器），`*.spec.ts` 與被測檔同目錄；`frontend.yml` 的 Build job 在 `npm run build` 前先跑 `npm test` |
