@@ -135,19 +135,28 @@ BEGIN
                    count(*) FILTER (WHERE revision_number > 1 AND has_previous AND content_changed) AS content_changes,
                    count(*) FILTER (WHERE revision_number > 1 AND has_previous AND NOT content_changed) AS metadata_only_changes
             FROM win GROUP BY feed_id
+        ), alerted AS (
+            -- The only copy of the threshold predicate; the API shows these
+            -- reasons as-is (values come from the caller).
+            SELECT s.*, array_remove(ARRAY[
+                       CASE WHEN s.new_articles >= p_alert_new_articles THEN 'new_articles' END,
+                       CASE WHEN s.revision_updates >= p_alert_revision_updates THEN 'revision_updates' END,
+                       CASE WHEN s.revision_updates >= p_alert_min_updates
+                                 AND s.revision_updates >= p_alert_per_article * s.revised_articles
+                            THEN 'revisions_per_article' END
+                   ], NULL) AS alerts
+            FROM per_feed s
         ), ranked AS (
             SELECT jsonb_build_object('feed_id', f.id, 'title', f.title, 'url', f.url,
                        'archived', f.archived_at IS NOT NULL,
                        'new_articles', s.new_articles, 'backfill_articles', s.backfill_articles,
                        'revision_updates', s.revision_updates, 'revised_articles', s.revised_articles,
                        'content_changes', s.content_changes,
-                       'metadata_only_changes', s.metadata_only_changes) AS item,
+                       'metadata_only_changes', s.metadata_only_changes,
+                       'alerts', to_jsonb(s.alerts)) AS item,
                    s.new_articles, s.revision_updates, f.id,
-                   (s.new_articles >= p_alert_new_articles
-                    OR s.revision_updates >= p_alert_revision_updates
-                    OR (s.revision_updates >= p_alert_min_updates
-                        AND s.revision_updates >= p_alert_per_article * s.revised_articles)) AS flagged
-            FROM per_feed s JOIN driftread.feeds f ON f.id = s.feed_id
+                   cardinality(s.alerts) > 0 AS flagged
+            FROM alerted s JOIN driftread.feeds f ON f.id = s.feed_id
         )
         SELECT jsonb_build_object(
             'observed_at', v_now,
@@ -185,5 +194,19 @@ END $$;
 -- recent window behind frequent refresh runs.
 CREATE INDEX IF NOT EXISTS worker_runs_kind_started_idx
     ON driftread.worker_runs(kind, started_at DESC);
+-- One round-trip instead of one query per kind; the kinds come from the
+-- caller (services/operations.py RUN_KINDS) and each lookup is a LIMIT 1
+-- probe of the index above.
+CREATE OR REPLACE FUNCTION driftread.latest_worker_runs(p_kinds text[])
+RETURNS SETOF driftread.worker_runs LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog AS $$
+    SELECT r.*
+    FROM unnest(p_kinds) AS k(kind)
+    CROSS JOIN LATERAL (
+        SELECT w.* FROM driftread.worker_runs w
+        WHERE w.kind = k.kind ORDER BY w.started_at DESC LIMIT 1
+    ) r
+$$;
+REVOKE ALL ON FUNCTION driftread.latest_worker_runs(text[]) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION driftread.latest_worker_runs(text[]) TO service_role;
 
 NOTIFY pgrst, 'reload schema';

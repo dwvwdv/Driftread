@@ -14,6 +14,7 @@ describe('PublicLayout offline integration', () => {
       mode: signal('session'),
       pendingCount: signal(0),
       clearAll: vi.fn(async () => void calls.push('clearAll')),
+      reclaim: vi.fn(() => void calls.push('reclaim')),
     };
     const auth = {
       session: signal({ user: { id: 'user-a', email: 'a@example.com' } }),
@@ -38,7 +39,8 @@ describe('PublicLayout offline integration', () => {
   it('clears the private offline cache before signing out', async () => {
     const { fixture, calls } = setup();
     await fixture.componentInstance.signOut();
-    expect(calls).toEqual(['clearAll', 'signOut']);
+    // reclaim() hands the reader back only if signOut() kept the session.
+    expect(calls).toEqual(['clearAll', 'signOut', 'reclaim']);
   });
 
   it('shows ONLINE/OFFLINE and the pending queue in the status bar', () => {

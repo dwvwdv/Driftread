@@ -30,19 +30,21 @@ class RPC:
 
 
 @pytest.mark.asyncio
-async def test_thresholds_flag_sources_without_changing_anything():
+async def test_thresholds_are_passed_to_sql_and_alerts_shown_as_returned():
+    # The predicate lives only in SQL (tests/sql/test_storage_observability.sql
+    # covers its boundaries); Python passes the thresholds and adds the average.
     data = {'observed_at': '2026-10-21T00:00:00Z', 'since': '2026-10-20T00:00:00Z',
-            'top_ingest': [source('dev', new_articles=645), source('ok', new_articles=499)],
+            'top_ingest': [source('dev', new_articles=645, alerts=['new_articles']), source('ok', new_articles=499)],
             'top_revisions': [
                 source('korea', new_articles=137, revision_updates=1589, revised_articles=160,
-                       metadata_only_changes=1586, content_changes=3),
-                source('churn', revision_updates=40, revised_articles=10),
+                       metadata_only_changes=1586, content_changes=3,
+                       alerts=['revision_updates', 'revisions_per_article']),
                 source('noise', revision_updates=29, revised_articles=1),
-                source('edits', revision_updates=60, revised_articles=30),
             ],
             # SQL counts every source over a threshold, including one that is
             # in neither (truncated) top list.
-            'flagged': [source('dev', new_articles=645), source('hidden', revision_updates=31, revised_articles=5)],
+            'flagged': [source('dev', new_articles=645, alerts=['new_articles']),
+                        source('hidden', revision_updates=31, revised_articles=5, alerts=['revisions_per_article'])],
             'flagged_total': 4}
     db = RPC(data)
     result = await activity.ingest_activity(db)
@@ -54,14 +56,18 @@ async def test_thresholds_flag_sources_without_changing_anything():
         'p_alert_min_updates': activity.REVISION_ALERT_PER_ARTICLE_MIN_UPDATES})]
     alerts = {s.feed_id: s.alerts for s in (*result.top_ingest, *result.top_revisions)}
     assert alerts == {'dev': ['new_articles'], 'ok': [],
-                      'korea': ['revision_updates', 'revisions_per_article'],
-                      'churn': ['revisions_per_article'], 'noise': [], 'edits': []}
+                      'korea': ['revision_updates', 'revisions_per_article'], 'noise': []}
     assert result.top_revisions[0].revisions_per_article == pytest.approx(1589 / 160)
     assert result.flagged_sources == 4
     assert {s.feed_id: s.alerts for s in result.flagged} == {
         'dev': ['new_articles'], 'hidden': ['revisions_per_article']}
     assert result.thresholds.revision_updates == activity.REVISION_ALERT_UPDATES
     assert result.window_hours == 24
+
+
+def test_unknown_alert_reason_is_rejected():
+    with pytest.raises(ValueError):
+        activity.classify(source('x', alerts=['made_up']))
 
 
 @pytest.mark.asyncio

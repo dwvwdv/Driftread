@@ -103,14 +103,26 @@ export class OfflineReadingService {
     const record = this.record();
     return record ? overlay(record) : [];
   });
-  readonly pendingCount = computed(() => this._record()?.pending.length ?? 0);
-  readonly updatedAt = computed(() => this._record()?.updatedAt || null);
+  /** The cache the current visitor may know about: a dormant cache only while
+   * offline (unlike `record`, not TTL-filtered, so an expired cache's queue
+   * still shows for its own user). */
+  private readonly visible = computed(() => {
+    const record = this._record();
+    if (this._mode() === 'dormant' && this.network.online()) return null;
+    return record;
+  });
+  readonly pendingCount = computed(() => this.visible()?.pending.length ?? 0);
+  readonly updatedAt = computed(() => this.visible()?.updatedAt || null);
+  /** Timer input: notifies only when the stored timestamp changes. */
+  private readonly storedAt = computed(() => this._record()?.updatedAt ?? 0);
 
   /** undefined until the first identity is observed in this runtime. */
   private owner: string | null | undefined = undefined;
   private generation = 0;
   private claimed: Promise<void> = Promise.resolve();
   private inFlight: Promise<SyncResult> | null = null;
+  /** Generation the in-flight run belongs to (see sync()). */
+  private inFlightGeneration = -1;
   private again = false;
   private wasOnline = this.network.online();
 
@@ -124,7 +136,7 @@ export class OfflineReadingService {
       // background-sync a page left open once the cache passes AUTO_REFRESH_MS.
       // The `updatedAt` computed only notifies when the timestamp changes, so a
       // failed sync that rewrites the record cannot re-arm an immediate retry.
-      const updatedAt = this.updatedAt() ?? 0;
+      const updatedAt = this.storedAt();
       clearTimeout(expiryTimer);
       clearTimeout(refreshTimer);
       expiryTimer = refreshTimer = undefined;
@@ -171,9 +183,13 @@ export class OfflineReadingService {
   /** Sign-out: drop every account's cache and queue before the session ends. */
   async clearAll(): Promise<void> {
     this.generation++;
+    // Forget the owner too: if auth.signOut() then fails (offline), reclaim()
+    // must be able to claim the still-signed-in user again.
+    this.owner = undefined;
     this._record.set(null);
     this._mode.set('none');
     this._error.set(null);
+    this._syncing.set(false);
     if (!this.store.available()) return;
     try {
       await this.store.clear();
@@ -188,21 +204,42 @@ export class OfflineReadingService {
    * Also the opt-in: the first successful sync creates the device cache.
    */
   sync(): Promise<SyncResult> {
-    if (this.inFlight) {
+    const generation = this.generation;
+    if (this.inFlight && this.inFlightGeneration === generation) {
       // An operation queued mid-run may have missed this run's replay list.
       this.again = true;
       return this.inFlight;
     }
+    // A run for a previous account (sign-out / account switch) is never joined:
+    // it stops at its guard, and this account's run starts after it.
+    const previous = this.inFlight;
     const run = async () => {
+      if (previous) await previous.catch(() => undefined);
       let result: SyncResult;
       do {
         this.again = false;
         result = await this.runSync();
-      } while (this.again && result.ok);
+      } while (this.again && result.ok && generation === this.generation);
       return result;
     };
-    this.inFlight = run().finally(() => (this.inFlight = null));
-    return this.inFlight;
+    const promise: Promise<SyncResult> = run().finally(() => {
+      if (this.inFlight !== promise) return;
+      this.inFlight = null;
+      this._syncing.set(false);
+    });
+    this.inFlight = promise;
+    this.inFlightGeneration = generation;
+    return promise;
+  }
+
+  /**
+   * After clearAll(): if the session survived (auth.signOut() cannot reach
+   * Supabase offline and keeps it), claim it again so the reader keeps
+   * working for the user who is still signed in.
+   */
+  reclaim(): void {
+    const userId = this.auth.session()?.user?.id ?? null;
+    if (userId && this.owner === undefined) this.onIdentity(userId);
   }
 
   /**
@@ -254,6 +291,7 @@ export class OfflineReadingService {
     const generation = this.generation;
     this._record.set(null);
     this._error.set(null);
+    this._syncing.set(false);
     this._loaded.set(false);
     if (!this.store.available()) {
       this._mode.set('none');
@@ -321,7 +359,9 @@ export class OfflineReadingService {
   }
 
   private async runSync(): Promise<SyncResult> {
-    const session = this.auth.session();
+    // Not the signal: after a resume/reconnect it can still hold an expired
+    // access token; currentSession() refreshes it first.
+    const session = await this.auth.currentSession();
     const userId = session?.user?.id;
     const token = session?.access_token;
     if (!userId || !token) {

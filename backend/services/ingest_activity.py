@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,7 +35,8 @@ class SourceActivity(BaseModel):
     content_changes: int = Field(ge=0)
     metadata_only_changes: int = Field(ge=0)
     revisions_per_article: float | None = None
-    alerts: list[str] = []
+    # Decided in SQL (source_ingest_activity), the only copy of the predicate.
+    alerts: list[Literal["new_articles", "revision_updates", "revisions_per_article"]] = []
 
 
 class ActivityThresholds(BaseModel):
@@ -58,18 +60,11 @@ class IngestActivity(BaseModel):
 
 
 def classify(item: dict) -> SourceActivity:
+    """Validate one RPC row and add the display-only average. The alert
+    reasons come from SQL; thresholds are passed in by ingest_activity()."""
     source = SourceActivity.model_validate(item)
     if source.revised_articles:
         source.revisions_per_article = source.revision_updates / source.revised_articles
-    alerts = []
-    if source.new_articles >= INGEST_ALERT_NEW_ARTICLES:
-        alerts.append("new_articles")
-    if source.revision_updates >= REVISION_ALERT_UPDATES:
-        alerts.append("revision_updates")
-    if (source.revision_updates >= REVISION_ALERT_PER_ARTICLE_MIN_UPDATES
-            and (source.revisions_per_article or 0) >= REVISION_ALERT_PER_ARTICLE):
-        alerts.append("revisions_per_article")
-    source.alerts = alerts
     return source
 
 

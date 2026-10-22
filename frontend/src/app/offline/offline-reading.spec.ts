@@ -53,10 +53,13 @@ describe('OfflineReadingService', () => {
   let http: HttpTestingController;
   let store: OfflineStore;
   let stream: { loadCounts: ReturnType<typeof vi.fn> };
+  /** Stands in for Supabase refreshing an expired token inside getSession(). */
+  let refreshed: (() => Promise<FakeSession>) | undefined;
 
   const as = (id: string): FakeSession => ({ user: { id }, access_token: `token-${id}` });
 
   function setup(initial: FakeSession = as('user-a'), isOnline = true) {
+    refreshed = undefined;
     globalThis.indexedDB = new IDBFactory();
     session = signal<FakeSession>(initial);
     online = signal(isOnline);
@@ -70,6 +73,7 @@ describe('OfflineReadingService', () => {
           provide: AuthService,
           useValue: {
             session,
+            currentSession: async () => (await refreshed?.()) ?? session(),
             get accessToken() {
               return session()?.access_token ?? null;
             },
@@ -290,6 +294,87 @@ describe('OfflineReadingService', () => {
     await vi.waitFor(async () => expect((await store.read('user-a'))?.cursor).toBe('c3'));
   });
 
+  it('syncs with the refreshed token, not the expired one still in the signal', async () => {
+    const svc = setup();
+    await vi.waitFor(() => expect(svc.loaded()).toBe(true));
+    // Resume after an hour: the signal still holds the expired token and
+    // getSession() refreshes before answering.
+    refreshed = async () => ({ user: { id: 'user-a' }, access_token: 'token-fresh' });
+    const done = svc.sync();
+    const req = await next(isSync);
+    expect(req.request.headers.get('Authorization')).toBe('Bearer token-fresh');
+    req.flush(snapshot('user-a'));
+    expect((await done).ok).toBe(true);
+  });
+
+  it('a sign-out during a sync does not leave the next user stuck on "syncing"', async () => {
+    const svc = setup();
+    await vi.waitFor(() => expect(svc.loaded()).toBe(true));
+    const aRun = svc.sync();
+    const aReq = await next(isSync);
+    expect(svc.syncing()).toBe(true);
+    await svc.clearAll();
+    expect(svc.syncing()).toBe(false);
+    aReq.flush(snapshot('user-a'));
+    expect((await aRun).ok).toBe(false);
+    session.set(as('user-b'));
+    TestBed.flushEffects();
+    await vi.waitFor(() => expect(svc.loaded()).toBe(true));
+    expect(svc.syncing()).toBe(false);
+    // B can opt in: a fresh run for B, not A's finished one.
+    const bRun = svc.sync();
+    const bReq = await next(isSync);
+    expect(bReq.request.headers.get('Authorization')).toBe('Bearer token-user-b');
+    bReq.flush(snapshot('user-b'));
+    expect((await bRun).ok).toBe(true);
+    expect(svc.syncing()).toBe(false);
+  });
+
+  it('a sync requested for a new account never joins the previous account run', async () => {
+    const svc = setup();
+    await initialSync(svc);
+    const aRun = svc.sync();
+    const aReq = await next(isSync);
+    session.set(as('user-b'));
+    TestBed.flushEffects();
+    const bRun = svc.sync();
+    expect(bRun).not.toBe(aRun);
+    aReq.flush(snapshot('user-a'));
+    expect((await aRun).ok).toBe(false);
+    const bReq = await next(isSync);
+    expect(bReq.request.headers.get('Authorization')).toBe('Bearer token-user-b');
+    bReq.flush(snapshot('user-b'));
+    expect((await bRun).ok).toBe(true);
+    expect((await store.read('user-b'))?.cursor).toBe('cursor-user-b');
+  });
+
+  it('reclaims the still-signed-in user when sign-out failed after clearAll()', async () => {
+    const svc = setup();
+    await initialSync(svc);
+    await svc.clearAll();
+    // auth.signOut() failed offline: the session (and its signal) is unchanged.
+    svc.reclaim();
+    await vi.waitFor(() => expect(svc.loaded()).toBe(true));
+    expect(svc.mode()).toBe('session');
+    const done = svc.sync();
+    (await next(isSync)).flush(snapshot('user-a', { cursor: 'again' }));
+    expect((await done).ok).toBe(true);
+    expect(await store.owner()).toBe('user-a');
+    expect((await store.read('user-a'))?.cursor).toBe('again');
+  });
+
+  it('reclaim() is a no-op after a successful sign-out', async () => {
+    const svc = setup();
+    await initialSync(svc);
+    await svc.clearAll();
+    session.set(null);
+    svc.reclaim();
+    TestBed.flushEffects();
+    await vi.waitFor(() => expect(svc.loaded()).toBe(true));
+    expect(svc.mode()).toBe('none');
+    expect(await store.owner()).toBeNull();
+  });
+
   it('signing out in this runtime clears every cached account', async () => {
     const svc = setup();
     await initialSync(svc);
@@ -331,7 +416,7 @@ describe('OfflineReadingService dormant mode', () => {
           bookmark_types: [],
         },
       ],
-      pending: [],
+      pending: [{ articleId: 'a1', kind: 'favorite', enabled: true }],
       cursor: 'c',
       updatedAt: Date.now(),
     }));
@@ -354,9 +439,14 @@ describe('OfflineReadingService dormant mode', () => {
     expect(svc.items().map((v) => v.article.id)).toEqual(['a1']);
     expect((await svc.setState('a1', 'read', true)).queued).toBe(false);
 
+    expect(svc.updatedAt()).not.toBeNull();
+    expect(svc.pendingCount()).toBe(1);
     online.set(true);
     TestBed.flushEffects();
     expect(svc.record()).toBeNull();
+    // The footer must not reveal the hidden account's queue or sync time.
+    expect(svc.pendingCount()).toBe(0);
+    expect(svc.updatedAt()).toBeNull();
     // Not deleted: the same user signing back in keeps it.
     expect(await seed.read('user-a')).not.toBeNull();
   });

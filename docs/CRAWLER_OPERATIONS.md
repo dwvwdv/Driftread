@@ -94,7 +94,7 @@ worker 隨常駐的來源評審設定監看另跑 `storage` 佇列工作，每�
 
 - `top_ingest`：新增文章最多的來源，含其中 `backfill`（舊文回填）篇數，區分刊登時間與入庫時間。
 - `top_revisions`：版本更新（`revision_number > 1`）最多的來源，含被更新的文章數、與前一版比較的正文變更數與僅中繼資料變更數（前一版已清除者兩者都不計）。
-- `flagged`／`flagged_sources`：在截斷前對**全部**來源套用門檻的結果。只靠「每篇平均版本」超標的來源，總更新數未必排得進 `top_revisions`；所以超標總數與清單（最多 `limit` 筆）由 SQL 另外計算，不從兩份前 N 名推算。門檻只在 Python 定義一次，以參數傳入 SQL。
+- `flagged`／`flagged_sources`：在截斷前對**全部**來源套用門檻的結果。只靠「每篇平均版本」超標的來源，總更新數未必排得進 `top_revisions`；所以超標總數與清單（最多 `limit` 筆）由 SQL 另外計算，不從兩份前 N 名推算。門檻值只在 Python 定義、以參數傳入；判斷式只在 SQL 寫一次，每筆回傳 `alerts`（超標原因），API 原樣顯示。
 
 查詢只走新索引 `article_revisions(recorded_at)` 的時間範圍，再以主鍵關聯文章，不全表掃描 `article_revisions` 或 `articles`。每篇新文章入庫時都會在同一交易記錄版本，之後的版本更新，所以新增篇數即使第 1 版已被 10 版上限清掉仍是精確值；版本更新數在單篇一天超過 10 次時是下限。`article_revisions` 只新增不更新，額外索引不影響 HOT 更新。
 
@@ -128,7 +128,7 @@ worker 隨常駐的來源評審設定監看另跑 `storage` 佇列工作，每�
 
 `GET /api/admin/operations?limit=20`（需 `X-API-Key`）提供 worker heartbeat、最近迴圈與最近失敗數。refresh、discovery、retention、storage 分別記錄，每 30 秒更新 heartbeat；超過 90 秒視為 stale。正在執行但 heartbeat 過期的 run 在讀取時呈現 interrupted；尚無紀錄呈現未知。這是近期執行視窗，不是每日累積報表。
 
-近期視窗常被頻繁的 refresh 填滿，所以另回傳 `latest_runs`：每種 kind 在保存期內最近一次 run（以 `worker_runs(kind, started_at DESC)` 索引查詢），沒有則為 null。每個 worker loop 的 heartbeat 另帶 `config`：該 worker 程序自己解析的 `FEED_REFRESH_ENABLED`、`FEED_DISCOVERY_ENABLED`，以及 `ARTICLE_RETENTION_ENABLED`／保存天數／批次／間隔（只有布林與整數，無密鑰）。`worker_config` 取最新一筆帶設定的 heartbeat，標示回報時間與是否過期；舊版 worker 不帶設定時為 null，後台顯示「狀態未知」，不當成已停用。排程縮減啟用時一律直接套用（`mode=apply`），不做 dry-run；後台手動縮減仍預設 dry-run。API 容器的環境變數可能與 worker 不同，所以不從 API 讀取。
+近期視窗常被頻繁的 refresh 填滿，所以另回傳 `latest_runs`：每種 kind 在保存期內最近一次 run，沒有則為 null；由 `latest_worker_runs(kinds)` RPC 一次取回（每個 kind 一次 `worker_runs(kind, started_at DESC)` 索引的 LIMIT 1 查詢），不為每個 kind 各發一次 PostgREST 請求。每個 worker loop 的 heartbeat 另帶 `config`：該 worker 程序自己解析的 `FEED_REFRESH_ENABLED`、`FEED_DISCOVERY_ENABLED`，以及 `ARTICLE_RETENTION_ENABLED`／保存天數／批次／間隔（只有布林與整數，無密鑰）。`worker_config` 取最新一筆帶設定的 heartbeat，標示回報時間與是否過期；舊版 worker 不帶設定時為 null，後台顯示「狀態未知」，不當成已停用。排程縮減啟用時一律直接套用（`mode=apply`），不做 dry-run；後台手動縮減仍預設 dry-run。API 容器的環境變數可能與 worker 不同，所以不從 API 讀取。
 
 監控寫入失敗會記錄 log，不停掉擷取。私有表不開放 anon／authenticated。run 與 heartbeat 保留 30 天，每小時最多清除 1000 筆過期紀錄。狀態查詢最多回傳 100 個 run、200 個 worker。主要文章寫入／抽取移到 thread，但其他短同步 DB 操作仍可能短暫延遲 event loop，heartbeat 並非獨立程序的存活探針。
 

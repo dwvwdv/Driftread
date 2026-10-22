@@ -352,7 +352,7 @@ MCP 的同步 JWT 驗證交由 FastAPI／Starlette 共用的有界 threadpool �
 
 `article_storage_snapshots` 只留日期與 aggregate，不含正文、URL、使用者身份；RLS 零 policy，PUBLIC／anon／authenticated 撤銷表與採樣 RPC 權限，僅 backend service_role 存取。採樣 RPC 為 `SECURITY INVOKER`、固定 `pg_catalog` search_path；歷史 API 沿用後台管理 session／機器 API Key 驗證，查詢視窗最多 90 天。GET 僅讀歷史，不觸發採樣或縮減。真 PostgreSQL fixture 覆蓋權限拒絕、同日去重與保存期邊界。
 
-#114 的每表統計與來源入庫觀測沿用同一界線：`table_storage_stats`、`source_ingest_activity` 為 `SECURITY INVOKER`、固定 `pg_catalog` search_path，PUBLIC／anon／authenticated 無 EXECUTE；只讀 catalog／統計與版本 metadata，不回傳正文。`source_ingest_activity` 的視窗、筆數與門檻參數在 SQL 內驗證（1–168 小時、1–50 筆、門檻須為正數）。worker heartbeat 的 `config` 只寫布林與整數設定，不含密鑰；後台以文字插值顯示來源標題與 URL，不以 HTML 渲染。
+#114 的每表統計與來源入庫觀測沿用同一界線：`table_storage_stats`、`source_ingest_activity` 為 `SECURITY INVOKER`、固定 `pg_catalog` search_path，PUBLIC／anon／authenticated 無 EXECUTE；只讀 catalog／統計與版本 metadata，不回傳正文。`latest_worker_runs` 同為 SECURITY INVOKER、只有 service_role 可執行。`source_ingest_activity` 的視窗、筆數與門檻參數在 SQL 內驗證（1–168 小時、1–50 筆、門檻須為正數）。worker heartbeat 的 `config` 只寫布林與整數設定，不含密鑰；後台以文字插值顯示來源標題與 URL，不以 HTML 渲染。
 
 ## 33. 來源評審管理 MCP 與付費請求（#96）
 

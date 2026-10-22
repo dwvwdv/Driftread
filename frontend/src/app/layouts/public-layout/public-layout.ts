@@ -121,6 +121,8 @@ export class PublicLayout {
     // it cannot reach Supabase (offline), but the user asked to leave.
     await this.offline.clearAll();
     await this.auth.signOut();
+    // Still signed in (sign-out failed): give the reader back to that user.
+    this.offline.reclaim();
     this.accountOpen.set(false);
     void this.router.navigateByUrl('/');
   }

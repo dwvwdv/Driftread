@@ -61,3 +61,26 @@ def test_rpc_payloads_match_the_api_models(pg_database):
         activity = scalar(conn, 'SELECT driftread.source_ingest_activity(24, 10, 500, 200, 3.0, 30)')
         for item in activity['top_ingest'] + activity['top_revisions'] + activity['flagged']:
             classify(item)
+
+
+def test_latest_worker_runs_returns_newest_run_per_requested_kind(pg_database):
+    with connection(pg_database) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO driftread.worker_runs(id, worker_id, kind, status, started_at) VALUES
+                (gen_random_uuid(), 'w', 'retention', 'succeeded', now() - interval '2 days'),
+                (gen_random_uuid(), 'w', 'retention', 'failed', now() - interval '1 day'),
+                (gen_random_uuid(), 'w', 'refresh', 'succeeded', now())""")
+        conn.commit()
+    with connection(pg_database, 'service_role') as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT kind, status FROM driftread.latest_worker_runs(
+                ARRAY['refresh', 'retention', 'storage']) ORDER BY kind""")
+            # A kind without runs is simply absent; the caller fills in None.
+            assert cur.fetchall() == [('refresh', 'succeeded'), ('retention', 'failed')]
+    with connection(pg_database) as conn:
+        assert not scalar(conn, """SELECT has_function_privilege('anon',
+            'driftread.latest_worker_runs(text[])', 'EXECUTE')""")
+        assert not scalar(conn, """SELECT has_function_privilege('authenticated',
+            'driftread.latest_worker_runs(text[])', 'EXECUTE')""")
+        assert not scalar(conn, """SELECT prosecdef FROM pg_proc
+            WHERE oid = 'driftread.latest_worker_runs(text[])'::regprocedure""")

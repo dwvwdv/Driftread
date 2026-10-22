@@ -1367,8 +1367,18 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - review 修正（Codex P2）：`record`／`expired` 是 `computed`，`Date.now()` 不是 reactive dependency；離線頁一直開著或已安裝的 PWA 暫停後恢復時，若快取、模式與網路狀態都沒變，超過 24 小時的摘要仍會繼續顯示。改用時間 signal：快取到期時由計時器更新，頁面回到前景（`visibilitychange`）時也更新。新增兩個測試，修正前皆失敗。
 - review 修正（Codex P2）：背景同步原本只在載入快取與離線→線上時判斷，頁面一直在線或休眠後恢復時 `navigator.onLine` 仍為 true，快取會一直停在舊版本直到 24 小時被隱藏。改為回到前景時與頁面在前景時快取滿 15 分鐘的計時器也會背景同步；計時器只在 `updatedAt` 數值改變時重排，同步失敗不會立即重試，已有同步進行時也不重複排入（喚醒時計時器與 visibility 事件會同時觸發）。新增兩個測試，修正前皆失敗。
 
+**`/code-review` 修正（9 項，皆為本 PR 新增的程式）**
+
+- 離線同步改由 `AuthService.currentSession()`（Supabase `getSession()`，過期先刷新）取得 token：恢復前景或重新連線時 signal 可能仍是過期 token，原本會 401 且 `TOKEN_REFRESHED` 同帳號不會重試。
+- 同步途中登出或切換帳號：`_syncing` 原本只在世代未變時重設，下一位使用者的同步按鈕會一直停在「同步中」；現在登出／切換時重設，且最後一輪結束時一律清除。新帳號的 `sync()` 原本會併入上一帳號的在途同步並因 `!ok` 被吞掉，現在依世代區分，等舊同步停下後另起一輪。
+- 登出時 Supabase sign-out 失敗（離線）而 session 仍在：`clearAll()` 已清掉 owner，原本之後所有寫入都靜默失敗；現在清除 owner 記錄並由 `reclaim()` 重新認領仍登入的使用者。
+- 頁尾待同步數與最後同步時間原本讀未過濾的快取，dormant 狀態連線後會顯示上一個帳號的佇列；改為與可見快取一致。
+- 後端：各 kind 最近一次 run 由 5 次 PostgREST 請求改為一支 `latest_worker_runs(text[])` RPC（INVOKER、service-only，真 PostgreSQL 測試）；`/admin/retention/tables` 的兩個獨立讀取改並行；門檻判斷式只留 SQL 一份，每筆回傳 `alerts`，Python 只傳門檻值，`>=` 邊界由 SQL fixture 驗證。
+- 前端：兩個後台面板共用 `shared/bytes.ts` 的 MiB 格式化。
+- 前端新增 5 個測試（刷新後 token、登出中同步、跨帳號不併入、sign-out 失敗後重新認領、dormant 連線後隱藏佇列），修正前皆失敗。
+
 沒做什麼／已知未處理：離線不含正文、沒有應用內新版提示、沒有 server push 撤權（同 extension，24 小時 TTL）。token 在離線期間過期時 Supabase 無法恢復 session，此時只在離線狀態唯讀顯示上次帳號的快取，連線後隱藏、不刪除；共用裝置需先登出。nginx 沒有 CSP，日後加 CSP 需允許 `worker-src`／`manifest-src 'self'`。
 
 驗證（PWA）：新增 55 項 frontend 測試（含 fake-indexeddb 的帳號分隔、切帳號、重送、回滾與 ngsw 設定）。以 Playwright Chromium 對 production build 的 fake API 於 390×844 走查 manifest、SW 註冊、離線重新載入、重新連線重送（原 token）、Cache Storage 無 `/api/`、登出清空 IndexedDB 與無水平溢出。未驗證：nginx 設定（沙箱無 Docker daemon）、真手機安裝（Android／iOS）、真 Supabase 登入與正式部署。
 
-合併與 review 修正後整體驗證：frontend **53 files／558 tests** 通過，production build 成功，initial bundle 514.25 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。backend 未受 PWA 部分影響，沿用上方 1646 passed 結果。
+合併與 review 修正後整體驗證：backend **1648 passed**（含真 PostgreSQL）；frontend **54 files／565 tests** 通過，production build 成功，initial bundle 514.41 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。

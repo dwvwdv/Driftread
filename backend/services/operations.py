@@ -141,12 +141,9 @@ def operations_status(db, limit: int = 20) -> dict:
         by_worker[worker["worker_id"]] = worker
     # The recent window is dominated by frequent refresh runs; a daily
     # retention or storage run needs its own lookup to stay visible.
-    latest_runs = {}
-    for kind in RUN_KINDS:
-        rows = db.table("worker_runs").select("*").eq("kind", kind).order(
-            "started_at", desc=True
-        ).limit(1).execute().data or []
-        latest_runs[kind] = rows[0] if rows else None
+    latest_runs = dict.fromkeys(RUN_KINDS)
+    for row in db.rpc("latest_worker_runs", {"p_kinds": list(RUN_KINDS)}).execute().data or []:
+        latest_runs[row["kind"]] = row
     for run in [*runs, *(r for r in latest_runs.values() if r)]:
         worker = by_worker.get(run["worker_id"])
         if run["status"] == "running" and (

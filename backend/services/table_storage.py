@@ -111,12 +111,15 @@ async def table_storage_history(db, days: int = 7) -> TableStorageHistory:
     now = datetime.now(timezone.utc)
     # One extra day so the oldest interval in the window has its left edge.
     cutoff: date = now.date() - timedelta(days=days)
-    rows = await asyncio.to_thread(lambda: db.table("article_storage_snapshots").select(
-        "snapshot_date,tables"
-    ).gte("snapshot_date", cutoff.isoformat()).not_.is_("tables", "null").order(
-        "snapshot_date"
-    ).limit(days + 1).execute().data or [])
-    live = await asyncio.to_thread(lambda: db.rpc("table_storage_stats", {}).execute().data)
+    # Independent reads: saved samples and the live catalog snapshot.
+    rows, live = await asyncio.gather(
+        asyncio.to_thread(lambda: db.table("article_storage_snapshots").select(
+            "snapshot_date,tables"
+        ).gte("snapshot_date", cutoff.isoformat()).not_.is_("tables", "null").order(
+            "snapshot_date"
+        ).limit(days + 1).execute().data or []),
+        asyncio.to_thread(lambda: db.rpc("table_storage_stats", {}).execute().data),
+    )
     samples = [TableSnapshot.model_validate(row["tables"]) for row in rows]
     intervals = [interval(prev, cur) for prev, cur in zip(samples, samples[1:])]
     intervals.reverse()

@@ -9,6 +9,7 @@ import {
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { AdminService } from '../../../services/admin';
+import { formatMiB, formatSignedMiB } from '../../../shared/bytes';
 import {
   ArticleStorageStats,
   StorageHistory,
@@ -76,11 +77,11 @@ export class AdminDashboard implements OnInit {
   protected readonly latestKinds = ['retention', 'storage'];
 
   protected bytes(value: number): string {
-    return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+    return formatMiB(value);
   }
 
   protected dailyBytes(value: number): string {
-    return `${value > 0 ? '+' : ''}${this.bytes(value)}`;
+    return formatSignedMiB(value);
   }
 
   protected runStatus(status: string): string {

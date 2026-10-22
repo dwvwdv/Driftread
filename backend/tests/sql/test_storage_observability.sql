@@ -134,6 +134,24 @@ BEGIN
     IF (driftread.source_ingest_activity(24, 10, 1000, 1000, 2.0, 2)->>'flagged_total')::int <> 0 THEN
         RAISE EXCEPTION 'per-article ratio below threshold flagged';
     END IF;
+    -- Alert reasons and their >= boundaries (the only copy of the predicate).
+    -- busy: 3 new, 3 updates over 2 articles (1.5/article); quiet: 1 update.
+    v_result := driftread.source_ingest_activity(24, 10, 3, 3, 1.5, 3);
+    v_item := v_result->'top_revisions'->0;
+    IF (v_item->>'feed_id')::uuid <> v_busy
+       OR v_item->'alerts' <> '["new_articles", "revision_updates", "revisions_per_article"]'::jsonb
+       OR v_result->'top_revisions'->1->'alerts' <> '[]'::jsonb THEN
+        RAISE EXCEPTION 'alert reasons at the boundary: %', v_result;
+    END IF;
+    -- Just above each boundary: 3 < 4, 3 < 4, 3 < 1.6 * 2.
+    v_result := driftread.source_ingest_activity(24, 10, 4, 4, 1.6, 3);
+    IF v_result->'top_revisions'->0->'alerts' <> '[]'::jsonb OR (v_result->>'flagged_total')::int <> 0 THEN
+        RAISE EXCEPTION 'alerts above the boundary: %', v_result;
+    END IF;
+    -- Below the minimum number of updates the average alone does not flag.
+    IF driftread.source_ingest_activity(24, 10, 1000, 1000, 1.0, 4)->'top_revisions'->0->'alerts' <> '[]'::jsonb THEN
+        RAISE EXCEPTION 'per-article alert without enough updates';
+    END IF;
 END $$;
 DO $$
 BEGIN

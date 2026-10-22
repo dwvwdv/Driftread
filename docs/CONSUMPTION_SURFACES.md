@@ -73,7 +73,9 @@ frontend nginx 對 `index.html`、`env.js`、`ngsw.json`、`ngsw-worker.js`、`s
 
 - IndexedDB `driftread-offline` 以 `user_id` 為 key，並記錄唯一 owner；登入（或切換）為某帳號時，同一個交易內刪除其他帳號的快取與待送佇列。寫入時在交易內再比對 owner，舊帳號延遲回應或寫入不能把資料寫回。
 - 本執行期間 session 結束（登出、refresh token 被撤銷）會清空整個離線資料庫；前端登出按鈕先清空再呼叫 Supabase sign-out，所以離線時登出（Supabase 無法連線、session 未移除）仍會清掉私人快取。
-- 同步開始時鎖定該帳號的 access token 並明確放進 Authorization（`authInterceptor` 不覆寫既有 Authorization），每次請求前檢查帳號與世代未變；切換帳號後不會用 B 的 token 送出 A 的操作，A 的操作也已被刪除。
+- 前端登出時若 Supabase sign-out 失敗而 session 仍在，清空後會重新為該使用者建立空快取（`reclaim()`），離線閱讀不會停在無法寫入的狀態。
+- 同步開始時先經 `getSession()` 取得 access token（過期會先刷新；恢復前景或重新連線時 signal 可能仍是過期 token），再鎖定並明確放進 Authorization（`authInterceptor` 不覆寫既有 Authorization），每次請求前檢查帳號與世代未變；切換帳號後不會用 B 的 token 送出 A 的操作，A 的操作也已被刪除。新帳號的同步不會併入上一個帳號仍在進行的同步，而是等它在檢查點停下後另起一輪；登出或切換帳號時「同步中」狀態一併重設。
+- 未恢復 session 而改顯示上一個 owner 快取（下方例外）時，連線後頁尾的待同步數與最後同步時間也一起隱藏。
 - 例外：access token 在離線期間過期時 Supabase 無法恢復 session，但沒有登出事件。此時 `/me/offline` 只在**離線**狀態下以唯讀方式顯示上次 owner 的 24 小時內快取（不能排入操作）；一旦連線且沒有 session 就不顯示，等使用者登入（同帳號保留、不同帳號刪除）。這與擴充「browser 重啟後保留 queue」的取捨相同；共用裝置請先登出。
 
 ### 已知限制

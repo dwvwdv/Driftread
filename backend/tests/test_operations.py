@@ -123,7 +123,8 @@ def test_stale_workers_and_interrupted_runs_are_explicit():
         {"id": "r", "worker_id": "w", "status": "running"},
         {"id": "ok", "worker_id": "w", "status": "succeeded"},
     ])
-    runs.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[])
+    db.rpc.side_effect = lambda name, params: MagicMock(
+        execute=MagicMock(return_value=SimpleNamespace(data=[] if name == "latest_worker_runs" else {})))
     with patch.object(operations, "utcnow", return_value=now):
         result = operations.operations_status(db, 5)
     assert result["workers"][0]["stale"] is True
@@ -151,15 +152,20 @@ def test_latest_run_per_kind_and_newest_reported_worker_config():
          "heartbeat_at": (now - timedelta(seconds=10)).isoformat()},
     ])
     runs.select.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[])
-    latest = runs.select.return_value.eq
     retention_run = {"id": "ret", "worker_id": "gone", "kind": "retention", "status": "running"}
-    latest.return_value.order.return_value.limit.return_value.execute.side_effect = lambda: SimpleNamespace(
-        data=[dict(retention_run)] if latest.call_args.args == ("kind", "retention") else [])
+    rpc_calls = []
+
+    def rpc(name, params):
+        rpc_calls.append((name, params))
+        data = [dict(retention_run)] if name == "latest_worker_runs" else {}
+        return MagicMock(execute=MagicMock(return_value=SimpleNamespace(data=data)))
+
+    db.rpc.side_effect = rpc
     with patch.object(operations, "utcnow", return_value=now):
         result = operations.operations_status(db, 20)
-    assert [call.args for call in latest.call_args_list] == [("kind", k) for k in operations.RUN_KINDS]
-    latest.return_value.order.assert_called_with("started_at", desc=True)
-    latest.return_value.order.return_value.limit.assert_called_with(1)
+    # One round-trip for every kind, not one query per kind.
+    assert ("latest_worker_runs", {"p_kinds": list(operations.RUN_KINDS)}) in rpc_calls
+    runs.select.return_value.eq.assert_not_called()
     # A run whose worker no longer heartbeats is interrupted, like the recent list.
     assert result["latest_runs"]["retention"]["status"] == "interrupted"
     assert result["latest_runs"]["storage"] is None

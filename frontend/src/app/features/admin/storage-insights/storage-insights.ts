@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { AdminService } from '../../../services/admin';
+import { formatMiB, formatSignedMiB } from '../../../shared/bytes';
 import {
   IngestActivity,
   SourceActivityAlert,
@@ -79,9 +80,7 @@ export class StorageInsights implements OnInit {
   }
 
   protected bytes(value: number | null): string {
-    if (value === null) return '—';
-    const sign = value < 0 ? '-' : '';
-    return `${sign}${(Math.abs(value) / 1024 / 1024).toFixed(1)} MiB`;
+    return formatMiB(value);
   }
 
   protected percent(ratio: number): string {
@@ -89,7 +88,7 @@ export class StorageInsights implements OnInit {
   }
 
   protected signedBytes(value: number | null): string {
-    return value !== null && value > 0 ? `+${this.bytes(value)}` : this.bytes(value);
+    return formatSignedMiB(value);
   }
 
   /** Counters differenced across a stats reset are unknown, never negative. */
