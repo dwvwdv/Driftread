@@ -1,4 +1,11 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnInit,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { AdminService } from '../../../services/admin';
 import { formatMiB, formatSignedMiB } from '../../../shared/bytes';
@@ -11,12 +18,19 @@ import {
 import { ObCard } from '../../../ui/card/card';
 import { ObCallout } from '../../../ui/callout/callout';
 import { ObLoading, ObEmpty } from '../../../ui/state/state';
+import { ObTabs } from '../../../ui/tabs/tabs';
 
 const ALERT_LABELS: Record<SourceActivityAlert, string> = {
   new_articles: '新增量偏高',
   revision_updates: '版本更新偏多',
   revisions_per_article: '每篇平均版本偏高',
 };
+
+/** #117: 24 hours and 7 days; the API accepts only these two windows. */
+const WINDOWS = [
+  { hours: 24, tab: '24 小時', meta: 'LAST 24H', label: '最近 24 小時' },
+  { hours: 168, tab: '7 天', meta: 'LAST 7D', label: '最近 7 天' },
+] as const;
 
 /**
  * #114 read-only observability beside the daily storage history: recent
@@ -27,7 +41,7 @@ const ALERT_LABELS: Record<SourceActivityAlert, string> = {
 @Component({
   selector: 'app-storage-insights',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DatePipe, DecimalPipe, ObCard, ObCallout, ObLoading, ObEmpty],
+  imports: [DatePipe, DecimalPipe, ObCard, ObCallout, ObLoading, ObEmpty, ObTabs],
   templateUrl: './storage-insights.html',
   styleUrl: './storage-insights.scss',
 })
@@ -38,7 +52,12 @@ export class StorageInsights implements OnInit {
   protected activityLoading = signal(true);
   protected tables = signal<TableStorageHistory | null>(null);
   protected tablesLoading = signal(true);
-  private request = 0;
+  protected readonly windowTabs = WINDOWS.map((w) => w.tab);
+  protected windowIndex = signal(0);
+  protected readonly window = computed(() => WINDOWS[this.windowIndex()]);
+  // Separate counters: switching the window must not drop a table response.
+  private activityRequest = 0;
+  private tablesRequest = 0;
 
   ngOnInit(): void {
     this.load();
@@ -46,31 +65,42 @@ export class StorageInsights implements OnInit {
 
   /** Called by the dashboard's refresh button; stale responses are dropped. */
   load(): void {
-    const request = ++this.request;
-    this.activityLoading.set(true);
+    this.loadActivity();
+    const request = ++this.tablesRequest;
     this.tablesLoading.set(true);
-    this.admin.ingestActivity().subscribe({
-      next: (activity) => {
-        if (request !== this.request) return;
-        this.activity.set(activity);
-        this.activityLoading.set(false);
-      },
-      error: () => {
-        if (request !== this.request) return;
-        this.activity.set(null);
-        this.activityLoading.set(false);
-      },
-    });
     this.admin.tableStorage().subscribe({
       next: (tables) => {
-        if (request !== this.request) return;
+        if (request !== this.tablesRequest) return;
         this.tables.set(tables);
         this.tablesLoading.set(false);
       },
       error: () => {
-        if (request !== this.request) return;
+        if (request !== this.tablesRequest) return;
         this.tables.set(null);
         this.tablesLoading.set(false);
+      },
+    });
+  }
+
+  protected onWindow(index: number): void {
+    if (index === this.windowIndex()) return;
+    this.windowIndex.set(index);
+    this.loadActivity();
+  }
+
+  private loadActivity(): void {
+    const request = ++this.activityRequest;
+    this.activityLoading.set(true);
+    this.admin.ingestActivity(10, this.window().hours).subscribe({
+      next: (activity) => {
+        if (request !== this.activityRequest) return;
+        this.activity.set(activity);
+        this.activityLoading.set(false);
+      },
+      error: () => {
+        if (request !== this.activityRequest) return;
+        this.activity.set(null);
+        this.activityLoading.set(false);
       },
     });
   }

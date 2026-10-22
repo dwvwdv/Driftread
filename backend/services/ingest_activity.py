@@ -13,8 +13,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 WINDOW_HOURS = 24
+# 24h and 7d (#117); source_ingest_activity accepts at most 168 hours.
+WINDOW_CHOICES = (24, 168)
 MAX_LIMIT = 50
 # Highlight only; a busy news source is normal. Issue #114 saw ~650/day at most.
+# Count thresholds are per 24 hours and scale with the window; the per-article
+# average does not.
 INGEST_ALERT_NEW_ARTICLES = 500
 # Updates are a lower bound (each article keeps its latest 10 revisions).
 REVISION_ALERT_UPDATES = 200
@@ -68,18 +72,32 @@ def classify(item: dict) -> SourceActivity:
     return source
 
 
-async def ingest_activity(db, limit: int = 10) -> IngestActivity:
+def thresholds_for(hours: int) -> ActivityThresholds:
+    days = hours // 24
+    return ActivityThresholds(
+        new_articles=INGEST_ALERT_NEW_ARTICLES * days,
+        revision_updates=REVISION_ALERT_UPDATES * days,
+        revisions_per_article=REVISION_ALERT_PER_ARTICLE,
+        revisions_per_article_min_updates=REVISION_ALERT_PER_ARTICLE_MIN_UPDATES * days,
+    )
+
+
+async def ingest_activity(db, limit: int = 10, hours: int = WINDOW_HOURS) -> IngestActivity:
     if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 50")
+    if type(hours) is not int or hours not in WINDOW_CHOICES:
+        raise ValueError("hours must be 24 or 168")
+    thresholds = thresholds_for(hours)
     data = await asyncio.to_thread(lambda: db.rpc("source_ingest_activity", {
-        "p_hours": WINDOW_HOURS, "p_limit": limit,
-        "p_alert_new_articles": INGEST_ALERT_NEW_ARTICLES,
-        "p_alert_revision_updates": REVISION_ALERT_UPDATES,
-        "p_alert_per_article": REVISION_ALERT_PER_ARTICLE,
-        "p_alert_min_updates": REVISION_ALERT_PER_ARTICLE_MIN_UPDATES,
+        "p_hours": hours, "p_limit": limit,
+        "p_alert_new_articles": thresholds.new_articles,
+        "p_alert_revision_updates": thresholds.revision_updates,
+        "p_alert_per_article": thresholds.revisions_per_article,
+        "p_alert_min_updates": thresholds.revisions_per_article_min_updates,
     }).execute().data)
     return IngestActivity(
         observed_at=data["observed_at"], since=data["since"],
+        window_hours=hours, thresholds=thresholds,
         top_ingest=[classify(item) for item in data.get("top_ingest") or []],
         top_revisions=[classify(item) for item in data.get("top_revisions") or []],
         flagged=[classify(item) for item in data.get("flagged") or []],

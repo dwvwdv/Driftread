@@ -1,12 +1,12 @@
 """Operational state is accessible only through the existing admin API key."""
 import asyncio
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 
 from database import get_client
 from routers.admin import require_api_key
-from services.ingest_activity import IngestActivity, MAX_LIMIT, ingest_activity
+from services.ingest_activity import IngestActivity, MAX_LIMIT, WINDOW_CHOICES, ingest_activity
 from services.operations import operations_status
 
 router = APIRouter(prefix="/admin/operations", tags=["admin"])
@@ -23,7 +23,10 @@ async def get_operations(
 @router.get("/ingest", response_model=IngestActivity, dependencies=[Depends(require_api_key)])
 async def get_ingest_activity(
     limit: int = Query(10, ge=1, le=MAX_LIMIT),
+    hours: int = Query(24),
     db: Client = Depends(get_client),
 ) -> IngestActivity:
-    """Last 24 hours of per-source ingest and revision rates; display only."""
-    return await ingest_activity(db, limit)
+    """Last 24 hours or 7 days of per-source ingest and revision rates; display only."""
+    if hours not in WINDOW_CHOICES:
+        raise HTTPException(status_code=422, detail="hours must be 24 or 168")
+    return await ingest_activity(db, limit, hours)

@@ -219,6 +219,19 @@ describe('AdminService 409 handling', () => {
     }
   });
 
+  it('asks for the 24-hour ingest window by default and 7 days on request', () => {
+    const service = TestBed.inject(AdminService);
+    service.ingestActivity().subscribe();
+    const day = httpMock.expectOne((req) => req.url.endsWith('/admin/operations/ingest'));
+    expect(day.request.params.get('hours')).toBe('24');
+    day.flush({});
+    service.ingestActivity(5, 168).subscribe();
+    const week = httpMock.expectOne((req) => req.url.endsWith('/admin/operations/ingest'));
+    expect(week.request.params.get('hours')).toBe('168');
+    expect(week.request.params.get('limit')).toBe('5');
+    week.flush({});
+  });
+
   it('reads settings and writes a typed setting with a version precondition', () => {
     const service = TestBed.inject(AdminService);
     service.globalSettings().subscribe();

@@ -80,6 +80,29 @@ async def test_empty_window_and_unrevised_sources():
 
 
 @pytest.mark.asyncio
+async def test_seven_day_window_scales_count_thresholds_only():
+    db = RPC({'observed_at': '2026-10-22T00:00:00Z', 'since': '2026-10-15T00:00:00Z',
+              'top_ingest': [], 'top_revisions': []})
+    result = await activity.ingest_activity(db, 5, 168)
+    assert db.calls == [('source_ingest_activity', {
+        'p_hours': 168, 'p_limit': 5,
+        'p_alert_new_articles': activity.INGEST_ALERT_NEW_ARTICLES * 7,
+        'p_alert_revision_updates': activity.REVISION_ALERT_UPDATES * 7,
+        'p_alert_per_article': activity.REVISION_ALERT_PER_ARTICLE,
+        'p_alert_min_updates': activity.REVISION_ALERT_PER_ARTICLE_MIN_UPDATES * 7})]
+    assert result.window_hours == 168
+    assert result.thresholds.new_articles == activity.INGEST_ALERT_NEW_ARTICLES * 7
+    assert result.thresholds.revisions_per_article == activity.REVISION_ALERT_PER_ARTICLE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('hours', [0, 48, 169, '24', True])
+async def test_invalid_window_rejected_before_db(hours):
+    with pytest.raises(ValueError):
+        await activity.ingest_activity(None, 10, hours)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('limit', [0, 51, True])
 async def test_invalid_limit_rejected_before_db(limit):
     with pytest.raises(ValueError):
@@ -102,4 +125,12 @@ def test_ingest_endpoint_requires_admin_and_bounds_limit():
         result = client.get('/admin/operations/ingest?limit=3', headers={'X-API-Key': 'test-admin-key'})
         assert result.status_code == 200
         assert result.json()['window_hours'] == 24
-        call.assert_called_once_with(db, 3)
+        call.assert_called_once_with(db, 3, 24)
+        call.reset_mock()
+        for bad in ('48', '0', '169', 'week'):
+            assert client.get(f'/admin/operations/ingest?hours={bad}',
+                              headers={'X-API-Key': 'test-admin-key'}).status_code == 422
+        call.assert_not_called()
+        assert client.get('/admin/operations/ingest?hours=168',
+                          headers={'X-API-Key': 'test-admin-key'}).status_code == 200
+        call.assert_called_once_with(db, 10, 168)

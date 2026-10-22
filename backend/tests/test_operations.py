@@ -282,6 +282,31 @@ async def test_retention_disabled_does_not_run_with_refresh(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_explicit_retention_false_leaves_other_schedulers_running(monkeypatch):
+    # #117: Compose now defaults retention on; an explicit false must still
+    # switch off only retention, not refresh, discovery or review monitoring.
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
+    monkeypatch.setenv("ARTICLE_RETENTION_ENABLED", "false")
+
+    async def immediate(stop):
+        return None
+
+    with (
+        patch.object(worker, "run_forever", side_effect=immediate) as refresh,
+        patch.object(worker, "run_discovery_forever", side_effect=immediate) as discovery,
+        patch.object(worker, "run_retention_forever") as retention,
+        patch.object(worker, "run_storage_forever", side_effect=immediate),
+        patch.object(worker, "run_source_review_forever", side_effect=immediate) as review,
+    ):
+        assert await worker.main() == 0
+    retention.assert_not_called()
+    refresh.assert_called_once()
+    discovery.assert_called_once()
+    review.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_retention_cycle_records_compaction_summary_and_stops():
     from services.retention import RetentionSummary
 
