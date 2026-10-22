@@ -1327,7 +1327,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 驗證：本地 PostgreSQL 16 跑完整 backend **1625 passed**（含真 PostgreSQL 測試）。新增 `tests/test_ingest_write_amplification_postgres.py`：先在移除新 migration 的情況下確認 4 個測試中 3 個失敗（重現根因），套用後全過；涵蓋連續 20 次 restamp 不改文章 ctid／版本數／`sync_changes`、標題／正文／摘要／作者變動仍建立版本並帶入新日期、NULL 日期補一次、provenance hash 立即更新與 `last_seen_at` 6 小時節流。`tests/test_articles_service.py` 新增持久化暫停仍入庫但不碰 frontier、開關讀取失敗不影響入庫、每批讀一次開關三個測試。文件檢查通過。**未驗證**：正式環境部署後的寫入量變化（需部署後 24–72 小時比對每小時新增文章、更新、版本、探索 target 與各表容量），未動 frontend。
 
-## 階段五十六：#114 D／E 的容量與入庫觀測（PR 待定，issue #114，2026-10-22）
+## 階段五十六：#114 D／E 的容量與入庫觀測（PR #116，issue #114，2026-10-22）
 
 PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才能決定政策：營運無法分辨 DB 成長是有效資料還是 VACUUM 已回收、可在表內重用但檔案沒縮小的空間；也看不到哪個來源一天入庫多少、哪個來源反覆產生版本；正式 `worker_runs` 沒有 retention 紀錄，無法確認 worker 容器的 `ARTICLE_RETENTION_ENABLED` 實際值。本 PR 只做唯讀觀測與後台顯示，不改任何產品政策。
 
