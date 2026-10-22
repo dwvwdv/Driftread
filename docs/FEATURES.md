@@ -377,7 +377,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
 | POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
 | GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20；另含各 kind 最近一次 run（`latest_runs`）與 worker 實際解析的排程設定（`worker_config`，含 `ARTICLE_RETENTION_ENABLED`）；見 [Worker 監控](CRAWLER_OPERATIONS.md#worker-監控) |
-| GET | `/admin/operations/ingest` | 最近 24 小時新增文章最多與版本更新最多的來源，附門檻標示，只供觀察；`limit` 1–50、預設 10；見 [來源入庫量與版本異常](CRAWLER_OPERATIONS.md#來源入庫量與版本異常) |
+| GET | `/admin/operations/ingest` | 最近 24 小時新增文章最多與版本更新最多的來源，以及對全部來源計算的超標總數與清單，只供觀察；`limit` 1–50、預設 10；見 [來源入庫量與版本異常](CRAWLER_OPERATIONS.md#來源入庫量與版本異常) |
 | GET | `/admin/settings` | 共用全域設定與版本，包含探測方向與來源評審政策 |
 | PUT | `/admin/settings/{key}` | 型別驗證與版本比對的設定儲存，衝突回 409 |
 | GET | `/admin/source-reviews` | 有界評審列表，可依 `candidate_id` 過濾 |

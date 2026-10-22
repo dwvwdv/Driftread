@@ -45,7 +45,7 @@ def test_service_role_reads_table_counters(pg_database):
         names = scalar(conn, """SELECT jsonb_agg(t->'name')
             FROM jsonb_array_elements(driftread.table_storage_stats()->'tables') t""")
         assert {'articles', 'article_revisions', 'sync_changes'} <= set(names)
-        assert scalar(conn, 'SELECT driftread.source_ingest_activity(24, 10) ? %s', ('top_revisions',))
+        assert scalar(conn, 'SELECT driftread.source_ingest_activity(24, 10, 500, 200, 3.0, 30) ? %s', ('top_revisions',))
 
 
 def test_rpc_payloads_match_the_api_models(pg_database):
@@ -58,6 +58,6 @@ def test_rpc_payloads_match_the_api_models(pg_database):
         delta = interval(first, later)
         assert {t.name for t in delta.tables} >= {'articles', 'background_jobs'}
         assert all(t.comparable for t in delta.tables if t.name == 'articles')
-        activity = scalar(conn, 'SELECT driftread.source_ingest_activity(24, 10)')
-        for item in activity['top_ingest'] + activity['top_revisions']:
+        activity = scalar(conn, 'SELECT driftread.source_ingest_activity(24, 10, 500, 200, 3.0, 30)')
+        for item in activity['top_ingest'] + activity['top_revisions'] + activity['flagged']:
             classify(item)

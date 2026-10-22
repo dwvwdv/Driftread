@@ -1350,6 +1350,7 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 
 - 沒有每來源每日入庫上限、異常來源節流或封存、retention 啟用或預設值變更，也沒有刪除資料或索引、改 `search_vector`；這些仍待使用者決定。沒有每小時寫入量的時間序列；部署前後 24–72 小時的比對要用這些面板人工觀察。
 - 部署注意：`article_revisions(recorded_at)` 以一般 `CREATE INDEX` 建立，建立期間會短暫擋住文章更新，建議離峰部署（見 RUNBOOK）。
+- review 修正（Codex P2）：原本超標來源數是從截斷後的兩份前 N 名推算，`limit` 較小時會少算；更嚴重的是只靠「每篇平均版本」超標的來源總更新數未必排得進前 N，會完全看不到。改為由 SQL 在截斷前對全部來源套用門檻，回傳 `flagged_total` 與最多 `limit` 筆的 `flagged` 清單，後台在警示中列出來源名稱；門檻仍只在 `ingest_activity.py` 定義，以參數傳入（migration 尚未合併，直接修改同一支）。SQL fixture 以 `limit=1` 確認不在前 N 名的來源仍被計入，並驗證門檻參數為 0／NULL 時拒絕。
 - 既有文件落差：FEATURES 的索引清單列了 `articles(feed_id, fetched_at DESC)`，repo 實際沒有這個索引；本 PR 未修，新增篇數查詢改從 revisions 推導，不依賴它。
 
 驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1646 passed／0 skipped**（含真 PostgreSQL）。新增 `tests/test_storage_observability_postgres.py` 與 `tests/sql/test_storage_observability.sql`，涵蓋 migration 重跑、快照格式與大小加總、同日補表快照且不重掃文章、CHECK 約束、新增／回填／metadata-only／正文變更計數、limit、24 小時視窗排除、參數驗證、anon／authenticated 無 EXECUTE、SECURITY INVOKER，並以 EXPLAIN 確認兩個新索引可被使用；`test_table_storage.py`、`test_ingest_activity.py`、`test_operations.py` 覆蓋區間增量、reset 處理、門檻判斷、端點認證與上下限、worker 設定回報。frontend 單獨驗證 43 files／499 tests 與 production build 通過（新程式碼都在 lazy chunk，增量出現在共用 chunk）。文件檢查與 `git diff --check` 通過。**未驗證**：瀏覽器實機（含 390px）、Docker 與正式 Supabase 部署。

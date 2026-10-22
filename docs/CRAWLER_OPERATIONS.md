@@ -90,10 +90,11 @@ worker 隨常駐的來源評審設定監看另跑 `storage` 佇列工作，每�
 
 #114 D 與 B 的最後一點：只做觀察與後台標示，**不**限制每來源每日入庫量、不節流、不封存、不啟用 retention；那些是待使用者決定的產品政策。
 
-`GET /api/admin/operations/ingest?limit=10`（`limit` 1–50）呼叫 `source_ingest_activity(24, limit)`，回傳最近 24 小時：
+`GET /api/admin/operations/ingest?limit=10`（`limit` 1–50）呼叫 `source_ingest_activity(24, limit, …門檻)`，回傳最近 24 小時：
 
 - `top_ingest`：新增文章最多的來源，含其中 `backfill`（舊文回填）篇數，區分刊登時間與入庫時間。
 - `top_revisions`：版本更新（`revision_number > 1`）最多的來源，含被更新的文章數、與前一版比較的正文變更數與僅中繼資料變更數（前一版已清除者兩者都不計）。
+- `flagged`／`flagged_sources`：在截斷前對**全部**來源套用門檻的結果。只靠「每篇平均版本」超標的來源，總更新數未必排得進 `top_revisions`；所以超標總數與清單（最多 `limit` 筆）由 SQL 另外計算，不從兩份前 N 名推算。門檻只在 Python 定義一次，以參數傳入 SQL。
 
 查詢只走新索引 `article_revisions(recorded_at)` 的時間範圍，再以主鍵關聯文章，不全表掃描 `article_revisions` 或 `articles`。每篇新文章入庫時都會在同一交易記錄版本，之後的版本更新，所以新增篇數即使第 1 版已被 10 版上限清掉仍是精確值；版本更新數在單篇一天超過 10 次時是下限。`article_revisions` 只新增不更新，額外索引不影響 HOT 更新。
 

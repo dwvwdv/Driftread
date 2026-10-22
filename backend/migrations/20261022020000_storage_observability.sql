@@ -95,7 +95,13 @@ CREATE INDEX IF NOT EXISTS article_revisions_recorded_at_idx
 -- revisions are newer, so a new article always has a surviving revision in
 -- the window: new-article counts are exact even when pruning removed rev 1.
 -- Update counts are a lower bound once one article exceeds the 10-version cap.
-CREATE OR REPLACE FUNCTION driftread.source_ingest_activity(p_hours integer, p_limit integer)
+-- The alert thresholds come from the caller (backend/services/ingest_activity.py
+-- keeps the only copy) and are applied to every source before the top lists are
+-- truncated, so a per-article churn source outside both top lists still shows.
+CREATE OR REPLACE FUNCTION driftread.source_ingest_activity(
+    p_hours integer, p_limit integer,
+    p_alert_new_articles integer, p_alert_revision_updates integer,
+    p_alert_per_article numeric, p_alert_min_updates integer)
 RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog AS $$
 DECLARE
     v_now timestamptz := now();
@@ -103,6 +109,10 @@ DECLARE
 BEGIN
     IF p_hours IS NULL OR p_hours NOT BETWEEN 1 AND 168 OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 50 THEN
         RAISE EXCEPTION 'invalid ingest activity window' USING ERRCODE = '22023';
+    END IF;
+    IF coalesce(p_alert_new_articles, 0) < 1 OR coalesce(p_alert_revision_updates, 0) < 1
+       OR coalesce(p_alert_per_article, 0) <= 0 OR coalesce(p_alert_min_updates, 0) < 1 THEN
+        RAISE EXCEPTION 'invalid ingest activity thresholds' USING ERRCODE = '22023';
     END IF;
     v_since := v_now - make_interval(hours => p_hours);
     RETURN (
@@ -132,7 +142,11 @@ BEGIN
                        'revision_updates', s.revision_updates, 'revised_articles', s.revised_articles,
                        'content_changes', s.content_changes,
                        'metadata_only_changes', s.metadata_only_changes) AS item,
-                   s.new_articles, s.revision_updates, f.id
+                   s.new_articles, s.revision_updates, f.id,
+                   (s.new_articles >= p_alert_new_articles
+                    OR s.revision_updates >= p_alert_revision_updates
+                    OR (s.revision_updates >= p_alert_min_updates
+                        AND s.revision_updates >= p_alert_per_article * s.revised_articles)) AS flagged
             FROM per_feed s JOIN driftread.feeds f ON f.id = s.feed_id
         )
         SELECT jsonb_build_object(
@@ -143,11 +157,17 @@ BEGIN
                 ORDER BY new_articles DESC, id LIMIT p_limit) t), '[]'::jsonb),
             'top_revisions', coalesce((SELECT jsonb_agg(item ORDER BY revision_updates DESC, id) FROM (
                 SELECT item, revision_updates, id FROM ranked WHERE revision_updates > 0
-                ORDER BY revision_updates DESC, id LIMIT p_limit) t), '[]'::jsonb))
+                ORDER BY revision_updates DESC, id LIMIT p_limit) t), '[]'::jsonb),
+            'flagged_total', (SELECT count(*) FROM ranked WHERE flagged),
+            'flagged', coalesce((SELECT jsonb_agg(item ORDER BY new_articles DESC, revision_updates DESC, id) FROM (
+                SELECT item, new_articles, revision_updates, id FROM ranked WHERE flagged
+                ORDER BY new_articles DESC, revision_updates DESC, id LIMIT p_limit) t), '[]'::jsonb))
     );
 END $$;
-REVOKE ALL ON FUNCTION driftread.source_ingest_activity(integer, integer) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION driftread.source_ingest_activity(integer, integer) TO service_role;
+REVOKE ALL ON FUNCTION driftread.source_ingest_activity(integer, integer, integer, integer, numeric, integer)
+    FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION driftread.source_ingest_activity(integer, integer, integer, integer, numeric, integer)
+    TO service_role;
 
 -- 3. The worker reports the scheduler configuration it actually parsed, so the
 --    admin can see ARTICLE_RETENTION_ENABLED etc. without reading the API's env.

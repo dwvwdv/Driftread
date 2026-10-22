@@ -567,6 +567,8 @@ export interface IngestActivity {
   };
   top_ingest: SourceActivity[];
   top_revisions: SourceActivity[];
+  /** Over-threshold sources across the whole window (up to `limit`), not only the top lists. */
+  flagged: SourceActivity[];
   flagged_sources: number;
 }
 

@@ -51,6 +51,9 @@ class IngestActivity(BaseModel):
     thresholds: ActivityThresholds = ActivityThresholds()
     top_ingest: list[SourceActivity]
     top_revisions: list[SourceActivity]
+    # Every source over a threshold in the window (SQL applies the thresholds
+    # before truncating), not only those that made the top lists.
+    flagged: list[SourceActivity]
     flagged_sources: int
 
 
@@ -75,10 +78,14 @@ async def ingest_activity(db, limit: int = 10) -> IngestActivity:
         raise ValueError("limit must be between 1 and 50")
     data = await asyncio.to_thread(lambda: db.rpc("source_ingest_activity", {
         "p_hours": WINDOW_HOURS, "p_limit": limit,
+        "p_alert_new_articles": INGEST_ALERT_NEW_ARTICLES,
+        "p_alert_revision_updates": REVISION_ALERT_UPDATES,
+        "p_alert_per_article": REVISION_ALERT_PER_ARTICLE,
+        "p_alert_min_updates": REVISION_ALERT_PER_ARTICLE_MIN_UPDATES,
     }).execute().data)
-    top_ingest = [classify(item) for item in data.get("top_ingest") or []]
-    top_revisions = [classify(item) for item in data.get("top_revisions") or []]
-    flagged = {s.feed_id for s in (*top_ingest, *top_revisions) if s.alerts}
-    return IngestActivity(observed_at=data["observed_at"], since=data["since"],
-                          top_ingest=top_ingest, top_revisions=top_revisions,
-                          flagged_sources=len(flagged))
+    return IngestActivity(
+        observed_at=data["observed_at"], since=data["since"],
+        top_ingest=[classify(item) for item in data.get("top_ingest") or []],
+        top_revisions=[classify(item) for item in data.get("top_revisions") or []],
+        flagged=[classify(item) for item in data.get("flagged") or []],
+        flagged_sources=data.get("flagged_total") or 0)

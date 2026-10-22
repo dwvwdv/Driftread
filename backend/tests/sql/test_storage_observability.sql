@@ -93,7 +93,7 @@ BEGIN
     RETURNING id INTO v_old;
     UPDATE driftread.articles SET title='legacy v2' WHERE id=v_old;
 
-    v_result := driftread.source_ingest_activity(24, 10);
+    v_result := driftread.source_ingest_activity(24, 10, 500, 200, 3.0, 30);
     IF (v_result->>'since')::timestamptz <> now() - interval '24 hours' THEN RAISE EXCEPTION 'window: %', v_result; END IF;
     IF jsonb_array_length(v_result->'top_ingest') <> 1 THEN RAISE EXCEPTION 'quiet feed has no new article: %', v_result; END IF;
     v_item := v_result->'top_ingest'->0;
@@ -112,20 +112,49 @@ BEGIN
        OR (v_item->>'new_articles')::int <> 0 THEN
         RAISE EXCEPTION 'quiet revisions: %', v_item;
     END IF;
-    IF jsonb_array_length(driftread.source_ingest_activity(24, 1)->'top_revisions') <> 1 THEN
+    IF jsonb_array_length(driftread.source_ingest_activity(24, 1, 500, 200, 3.0, 30)->'top_revisions') <> 1 THEN
         RAISE EXCEPTION 'limit ignored';
+    END IF;
+    -- Production thresholds: nothing in this small fixture is flagged.
+    IF (v_result->>'flagged_total')::int <> 0 OR v_result->'flagged' <> '[]'::jsonb THEN
+        RAISE EXCEPTION 'unexpected flags: %', v_result;
+    END IF;
+    -- Thresholds apply to every source before truncation: with limit 1 the
+    -- quiet feed is in neither top list but is still counted (1 update on 1
+    -- article >= 1.0 per article), and busy is flagged by new articles.
+    v_result := driftread.source_ingest_activity(24, 1, 3, 1000, 1.0, 1);
+    IF jsonb_array_length(v_result->'top_ingest') <> 1 OR jsonb_array_length(v_result->'top_revisions') <> 1
+       OR (v_result->'top_revisions'->0->>'feed_id')::uuid <> v_busy THEN
+        RAISE EXCEPTION 'truncated lists: %', v_result;
+    END IF;
+    IF (v_result->>'flagged_total')::int <> 2 OR jsonb_array_length(v_result->'flagged') <> 1
+       OR (v_result->'flagged'->0->>'feed_id')::uuid <> v_busy THEN
+        RAISE EXCEPTION 'flagged total must cover sources outside the top lists: %', v_result;
+    END IF;
+    IF (driftread.source_ingest_activity(24, 10, 1000, 1000, 2.0, 2)->>'flagged_total')::int <> 0 THEN
+        RAISE EXCEPTION 'per-article ratio below threshold flagged';
     END IF;
 END $$;
 DO $$
 BEGIN
     BEGIN
-        PERFORM driftread.source_ingest_activity(0, 10);
+        PERFORM driftread.source_ingest_activity(0, 10, 500, 200, 3.0, 30);
         RAISE EXCEPTION 'invalid hours accepted';
     EXCEPTION WHEN invalid_parameter_value THEN NULL;
     END;
     BEGIN
-        PERFORM driftread.source_ingest_activity(24, 51);
+        PERFORM driftread.source_ingest_activity(24, 51, 500, 200, 3.0, 30);
         RAISE EXCEPTION 'invalid limit accepted';
+    EXCEPTION WHEN invalid_parameter_value THEN NULL;
+    END;
+    BEGIN
+        PERFORM driftread.source_ingest_activity(24, 10, 0, 200, 3.0, 30);
+        RAISE EXCEPTION 'invalid threshold accepted';
+    EXCEPTION WHEN invalid_parameter_value THEN NULL;
+    END;
+    BEGIN
+        PERFORM driftread.source_ingest_activity(24, 10, 500, 200, NULL, 30);
+        RAISE EXCEPTION 'null threshold accepted';
     EXCEPTION WHEN invalid_parameter_value THEN NULL;
     END;
 END $$;
@@ -136,7 +165,7 @@ ALTER TABLE driftread.article_revisions DISABLE TRIGGER article_revision_immutab
 UPDATE driftread.article_revisions SET recorded_at = now() - interval '25 hours';
 UPDATE driftread.articles SET fetched_at = now() - interval '25 hours';
 DO $$
-DECLARE v_result jsonb := driftread.source_ingest_activity(24, 10);
+DECLARE v_result jsonb := driftread.source_ingest_activity(24, 10, 500, 200, 3.0, 30);
 BEGIN
     IF v_result->'top_ingest' <> '[]'::jsonb OR v_result->'top_revisions' <> '[]'::jsonb THEN
         RAISE EXCEPTION 'old activity counted: %', v_result;
@@ -148,12 +177,12 @@ DO $$
 BEGIN
     IF has_function_privilege('anon','driftread.table_storage_stats()','EXECUTE')
        OR has_function_privilege('authenticated','driftread.table_storage_stats()','EXECUTE')
-       OR has_function_privilege('anon','driftread.source_ingest_activity(integer,integer)','EXECUTE')
-       OR has_function_privilege('authenticated','driftread.source_ingest_activity(integer,integer)','EXECUTE')
-       OR NOT has_function_privilege('service_role','driftread.source_ingest_activity(integer,integer)','EXECUTE')
+       OR has_function_privilege('anon','driftread.source_ingest_activity(integer,integer,integer,integer,numeric,integer)','EXECUTE')
+       OR has_function_privilege('authenticated','driftread.source_ingest_activity(integer,integer,integer,integer,numeric,integer)','EXECUTE')
+       OR NOT has_function_privilege('service_role','driftread.source_ingest_activity(integer,integer,integer,integer,numeric,integer)','EXECUTE')
        OR has_table_privilege('anon','driftread.worker_heartbeats','SELECT')
     THEN RAISE EXCEPTION 'observability access leaked'; END IF;
-    IF (SELECT prosecdef FROM pg_proc WHERE oid='driftread.source_ingest_activity(integer,integer)'::regprocedure)
+    IF (SELECT prosecdef FROM pg_proc WHERE oid='driftread.source_ingest_activity(integer,integer,integer,integer,numeric,integer)'::regprocedure)
        OR (SELECT prosecdef FROM pg_proc WHERE oid='driftread.table_storage_stats()'::regprocedure) THEN
         RAISE EXCEPTION 'observability functions must be SECURITY INVOKER';
     END IF;

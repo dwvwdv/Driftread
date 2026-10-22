@@ -55,7 +55,18 @@ const activity: IngestActivity = {
       alerts: ['revision_updates', 'revisions_per_article'],
     }),
   ],
-  flagged_sources: 2,
+  flagged: [
+    source({ feed_id: 'dev', title: 'DEV Community', new_articles: 645, alerts: ['new_articles'] }),
+    source({
+      feed_id: 'churn',
+      title: 'Churn Feed',
+      revision_updates: 40,
+      revised_articles: 10,
+      revisions_per_article: 4,
+      alerts: ['revisions_per_article'],
+    }),
+  ],
+  flagged_sources: 3,
 };
 
 const articles: TableStat = {
@@ -136,7 +147,12 @@ describe('StorageInsights', () => {
   it('lists top sources, thresholds and flags without offering any action', () => {
     const element: HTMLElement = render().nativeElement;
     const text = element.textContent!;
-    expect(text).toContain('2 個來源超過觀察門檻');
+    expect(text).toContain('3 個來源超過觀察門檻');
+    // A per-article churn source outside both top lists is still named.
+    const flagged = element.querySelector('ul.flagged')!.textContent!;
+    expect(flagged).toContain('Churn Feed：每篇平均版本偏高');
+    expect(flagged).toContain('DEV Community：新增量偏高');
+    expect(text).toContain('僅列出前 2 個');
     expect(text).toContain('新增 645 篇，其中舊文回填 12 篇');
     expect(text).toContain('新增量偏高');
     expect(text).toContain('更新 1,589 次／160 篇');
@@ -170,7 +186,7 @@ describe('StorageInsights', () => {
   it('separates empty windows, missing intervals and failures per panel', () => {
     const empty = render({
       ingestActivity: () =>
-        of({ ...activity, top_ingest: [], top_revisions: [], flagged_sources: 0 }),
+        of({ ...activity, top_ingest: [], top_revisions: [], flagged: [], flagged_sources: 0 }),
       tableStorage: () => of({ ...tables, intervals: [] }),
     }).nativeElement.textContent;
     expect(empty).toContain('最近 24 小時沒有新增文章');
@@ -195,7 +211,7 @@ describe('StorageInsights', () => {
       },
     });
     fixture.componentInstance.load();
-    responses[1].next({ ...activity, flagged_sources: 0 });
+    responses[1].next({ ...activity, flagged: [], flagged_sources: 0 });
     responses[0].error(new Error('old request'));
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).not.toContain('來源入庫量未知');

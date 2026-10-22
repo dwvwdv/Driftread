@@ -13,6 +13,14 @@
       @if (a.flagged_sources > 0) {
         <ob-callout tone="warning" heading="{{ a.flagged_sources }} 個來源超過觀察門檻">
           請確認是真實新聞量，還是來源反覆重送相同項目。
+          <ul class="flagged" aria-label="超過觀察門檻的來源">
+            @for (s of a.flagged; track s.feed_id) {
+              <li>{{ s.title || s.url }}：{{ alertLabels(s.alerts) }}</li>
+            }
+          </ul>
+          @if (a.flagged_sources > a.flagged.length) {
+            <p>僅列出前 {{ a.flagged.length }} 個。</p>
+          }
         </ob-callout>
       }
       <h3 class="ob-label sub">新增文章最多</h3>

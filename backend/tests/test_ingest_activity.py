@@ -39,16 +39,27 @@ async def test_thresholds_flag_sources_without_changing_anything():
                 source('churn', revision_updates=40, revised_articles=10),
                 source('noise', revision_updates=29, revised_articles=1),
                 source('edits', revision_updates=60, revised_articles=30),
-            ]}
+            ],
+            # SQL counts every source over a threshold, including one that is
+            # in neither (truncated) top list.
+            'flagged': [source('dev', new_articles=645), source('hidden', revision_updates=31, revised_articles=5)],
+            'flagged_total': 4}
     db = RPC(data)
     result = await activity.ingest_activity(db)
-    assert db.calls == [('source_ingest_activity', {'p_hours': 24, 'p_limit': 10})]
+    assert db.calls == [('source_ingest_activity', {
+        'p_hours': 24, 'p_limit': 10,
+        'p_alert_new_articles': activity.INGEST_ALERT_NEW_ARTICLES,
+        'p_alert_revision_updates': activity.REVISION_ALERT_UPDATES,
+        'p_alert_per_article': activity.REVISION_ALERT_PER_ARTICLE,
+        'p_alert_min_updates': activity.REVISION_ALERT_PER_ARTICLE_MIN_UPDATES})]
     alerts = {s.feed_id: s.alerts for s in (*result.top_ingest, *result.top_revisions)}
     assert alerts == {'dev': ['new_articles'], 'ok': [],
                       'korea': ['revision_updates', 'revisions_per_article'],
                       'churn': ['revisions_per_article'], 'noise': [], 'edits': []}
     assert result.top_revisions[0].revisions_per_article == pytest.approx(1589 / 160)
-    assert result.flagged_sources == 3
+    assert result.flagged_sources == 4
+    assert {s.feed_id: s.alerts for s in result.flagged} == {
+        'dev': ['new_articles'], 'hidden': ['revisions_per_article']}
     assert result.thresholds.revision_updates == activity.REVISION_ALERT_UPDATES
     assert result.window_hours == 24
 
@@ -59,6 +70,7 @@ async def test_empty_window_and_unrevised_sources():
         'since': '2026-10-20T00:00:00Z', 'top_ingest': [source('a', new_articles=1)], 'top_revisions': []}), 5)
     assert result.top_ingest[0].revisions_per_article is None
     assert result.flagged_sources == 0
+    assert result.flagged == []
 
 
 @pytest.mark.asyncio
@@ -74,7 +86,7 @@ def test_ingest_endpoint_requires_admin_and_bounds_limit():
     db = object()
     app.dependency_overrides[get_client] = lambda: db
     payload = {'observed_at': '2026-10-21T00:00:00Z', 'since': '2026-10-20T00:00:00Z',
-               'top_ingest': [], 'top_revisions': [], 'flagged_sources': 0}
+               'top_ingest': [], 'top_revisions': [], 'flagged': [], 'flagged_sources': 0}
     with TestClient(app) as client, patch('routers.admin_operations.ingest_activity',
                                           return_value=payload) as call:
         assert client.get('/admin/operations/ingest').status_code == 422
