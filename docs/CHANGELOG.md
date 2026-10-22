@@ -1327,7 +1327,7 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 
 驗證：本地 PostgreSQL 16 跑完整 backend **1625 passed**（含真 PostgreSQL 測試）。新增 `tests/test_ingest_write_amplification_postgres.py`：先在移除新 migration 的情況下確認 4 個測試中 3 個失敗（重現根因），套用後全過；涵蓋連續 20 次 restamp 不改文章 ctid／版本數／`sync_changes`、標題／正文／摘要／作者變動仍建立版本並帶入新日期、NULL 日期補一次、provenance hash 立即更新與 `last_seen_at` 6 小時節流。`tests/test_articles_service.py` 新增持久化暫停仍入庫但不碰 frontier、開關讀取失敗不影響入庫、每批讀一次開關三個測試。文件檢查通過。**未驗證**：正式環境部署後的寫入量變化（需部署後 24–72 小時比對每小時新增文章、更新、版本、探索 target 與各表容量），未動 frontend。
 
-## 階段五十六：#114 D／E 的容量與入庫觀測（PR #116，issue #114，2026-10-22）
+## 階段五十六：#114 D／E 的容量與入庫觀測，以及 #92 PWA 行動閱讀出口（PR #116，issue #114／#92，2026-10-22）
 
 PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才能決定政策：營運無法分辨 DB 成長是有效資料還是 VACUUM 已回收、可在表內重用但檔案沒縮小的空間；也看不到哪個來源一天入庫多少、哪個來源反覆產生版本；正式 `worker_runs` 沒有 retention 紀錄，無法確認 worker 容器的 `ARTICLE_RETENTION_ENABLED` 實際值。本 PR 只做唯讀觀測與後台顯示，不改任何產品政策。
 
@@ -1352,4 +1352,19 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - 部署注意：`article_revisions(recorded_at)` 以一般 `CREATE INDEX` 建立，建立期間會短暫擋住文章更新，建議離峰部署（見 RUNBOOK）。
 - 既有文件落差：FEATURES 的索引清單列了 `articles(feed_id, fetched_at DESC)`，repo 實際沒有這個索引；本 PR 未修，新增篇數查詢改從 revisions 推導，不依賴它。
 
-驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1646 passed／0 skipped**（含真 PostgreSQL）。新增 `tests/test_storage_observability_postgres.py` 與 `tests/sql/test_storage_observability.sql`，涵蓋 migration 重跑、快照格式與大小加總、同日補表快照且不重掃文章、CHECK 約束、新增／回填／metadata-only／正文變更計數、limit、24 小時視窗排除、參數驗證、anon／authenticated 無 EXECUTE、SECURITY INVOKER，並以 EXPLAIN 確認兩個新索引可被使用；`test_table_storage.py`、`test_ingest_activity.py`、`test_operations.py` 覆蓋區間增量、reset 處理、門檻判斷、端點認證與上下限、worker 設定回報。frontend 43 files／499 tests 與 production build 通過；initial bundle 既有警告從 512.45 kB 增加到 513.74 kB（新程式碼都在 lazy chunk，增量出現在共用 chunk）。文件檢查與 `git diff --check` 通過。**未驗證**：瀏覽器實機（含 390px）、Docker 與正式 Supabase 部署。
+驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1646 passed／0 skipped**（含真 PostgreSQL）。新增 `tests/test_storage_observability_postgres.py` 與 `tests/sql/test_storage_observability.sql`，涵蓋 migration 重跑、快照格式與大小加總、同日補表快照且不重掃文章、CHECK 約束、新增／回填／metadata-only／正文變更計數、limit、24 小時視窗排除、參數驗證、anon／authenticated 無 EXECUTE、SECURITY INVOKER，並以 EXPLAIN 確認兩個新索引可被使用；`test_table_storage.py`、`test_ingest_activity.py`、`test_operations.py` 覆蓋區間增量、reset 處理、門檻判斷、端點認證與上下限、worker 設定回報。frontend 單獨驗證 43 files／499 tests 與 production build 通過（新程式碼都在 lazy chunk，增量出現在共用 chunk）。文件檢查與 `git diff --check` 通過。**未驗證**：瀏覽器實機（含 390px）、Docker 與正式 Supabase 部署。
+
+**#92：行動裝置閱讀出口採 PWA**
+
+形式決定採 PWA 而非 Flutter：沿用既有 Angular 前端、Offbeat 元件庫、Supabase 登入與 publication 讀取層，`/me/sync` 的 invalidation／100 篇 replacement snapshot 與 `/me/sync/operations` 離線重送契約已由 extension 驗證，可直接重用；Flutter 需另維護一套 UI、認證與商店發佈，對單一自架部署成本過高。這部分不新增後端資料模型、API 或 migration。
+
+- 新增 manifest、icon 與 `@angular/service-worker`（21.2.12，與 core 對齊）。SW 只快取 app shell；`/api/**`、`/.well-known/**` 不進 Cache Storage，也不被導覽 fallback 成 index.html，避免共用快取造成跨帳號洩漏。容器啟動時 render 的 `env.js` 排除在 app shell 之外，改為 network-first，換 Supabase 設定後下次連線即生效。SW 以 lazy import 註冊、不用 `provideServiceWorker()`。
+- `/me/offline`、`/me/offline/:id`：IndexedDB 以 user_id 分隔保存最近 100 篇摘要（白名單欄位，不存正文），離線可列出與閱讀，摘要走 `[innerHTML]` sanitizer。已讀／收藏／稍後讀樂觀疊加並 coalesce 排隊（最多 100 篇），重新連線先剔除失權操作，再用原帳號 token 重送，最後拉回 authoritative snapshot；404／409 丟棄並回到伺服器狀態，503／網路失敗保留，IndexedDB 寫入失敗立即回滾。
+- 帳號隔離：claim 新帳號時同交易刪除其他帳號的快取與佇列；寫入在交易內比對 owner，延遲回應不能寫回；執行期間 session 結束或按登出即清空。`authInterceptor` 改為不覆寫呼叫端已帶的 Authorization，讓重送鎖定佇列主人的 token（既有只有管理 session 會自帶，帶的是同一個 token，行為不變）。
+- 頁尾 ONLINE／OFFLINE 與待同步數；nginx 對 index.html、env.js、ngsw.json、SW 檔與 manifest 回 no-cache，manifest 補 MIME（location 層重寫安全 header）。
+
+沒做什麼／已知未處理：離線不含正文、沒有應用內新版提示、沒有 server push 撤權（同 extension，24 小時 TTL）。token 在離線期間過期時 Supabase 無法恢復 session，此時只在離線狀態唯讀顯示上次帳號的快取，連線後隱藏、不刪除；共用裝置需先登出。nginx 沒有 CSP，日後加 CSP 需允許 `worker-src`／`manifest-src 'self'`。
+
+驗證（PWA）：新增 55 項 frontend 測試（含 fake-indexeddb 的帳號分隔、切帳號、重送、回滾與 ngsw 設定）。以 Playwright Chromium 對 production build 的 fake API 於 390×844 走查 manifest、SW 註冊、離線重新載入、重新連線重送（原 token）、Cache Storage 無 `/api/`、登出清空 IndexedDB 與無水平溢出。未驗證：nginx 設定（沙箱無 Docker daemon）、真手機安裝（Android／iOS）、真 Supabase 登入與正式部署。
+
+合併後整體驗證：frontend **53 files／554 tests** 通過，production build 成功，initial bundle 514.25 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。backend 未受 PWA 部分影響，沿用上方 1646 passed 結果。
