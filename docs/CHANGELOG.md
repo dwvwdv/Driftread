@@ -1423,7 +1423,7 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 
 驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1663 passed**（含真 PostgreSQL）。新增 `tests/test_deploy_defaults.py`（Compose 兩個服務的預設與排程參數、`.env.example` 不寫死值、程式碼預設仍關閉、`gen_env.py` 在未設定／false／true 下只回報不寫入）；`tests/test_operations.py` 新增明確 false 時 refresh／discovery／評審仍啟動而 retention 不啟動；`tests/test_ingest_activity.py` 新增 7 天視窗門檻、非法視窗在 service 與 endpoint 皆拒絕。retention 對訂閱／收藏／已讀、待抽取與同 hash 競爭的保護沿用既有的 `tests/test_postgres_lifecycle.py` 與 `tests/sql/test_crawler_lifecycle.sql`，未改 SQL。`docker compose config` 實測：無 `.env` 與 `.env` 無此變數時 `api`／`worker` 皆為 `"true"`，`.env` 或 shell 設 `false` 時皆為 `"false"`。frontend **54 files／567 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器運行、正式 Supabase 部署後的縮減與 24–72 小時容量變化、瀏覽器實機。
 
-## 階段五十八：每來源文章上限，預設 1000 篇並保護收藏與人工事件引用（PR 待定，issue #117／PR #118 後續，2026-10-22）
+## 階段五十八：每來源文章上限，預設 1000 篇並保護收藏與人工事件引用（PR #119，issue #117／PR #118 後續，2026-10-22）
 
 #118 把「舊文章列到期」列為待決定的產品政策。使用者決定：每個來源預設最多 1000 篇，超過就淘汰最舊的，收藏的跳過。討論後的修正（皆經使用者同意）：依 `timeline_at` 而非 `published_at` 判斷新舊、受保護文章不計入上限、保護範圍加上人工事件引用、已讀不保護、未抽取版本有 1.5 倍緩衝、每來源一個水位線防止重抓、可每來源覆寫、由 worker 分批執行。
 
