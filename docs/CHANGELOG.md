@@ -1422,3 +1422,31 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - 不修：切換 24 小時／7 天時每次重抓。只有管理員手動切換才會觸發，7 天查詢走 `article_revisions(recorded_at)` 索引範圍；加每個視窗的快取還要處理快取失效與「重新整理」語意，成本高於收益。
 
 驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1663 passed**（含真 PostgreSQL）。新增 `tests/test_deploy_defaults.py`（Compose 兩個服務的預設與排程參數、`.env.example` 不寫死值、程式碼預設仍關閉、`gen_env.py` 在未設定／false／true 下只回報不寫入）；`tests/test_operations.py` 新增明確 false 時 refresh／discovery／評審仍啟動而 retention 不啟動；`tests/test_ingest_activity.py` 新增 7 天視窗門檻、非法視窗在 service 與 endpoint 皆拒絕。retention 對訂閱／收藏／已讀、待抽取與同 hash 競爭的保護沿用既有的 `tests/test_postgres_lifecycle.py` 與 `tests/sql/test_crawler_lifecycle.sql`，未改 SQL。`docker compose config` 實測：無 `.env` 與 `.env` 無此變數時 `api`／`worker` 皆為 `"true"`，`.env` 或 shell 設 `false` 時皆為 `"false"`。frontend **54 files／567 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器運行、正式 Supabase 部署後的縮減與 24–72 小時容量變化、瀏覽器實機。
+
+## 階段五十八：每來源文章上限，預設 1000 篇並保護收藏與人工事件引用（PR 待定，issue #117／PR #118 後續，2026-10-22）
+
+#118 把「舊文章列到期」列為待決定的產品政策。使用者決定：每個來源預設最多 1000 篇，超過就淘汰最舊的，收藏的跳過。討論後的修正（皆經使用者同意）：依 `timeline_at` 而非 `published_at` 判斷新舊、受保護文章不計入上限、保護範圍加上人工事件引用、已讀不保護、未抽取版本有 1.5 倍緩衝、每來源一個水位線防止重抓、可每來源覆寫、由 worker 分批執行。
+
+**評估依據（正式資料庫唯讀查詢，2026-10-22）**：資料庫 477 MB、38,445 篇、378 個來源，每來源中位數 20.5 篇；超過 1000 篇的只有 8 個來源，合計多出 8,680 篇、約 45 MB 列資料，其中約 36 MB 來自 DEV Community（2,804 篇、56 MB、24 小時 799 篇）。有收藏的文章 1 篇、有已讀紀錄的 7 篇。篇數制讓高頻來源只留約一天、低頻來源保留數月；天數制會連低頻來源一起砍。
+
+**做了什麼**
+
+- migration `20261022120000_article_cap.sql`：`feeds.article_cap`（100–100000，NULL 用全域）、`feeds.article_cap_evicted_through`、`article_cap` 工作種類與 `worker_runs` kind，以及 `enforce_article_cap(p_default_cap, p_limit, p_dry_run, p_keep_unextracted)`。RPC 依 `timeline_at DESC, id DESC` 排名未受保護的文章，刪除排名超過上限者（開啟保護時未抽取的版本保留到 1.5 倍），依超出量由大到小處理來源，每批上限由參數決定。
+- 保護：`user_bookmarks`（收藏與稍後讀）、`fact_articles`（人工事件，含已排除的連結）不刪除也不計入。已讀不保護、訂閱的來源同樣套用——讀得多或有人訂閱就整個來源無法淘汰，不是想要的語意。
+- 鎖：交易 advisory lock 序列化整輪；來源列 `FOR UPDATE SKIP LOCKED`（與 `ingest_article_batch` 同順序，正在入庫的來源本輪略過、不讓 refresh 等待）；文章列先 `SKIP LOCKED`，再以新的語句快照重新檢查保護條件後刪除，沿用正文縮減的作法，在途的收藏（持有 FK KEY SHARE）會讓該文章保留。
+- 防止重抓：刪除後只要 URL 還在 feed 中就會被重新 INSERT。沒有沿用 `article_cleanup_tombstones`（一 URL 一筆，正式環境已 1,271 筆，自動淘汰會無限成長），改為每來源一個水位線；既有的 `guard_removed_article()` trigger 對「該來源尚不存在且 `timeline_at` 不晚於水位線」的新列回傳 NULL，已存在的列照常 upsert。
+- 全域設定 `article.cap`（`{enabled, max_per_feed}`，資料庫沒有這一列時為 `true／1000`，所以新部署預設啟用）；worker 新增常駐的 `article_cap` loop，每 60 分鐘、每批 500 篇，每次 claim 前讀設定，停用時不入列。`p_keep_unextracted` 跟隨部署的 `FEED_DISCOVERY_ENABLED`：探索關閉時沒有東西會完成抽取，若照樣保護，上限會默默變成 1.5 倍。
+- API：`POST /admin/retention/article-cap/run`（預設 dry-run，`max_per_feed`、`limit` 有界）；`PATCH /admin/feeds/{id}/source` 接受 `article_cap`（明確 null 改回全域），回傳改為 `AdminFeed` 才看得到覆寫值。
+- 後台：「總覽」新增「每來源文章上限」卡片（開關、全域上限、預覽下一批；降低上限或重新啟用時確認；儲存失敗顯示資料庫目前值並保留本地修改）；「來源設定」對話框新增文章上限欄位；「各排程最近一次執行」列出 `article_cap`。UI 只預覽，不提供立即刪除按鈕。
+- 文件：CRAWLER_OPERATIONS 新增「每來源文章上限」並把治理表的「舊文章列到期」指向它；RUNBOOK 新增部署前預覽 SQL、在新 worker 啟動前停用的方法與回滾（含清除水位線）；GLOBAL_SETTINGS、FEATURES（API、路由、資料表、限制）、BACKGROUND_JOBS、CONTENT_MODEL、README 警告區塊、TODO。
+
+**沒做的事／已知未處理**
+
+- 沒有「立即套用」的後台按鈕，避免誤觸刪除；要排程外執行就用 API 的 `dry_run=false`。
+- 批次與間隔是程式碼常數（500 篇、60 分鐘），沒有開放設定：每次刪除會為每篇文章與其已讀紀錄寫同步失效紀錄、持有共用的 sync clock 列鎖，放大批次會拉長其他寫入的等待。第一次上線約 18 小時清完 8,680 篇。
+- 沒有發布日期的項目以抓取時間計，若來源反覆列出已刪除的無日期項目仍會被收回；正常 feed 只列最近 20–100 項。調高上限不會清除水位線，比水位線舊、從未入庫的項目仍會被略過（RUNBOOK 有清除方法）。
+- refresh 以抓取前後的篇數差計算新增數，淘汰剛好落在同一來源兩次計數之間時新增數偏低、自適應間隔可能多退避一次；淘汰每小時一次且不碰正在寫入的來源，本版不處理。
+- 刪除不會讓資料庫檔案變小，空間由之後的新文章重用；仍需回收時照 RUNBOOK 手動 `VACUUM FULL`。理論上 300 個來源都長到 1000 篇仍會超過 500 MB，上限不是硬性的容量保證；以目前分佈短期內碰不到。
+- 高位元組來源只存摘要、每日入庫預算、`search_vector` 改寫仍待決定（TODO）。
+
+驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1708 passed**（含真 PostgreSQL；本 PR 前 1669）。新增 `tests/sql/test_article_cap.sql`（預覽不變動、批次預算先刪最舊、受保護文章不刪不計入、已讀 cascade、1.5 倍緩衝與關閉時降到上限、全域預設、水位線擋下已刪項目但允許受保護列更新與新／無日期項目、無水位線來源不受影響、參數與 CHECK 邊界）、`tests/test_article_cap_postgres.py`（migration 重跑、正在入庫的來源被略過、在途收藏讓文章保留、兩輪並行不重複刪、anon／authenticated 無權呼叫）、`tests/test_article_cap.py`（service 參數與契約、探索開關對應保護、設定預設與驗證、API 認證與邊界、worker loop 停用時不 claim）與 `tests/test_source_model.py` 的覆寫設定／清除；既有 worker 啟動測試補上新 loop。frontend **55 files／575 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器、正式 Supabase 套用 migration 與第一輪刪除、瀏覽器實機操作後台卡片。

@@ -90,18 +90,18 @@ async def import_feeds(
     return created
 
 
-@router.patch("/feeds/{feed_id}/source", response_model=Feed, dependencies=[Depends(_require_api_key)])
+@router.patch("/feeds/{feed_id}/source", response_model=AdminFeed, dependencies=[Depends(_require_api_key)])
 async def update_source_metadata(
     feed_id: UUID,
     body: SourceMetadataUpdate,
     db: Client = Depends(get_client),
-) -> Feed:
+) -> AdminFeed:
     updates = body.model_dump(exclude_unset=True)
     query = db.table("feeds")
     result = (query.update(updates) if updates else query.select("*")).eq("id", str(feed_id)).execute()
     if not result or not result.data:
         raise HTTPException(status_code=404, detail="Feed not found")
-    return Feed(**result.data[0])
+    return AdminFeed(**result.data[0])
 
 
 @router.get("/feeds/source-health", dependencies=[Depends(_require_api_key)])

@@ -27,6 +27,8 @@ class SourceMetadataUpdate(BaseModel):
     participation_mode: ParticipationMode | None = None
     signal_group: str | None = Field(default=None, max_length=100)
     fulltext_policy: FulltextPolicy | None = None
+    # Explicit null clears the override and falls back to the article.cap setting.
+    article_cap: int | None = Field(default=None, ge=100, le=100000)
 
     @field_validator("first_party", "participation_mode", "fulltext_policy")
     @classmethod
@@ -166,6 +168,8 @@ class AdminFeed(Feed):
     # Existing failure details are management-only; public diagnostics contain
     # safe outcome codes and counts, never arbitrary exception strings.
     last_failure_reason: str | None = None
+    # Per-source override of the article.cap setting; None uses the default.
+    article_cap: int | None = None
 
 
 class PaginatedAdminFeeds(PaginatedFeeds):

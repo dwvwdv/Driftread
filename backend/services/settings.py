@@ -20,6 +20,7 @@ from services.link_harvest import is_denied_host, normalize_host, origin_of
 DISCOVERY_PROFILES_KEY = "discovery.profiles"
 DISCOVERY_CONTROL_KEY = "discovery.control"
 SOURCE_REVIEW_KEY = "source.review"
+ARTICLE_CAP_KEY = "article.cap"
 DEFAULT_SOURCE_REVIEW_POLICY = (
     "Assess source quality using the supplied article samples. Prefer substantive, "
     "original and useful information with traceable authorship or citations. Reject "
@@ -140,6 +141,19 @@ class SourceReviewValue(BaseModel):
         return value
 
 
+class ArticleCapValue(BaseModel):
+    """Per-source article cap; deletes whole rows, so bounds match the RPC.
+
+    Sources can override max_per_feed in feeds.article_cap. See
+    docs/CRAWLER_OPERATIONS.md「每來源文章上限」.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    enabled: bool = True
+    max_per_feed: int = Field(default=1000, ge=100, le=100000)
+
+
 def default_discovery_profiles() -> DiscoveryProfilesValue:
     entries = [
         ("tech", "科技", "technology", ["https://technews.tw/", "https://www.inside.com.tw/"]),
@@ -207,6 +221,7 @@ SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
         DiscoveryProfilesValue, default_discovery_profiles, _prepare_discovery_seeds,
     ),
     SOURCE_REVIEW_KEY: SettingDefinition(SourceReviewValue, SourceReviewValue),
+    ARTICLE_CAP_KEY: SettingDefinition(ArticleCapValue, ArticleCapValue),
 }
 
 
@@ -244,6 +259,11 @@ def load_discovery_profiles(db) -> list[DiscoveryProfile]:
 def load_source_review_settings(db) -> SourceReviewValue:
     """Read on each operation so disabling review takes effect without restart."""
     return SourceReviewValue.model_validate(get_setting(db, SOURCE_REVIEW_KEY).value)
+
+
+def load_article_cap_settings(db) -> ArticleCapValue:
+    """Read on each run so disabling the cap takes effect without restart."""
+    return ArticleCapValue.model_validate(get_setting(db, ARTICLE_CAP_KEY).value)
 
 
 async def save_setting(db, key: str, value: Any, expected_version: int) -> AppSetting | None:

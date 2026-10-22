@@ -89,6 +89,7 @@ describe('AdminFeeds active paging', () => {
       fetchStatus: (feed: Feed) => string;
       sourceRole: string;
       signalGroup: string;
+      articleCap: number | null;
     };
     fixture.detectChanges();
     Object.assign(fixture.componentInstance, { pageSize: () => pageSize });
@@ -119,9 +120,27 @@ describe('AdminFeeds active paging', () => {
     reader.saveSource();
     expect(sourceCalls.at(-1)).toEqual({ id: 'feed-1', body: {
       participation_mode: 'signal_only', fulltext_policy: 'rss', signal_group: 'shared-source', first_party: false,
+      article_cap: null,
     } });
     expect(reader.editing()).toBeNull();
     expect(requests).toEqual([1, 1]);
+  });
+
+  it('sends a per-source article cap and rejects one outside 100–100000', () => {
+    const { reader } = setup({ items: [feed(1)], total: 1, page: 1, page_size: 50 });
+    reader.editSource({ ...feed(1), article_cap: 500 });
+    expect(reader.articleCap).toBe(500);
+    reader.articleCap = 99;
+    reader.saveSource();
+    expect(sourceCalls).toEqual([]);
+    expect(reader.editing()?.id).toBe('feed-1');
+    reader.articleCap = 300;
+    reader.saveSource();
+    expect((sourceCalls.at(-1)?.body as { article_cap: number }).article_cap).toBe(300);
+    reader.editSource({ ...feed(1), article_cap: 300 });
+    reader.articleCap = null;
+    reader.saveSource();
+    expect((sourceCalls.at(-1)?.body as { article_cap: null }).article_cap).toBeNull();
   });
 
   it('backfills quietly, without swapping the list for the spinner', async () => {

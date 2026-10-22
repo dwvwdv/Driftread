@@ -32,6 +32,11 @@
     </label>
     <label class="ob-checkbox"><input type="checkbox" name="firstParty" [(ngModel)]="firstParty" [disabled]="savingSource()" />第一手來源</label>
     <p>鏡像或同集團來源使用相同訊號群組，避免重複計算熱度。</p>
+    <label>文章上限（篇）
+      <input class="ob-input" name="articleCap" type="number" min="100" max="100000" step="1"
+        placeholder="留空使用全域設定" [(ngModel)]="articleCap" [disabled]="savingSource()" />
+    </label>
+    <p>超過上限時排程會刪除最舊的文章；收藏、稍後讀與人工事件引用的文章不刪除也不計入。</p>
     <button type="submit" class="ob-btn ob-btn--primary" [disabled]="savingSource()">{{ savingSource() ? '儲存中…' : '儲存' }}</button>
     <button type="button" class="ob-btn ob-btn--ghost" [disabled]="savingSource()" (click)="editing.set(null)">取消</button>
   </form>

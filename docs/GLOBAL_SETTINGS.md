@@ -28,7 +28,7 @@
 
 ## 共用儲存與 API
 
-設定存於 `driftread.app_settings`，以 `key` 對應型別化 JSON `value`，並有 `version` 與 `updated_at`。目前註冊 `discovery.control`（自動探索開關）、`discovery.profiles`（value 為 `{ "profiles": [...] }`）與 `source.review`（來源評審引擎、政策、門檻及可選人工覆核，見 [來源評審](SOURCE_REVIEW.md)）。兩張設定卡分別保存版本與草稿，衝突不丟棄尚未儲存的修改。加入新設定類型只需擴充 `SETTING_DEFINITIONS` 與對應表單，不必新增儲存表或 CRUD API。
+設定存於 `driftread.app_settings`，以 `key` 對應型別化 JSON `value`，並有 `version` 與 `updated_at`。目前註冊 `discovery.control`（自動探索開關）、`discovery.profiles`（value 為 `{ "profiles": [...] }`）、`source.review`（來源評審引擎、政策、門檻及可選人工覆核，見 [來源評審](SOURCE_REVIEW.md)）與 `article.cap`（`{ "enabled": true, "max_per_feed": 1000 }`，每來源文章上限；資料庫沒有這一列時就是這個預設，所以新部署預設啟用；`max_per_feed` 100–100000，來源可用 `feeds.article_cap` 覆寫，worker 每批前重新讀取，見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)）。`article.cap` 的卡片在後台「總覽」，儲存失敗時顯示資料庫目前的值與版本、保留本地修改。設定頁的兩張設定卡分別保存版本與草稿，衝突不丟棄尚未儲存的修改。加入新設定類型只需擴充 `SETTING_DEFINITIONS` 與對應表單，不必新增儲存表或 CRUD API。
 
 | API | 用途 |
 |---|---|

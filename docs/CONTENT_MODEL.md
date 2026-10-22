@@ -4,7 +4,7 @@
 
 ## 身份與版本
 
-文章暫存保留 ID／版本／使用者資料，永久刪除則 cascade 清除，並以 feed＋URL 標記阻止自動重建；操作見 [後台清理](ADMIN_CLEANUP.md#預覽暫存與刪除)。
+文章暫存保留 ID／版本／使用者資料，永久刪除則 cascade 清除，並以 feed＋URL 標記阻止自動重建；操作見 [後台清理](ADMIN_CLEANUP.md#預覽暫存與刪除)。每來源文章上限也會永久刪除超量的舊文章（cascade 同上），改以每來源一個 `timeline_at` 水位線阻止重建，見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)。
 
 `articles.id`、`UNIQUE(feed_id,url)` 與所有使用者關聯保持原樣。不同 feed 對同一 URL 的描述／HTML 仍有各自的文章列，互不覆寫。`canonical_url` 僅移除 URL fragment，以精確 URL 分組 provenance；不猜測同站其他路徑、追蹤 query、syndication 或語意相同文章，也不合併已收藏的舊 ID。
 

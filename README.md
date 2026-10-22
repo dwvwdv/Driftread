@@ -183,6 +183,14 @@ docker compose down
 > 時新文章不會完成抽取，開啟也不會縮減它們；容量估算見
 > [CRAWLER_OPERATIONS](docs/CRAWLER_OPERATIONS.md#compose-預設開啟與容量模型117)。
 
+> **⚠ 每來源文章上限預設開啟**
+>
+> 全域設定 `article.cap` 預設啟用、每個來源最多 1000 篇：worker 每小時刪除超過上限的最舊文章（每批
+> 最多 500 篇），連同其版本、來源證據與已讀紀錄。收藏、稍後讀與後台人工事件引用的文章不刪除、也不
+> 計入上限；個別來源可在後台「來源設定」覆寫上限。這是**刪除整篇文章**，無法自行還原。升級前先備份，
+> 想停用或改上限，在新版 worker 啟動前於後台「總覽 → 每來源文章上限」儲存即可，步驟見
+> [RUNBOOK](docs/RUNBOOK.md#每來源文章上限)。
+
 > `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**；瀏覽器只吃
 > `SUPABASE_ANON_KEY`。
 

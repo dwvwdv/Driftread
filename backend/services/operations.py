@@ -13,7 +13,7 @@ HEARTBEAT_SECONDS = 30
 STALE_SECONDS = 90
 RETENTION_DAYS = 30
 PRUNE_SECONDS = 3600
-RUN_KINDS = ("refresh", "discovery", "retention", "source_review", "storage")
+RUN_KINDS = ("refresh", "discovery", "retention", "source_review", "storage", "article_cap")
 
 
 def scheduler_config() -> dict:

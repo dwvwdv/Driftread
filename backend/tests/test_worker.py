@@ -17,6 +17,7 @@ def _durable_queue(monkeypatch):
     # These lifecycle tests isolate the pre-existing refresh/discovery loops.
     # Dedicated review-loop hot reload is covered in test_source_review_workflow.
     monkeypatch.setattr(worker, "run_source_review_forever", AsyncMock())
+    monkeypatch.setattr(worker, "run_article_cap_forever", AsyncMock())
 
 from services.feed_refresh import RefreshResult
 
