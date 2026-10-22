@@ -14,6 +14,14 @@
     <meta name="theme-color" content="#eceff4" media="(prefers-color-scheme: light)" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <!-- PWA (issue #92): manifest + home-screen icons. Colours follow the dark
+         Offbeat surface-base (Nord Polar Night 0), same as theme-color above. -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Driftread" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <!--
       Runtime Supabase config, read by src/app/services/runtime-config.ts. A
       plain (non-module) script executes synchronously as the parser reaches

@@ -224,6 +224,11 @@ main {
   color: var(--success-ink);
 }
 
+.offline,
+.pending {
+  color: var(--warning-ink);
+}
+
 .sep {
   opacity: 0.5;
 }

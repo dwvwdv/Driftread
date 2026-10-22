@@ -1,0 +1,110 @@
+<ob-page-header
+  kicker="OFFLINE"
+  heading="離線閱讀"
+  subtitle="最近 100 篇訂閱文章的摘要存在這台裝置，離線也能閱讀"
+>
+  @if (auth.session()) {
+    <button
+      type="button"
+      class="ob-btn ob-btn--primary ob-btn--sm"
+      [disabled]="!offline.online() || offline.syncing()"
+      (click)="sync()"
+    >
+      {{ offline.syncing() ? '同步中…' : '同步' }}
+    </button>
+  }
+</ob-page-header>
+
+<div class="status" role="status">
+  <span class="ob-dot" [class.is-online]="offline.online()" [class.is-offline]="!offline.online()">
+    {{ offline.online() ? '已連線' : '離線' }}
+  </span>
+  @if (offline.updatedAt(); as updated) {
+    <span>上次同步 {{ updated | date: 'yyyy-MM-dd HH:mm' }}</span>
+  }
+  @if (offline.pendingCount() > 0) {
+    <span class="ob-chip ob-chip--warning">{{ offline.pendingCount() }} 項待同步</span>
+  }
+</div>
+
+@if (offline.mode() === 'dormant' && offline.record()) {
+  <ob-callout tone="warning" heading="登入尚未恢復">
+    目前離線且無法恢復登入，以下是這台裝置上次同步的內容，僅供閱讀；重新連線並登入後才能標記與同步。
+  </ob-callout>
+} @else if (auth.session() && !offline.online()) {
+  <ob-callout tone="info" heading="目前離線">
+    標記已讀、收藏或稍後讀會先存在這台裝置，重新連線後自動送出。
+  </ob-callout>
+}
+
+@if (!offline.loaded()) {
+  <ob-loading label="讀取離線快取" />
+} @else if (!auth.session() && !offline.record()) {
+  <ob-empty message="登入後同步，才能在這台裝置離線閱讀。">
+    <a
+      class="ob-btn ob-btn--primary"
+      routerLink="/login"
+      [queryParams]="{ redirect: '/me/offline' }"
+      >前往登入</a
+    >
+  </ob-empty>
+} @else if (offline.expired() && !offline.record()) {
+  <ob-empty message="離線快取已超過 24 小時，為避免顯示已失效的內容，請連線後同步。" />
+} @else if (!offline.record()) {
+  <ob-empty message="這台裝置還沒有離線快取。按「同步」下載最近 100 篇摘要。" />
+} @else if (rows().length === 0) {
+  <ob-empty message="訂閱中還沒有文章。" />
+} @else {
+  <div class="list">
+    @for (row of rows(); track row.view.article.id) {
+      <ob-list-row [class.is-read]="row.view.read">
+        <a rowTitle [routerLink]="['/me/offline', row.view.article.id]">{{
+          row.view.article.title || '（無標題）'
+        }}</a>
+        <div rowLines>
+          <span>
+            {{ row.view.article.feed_title }}
+            @if (row.view.article.published_at) {
+              ・ {{ row.view.article.published_at | date: 'yyyy-MM-dd' }}
+            }
+            @if (row.view.pending.length > 0) {
+              ・ 待同步
+            }
+          </span>
+          @if (row.preview) {
+            <span class="summary">{{ row.preview }}</span>
+          }
+        </div>
+        @if (offline.mode() === 'session') {
+          <div rowMeta>
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              (click)="toggle(row.view, 'read')"
+            >
+              {{ row.view.read ? '標為未讀' : '標為已讀' }}
+            </button>
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              [attr.aria-pressed]="row.view.favorite"
+              (click)="toggle(row.view, 'favorite')"
+            >
+              <ob-icon name="star" [size]="14" [filled]="row.view.favorite" />
+              {{ row.view.favorite ? '已收藏' : '收藏' }}
+            </button>
+            <button
+              type="button"
+              class="ob-btn ob-btn--ghost ob-btn--sm"
+              [attr.aria-pressed]="row.view.readLater"
+              (click)="toggle(row.view, 'read_later')"
+            >
+              <ob-icon name="bookmark" [size]="14" [filled]="row.view.readLater" />
+              {{ row.view.readLater ? '已加入稍後讀' : '稍後讀' }}
+            </button>
+          </div>
+        }
+      </ob-list-row>
+    }
+  </div>
+}

@@ -1,0 +1,29 @@
+{
+  "name": "漂流閱讀 Driftread",
+  "short_name": "Driftread",
+  "description": "以「猜你喜歡」為核心的 RSS 推薦與閱讀平台；登入後可離線閱讀最近同步的文章摘要。",
+  "lang": "zh-Hant",
+  "dir": "ltr",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#2e3440",
+  "theme_color": "#2e3440",
+  "categories": ["news", "books"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "離線閱讀", "url": "/me/offline" },
+    { "name": "我的閱讀", "url": "/me/stream" }
+  ]
+}

@@ -48,6 +48,18 @@ export const routes: Routes = [
           import('./components/reading-stream/reading-stream').then((m) => m.ReadingStream),
       },
       {
+        path: 'me/offline',
+        title: '離線閱讀 — 漂流閱讀 Driftread',
+        loadComponent: () =>
+          import('./components/offline-reading/offline-reading').then((m) => m.OfflineReading),
+      },
+      {
+        path: 'me/offline/:id',
+        title: '離線閱讀 — 漂流閱讀 Driftread',
+        loadComponent: () =>
+          import('./components/offline-article/offline-article').then((m) => m.OfflineArticle),
+      },
+      {
         path: 'recommendations',
         title: '猜你喜歡 — 漂流閱讀 Driftread',
         loadComponent: () =>
