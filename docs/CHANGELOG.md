@@ -1382,3 +1382,43 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 驗證（PWA）：新增 55 項 frontend 測試（含 fake-indexeddb 的帳號分隔、切帳號、重送、回滾與 ngsw 設定）。以 Playwright Chromium 對 production build 的 fake API 於 390×844 走查 manifest、SW 註冊、離線重新載入、重新連線重送（原 token）、Cache Storage 無 `/api/`、登出清空 IndexedDB 與無水平溢出。未驗證：nginx 設定（沙箱無 Docker daemon）、真手機安裝（Android／iOS）、真 Supabase 登入與正式部署。
 
 合併與 review 修正後整體驗證：backend **1648 passed**（含真 PostgreSQL）；frontend **54 files／565 tests** 通過，production build 成功，initial bundle 514.41 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。
+
+## 階段五十七：Compose 範例預設開啟正文縮減，並量化高流量來源的容量模型（PR #118，issue #117，2026-10-22）
+
+#117 指出來源數上限（300）不等於寫入與儲存預算：2026-10-22 最近 24 小時約 3,900 篇新文章、全部來自正常 RSS refresh，前三名來源佔 36%，資料庫已逼近 Free Plan 500 MB。使用者明確指定的產品決策是 Compose 範例預設開啟既有的 article retention；收錄限額等政策要求先評估、不擅自決定。
+
+**做了什麼**
+
+- `docker-compose.yml` 的 `api` 與 `worker` 都改為 `ARTICLE_RETENTION_ENABLED: ${ARTICLE_RETENTION_ENABLED:-true}`，兩個容器不會互相矛盾；`.env` 明確的 `false` 仍優先。`30 天／200 篇／1440 分鐘` 未改。
+- **程式碼層 fallback 刻意不改**：`services/retention.py::retention_enabled()` 仍只認明確 `true/1/yes/on`。issue 指定的是 Compose 範例預設，不是所有非 Compose 部署的執行語意；拼錯的布林值也不能開啟會移除正文的排程。
+- `.env.example` 改成註解的 `# ARTICLE_RETENTION_ENABLED=true` 並寫清楚保留與移除的內容。刻意維持註解：取消註解會讓 `gen_env.py` 把值複製進新 `.env`，等於把 Compose 預設寫死。`gen_env.py` 從 `OPTIONAL_MISC_DEFAULTS` 移除這個變數（它的 Compose 預設與程式碼預設不同，不能再列成同一個「預設值」），改為依 `.env` 現值回報 Compose 預設／已啟用／已停用，且從不寫入。
+- `GET /admin/operations/ingest` 新增 `hours`（只接受 24 或 168），後台「來源入庫量與版本更新」加上 24 小時／7 天切換。SQL 早就支援 1–168 小時，不需 migration；7 天的次數門檻乘以 7，每篇平均門檻不變。切換視窗只重抓入庫面板，兩個面板改用各自的 request 計數，避免切換時丟掉每表容量的回應。
+- README 醒目說明預設開啟、保留內容、無法自行還原與明確 false 的停用方式；RUNBOOK 新增部署前（備份、dry-run、基準）、部署後（worker 實際設定、retention run summary、24–72 小時追蹤、不排程 `VACUUM FULL`）與回滾步驟；CRAWLER_OPERATIONS 新增容量模型與入庫治理提案。
+
+**評估結論（正式資料庫唯讀查詢，2026-10-22 約 07:20 UTC）**
+
+- 有正文的文章列平均 11.9 KB，其中 `search_vector` 5.9 KB 比正文本身（4.1 KB）還大；無正文 1.4 KB。每日新增約 33 MiB 列資料＋約 8.5 MiB 索引。
+- 30 天正文保存在 500 MB 下不成立（窗口約 1.2 GiB）；縮減後每篇仍殘留約 3.5–4.5 KB（列、索引、版本、來源證據），即每天約 13–17 MiB 無上限成長，只靠縮減無法讓容量穩定。
+- 每天需要縮減約 2,100 篇才跟得上，預設 200 篇只有約 10%。目前符合條件僅 74 篇，第一次排程影響很小；2026-10-16 單日 10,692 篇的尖峰約 11-15 起進入可縮減範圍。提案改為 60 分鐘間隔、批次維持 200（RPC 在交易內持有來源列鎖，放大批次會拉長 refresh 等待），未改預設。
+- **Compose 預設 `FEED_DISCOVERY_ENABLED=false` 時新文章不會完成外連抽取，因此開啟 retention 也不會縮減它們**；正式環境探索開啟（97.7% 已抽取）所以有效。是否允許縮減未抽取版本仍待決定（#114 留下的同一個問題）。
+- DEV Community 7 天 2,648 篇、52.5 MiB，約佔 7 天文章列資料的三分之一；issue 統計的 24 小時 907 篇對應 907 個 canonical URL，本次查 7 天 2,648 篇也全是不同 URL，沒有重複 INSERT（另有 `articles(feed_id,url)` 唯一約束）。其他前 10 名來源 7 天都 ≤ 4.1 MiB，問題是「高位元組」而非單純「高篇數」。
+- 入庫治理方案（每來源每日預算、高位元組來源只存摘要、`search_vector` 只索引標題摘要、舊列到期、付費方案）的效果、完整性與成本比較寫在 CRAWLER_OPERATIONS。建議先對高位元組來源入庫只存摘要並把 retention 改成 60 分鐘，限額先只告警；全部待使用者決定。
+
+**沒做的事**
+
+- 沒有每來源／全站入庫預算、超額 ledger、只存摘要的入庫政策、`search_vector` 改寫或文章列到期；沒有封存 DEV Community，也沒有刪除或縮減任何既有文章。這些是產品政策，issue 要求先提案。
+- 沒有每來源位元組的 API（需逐來源 `pg_column_size`，成本高，留待決定是否需要每日快照）；沒有改 retention 的天數、批次或間隔。
+- 正式環境的 `.env` 實際值本 PR 無法確認；若正式 `.env` 沒有這個變數，部署本版後就會開始縮減。部署時同時會套用尚未上線的 PR #115、#116 migration。
+
+**`/code-review` 修正（兩輪合計 14 項，去重後修 11 項）**
+
+- `gen_env.py` 原本直接讀 `.env` 原文判斷：`ARTICLE_RETENTION_ENABLED="true"`、`'yes'` 或 `true  # 註解` 在 Compose 都解析成啟用，腳本卻回報「已停用」，等於對不可逆的縮減報錯狀態。新增 `compose_value()`，依 Compose 的規則去引號、去掉前面有空白的 `#` 註解（以 `docker compose config` 逐一實測對照）；啟用值集中為 `RETENTION_TRUE_VALUES`，測試逐值比對 `retention_enabled()`，避免兩邊定義漂移。
+- 7 天視窗原本把三個次數門檻都乘以 7：版本更新數受每篇 10 版上限約束，同一個持續重送的來源在 24 小時被標示、7 天卻消失；每篇平均門檻不放大則讓 7 天對較慢的重送更敏感。改為只放大新增篇數門檻，版本門檻在兩個視窗相同，7 天的標示是 24 小時的超集合，並在 FEATURES、CRAWLER_OPERATIONS 與後台說明寫明語意。
+- 後台標題與空狀態原本跟著使用者點的分頁：先部署前端、API 仍是舊版（忽略 `hours`、回 24 小時）時會把一天的資料標成「最近 7 天」。改為依回應的 `window_hours` 標示，載入中才用分頁值。
+- 允許視窗的規則只留一份：`ingest_activity.window_error()`，router 與 service 共用，訊息由 `WINDOW_CHOICES` 產生。沒有改用 `Literal[24, 168]`：實測 FastAPI 不會把查詢字串 `"168"` 轉成 Literal 整數，合法請求會被 422。也沒有在 router 攔 `ValueError`，因為 pydantic 的 `ValidationError` 是它的子類，RPC 回傳格式錯誤會被誤報成 422 並帶出內容。
+- `IngestActivity.window_hours`／`thresholds` 改為必填，不再與 `thresholds_for()` 各自維護一份 24 小時預設。
+- 新增的 worker 測試與既有測試幾乎相同，改為參數化既有測試（discovery 開／關），並多驗證 refresh 與評審照常啟動。
+- 文件：`worker.py` docstring、`docs/BACKGROUND_JOBS.md`、`docs/CONTENT_MODEL.md` 仍寫 retention「預設關閉／opt-in only」，與 Compose 新預設不符，已更新；FEATURES 的版本更新門檻列補上 7 天語意。
+- 不修：切換 24 小時／7 天時每次重抓。只有管理員手動切換才會觸發，7 天查詢走 `article_revisions(recorded_at)` 索引範圍；加每個視窗的快取還要處理快取失效與「重新整理」語意，成本高於收益。
+
+驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1663 passed**（含真 PostgreSQL）。新增 `tests/test_deploy_defaults.py`（Compose 兩個服務的預設與排程參數、`.env.example` 不寫死值、程式碼預設仍關閉、`gen_env.py` 在未設定／false／true 下只回報不寫入）；`tests/test_operations.py` 新增明確 false 時 refresh／discovery／評審仍啟動而 retention 不啟動；`tests/test_ingest_activity.py` 新增 7 天視窗門檻、非法視窗在 service 與 endpoint 皆拒絕。retention 對訂閱／收藏／已讀、待抽取與同 hash 競爭的保護沿用既有的 `tests/test_postgres_lifecycle.py` 與 `tests/sql/test_crawler_lifecycle.sql`，未改 SQL。`docker compose config` 實測：無 `.env` 與 `.env` 無此變數時 `api`／`worker` 皆為 `"true"`，`.env` 或 shell 設 `false` 時皆為 `"false"`。frontend **54 files／567 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器運行、正式 Supabase 部署後的縮減與 24–72 小時容量變化、瀏覽器實機。

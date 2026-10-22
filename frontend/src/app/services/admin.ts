@@ -356,11 +356,12 @@ export class AdminService {
     );
   }
 
-  ingestActivity(limit = 10): Observable<IngestActivity> {
+  /** `hours` is 24 or 168 (7 days); the API rejects any other window. */
+  ingestActivity(limit = 10, hours: 24 | 168 = 24): Observable<IngestActivity> {
     return this.get(
       '/admin/operations/ingest',
       '讀取來源入庫量失敗',
-      new HttpParams().set('limit', limit),
+      new HttpParams().set('limit', limit).set('hours', hours),
     );
   }
 

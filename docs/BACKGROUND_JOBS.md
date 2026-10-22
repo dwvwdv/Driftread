@@ -4,7 +4,7 @@
 
 Discovery 另遵守持久化探索暫停開關，暫停保留 queued 工作與 heartbeat，啟用後依原排程接續；在途 discovery cycle 有輪詢取消。已開始的 DB thread／付費請求不假稱能撤回。細節見 [探索控制](GLOBAL_SETTINGS.md#自動探索暫停與啟用)。
 
-`backend/services/job_queue.py` 使用 scoped Supabase client 呼叫 PostgreSQL RPC。佇列失敗時不退回記憶體執行。`refresh`、`discovery`、`retention` 以完整 cycle 為工作單位，沿用各自 enable flag、tick、抓取限制與內部並發。discovery／retention 的預設關閉狀態不變。
+`backend/services/job_queue.py` 使用 scoped Supabase client 呼叫 PostgreSQL RPC。佇列失敗時不退回記憶體執行。`refresh`、`discovery`、`retention` 以完整 cycle 為工作單位，沿用各自 enable flag、tick、抓取限制與內部並發。discovery 預設關閉；retention 在 `docker-compose.yml` 預設開啟、程式碼層未設定時關閉（#117，見 [Compose 預設開啟與容量模型](CRAWLER_OPERATIONS.md#compose-預設開啟與容量模型117)）。
 
 `source_review` 新增獨立週期（預設每 60 秒、單輪最多 10 個候選、900 秒 timeout、並發上限 1），永遠監看後台 `source.review`，獨立於 discovery 的部署／暫停開關。評審停用時不 enqueue／claim、不抓取或付費；重新啟用不需重啟。來源評審另有資料包／模型租約與版本 fencing，不以背景 queue ack 代替業務交易保護；詳見 [來源評審](SOURCE_REVIEW.md)。
 

@@ -152,6 +152,7 @@ docker compose down
 | `FEED_REFRESH_MAX_INTERVAL_MINUTES` | | 個別 feed 抓取間隔上限，預設 `1440`（24 小時）|
 | `FEED_DISCOVERY_ENABLED` | | 是否啟用主動發現，**預設 `false`**。詳見下方說明 |
 | `LOG_LEVEL` | | worker 的日誌等級，預設 `INFO` |
+| `ARTICLE_RETENTION_ENABLED` | | 舊正文自動縮減，**Compose 預設 `true`**；`.env` 設 `false` 停用。不經 Compose 執行時未設定視為關閉。見下方說明 |
 
 其餘 15 個 `FEED_DISCOVERY_*` 參數（收割批次、探測並發、禮貌延遲、robots、自動入庫門檻…）
 皆有預設值，說明見 [`.env.example`](.env.example)，完整語意見
@@ -166,6 +167,21 @@ docker compose down
 > 啟用前請先讀 [`docs/SECURITY.md`](docs/SECURITY.md) 的 #24，特別是 **DNS rebinding** 那一節 ——
 > 那個從 #22 起就記錄但尚未修復的繞過，在無人看管的自主迴圈下嚴重度明顯上升。另外請在
 > `DISCOVERY_USER_AGENT` 帶上聯絡網址，讓被抓取的站方找得到你。
+
+> **⚠ 舊正文自動縮減預設開啟（#117）**
+>
+> `docker-compose.yml` 預設 `ARTICLE_RETENTION_ENABLED=true`：worker 每天最多縮減一批（預設
+> 200 篇）超過 30 天、目前版本已完成外連抽取、來源無人訂閱且沒有收藏或已讀的文章，把正文設成
+> NULL。文章 ID、URL、標題、摘要與所有使用者紀錄都保留，不刪文章列；但被縮減的正文**無法從
+> 資料庫自行還原**，只能從備份或原站重新取回。今天剛入庫的文章不會被縮減，一般 VACUUM 後資料庫
+> 檔案也不會立刻變小。
+>
+> 升級到這一版時，`.env` 沒有設定這個變數的既有部署會開始縮減。不想縮減就在 `.env` 寫
+> `ARTICLE_RETENTION_ENABLED=false`；明確的 `false` 不會被 `gen_env.py` 或升級覆寫。第一次
+> 啟用前先備份，並在後台或 `POST /api/admin/retention/run`（預設 dry-run）預覽，步驟見
+> [RUNBOOK](docs/RUNBOOK.md#compose-預設開啟正文縮減117)。`FEED_DISCOVERY_ENABLED=false`
+> 時新文章不會完成抽取，開啟也不會縮減它們；容量估算見
+> [CRAWLER_OPERATIONS](docs/CRAWLER_OPERATIONS.md#compose-預設開啟與容量模型117)。
 
 > `SUPABASE_KEY` 是 service_role key，**絕對不可暴露給瀏覽器**；瀏覽器只吃
 > `SUPABASE_ANON_KEY`。

@@ -263,22 +263,29 @@ async def test_retention_runs_when_other_schedulers_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_retention_disabled_does_not_run_with_refresh(monkeypatch):
+@pytest.mark.parametrize("discovery", ["false", "true"])
+async def test_retention_disabled_does_not_run_with_refresh(monkeypatch, discovery):
+    # #117: Compose defaults retention on; an explicit false switches off only
+    # retention, never refresh, discovery or review monitoring.
     monkeypatch.setenv("FEED_REFRESH_ENABLED", "true")
-    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", discovery)
     monkeypatch.setenv("ARTICLE_RETENTION_ENABLED", "false")
 
     async def immediate(stop):
         return None
 
     with (
-        patch.object(worker, "run_forever", side_effect=immediate),
+        patch.object(worker, "run_forever", side_effect=immediate) as refresh,
+        patch.object(worker, "run_discovery_forever", side_effect=immediate) as found,
         patch.object(worker, "run_retention_forever") as retention,
         patch.object(worker, "run_storage_forever", side_effect=immediate),
-        patch.object(worker, "run_source_review_forever", side_effect=immediate),
+        patch.object(worker, "run_source_review_forever", side_effect=immediate) as review,
     ):
         assert await worker.main() == 0
     retention.assert_not_called()
+    refresh.assert_called_once()
+    review.assert_called_once()
+    assert found.call_count == (discovery == "true")
 
 
 @pytest.mark.asyncio

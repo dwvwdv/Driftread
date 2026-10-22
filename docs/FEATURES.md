@@ -111,7 +111,7 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 
 ## 2c. 主動發現管道
 
-增量版本抽取、中文種子優先名額、worker 狀態與正文縮減的現行行為及操作方式，見 [CRAWLER_OPERATIONS.md](CRAWLER_OPERATIONS.md)。文章以內容 hash 追蹤抽取，失敗保留待處理工作；正文縮減預設關閉，保留文章身份與使用者關聯。
+增量版本抽取、中文種子優先名額、worker 狀態與正文縮減的現行行為及操作方式，見 [CRAWLER_OPERATIONS.md](CRAWLER_OPERATIONS.md)。文章以內容 hash 追蹤抽取，失敗保留待處理工作；正文縮減在 Compose 部署預設開啟（程式碼層未設定時仍關閉），保留文章身份與使用者關聯。
 
 > ⚠ **預設關閉。** 這是唯一一個會主動對「沒人要求過的第三方網站」發出請求的迴圈，
 > 啟用前請先讀 [SECURITY.md 的自主發現章節](SECURITY.md)，特別是 DNS rebinding 那一節。
@@ -377,7 +377,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
 | POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
 | GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20；另含各 kind 最近一次 run（`latest_runs`）與 worker 實際解析的排程設定（`worker_config`，含 `ARTICLE_RETENTION_ENABLED`）；見 [Worker 監控](CRAWLER_OPERATIONS.md#worker-監控) |
-| GET | `/admin/operations/ingest` | 最近 24 小時新增文章最多與版本更新最多的來源，以及對全部來源計算的超標總數與清單，只供觀察；`limit` 1–50、預設 10；見 [來源入庫量與版本異常](CRAWLER_OPERATIONS.md#來源入庫量與版本異常) |
+| GET | `/admin/operations/ingest` | 最近 24 小時或 7 天新增文章最多與版本更新最多的來源，以及對全部來源計算的超標總數與清單，只供觀察；`limit` 1–50、預設 10；`hours` 24 或 168、預設 24；見 [來源入庫量與版本異常](CRAWLER_OPERATIONS.md#來源入庫量與版本異常) |
 | GET | `/admin/settings` | 共用全域設定與版本，包含探測方向與來源評審政策 |
 | PUT | `/admin/settings/{key}` | 型別驗證與版本比對的設定儲存，衝突回 409 |
 | GET | `/admin/source-reviews` | 有界評審列表，可依 `candidate_id` 過濾 |
@@ -651,9 +651,9 @@ DELETE FROM discovery_targets
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
 | 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
-| 來源入庫觀察視窗 | 最近 24 小時；列出前 `limit`（1–50，預設 10）個來源 | `services/ingest_activity.py::WINDOW_HOURS` |
-| 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇（只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
-| 版本更新標示門檻 | 單一來源 24 小時版本更新 ≥ 200 次，或至少 30 次且每篇平均 ≥ 3 次（只標示，不節流或封存；版本數為下限） | `services/ingest_activity.py::REVISION_ALERT_*` |
+| 來源入庫觀察視窗 | 最近 24 小時（預設）或 7 天；列出前 `limit`（1–50，預設 10）個來源 | `services/ingest_activity.py::WINDOW_HOURS`、`WINDOW_CHOICES` |
+| 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇；7 天視窗為 ≥ 3,500 篇（只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
+| 版本更新標示門檻 | 單一來源在視窗內版本更新 ≥ 200 次，或至少 30 次且每篇平均 ≥ 3 次；24 小時與 7 天視窗相同，不隨視窗放大（每篇只保留 10 版，放大會讓 7 天漏掉 24 小時已標示的來源），所以 7 天也會標示較慢但持續的重送（只標示，不節流或封存；版本數為下限） | `services/ingest_activity.py::REVISION_ALERT_*` |
 | 每表容量快照範圍 | `driftread` 依總量前 25 大的表，另固定包含 articles、article_revisions、article_discoveries、sync_changes、discovery_targets、background_jobs；與每日容量同樣保存 90 天 | `migrations/20261022020000_storage_observability.sql` |
 | 來源證據 `last_seen_at` 更新頻率 | 同一入口最多每 6 小時一次；觀測 hash 改變時立即更新 | `migrations/20261021100000_ingest_write_amplification.sql` |
 | **主動發現總開關** | **關**（`FEED_DISCOVERY_ENABLED`）| `services/discovery_config.py` |

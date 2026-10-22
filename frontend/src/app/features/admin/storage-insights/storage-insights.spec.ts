@@ -162,7 +162,8 @@ describe('StorageInsights', () => {
     // Third-party titles are text, never markup.
     expect(text).toContain('<b>Korea Times</b>');
     expect(element.querySelector('.sources b')).toBeNull();
-    expect(element.querySelector('button')).toBeNull();
+    // The only buttons are the read-only window tabs.
+    expect(element.querySelector('button:not([role="tab"])')).toBeNull();
   });
 
   it('shows per-table sizes and marks reset counters unknown instead of negative', () => {
@@ -199,6 +200,71 @@ describe('StorageInsights', () => {
     }).nativeElement.textContent;
     expect(failed).toContain('每表容量未知');
     expect(failed).toContain('DEV Community');
+  });
+
+  it('switches to the 7-day window without reloading the table panel', () => {
+    const calls: number[] = [];
+    const responses: Subject<IngestActivity>[] = [];
+    let tableCalls = 0;
+    const fixture = render({
+      ingestActivity: (_limit: number, hours: number) => {
+        calls.push(hours);
+        const response = new Subject<IngestActivity>();
+        responses.push(response);
+        return response;
+      },
+      tableStorage: () => {
+        tableCalls++;
+        return of(tables);
+      },
+    });
+    responses[0].next({ ...activity, flagged: [], flagged_sources: 0 });
+    fixture.detectChanges();
+    const element: HTMLElement = fixture.nativeElement;
+    const tabs = element.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    expect(Array.from(tabs).map((t) => t.textContent!.trim())).toEqual(['24 小時', '7 天']);
+
+    tabs[1].click();
+    fixture.detectChanges();
+    expect(calls).toEqual([24, 168]);
+    expect(tableCalls).toBe(1);
+    expect(element.textContent).toContain('LAST 7D');
+    // The 24-hour answer arriving late must not overwrite the 7-day window.
+    responses[0].next({ ...activity });
+    responses[1].next({
+      ...activity,
+      window_hours: 168,
+      top_ingest: [],
+      top_revisions: [],
+      flagged: [],
+      flagged_sources: 0,
+    });
+    fixture.detectChanges();
+    expect(element.textContent).toContain('最近 7 天沒有新增文章');
+    expect(element.textContent).toContain('最近 168 小時');
+    expect(element.textContent).not.toContain('超過觀察門檻');
+
+    // An older API ignores `hours` and answers for 24 hours: labels follow
+    // the server's window, never the tab.
+    element.querySelectorAll<HTMLButtonElement>('[role="tab"]')[0].click();
+    fixture.detectChanges();
+    element.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
+    fixture.detectChanges();
+    responses[3].next({
+      ...activity,
+      top_ingest: [],
+      top_revisions: [],
+      flagged: [],
+      flagged_sources: 0,
+    });
+    fixture.detectChanges();
+    expect(element.textContent).toContain('LAST 24H');
+    expect(element.textContent).toContain('最近 24 小時沒有新增文章');
+    expect(element.textContent).not.toContain('最近 7 天沒有新增文章');
+
+    // Selecting the active tab again does not refetch.
+    element.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
+    expect(calls).toEqual([24, 168, 24, 168]);
   });
 
   it('drops a stale response after a reload', () => {

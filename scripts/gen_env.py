@@ -9,6 +9,7 @@ SUPABASE_URL / SUPABASE_KEY (service_role) / SUPABASE_ANON_KEY / DATABASE_URL /
 SUPABASE_JWT_SECRET must be filled in manually from the Supabase Dashboard.
 """
 import os
+import re
 import secrets
 
 
@@ -52,9 +53,16 @@ OPTIONAL_DISCOVERY_DEFAULTS = {
 }
 
 # Read by backend/worker.py. Optional, with a code-level default.
+# ARTICLE_RETENTION_ENABLED is the exception: docker-compose.yml defaults it to
+# true while the code default (worker run outside Compose) stays false, so it is
+# reported separately below and never written into .env — an explicit false an
+# operator already set must survive every rerun of this script.
+# Must match backend/services/retention.py::retention_enabled()
+# (tests/test_deploy_defaults.py checks every value against it).
+RETENTION_TRUE_VALUES = ("true", "1", "yes", "on")
+
 OPTIONAL_MISC_DEFAULTS = {
     "LOG_LEVEL": "INFO",
-    "ARTICLE_RETENTION_ENABLED": "false",
     "ARTICLE_RETENTION_DAYS": "30",
     "ARTICLE_RETENTION_BATCH_SIZE": "200",
     "ARTICLE_RETENTION_INTERVAL_MINUTES": "1440",
@@ -72,6 +80,16 @@ def read_env(path: str) -> dict[str, str]:
                 key, _, val = line.partition("=")
                 result[key.strip()] = val.strip()
     return result
+
+
+def compose_value(raw: str) -> str:
+    """The value Docker Compose would interpolate from a .env line's raw text:
+    quotes removed, and for unquoted values a whitespace-led `#` comment dropped."""
+    raw = raw.strip()
+    if raw[:1] in ("'", '"'):
+        end = raw.find(raw[0], 1)
+        return raw[1:end] if end > 0 else raw[1:]
+    return re.split(r"\s+#", raw, maxsplit=1)[0].strip()
 
 
 def main():
@@ -191,6 +209,18 @@ def main():
         print("\nℹ 自主發現預設關閉（FEED_DISCOVERY_ENABLED=false）；")
         print("  啟用前請先讀 docs/SECURITY.md。其餘 FEED_DISCOVERY_* 參數")
         print("  也都有預設值，見 .env.example。")
+
+    retention_flag = compose_value(existing.get("ARTICLE_RETENTION_ENABLED", "")).lower()
+    if not retention_flag:
+        print("\nℹ 舊正文縮減使用 docker-compose.yml 的預設（ARTICLE_RETENTION_ENABLED=true）：")
+        print("  worker 每天縮減一批超過保存天數、未受使用者保護的舊正文，")
+        print("  保留文章 ID、URL、標題、摘要與使用者紀錄。不想啟用請在 .env 設為 false；")
+        print("  第一次啟用前先備份並用後台 dry-run 預覽（見 README）。")
+    elif retention_flag in RETENTION_TRUE_VALUES:
+        print("\nℹ 舊正文縮減已啟用（ARTICLE_RETENTION_ENABLED=%s）。" % retention_flag)
+    else:
+        print("\nℹ 舊正文縮減已停用（ARTICLE_RETENTION_ENABLED=%s）；" % retention_flag)
+        print("  只有 true/1/yes/on 會啟用排程，這個值不會被本腳本改寫。")
 
     unset_misc = [k for k in OPTIONAL_MISC_DEFAULTS if k not in existing]
     if unset_misc:

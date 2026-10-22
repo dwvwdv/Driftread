@@ -69,7 +69,7 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 #64 新增 `20261013115249_article_storage_history.sql`，由 API 啟動時的 runner 套用；沒有新 exposed schema、Dashboard 設定或環境變數。先備份並停舊 worker，更新 API 並確認 ledger／healthy，再啟動同版 worker／frontend。
 
-確認管理首頁「容量成長趨勢」收到第一筆每日紀錄、`storage` 工作與 heartbeat 正常；worker 隨常駐的來源評審設定監看執行容量採樣，refresh／discovery／retention 全關也不退出；完全停用 worker 的操作見 [README 部署步驟](../README.md#步驟)。`GET /api/admin/retention/history?days=30` 必須由管理 session 或既有機器 API Key 授權，不登入不能讀。觀察至少 24 小時、兩筆不同日採樣後再驗證成長率；同日重啟不得覆寫採樣，不應手動清 ledger 或補造歷史。部署驗收仍由 #83 追蹤，正文縮減繼續維持 `ARTICLE_RETENTION_ENABLED=false`，直到備份／dry-run 驗證完成。
+確認管理首頁「容量成長趨勢」收到第一筆每日紀錄、`storage` 工作與 heartbeat 正常；worker 隨常駐的來源評審設定監看執行容量採樣，refresh／discovery／retention 全關也不退出；完全停用 worker 的操作見 [README 部署步驟](../README.md#步驟)。`GET /api/admin/retention/history?days=30` 必須由管理 session 或既有機器 API Key 授權，不登入不能讀。觀察至少 24 小時、兩筆不同日採樣後再驗證成長率；同日重啟不得覆寫採樣，不應手動清 ledger 或補造歷史。部署驗收仍由 #83 追蹤。正文縮減自 #117 起在 Compose 預設開啟，首次啟用與回滾見 [Compose 預設開啟正文縮減](#compose-預設開啟正文縮減117)。
 
 ## 每表容量與來源入庫觀測（#114）
 
@@ -79,7 +79,28 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 1. 管理首頁「排程器狀態」顯示「正文縮減排程（worker 實際設定）」；顯示「狀態未知」代表 worker 尚未更新或沒有心跳，不代表已停用。
 2. 「每表容量與 MVCC」即時表有資料；下一次每小時採樣後當天的表快照補上，隔一個 UTC 日才有第一個區間增量。
-3. 「來源入庫量與版本更新」列出最近 24 小時的來源；超過門檻只是提示，處置（限額、節流、封存、retention）需另行決定。
+3. 「來源入庫量與版本更新」列出最近 24 小時（可切換 7 天）的來源；超過門檻只是提示，處置（限額、節流、封存、retention）需另行決定。
+
+## Compose 預設開啟正文縮減（#117）
+
+沒有 migration、Dashboard 設定或新環境變數；只改 `docker-compose.yml` 的預設值（`api` 與 `worker` 都是 `${ARTICLE_RETENTION_ENABLED:-true}`）。`.env` 沒有這個變數的部署，更新 compose 檔並重建 worker 後就會開始排程縮減。2026-10-22 查詢時，正式資料庫的 ledger 停在 `20261020132503_cleanup_cascade_indexes.sql`：PR #115、#116 的 migration 尚未套用，同一次部署會一起套用，`article_revisions(recorded_at)` 索引注意事項見上一節。
+
+**部署前**
+
+1. 決定是否要縮減。不要的話先在 `.env` 寫 `ARTICLE_RETENTION_ENABLED=false`，再更新 compose 檔。
+2. 確認資料庫備份可還原；縮減後的正文只能從備份或原站取回。
+3. 預覽：`POST /api/admin/retention/run?retention_days=30&limit=200`（不帶 `dry_run` 就是預覽），記下 `eligible` 與 `content_bytes`。2026-10-22 正式環境符合條件的只有 74 篇。
+4. 記下基準：管理首頁「容量成長趨勢」「每表容量與 MVCC」、`articles` 的 heap／TOAST／index。
+
+**部署**：照一般順序 `docker compose up -d api`，確認 healthy 與 ledger 後 `docker compose up -d worker frontend`。用 `docker compose config | grep ARTICLE_RETENTION_ENABLED` 確認 `api` 與 `worker` 的值一致。
+
+**部署後**
+
+1. 管理首頁「排程器狀態」的「正文縮減排程（worker 實際設定）」應顯示已啟用、30 天、200 篇、1440 分鐘；`retention` 最近一次 run 的 summary 有 `eligible`／`compacted`／`content_bytes`，失敗時 `error` 只記例外類別。佇列裡還沒有 retention 工作時，worker 啟動後就排入並執行第一批；之後由 durable 佇列每 1440 分鐘一次，重啟 worker 不會多跑。
+2. 24–72 小時內每天比對：每來源新增篇數（24 小時／7 天）、版本更新數、`articles` 的 heap／TOAST／index 與資料庫總量。縮減只把空間標成可重用，總量不會下降，只會讓 TOAST 成長放慢。**不要把 `VACUUM FULL` 排成每日例行工作**；需要時照下方「資料庫接近 Supabase 容量上限」手動在離峰執行。
+3. 開啟旗標不代表容量問題解決：目前入庫量下每天需要縮減約 2,100 篇，預設只有 200 篇；估算與提案見 [CRAWLER_OPERATIONS](CRAWLER_OPERATIONS.md#compose-預設開啟與容量模型117)。
+
+**回滾**：在 `.env` 設 `ARTICLE_RETENTION_ENABLED=false` 後 `docker compose up -d worker`（只重建 worker 即可停止排程，`api` 一併重建讓兩邊一致）。已縮減的正文不會因回滾還原，需要時從備份取回。
 
 ## 收錄前來源身分檢查
 
