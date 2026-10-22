@@ -41,7 +41,52 @@ Extension 同步先拉權限 snapshot，剔除失權 pending operation，再用�
 
 本機快取只有摘要和狀態；有效期 24 小時，明確斷線、目前連線收到 401／403、成功切換帳號或 API 時清除，token 只存 Chrome session storage，不跨 Chrome 帳號同步。跨頁面的連線及快取變更由擴充 service worker 序列化，斷線／切帳號會等待已接受的 storage 寫入完成再清除或替換，拒絕舊 connectionId 的後續寫入；細節見 [extension 連線契約](../extension/README.md#安裝與連線)。候選連線驗證失敗保留目前帳號的快取與 pending，同一 API／帳號重新連線保留 queue。沒有 server push；離線時無法即時察覺撤權，須重新連線同步或等待快取過期。沒有完整歷史下載、正文離線閱讀或無限期離線支援。
 
+## 行動裝置閱讀出口（PWA）
+
+Issue #92 的行動出口採 **PWA**，不另建 Flutter app。理由：
+
+- 沿用既有 Angular 前端、Offbeat 元件庫、Supabase 登入與 publication 讀取層，只多一份 manifest、service worker 與離線模組；Flutter 要再維護一套 UI、認證、權限與發佈流程（兩個商店的審核與簽章），對單一自架部署成本過高。
+- `/me/sync` 的 invalidation／100 篇 replacement snapshot 與 `/me/sync/operations` 的離線重送已由 extension 驗證過契約，PWA 直接重用，不新增後端資料模型、API 或 migration。
+- 同一個 frontend image 即可安裝到 Android／iOS 主畫面，部署順序不變。
+
+### Service worker 快取策略
+
+使用 `@angular/service-worker`（版本與 Angular 21 對齊），由 `frontend/ngsw-config.json` 設定，production build 產生 `ngsw-worker.js`／`ngsw.json`；註冊在 `src/app/offline/sw-registration.ts`，以 lazy import 執行，不使用 `provideServiceWorker()`，所以不增加 initial bundle。
+
+- **只快取 app shell**：`index.html`、hash 檔名的 JS／CSS、manifest、icon（install 時 prefetch）。離線時導覽仍可開啟任何前台路由。
+- **任何 `/api/` 回應都不進 Cache Storage**：沒有任何 asset／data group 涵蓋 `/api/**` 或 `/.well-known/**`，ngsw 對未設定的請求直接走網路；`navigationUrls` 也排除這兩個前綴，避免 OAuth／API 導覽被回 `index.html`。帶 Authorization 的私人資料只存在下述 IndexedDB，且依帳號分隔。`src/app/offline/ngsw-config.spec.ts` 守住這條。
+- **`env.js` 不在 app shell**：它是容器啟動時 render 的 runtime config（只含 Supabase URL 與 anon key），改用 `freshness`（network-first，5 秒逾時才回快取），換 Supabase 設定後下次連線即生效；離線時用最後一次成功的版本，讓 Supabase client 能讀回本機 session。首次造訪時 SW 接管頁面後會再請求一次 `env.js` 填入此快取。
+- 沒有應用內「有新版本」提示：新部署在之後的頁面載入生效（ngsw 預設行為）。
+
+frontend nginx 對 `index.html`、`env.js`、`ngsw.json`、`ngsw-worker.js`、`safety-worker.js`、`manifest.webmanifest` 回 `Cache-Control: no-cache`，讓更新檢查與 runtime config 不被 HTTP 快取卡住；manifest 以 `application/manifest+json` 回應。目前 nginx 沒有 CSP，SW 與 manifest 都是同源資源；日後加 CSP 時需允許 `worker-src 'self'`、`manifest-src 'self'`。
+
+### 離線閱讀與重新連線同步
+
+`/me/offline` 列出本機快取、`/me/offline/:id` 顯示單篇摘要（`[innerHTML]` 經 Angular sanitizer，不使用 `bypassSecurityTrustHtml`），連線時提供「線上閱讀全文」與原文連結。語意照 extension（`extension/offline.js`）：
+
+- 第一次按「同步」才建立本機快取（opt-in）。之後登入且連線時，若快取超過 15 分鐘或有待送操作，會在背景同步：觸發時機是載入帳號快取、`online` 事件、頁面回到前景（`visibilitychange`，涵蓋休眠後恢復但 `navigator.onLine` 一直為 true 的 PWA），以及頁面在前景時快取滿 15 分鐘的計時器；已有同步進行時不重複排入。
+- `changed` 時以最近 100 篇整批替換（只保留白名單摘要欄位，不保存正文／search_vector），否則只推進 cursor。快取 24 小時後不再顯示，須連線重新同步，以免顯示已撤權內容。
+- 已讀／收藏／稍後讀先樂觀疊加在快照上並 coalesce 寫入佇列（同一篇同一種只留最後期望狀態，最多 100 篇）。同步順序同 extension：先帶 `pending_ids` 拉 snapshot 剔除已失權的操作（只剔除本次有詢問的文章），逐筆 `POST /api/me/sync/operations`，最後再拉 authoritative snapshot。404／409 丟棄該操作並回到伺服器狀態（等同回滾，畫面提示）；503、網路失敗、401／403 保留佇列等下次同步。IndexedDB 寫入失敗立即回滾樂觀狀態。
+- 頁尾狀態列顯示 ONLINE／OFFLINE 與待同步數量。
+
+### 帳號隔離
+
+- IndexedDB `driftread-offline` 以 `user_id` 為 key，並記錄唯一 owner；登入（或切換）為某帳號時，同一個交易內刪除其他帳號的快取與待送佇列。寫入時在交易內再比對 owner，舊帳號延遲回應或寫入不能把資料寫回。
+- 本執行期間 session 結束（登出、refresh token 被撤銷）會清空整個離線資料庫；前端登出按鈕先清空再呼叫 Supabase sign-out，所以離線時登出（Supabase 無法連線、session 未移除）仍會清掉私人快取。
+- 前端登出時若 Supabase sign-out 失敗而 session 仍在，清空後會重新為該使用者建立空快取（`reclaim()`），離線閱讀不會停在無法寫入的狀態。
+- 同步開始時先經 `getSession()` 取得 access token（過期會先刷新；恢復前景或重新連線時 signal 可能仍是過期 token），再鎖定並明確放進 Authorization（`authInterceptor` 不覆寫既有 Authorization），每次請求前檢查帳號與世代未變；切換帳號後不會用 B 的 token 送出 A 的操作，A 的操作也已被刪除。新帳號的同步不會併入上一個帳號仍在進行的同步，而是等它在檢查點停下後另起一輪；登出或切換帳號時「同步中」狀態一併重設。
+- 未恢復 session 而改顯示上一個 owner 快取（下方例外）時，連線後頁尾的待同步數與最後同步時間也一起隱藏。
+- 例外：access token 在離線期間過期時 Supabase 無法恢復 session，但沒有登出事件。此時 `/me/offline` 只在**離線**狀態下以唯讀方式顯示上次 owner 的 24 小時內快取（不能排入操作）；一旦連線且沒有 session 就不顯示，等使用者登入（同帳號保留、不同帳號刪除）。這與擴充「browser 重啟後保留 queue」的取捨相同；共用裝置請先登出。
+
+### 已知限制
+
+- 離線只有摘要，沒有正文離線閱讀；完整歷史下載與 server push 撤權同 extension 不提供。
+- `navigator.onLine` 只反映網路介面；captive portal 仍視為線上，請求失敗時以錯誤訊息處理並保留佇列。
+- iOS Safari 的 PWA 儲存可能被系統回收；IndexedDB 不可用（例如部分私密瀏覽）時離線功能停用，線上閱讀不受影響。
+
 ## 驗證
+
+PWA：`src/app/offline/*.spec.ts` 以 fake-indexeddb 驗證快取依 user 分隔、切帳號／登出清空、延遲寫入被拒、invalidation／replacement snapshot、離線佇列重送（原帳號 token）、404 丟棄回滾、503／網路失敗保留、IndexedDB 寫入失敗回滾、帳號切換中斷重送，以及 SW 設定不涵蓋 `/api/`；元件 spec 覆蓋登入提示、唯讀 dormant、離線狀態、sanitizer 與登出先清快取。Production build 另以 Chromium（Playwright）對 fake API 走查 manifest、SW 註冊、離線重新載入、重新連線重送、Cache Storage 無 `/api/` 與 390px 版面；真手機安裝、iOS Safari 與真 Supabase 尚未驗證。
 
 `backend/tests/test_sync_postgres.py` 使用獨立 PostgreSQL 測試資料庫驗證角色權限、owner RLS 寫入、交易 race／rollback、刪除與撤權、使用者搜尋隔離。`test_mcp.py` 使用官方 ClientSession 做 protocol interoperability；extension Node tests 覆蓋 account／options lifecycle、權限預檢、404 後重試及網路失敗。daily frontend tests 覆蓋登入、時區、空畫面、錯誤、帳號切換與 destroy。
 

@@ -97,6 +97,50 @@
           }
         </ul>
       }
+      <h3 class="ob-label sub">正文縮減排程（worker 實際設定）</h3>
+      @if (ops.worker_config; as reported) {
+        <p class="hint" [class.warning]="reported.stale">
+          {{ reported.hostname }} 於 {{ reported.reported_at | date: 'yyyy/MM/dd HH:mm:ss' }} 回報{{
+            reported.stale ? '（心跳已過期，可能不是目前的設定）' : ''
+          }}。
+        </p>
+        @if (reported.config.retention.enabled) {
+          <p class="warning" data-retention="apply">
+            已啟用：每 {{ reported.config.retention.interval_minutes }} 分鐘直接縮減最多
+            {{ reported.config.retention.batch_size }} 篇超過
+            {{ reported.config.retention.days }} 天的正文（排程不做 dry-run 預覽）。
+          </p>
+        } @else {
+          <p data-retention="disabled">
+            未啟用：worker 讀到的 ARTICLE_RETENTION_ENABLED 不是 true，排程不會縮減任何正文；
+            後台手動縮減仍預設 dry-run。
+          </p>
+        }
+      } @else {
+        <p class="warning" data-retention="unknown">
+          狀態未知：worker 尚未回報實際設定（可能是舊版 worker 或尚無心跳），不能假設已停用。
+        </p>
+      }
+      @if (ops.latest_runs; as latest) {
+        <ul class="operation-list" aria-label="各排程最近一次執行">
+          @for (kind of latestKinds; track kind) {
+            <li>
+              <strong>{{ kind }}</strong>
+              @if (latest[kind]; as run) {
+                <span [class.warning]="['failed', 'partial', 'interrupted'].includes(run.status)">{{
+                  runStatus(run.status)
+                }}</span>
+                <span class="hint">開始 {{ run.started_at | date: 'yyyy/MM/dd HH:mm:ss' }}</span>
+                @if (run.error) {
+                  <span class="warning">{{ run.error }}</span>
+                }
+              } @else {
+                <span class="hint">{{ ops.retention_days }} 天內沒有執行紀錄</span>
+              }
+            </li>
+          }
+        </ul>
+      }
       <p class="hint">
         最近 {{ ops.recent_runs.length }} 輪：{{
           ops.recent_failures
@@ -240,6 +284,8 @@
     }
   </ob-card>
 </section>
+
+<app-storage-insights />
 
 <section class="block">
   <ob-card heading="手動觸發" meta="ON DEMAND">

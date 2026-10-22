@@ -1326,3 +1326,59 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 待使用者決定：是否接受純日期更正、每來源每日入庫預算與告警、正文保存天數與是否啟用定時 retention、探索暫停期間未抽取版本是否允許縮減（代價是那些正文的外連永遠不會被探勘）。
 
 驗證：本地 PostgreSQL 16 跑完整 backend **1625 passed**（含真 PostgreSQL 測試）。新增 `tests/test_ingest_write_amplification_postgres.py`：先在移除新 migration 的情況下確認 4 個測試中 3 個失敗（重現根因），套用後全過；涵蓋連續 20 次 restamp 不改文章 ctid／版本數／`sync_changes`、標題／正文／摘要／作者變動仍建立版本並帶入新日期、NULL 日期補一次、provenance hash 立即更新與 `last_seen_at` 6 小時節流。`tests/test_articles_service.py` 新增持久化暫停仍入庫但不碰 frontier、開關讀取失敗不影響入庫、每批讀一次開關三個測試。文件檢查通過。**未驗證**：正式環境部署後的寫入量變化（需部署後 24–72 小時比對每小時新增文章、更新、版本、探索 target 與各表容量），未動 frontend。
+
+## 階段五十六：#114 D／E 的容量與入庫觀測，以及 #92 PWA 行動閱讀出口（PR #116，issue #114／#92，2026-10-22）
+
+PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才能決定政策：營運無法分辨 DB 成長是有效資料還是 VACUUM 已回收、可在表內重用但檔案沒縮小的空間；也看不到哪個來源一天入庫多少、哪個來源反覆產生版本；正式 `worker_runs` 沒有 retention 紀錄，無法確認 worker 容器的 `ARTICLE_RETENTION_ENABLED` 實際值。本 PR 只做唯讀觀測與後台顯示，不改任何產品政策。
+
+**E：每表容量與 MVCC**
+
+- 新 migration `20261022020000_storage_observability.sql` 在既有每日容量採樣的同一列保存 `tables` 快照（同一 advisory lock、UTC 每日去重、90 天保存）：`driftread` 總量前 25 大的表，加上固定的 articles／article_revisions／article_discoveries／sync_changes／discovery_targets／background_jobs，記錄 heap／TOAST／index bytes、live／dead tuples、累積 INSERT／UPDATE／DELETE／HOT、vacuum／autovacuum 時間與次數，以及資料庫 `stats_reset`。只讀 catalog 與統計，不掃表內容；部署當天已採樣的日子會補一次表快照，不重掃文章。
+- `GET /admin/retention/tables` 回傳即時快照與相鄰兩日的區間增量。累積計數遇到 stats reset、單表重設或 crash recovery 而變小時，增量為 null（後台顯示「無法計算」），不顯示負數；容量變化保留負值。dead tuples 是估計值，不安裝 `pgstattuple`。
+
+**D 與 B 的最後一點：來源入庫量與版本異常**
+
+- `source_ingest_activity` 只走新增的 `article_revisions(recorded_at)` 索引的時間範圍，再以主鍵關聯文章，不全表掃描。新文章入庫時一定在同一交易記錄版本，所以新增篇數即使第 1 版被 10 版上限清掉仍是精確值；版本更新數在單篇一天超過 10 次時是下限。另外以前一版比較，區分正文變更與僅中繼資料變更，並列出舊文回填篇數，區分刊登時間與入庫時間。
+- `GET /admin/operations/ingest` 列出最近 24 小時新增最多與版本更新最多的來源。標示門檻：新增 ≥ 500 篇；版本更新 ≥ 200 次；或至少 30 次且每篇平均 ≥ 3 次。只標示，不限額、不節流、不封存。
+
+**retention 實際狀態**
+
+- 每個 worker loop 的 heartbeat 帶上 worker 自己解析的排程設定（refresh／discovery 部署開關、retention 啟用、mode、天數、批次、間隔；只有布林與整數），`/admin/operations` 回傳最新一筆帶設定的 `worker_config` 與各 kind 最近一次 run（新增 `worker_runs(kind, started_at DESC)` 索引）。舊版 worker 不回報時顯示「狀態未知」，不當成已停用。API 容器的環境可能與 worker 不同，所以不從 API 讀。
+- 後台管理首頁新增「來源入庫量與版本更新」「每表容量與 MVCC」面板（寬表在自己的捲動區內，不撐寬 390px 頁面），並在排程器狀態顯示正文縮減排程的實際設定與 retention／storage 最近一次執行。
+
+**沒做的事**
+
+- 沒有每來源每日入庫上限、異常來源節流或封存、retention 啟用或預設值變更，也沒有刪除資料或索引、改 `search_vector`；這些仍待使用者決定。沒有每小時寫入量的時間序列；部署前後 24–72 小時的比對要用這些面板人工觀察。
+- 部署注意：`article_revisions(recorded_at)` 以一般 `CREATE INDEX` 建立，建立期間會短暫擋住文章更新，建議離峰部署（見 RUNBOOK）。
+- review 修正（Codex P2）：原本超標來源數是從截斷後的兩份前 N 名推算，`limit` 較小時會少算；更嚴重的是只靠「每篇平均版本」超標的來源總更新數未必排得進前 N，會完全看不到。改為由 SQL 在截斷前對全部來源套用門檻，回傳 `flagged_total` 與最多 `limit` 筆的 `flagged` 清單，後台在警示中列出來源名稱；門檻仍只在 `ingest_activity.py` 定義，以參數傳入（migration 尚未合併，直接修改同一支）。SQL fixture 以 `limit=1` 確認不在前 N 名的來源仍被計入，並驗證門檻參數為 0／NULL 時拒絕。
+- 既有文件落差：FEATURES 的索引清單列了 `articles(feed_id, fetched_at DESC)`，repo 實際沒有這個索引；本 PR 未修，新增篇數查詢改從 revisions 推導，不依賴它。
+
+驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1646 passed／0 skipped**（含真 PostgreSQL）。新增 `tests/test_storage_observability_postgres.py` 與 `tests/sql/test_storage_observability.sql`，涵蓋 migration 重跑、快照格式與大小加總、同日補表快照且不重掃文章、CHECK 約束、新增／回填／metadata-only／正文變更計數、limit、24 小時視窗排除、參數驗證、anon／authenticated 無 EXECUTE、SECURITY INVOKER，並以 EXPLAIN 確認兩個新索引可被使用；`test_table_storage.py`、`test_ingest_activity.py`、`test_operations.py` 覆蓋區間增量、reset 處理、門檻判斷、端點認證與上下限、worker 設定回報。frontend 單獨驗證 43 files／499 tests 與 production build 通過（新程式碼都在 lazy chunk，增量出現在共用 chunk）。文件檢查與 `git diff --check` 通過。**未驗證**：瀏覽器實機（含 390px）、Docker 與正式 Supabase 部署。
+
+**#92：行動裝置閱讀出口採 PWA**
+
+形式決定採 PWA 而非 Flutter：沿用既有 Angular 前端、Offbeat 元件庫、Supabase 登入與 publication 讀取層，`/me/sync` 的 invalidation／100 篇 replacement snapshot 與 `/me/sync/operations` 離線重送契約已由 extension 驗證，可直接重用；Flutter 需另維護一套 UI、認證與商店發佈，對單一自架部署成本過高。這部分不新增後端資料模型、API 或 migration。
+
+- 新增 manifest、icon 與 `@angular/service-worker`（21.2.12，與 core 對齊）。SW 只快取 app shell；`/api/**`、`/.well-known/**` 不進 Cache Storage，也不被導覽 fallback 成 index.html，避免共用快取造成跨帳號洩漏。容器啟動時 render 的 `env.js` 排除在 app shell 之外，改為 network-first，換 Supabase 設定後下次連線即生效。SW 以 lazy import 註冊、不用 `provideServiceWorker()`。
+- `/me/offline`、`/me/offline/:id`：IndexedDB 以 user_id 分隔保存最近 100 篇摘要（白名單欄位，不存正文），離線可列出與閱讀，摘要走 `[innerHTML]` sanitizer。已讀／收藏／稍後讀樂觀疊加並 coalesce 排隊（最多 100 篇），重新連線先剔除失權操作，再用原帳號 token 重送，最後拉回 authoritative snapshot；404／409 丟棄並回到伺服器狀態，503／網路失敗保留，IndexedDB 寫入失敗立即回滾。
+- 帳號隔離：claim 新帳號時同交易刪除其他帳號的快取與佇列；寫入在交易內比對 owner，延遲回應不能寫回；執行期間 session 結束或按登出即清空。`authInterceptor` 改為不覆寫呼叫端已帶的 Authorization，讓重送鎖定佇列主人的 token（既有只有管理 session 會自帶，帶的是同一個 token，行為不變）。
+- 頁尾 ONLINE／OFFLINE 與待同步數；nginx 對 index.html、env.js、ngsw.json、SW 檔與 manifest 回 no-cache，manifest 補 MIME（location 層重寫安全 header）。
+
+- review 修正（Codex P2）：`record`／`expired` 是 `computed`，`Date.now()` 不是 reactive dependency；離線頁一直開著或已安裝的 PWA 暫停後恢復時，若快取、模式與網路狀態都沒變，超過 24 小時的摘要仍會繼續顯示。改用時間 signal：快取到期時由計時器更新，頁面回到前景（`visibilitychange`）時也更新。新增兩個測試，修正前皆失敗。
+- review 修正（Codex P2）：背景同步原本只在載入快取與離線→線上時判斷，頁面一直在線或休眠後恢復時 `navigator.onLine` 仍為 true，快取會一直停在舊版本直到 24 小時被隱藏。改為回到前景時與頁面在前景時快取滿 15 分鐘的計時器也會背景同步；計時器只在 `updatedAt` 數值改變時重排，同步失敗不會立即重試，已有同步進行時也不重複排入（喚醒時計時器與 visibility 事件會同時觸發）。新增兩個測試，修正前皆失敗。
+
+**`/code-review` 修正（9 項，皆為本 PR 新增的程式）**
+
+- 離線同步改由 `AuthService.currentSession()`（Supabase `getSession()`，過期先刷新）取得 token：恢復前景或重新連線時 signal 可能仍是過期 token，原本會 401 且 `TOKEN_REFRESHED` 同帳號不會重試。
+- 同步途中登出或切換帳號：`_syncing` 原本只在世代未變時重設，下一位使用者的同步按鈕會一直停在「同步中」；現在登出／切換時重設，且最後一輪結束時一律清除。新帳號的 `sync()` 原本會併入上一帳號的在途同步並因 `!ok` 被吞掉，現在依世代區分，等舊同步停下後另起一輪。
+- 登出時 Supabase sign-out 失敗（離線）而 session 仍在：`clearAll()` 已清掉 owner，原本之後所有寫入都靜默失敗；現在清除 owner 記錄並由 `reclaim()` 重新認領仍登入的使用者。
+- 頁尾待同步數與最後同步時間原本讀未過濾的快取，dormant 狀態連線後會顯示上一個帳號的佇列；改為與可見快取一致。
+- 後端：各 kind 最近一次 run 由 5 次 PostgREST 請求改為一支 `latest_worker_runs(text[])` RPC（INVOKER、service-only，真 PostgreSQL 測試）；`/admin/retention/tables` 的兩個獨立讀取改並行；門檻判斷式只留 SQL 一份，每筆回傳 `alerts`，Python 只傳門檻值，`>=` 邊界由 SQL fixture 驗證。
+- 前端：兩個後台面板共用 `shared/bytes.ts` 的 MiB 格式化。
+- 前端新增 5 個測試（刷新後 token、登出中同步、跨帳號不併入、sign-out 失敗後重新認領、dormant 連線後隱藏佇列），修正前皆失敗。
+
+沒做什麼／已知未處理：離線不含正文、沒有應用內新版提示、沒有 server push 撤權（同 extension，24 小時 TTL）。token 在離線期間過期時 Supabase 無法恢復 session，此時只在離線狀態唯讀顯示上次帳號的快取，連線後隱藏、不刪除；共用裝置需先登出。nginx 沒有 CSP，日後加 CSP 需允許 `worker-src`／`manifest-src 'self'`。
+
+驗證（PWA）：新增 55 項 frontend 測試（含 fake-indexeddb 的帳號分隔、切帳號、重送、回滾與 ngsw 設定）。以 Playwright Chromium 對 production build 的 fake API 於 390×844 走查 manifest、SW 註冊、離線重新載入、重新連線重送（原 token）、Cache Storage 無 `/api/`、登出清空 IndexedDB 與無水平溢出。未驗證：nginx 設定（沙箱無 Docker daemon）、真手機安裝（Android／iOS）、真 Supabase 登入與正式部署。
+
+合併與 review 修正後整體驗證：backend **1648 passed**（含真 PostgreSQL）；frontend **54 files／565 tests** 通過，production build 成功，initial bundle 514.41 kB（既有 500 kB 預算警告延續；本 PR 前為 512.45 kB，未放寬預算）。

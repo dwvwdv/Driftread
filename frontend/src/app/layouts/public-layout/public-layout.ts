@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, ElementRef, inject, signal } from '
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
+import { OfflineReadingService } from '../../offline/offline-reading';
 import { AuthService } from '../../services/auth';
 import { ReadingStreamService } from '../../services/reading-stream';
 import { ObIcon } from '../../ui/icon/icon';
@@ -37,6 +38,12 @@ export class PublicLayout {
   // ReadingStreamService is a root singleton, so this and the stream page
   // share the same counts rather than each fetching their own.
   protected stream = inject(ReadingStreamService);
+  // Root singleton constructed here so its identity effect runs on every public
+  // page: it drops the previous account's offline cache and queue on an
+  // account switch, replays queued operations on reconnect, and feeds the
+  // online/offline status in the footer. Lives in this lazy chunk, not the
+  // initial bundle.
+  protected offline = inject(OfflineReadingService);
   private router = inject(Router);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
 
@@ -110,7 +117,12 @@ export class PublicLayout {
   }
 
   async signOut(): Promise<void> {
+    // Clear the private offline cache first: signOut() keeps the session when
+    // it cannot reach Supabase (offline), but the user asked to leave.
+    await this.offline.clearAll();
     await this.auth.signOut();
+    // Still signed in (sign-out failed): give the reader back to that user.
+    this.offline.reclaim();
     this.accountOpen.set(false);
     void this.router.navigateByUrl('/');
   }

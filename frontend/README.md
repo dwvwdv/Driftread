@@ -95,6 +95,16 @@ Nord 是為語法高亮設計的低對比色票，數個自然搭配在 UI 文�
 `FocusTrap`，並且離場時把焦點還給開啟它的元素。行動版抽屜除了 transform 位移還要
 `visibility: hidden`，否則鍵盤使用者會 Tab 進一個看不見的選單。
 
+## PWA 與離線閱讀
+
+production build 由 `ngsw-config.json` 產生 Angular service worker；`ng serve`（dev mode）不註冊。
+設計與取捨見 [docs/CONSUMPTION_SURFACES.md 的行動裝置閱讀出口](../docs/CONSUMPTION_SURFACES.md#行動裝置閱讀出口pwa)。改動時：
+
+- **SW 只快取 app shell。** 不要把 `/api/**`、`/.well-known/**` 或任何帶 Authorization 的請求加進 `assetGroups`／`dataGroups`——Cache Storage 不分帳號，放進去就是跨帳號洩漏。`src/app/offline/ngsw-config.spec.ts` 會擋。
+- **`env.js` 不能進 app shell。** 它在容器啟動時 render，只能是 network-first 的 `dataGroups`；放進 `/*.js` 會讓 build 時的空設定永遠蓋掉正式設定。
+- **私人離線資料只經 `OfflineStore`。** 它以 user id 分隔並在交易內檢查 owner；不要另外用 `localStorage` 或 Cache Storage 存個人文章或待送操作。
+- **重送用原帳號的 token。** `authInterceptor` 不覆寫呼叫端已帶的 Authorization；離線重送就是靠這點把 token 鎖在佇列的主人上。
+
 ## 後台
 
 `/admin/**` 是獨立的路由樹掛在 `AdminLayout` 下，前台沒有任何連到它的連結。

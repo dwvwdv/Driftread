@@ -78,6 +78,28 @@ worker 隨常駐的來源評審設定監看另跑 `storage` 佇列工作，每�
 
 部署需新增容量歷史 migration，順序見 [RUNBOOK](RUNBOOK.md#每日容量歷史)。只有 service_role 可讀寫私有 RLS 表並呼叫 INVOKER RPC，PUBLIC／anon／authenticated 無權限。
 
+## 每表容量與 MVCC 觀測
+
+#114 E：資料庫逼近 500 MB 時，要分清「有效資料成長」與「VACUUM 已回收、可在表內重用但檔案沒縮小的空間」，不能把相鄰兩日快照的差額都歸因於 bloat，也不應把 `VACUUM FULL` 當例行任務（`ACCESS EXCLUSIVE` 鎖、重建暫存空間與逾時風險，手動步驟見 [RUNBOOK](RUNBOOK.md#資料庫接近-supabase-容量上限)）。
+
+`20261022020000_storage_observability.sql` 在既有每日採樣的同一列新增 `tables` 快照（同一 advisory lock、UTC 每日去重與 90 天保存期）。`table_storage_stats()` 只讀 catalog 與 `pg_stat_user_tables`／`pg_stat_database`，不掃表內容；取 `driftread` schema 依總量前 25 大的表，並固定包含 `articles`、`article_revisions`、`article_discoveries`、`sync_changes`、`discovery_targets`、`background_jobs`。每表保存 heap（`pg_table_size` 扣掉 TOAST）、TOAST（含其索引）、index、合計 bytes，`n_live_tup`、`n_dead_tup`、累積 `n_tup_ins／upd／del／hot_upd`、`last_vacuum`、`last_autovacuum`、`vacuum_count`、`autovacuum_count`，以及資料庫層級的 `stats_reset`。部署當天已採樣過的日子會在下一次每小時檢查補一次表快照，不重掃文章、不改當天 aggregate。
+
+`GET /api/admin/retention/tables?days=7`（`days` 1–90）回傳即時的 `current`（同一函式，GET 不寫入）與相鄰兩筆已保存表快照之間的 `intervals`（最新在前，缺日保留實際間隔）。區間增量是累積計數相減：任一計數變小（單表重設、crash recovery）或 `stats_reset` 改變時，該表的 INSERT／UPDATE／DELETE／HOT 為 null（後台顯示「無法計算」），不顯示負數；新出現的表也不相減。容量變化保留負值。`n_dead_tup` 與比例是 PostgreSQL 的估計值，代表可被 VACUUM 回收的舊列版本；確切的可用空間需要 `pgstattuple` 之類的擴充，本版不安裝。
+
+## 來源入庫量與版本異常
+
+#114 D 與 B 的最後一點：只做觀察與後台標示，**不**限制每來源每日入庫量、不節流、不封存、不啟用 retention；那些是待使用者決定的產品政策。
+
+`GET /api/admin/operations/ingest?limit=10`（`limit` 1–50）呼叫 `source_ingest_activity(24, limit, …門檻)`，回傳最近 24 小時：
+
+- `top_ingest`：新增文章最多的來源，含其中 `backfill`（舊文回填）篇數，區分刊登時間與入庫時間。
+- `top_revisions`：版本更新（`revision_number > 1`）最多的來源，含被更新的文章數、與前一版比較的正文變更數與僅中繼資料變更數（前一版已清除者兩者都不計）。
+- `flagged`／`flagged_sources`：在截斷前對**全部**來源套用門檻的結果。只靠「每篇平均版本」超標的來源，總更新數未必排得進 `top_revisions`；所以超標總數與清單（最多 `limit` 筆）由 SQL 另外計算，不從兩份前 N 名推算。門檻值只在 Python 定義、以參數傳入；判斷式只在 SQL 寫一次，每筆回傳 `alerts`（超標原因），API 原樣顯示。
+
+查詢只走新索引 `article_revisions(recorded_at)` 的時間範圍，再以主鍵關聯文章，不全表掃描 `article_revisions` 或 `articles`。每篇新文章入庫時都會在同一交易記錄版本，之後的版本更新，所以新增篇數即使第 1 版已被 10 版上限清掉仍是精確值；版本更新數在單篇一天超過 10 次時是下限。`article_revisions` 只新增不更新，額外索引不影響 HOT 更新。
+
+標示門檻（`backend/services/ingest_activity.py`，也列在 [FEATURES](FEATURES.md#6-生效中的限制與門檻)）：24 小時新增 ≥ 500 篇；版本更新 ≥ 200 次；或至少 30 次更新且每篇平均 ≥ 3 次。超過門檻只在後台列出原因與筆數，請人工判斷是真實新聞量還是來源反覆重送相同項目。
+
 ## 來源抓取診斷（#106）
 
 時間欄位分別表示：`last_fetch_at` 是外連開始嘗試，`last_ok_at` 是 HTTP 抓取／解析成功（包含 304），`last_fetched_at` 是既有刷新完成時間（也包含准入排除）。`last_ok_at` 不代表文章已成功入庫；寫入失敗仍保留傳輸成功的證據，並另外記錄失敗、退避與下次嘗試。
@@ -105,6 +127,8 @@ worker 隨常駐的來源評審設定監看另跑 `storage` 佇列工作，每�
 ## Worker 監控
 
 `GET /api/admin/operations?limit=20`（需 `X-API-Key`）提供 worker heartbeat、最近迴圈與最近失敗數。refresh、discovery、retention、storage 分別記錄，每 30 秒更新 heartbeat；超過 90 秒視為 stale。正在執行但 heartbeat 過期的 run 在讀取時呈現 interrupted；尚無紀錄呈現未知。這是近期執行視窗，不是每日累積報表。
+
+近期視窗常被頻繁的 refresh 填滿，所以另回傳 `latest_runs`：每種 kind 在保存期內最近一次 run，沒有則為 null；由 `latest_worker_runs(kinds)` RPC 一次取回（每個 kind 一次 `worker_runs(kind, started_at DESC)` 索引的 LIMIT 1 查詢），不為每個 kind 各發一次 PostgREST 請求。每個 worker loop 的 heartbeat 另帶 `config`：該 worker 程序自己解析的 `FEED_REFRESH_ENABLED`、`FEED_DISCOVERY_ENABLED`，以及 `ARTICLE_RETENTION_ENABLED`／保存天數／批次／間隔（只有布林與整數，無密鑰）。`worker_config` 取最新一筆帶設定的 heartbeat，標示回報時間與是否過期；舊版 worker 不帶設定時為 null，後台顯示「狀態未知」，不當成已停用。排程縮減啟用時一律直接套用（`mode=apply`），不做 dry-run；後台手動縮減仍預設 dry-run。API 容器的環境變數可能與 worker 不同，所以不從 API 讀取。
 
 監控寫入失敗會記錄 log，不停掉擷取。私有表不開放 anon／authenticated。run 與 heartbeat 保留 30 天，每小時最多清除 1000 筆過期紀錄。狀態查詢最多回傳 100 個 run、200 個 worker。主要文章寫入／抽取移到 thread，但其他短同步 DB 操作仍可能短暫延遲 event loop，heartbeat 並非獨立程序的存活探針。
 

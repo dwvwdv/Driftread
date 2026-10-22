@@ -200,13 +200,18 @@ describe('AdminService 409 handling', () => {
     service.operations().subscribe();
     service.storageStats().subscribe();
     service.storageHistory().subscribe();
-    for (const path of [
-      '/admin/operations',
-      '/admin/retention/stats',
-      '/admin/retention/history',
-    ]) {
+    service.tableStorage().subscribe();
+    service.ingestActivity().subscribe();
+    for (const [path, param, value] of [
+      ['/admin/operations', null, null],
+      ['/admin/retention/stats', null, null],
+      ['/admin/retention/history', 'days', '30'],
+      ['/admin/retention/tables', 'days', '7'],
+      ['/admin/operations/ingest', 'limit', '10'],
+    ] as const) {
       const request = httpMock.expectOne((req) => req.url.endsWith(path));
       expect(request.request.method).toBe('GET');
+      if (param) expect(request.request.params.get(param)).toBe(value);
       expect(request.request.headers.get('x-manage-session')).toBe('otp-token');
       expect(request.request.headers.get('Authorization')).toBe('Bearer user-token');
       expect(request.request.headers.has('x-api-key')).toBe(false);

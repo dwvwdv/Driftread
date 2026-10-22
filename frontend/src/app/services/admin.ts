@@ -11,6 +11,8 @@ import {
   ArticleStorageStats,
   StorageHistory,
   OperationsStatus,
+  IngestActivity,
+  TableStorageHistory,
   DiscoveryCycleSummary,
   DiscoverySource,
   DiscoveryStats,
@@ -344,6 +346,22 @@ export class AdminService {
         { headers: this.headers() },
       )
       .pipe(catchError((error) => this.report(error, '儲存全域設定失敗')));
+  }
+
+  tableStorage(days = 7): Observable<TableStorageHistory> {
+    return this.get(
+      '/admin/retention/tables',
+      '讀取每表容量失敗',
+      new HttpParams().set('days', days),
+    );
+  }
+
+  ingestActivity(limit = 10): Observable<IngestActivity> {
+    return this.get(
+      '/admin/operations/ingest',
+      '讀取來源入庫量失敗',
+      new HttpParams().set('limit', limit),
+    );
   }
 
   storageHistory(): Observable<StorageHistory> {

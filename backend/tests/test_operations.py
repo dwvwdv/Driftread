@@ -123,6 +123,8 @@ def test_stale_workers_and_interrupted_runs_are_explicit():
         {"id": "r", "worker_id": "w", "status": "running"},
         {"id": "ok", "worker_id": "w", "status": "succeeded"},
     ])
+    db.rpc.side_effect = lambda name, params: MagicMock(
+        execute=MagicMock(return_value=SimpleNamespace(data=[] if name == "latest_worker_runs" else {})))
     with patch.object(operations, "utcnow", return_value=now):
         result = operations.operations_status(db, 5)
     assert result["workers"][0]["stale"] is True
@@ -130,6 +132,79 @@ def test_stale_workers_and_interrupted_runs_are_explicit():
     assert result["recent_runs"][1]["status"] == "succeeded"
     assert result["recent_failures"] == 1
     runs.select.return_value.order.return_value.limit.assert_called_once_with(5)
+    # Old worker images report no config: unknown, not "disabled".
+    assert result["worker_config"] is None
+    assert result["latest_runs"] == {kind: None for kind in operations.RUN_KINDS}
+
+
+def test_latest_run_per_kind_and_newest_reported_worker_config():
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    config = {"refresh_enabled": True, "discovery_deployment_enabled": True,
+              "retention": {"enabled": False, "mode": "disabled", "days": 30,
+                            "batch_size": 200, "interval_minutes": 1440}}
+    db = MagicMock()
+    heartbeat, runs, extra = MagicMock(), MagicMock(), MagicMock()
+    extra.select.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[])
+    db.table.side_effect = lambda name: {"worker_heartbeats": heartbeat, "worker_runs": runs}.get(name, extra)
+    heartbeat.select.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[
+        {"worker_id": "old", "hostname": "h1", "status": "running", "heartbeat_at": now.isoformat()},
+        {"worker_id": "new", "hostname": "h2", "status": "running", "config": config,
+         "heartbeat_at": (now - timedelta(seconds=10)).isoformat()},
+    ])
+    runs.select.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[])
+    retention_run = {"id": "ret", "worker_id": "gone", "kind": "retention", "status": "running"}
+    rpc_calls = []
+
+    def rpc(name, params):
+        rpc_calls.append((name, params))
+        data = [dict(retention_run)] if name == "latest_worker_runs" else {}
+        return MagicMock(execute=MagicMock(return_value=SimpleNamespace(data=data)))
+
+    db.rpc.side_effect = rpc
+    with patch.object(operations, "utcnow", return_value=now):
+        result = operations.operations_status(db, 20)
+    # One round-trip for every kind, not one query per kind.
+    assert ("latest_worker_runs", {"p_kinds": list(operations.RUN_KINDS)}) in rpc_calls
+    runs.select.return_value.eq.assert_not_called()
+    # A run whose worker no longer heartbeats is interrupted, like the recent list.
+    assert result["latest_runs"]["retention"]["status"] == "interrupted"
+    assert result["latest_runs"]["storage"] is None
+    assert result["worker_config"] == {"worker_id": "new", "hostname": "h2",
+        "reported_at": (now - timedelta(seconds=10)).isoformat(), "stale": False,
+        "status": "running", "config": config}
+
+
+def test_scheduler_config_reflects_worker_env(monkeypatch):
+    monkeypatch.setenv("ARTICLE_RETENTION_ENABLED", "yes")
+    monkeypatch.setenv("ARTICLE_RETENTION_DAYS", "45")
+    monkeypatch.setenv("ARTICLE_RETENTION_BATCH_SIZE", "5000")
+    monkeypatch.setenv("ARTICLE_RETENTION_INTERVAL_MINUTES", "60")
+    monkeypatch.setenv("FEED_REFRESH_ENABLED", "false")
+    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "false")
+    assert operations.scheduler_config() == {
+        "refresh_enabled": False, "discovery_deployment_enabled": False,
+        "retention": {"enabled": True, "mode": "apply", "days": 45, "batch_size": 1000,
+                      "interval_minutes": 60}}
+    # A misspelled boolean must read as disabled, as the scheduler itself does.
+    monkeypatch.setenv("ARTICLE_RETENTION_ENABLED", "ture")
+    assert operations.scheduler_config()["retention"]["mode"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_every_loop_heartbeat_reports_parsed_config(monkeypatch):
+    monkeypatch.setenv("ARTICLE_RETENTION_ENABLED", "false")
+    stop = asyncio.Event()
+
+    async def action(db):
+        stop.set()
+        return {"recorded": False}
+
+    db = MagicMock()
+    with patch.object(worker, "get_client", return_value=db):
+        await worker._run_loop(stop, "storage", 0, action, lambda result: result)
+    rows = [call.args[0] for call in db.table.return_value.upsert.call_args_list]
+    assert rows and all(row["config"]["retention"]["enabled"] is False for row in rows)
+    assert all(row["config"]["retention"]["mode"] == "disabled" for row in rows)
 
 
 def test_admin_operations_requires_admin_key_and_bounds_response():

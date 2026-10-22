@@ -25,6 +25,21 @@ export class AuthService {
     return this.client !== null;
   }
 
+  /**
+   * The session with a usable access token. getSession() refreshes an expired
+   * token first; the signal can still hold the expired one right after a
+   * resume or reconnect, before Supabase's own refresh emits TOKEN_REFRESHED.
+   */
+  async currentSession(): Promise<Session | null> {
+    if (!this.client) return this.session();
+    try {
+      const { data } = await this.client.auth.getSession();
+      return data.session;
+    } catch {
+      return this.session();
+    }
+  }
+
   get accessToken(): string | null {
     return this.session()?.access_token ?? null;
   }

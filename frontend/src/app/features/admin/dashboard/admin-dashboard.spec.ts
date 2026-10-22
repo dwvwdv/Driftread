@@ -47,6 +47,8 @@ function dashboard(overrides: Record<string, unknown> = {}) {
               points: [],
               growth: null,
             }),
+          ingestActivity: () => throwError(() => new Error('not under test')),
+          tableStorage: () => throwError(() => new Error('not under test')),
           ...overrides,
         },
       },
@@ -239,5 +241,101 @@ describe('AdminDashboard operational snapshots', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('2 輪失敗');
     expect(fixture.nativeElement.textContent).not.toContain('9 輪失敗');
+  });
+
+  it('shows the worker-reported retention state and latest retention run', () => {
+    const run = {
+      id: 'ret',
+      worker_id: 'w1',
+      kind: 'retention',
+      status: 'failed',
+      started_at: operations.observed_at,
+      finished_at: operations.observed_at,
+      summary: {},
+      error: 'RuntimeError',
+    };
+    const fixture = dashboard({
+      operations: () =>
+        of({
+          ...operations,
+          latest_runs: { retention: run, storage: null },
+          worker_config: {
+            worker_id: 'w1',
+            hostname: 'worker-host',
+            reported_at: operations.observed_at,
+            stale: false,
+            status: 'running',
+            config: {
+              refresh_enabled: true,
+              discovery_deployment_enabled: true,
+              retention: {
+                enabled: true,
+                mode: 'apply',
+                days: 30,
+                batch_size: 200,
+                interval_minutes: 1440,
+              },
+            },
+          },
+        }),
+    });
+    const element: HTMLElement = fixture.nativeElement;
+    expect(element.querySelector('[data-retention="apply"]')?.textContent).toContain(
+      '每 1440 分鐘直接縮減最多 200 篇超過 30 天',
+    );
+    const latest = element.querySelector('[aria-label="各排程最近一次執行"]')!.textContent!;
+    expect(latest).toContain('retention');
+    expect(latest).toContain('失敗');
+    expect(latest).toContain('RuntimeError');
+    expect(latest).toContain('30 天內沒有執行紀錄');
+  });
+
+  it('distinguishes a disabled retention scheduler from an unreported one', () => {
+    const disabled = dashboard({
+      operations: () =>
+        of({
+          ...operations,
+          worker_config: {
+            worker_id: 'w1',
+            hostname: 'worker-host',
+            reported_at: operations.observed_at,
+            stale: true,
+            status: 'running',
+            config: {
+              refresh_enabled: true,
+              discovery_deployment_enabled: false,
+              retention: {
+                enabled: false,
+                mode: 'disabled',
+                days: 30,
+                batch_size: 200,
+                interval_minutes: 1440,
+              },
+            },
+          },
+        }),
+    });
+    const element: HTMLElement = disabled.nativeElement;
+    expect(element.querySelector('[data-retention="disabled"]')).not.toBeNull();
+    expect(element.textContent).toContain('心跳已過期');
+    TestBed.resetTestingModule();
+    const unknown = dashboard();
+    expect(unknown.nativeElement.querySelector('[data-retention="unknown"]')).not.toBeNull();
+    expect(unknown.nativeElement.querySelector('[data-retention="disabled"]')).toBeNull();
+  });
+
+  it('reloads the storage insights panel with the dashboard refresh', () => {
+    let calls = 0;
+    const fixture = dashboard({
+      ingestActivity: () => {
+        calls++;
+        return throwError(() => new Error('unavailable'));
+      },
+    });
+    expect(calls).toBe(1);
+    expect(fixture.nativeElement.textContent).toContain('來源入庫量未知');
+    expect(fixture.nativeElement.textContent).toContain('2.0 MiB');
+    (fixture.componentInstance as unknown as { load: () => void }).load();
+    expect(calls).toBe(2);
   });
 });

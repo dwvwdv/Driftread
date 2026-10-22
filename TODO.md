@@ -13,6 +13,13 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 - [~] 進行中
 - [x] 已完成
 
+## issue #92：行動裝置閱讀出口
+
+- [x] 形式決定為 PWA（沿用 Angular 前端與 `/me/sync`，不另建 Flutter），理由與快取策略：[行動裝置閱讀出口](docs/CONSUMPTION_SURFACES.md#行動裝置閱讀出口pwa)。
+- [x] Manifest、icon 與只快取 app shell 的 service worker（`/api/` 不進快取、`env.js` network-first）：`frontend/ngsw-config.json`、`frontend/public/manifest.webmanifest`、`frontend/src/app/offline/sw-registration.ts`、`frontend/nginx.conf`。
+- [x] 依帳號分隔的 IndexedDB 離線閱讀、離線操作排隊與重新連線重送、切換帳號／登出清除：`frontend/src/app/offline/`、`/me/offline` 頁面。
+- [ ] 真手機安裝（Android Chrome、iOS Safari）、真 Supabase 登入與正式部署的 nginx header 驗收。
+
 ## issue #106：來源管道診斷與恢復
 
 - [x] 唯讀核對精確文章數、全部零文章來源及最新評審狀態，保留時間點與未驗證邊界：[調查紀錄](docs/ISSUE_106.md)。
@@ -467,4 +474,5 @@ Driftread 的開發順序以「發現來源 → 訂閱 → 持續閱讀 → 回�
 
 - [x] #111 來源評審／探索解耦：SQL 准入、worker、MCP 可用性、歷史 hold 成因預覽與版本保護修復（`backend/migrations/20261020080000_review_independence.sql`、`scripts/reconcile_source_review_holds.py`）。
 - [x] #114 第一階段：持久化探索暫停涵蓋文章入庫的外連採集（`backend/services/articles.py`）；純 `pubDate` 重送不寫文章／版本、來源證據 `last_seen_at` 每 6 小時節流（`backend/migrations/20261021100000_ingest_write_amplification.sql`）。
-- [ ] #114 後續：部署後 24–72 小時比對每小時新增文章／更新／版本／探索 target／各表 heap、TOAST、index 與 DB 用量；每來源每日入庫預算與告警、異常 revision-rate 偵測、retention 排程是否啟用與保存天數（需使用者決定），以及探索暫停期間未抽取版本無法縮減正文的政策。
+- [x] #114 D／E 觀測（只讀、不改政策）：每表 heap／TOAST／index、dead tuples、vacuum 與每日 INSERT／UPDATE／DELETE 區間增量（`backend/services/table_storage.py`、`GET /admin/retention/tables`），最近 24 小時來源入庫量與版本更新異常標示（`backend/services/ingest_activity.py`、`GET /admin/operations/ingest`），worker 實際 retention 設定與各排程最近一次 run（`backend/services/operations.py`）；migration `backend/migrations/20261022020000_storage_observability.sql`，後台 `frontend/src/app/features/admin/storage-insights/` 與管理首頁；[設計](docs/CRAWLER_OPERATIONS.md#每表容量與-mvcc-觀測)。
+- [ ] #114 後續：部署後 24–72 小時比對每小時新增文章／更新／版本／探索 target／各表 heap、TOAST、index 與 DB 用量；每來源每日入庫預算與告警、異常 revision-rate 來源是否節流或封存（偵測已完成）、retention 排程是否啟用與保存天數（需使用者決定），以及探索暫停期間未抽取版本無法縮減正文的政策。

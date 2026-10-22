@@ -409,6 +409,28 @@ export interface WorkerRun {
   error: string | null;
 }
 
+/** The scheduler configuration a worker actually parsed from its own env. */
+export interface WorkerSchedulerConfig {
+  refresh_enabled: boolean;
+  discovery_deployment_enabled: boolean;
+  retention: {
+    enabled: boolean;
+    mode: 'apply' | 'disabled';
+    days: number;
+    batch_size: number;
+    interval_minutes: number;
+  };
+}
+
+export interface ReportedWorkerConfig {
+  worker_id: string;
+  hostname: string | null;
+  reported_at: string;
+  stale: boolean;
+  status: string;
+  config: WorkerSchedulerConfig;
+}
+
 export interface OperationsStatus {
   observed_at: string;
   stale_after_seconds: number;
@@ -416,6 +438,10 @@ export interface OperationsStatus {
   workers: WorkerHeartbeat[];
   recent_runs: WorkerRun[];
   recent_failures: number;
+  /** Absent on an older API; null per kind when no run is on record. */
+  latest_runs?: Record<string, WorkerRun | null>;
+  /** null when no heartbeat carries a config (older worker image). */
+  worker_config?: ReportedWorkerConfig | null;
   queue?: {
     queued: number;
     running: number;
@@ -463,6 +489,87 @@ export interface StorageHistory {
     total_bytes_per_day: number;
     database_bytes_per_day: number;
   } | null;
+}
+
+export interface TableStat {
+  name: string;
+  heap_bytes: number;
+  toast_bytes: number;
+  index_bytes: number;
+  total_bytes: number;
+  n_live_tup: number | null;
+  n_dead_tup: number | null;
+  n_tup_ins: number | null;
+  n_tup_upd: number | null;
+  n_tup_del: number | null;
+  n_tup_hot_upd: number | null;
+  last_vacuum: string | null;
+  last_autovacuum: string | null;
+  vacuum_count: number | null;
+  autovacuum_count: number | null;
+  dead_ratio: number | null;
+}
+
+export interface TableDelta {
+  name: string;
+  /** false: statistics were reset or the table is new; counters are unknown. */
+  comparable: boolean;
+  inserted: number | null;
+  updated: number | null;
+  deleted: number | null;
+  hot_updated: number | null;
+  total_bytes_delta: number | null;
+  n_dead_tup: number | null;
+}
+
+export interface TableInterval {
+  start_at: string;
+  end_at: string;
+  elapsed_hours: number;
+  stats_reset_changed: boolean;
+  tables: TableDelta[];
+}
+
+export interface TableStorageHistory {
+  observed_at: string;
+  retention_days: number;
+  current: { observed_at: string; stats_reset: string | null; tables: TableStat[] };
+  /** Newest first. */
+  intervals: TableInterval[];
+}
+
+export type SourceActivityAlert = 'new_articles' | 'revision_updates' | 'revisions_per_article';
+
+export interface SourceActivity {
+  feed_id: string;
+  title: string | null;
+  url: string;
+  archived: boolean;
+  new_articles: number;
+  backfill_articles: number;
+  revision_updates: number;
+  revised_articles: number;
+  content_changes: number;
+  metadata_only_changes: number;
+  revisions_per_article: number | null;
+  alerts: SourceActivityAlert[];
+}
+
+export interface IngestActivity {
+  observed_at: string;
+  since: string;
+  window_hours: number;
+  thresholds: {
+    new_articles: number;
+    revision_updates: number;
+    revisions_per_article: number;
+    revisions_per_article_min_updates: number;
+  };
+  top_ingest: SourceActivity[];
+  top_revisions: SourceActivity[];
+  /** Over-threshold sources across the whole window (up to `limit`), not only the top lists. */
+  flagged: SourceActivity[];
+  flagged_sources: number;
 }
 
 export interface DiscoveryProfile {

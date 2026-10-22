@@ -1,0 +1,91 @@
+<div class="bar">
+  <a class="back" routerLink="/me/offline">
+    <ob-icon name="arrow-left" [size]="14" />
+    返回離線閱讀
+  </a>
+  @if (view(); as v) {
+    @if (offline.mode() === 'session') {
+      <div class="actions">
+        <button type="button" class="ob-btn ob-btn--ghost ob-btn--sm" (click)="toggle('read')">
+          {{ v.read ? '標為未讀' : '標為已讀' }}
+        </button>
+        <button
+          type="button"
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [attr.aria-pressed]="v.favorite"
+          (click)="toggle('favorite')"
+        >
+          <ob-icon name="star" [size]="14" [filled]="v.favorite" />
+          {{ v.favorite ? '已收藏' : '收藏' }}
+        </button>
+        <button
+          type="button"
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [attr.aria-pressed]="v.readLater"
+          (click)="toggle('read_later')"
+        >
+          <ob-icon name="bookmark" [size]="14" [filled]="v.readLater" />
+          {{ v.readLater ? '已加入稍後讀' : '稍後讀' }}
+        </button>
+      </div>
+    }
+  }
+</div>
+
+@if (!offline.loaded()) {
+  <ob-loading label="讀取離線快取" />
+} @else if (view(); as v) {
+  <article class="reader">
+    <header class="head">
+      <h1>{{ v.article.title || '（無標題）' }}</h1>
+      <p class="meta">
+        @if (v.article.feed_title) {
+          <span>{{ v.article.feed_title }}</span>
+        }
+        @if (v.article.author) {
+          <span>・ {{ v.article.author }}</span>
+        }
+        @if (v.article.published_at) {
+          <time [attr.datetime]="v.article.published_at">
+            ・ {{ v.article.published_at | date: 'yyyy 年 MM 月 dd 日' }}
+          </time>
+        }
+        @if (v.pending.length > 0) {
+          <span class="ob-chip ob-chip--warning">待同步</span>
+        }
+      </p>
+    </header>
+
+    @if (v.article.summary) {
+      <!-- Third-party HTML: [innerHTML] keeps Angular's sanitizer in the path.
+           .prose lives in src/styles/_prose.scss (global, see frontend/README). -->
+      <div class="prose" [innerHTML]="v.article.summary"></div>
+    } @else {
+      <p class="none">這篇文章沒有摘要。</p>
+    }
+    <p class="none">離線快取只保存摘要；完整正文請連線後閱讀。</p>
+
+    <p class="links">
+      @if (offline.online()) {
+        <a class="ob-btn ob-btn--primary ob-btn--sm" [routerLink]="['/articles', v.article.id]">
+          線上閱讀全文
+        </a>
+      }
+      @if (v.article.url) {
+        <a
+          class="ob-btn ob-btn--ghost ob-btn--sm"
+          [href]="v.article.url"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <ob-icon name="external" [size]="14" />
+          原文
+        </a>
+      }
+    </p>
+  </article>
+} @else {
+  <ob-empty message="離線快取裡沒有這篇文章，可能已不在最近 100 篇，或快取已過期。">
+    <a class="ob-btn ob-btn--ghost" routerLink="/me/offline">回到離線閱讀</a>
+  </ob-empty>
+}

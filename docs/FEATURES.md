@@ -24,6 +24,7 @@
 | 後台手動匯入（JSON） | ✅ | `POST /api/admin/feeds`，需 admin key。只寫 metadata，排入到期佇列由排程器抓文章 | `routers/admin.py`、`components/admin` |
 | 開放 API 匯入 | ✅ | `POST /api/admin/feeds/from-url`，供外部腳本 / 擴充使用 | `routers/admin.py` |
 | 瀏覽器擴充 | ✅ | 任何網站一鍵加入 feed（Chromium 系，開發版載入） | `extension/` |
+| **行動裝置閱讀出口（PWA）** | ✅ | 可安裝到主畫面（manifest + `@angular/service-worker`，SW 只快取 app shell、不快取 `/api/`）；`/me/offline` 依帳號在 IndexedDB 保存 `/me/sync` 最近 100 篇摘要，離線閱讀與已讀／收藏／稍後讀排隊，重新連線經 `/me/sync/operations` 重送；切換帳號／登出清空私人快取（[設計](CONSUMPTION_SURFACES.md#行動裝置閱讀出口pwa)）| `frontend/ngsw-config.json`、`frontend/src/app/offline/`、`components/offline-reading` |
 | 全文搜尋 | ✅ | 文章（標題／摘要／作者／全文）與 Feed（名稱／描述）分開搜尋，PostgreSQL tsvector + GIN index，cursor 分頁依相關度排序，附命中摘要片段 | `routers/search.py`、`migrations/020_full_text_search.sql`、`components/search` |
 
 ## 1b. 非 AI 功能與操作索引
@@ -375,7 +376,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | PATCH | `/admin/discovery/sources/{id}` | 調整 `enabled` / `interval_hours` |
 | POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
 | POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
-| GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20 |
+| GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20；另含各 kind 最近一次 run（`latest_runs`）與 worker 實際解析的排程設定（`worker_config`，含 `ARTICLE_RETENTION_ENABLED`）；見 [Worker 監控](CRAWLER_OPERATIONS.md#worker-監控) |
+| GET | `/admin/operations/ingest` | 最近 24 小時新增文章最多與版本更新最多的來源，以及對全部來源計算的超標總數與清單，只供觀察；`limit` 1–50、預設 10；見 [來源入庫量與版本異常](CRAWLER_OPERATIONS.md#來源入庫量與版本異常) |
 | GET | `/admin/settings` | 共用全域設定與版本，包含探測方向與來源評審政策 |
 | PUT | `/admin/settings/{key}` | 型別驗證與版本比對的設定儲存，衝突回 409 |
 | GET | `/admin/source-reviews` | 有界評審列表，可依 `candidate_id` 過濾 |
@@ -393,6 +395,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 管理評審 MCP `/api/admin/mcp/` 使用獨立專用機器 key 或本服務發出的窄權限 OAuth token；普通管理 key／Supabase JWT／管理 session 不可替代。工具與 ChatGPT Web 設定見 [SOURCE_REVIEW.md](SOURCE_REVIEW.md#管理-mcp-與權限)。
 | GET | `/admin/retention/stats` | 文章分類計數、表／索引／資料庫 bytes 快照 |
 | GET | `/admin/retention/history` | 每日容量歷史與實際時間平均成長率；`days` 1–90、預設 30；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史) |
+| GET | `/admin/retention/tables` | 每表 heap／TOAST／index、live／dead tuples 與 vacuum 的即時快照，以及相鄰每日採樣的 INSERT／UPDATE／DELETE 增量（統計重設時為 null）；`days` 1–90、預設 7；見 [每表容量與 MVCC 觀測](CRAWLER_OPERATIONS.md#每表容量與-mvcc-觀測) |
 | POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
 | GET | `/admin/discovery/stats` | 各狀態的計數 |
 
@@ -416,6 +419,8 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | `/me/feeds` | `my-feeds`（來源管理：訂閱清單、OPML；不再是主要閱讀入口）|
 | `/me/bookmarks` | `bookmarks` |
 | `/me/digest` | `daily-digest`（登入後的每日摘要） |
+| `/me/offline` | `offline-reading`（PWA 離線閱讀：本機快取的最近 100 篇摘要、離線標記排隊，見 [行動裝置閱讀出口](CONSUMPTION_SURFACES.md#行動裝置閱讀出口pwa)）|
+| `/me/offline/:id` | `offline-article`（單篇離線摘要，連線時連到 `/articles/:id`）|
 | `/me/preferences` | `preferences` |
 | `**` | 轉回 `/` |
 
@@ -520,7 +525,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `discovery_sources` | 006 | 管理員維護的目錄頁清單（`links_page` / `opml`）|
 | `_migrations` | `migrate.py` 自建 | 已套用的 migration 檔名；RLS 開啟、anon/authenticated 無 table privilege |
 | `background_job_kinds` / `background_jobs` / `worker_alerts` | 20261009000000 / 20261009000100 | service-only 的佇列與 watchdog；見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |
-| `article_storage_snapshots` | 20261013115249 | UTC 每日第一筆 aggregate，保留 90 天；RLS 零 policy、service-only；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史) |
+| `article_storage_snapshots` | 20261013115249、20261022020000 | UTC 每日第一筆 aggregate 與每表容量／MVCC 統計（`tables`），保留 90 天；RLS 零 policy、service-only；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史)、[每表容量與 MVCC 觀測](CRAWLER_OPERATIONS.md#每表容量與-mvcc-觀測)。同 migration 為 `worker_heartbeats` 新增 worker 自行回報的排程設定 `config`，並新增 `article_revisions(recorded_at)`、`worker_runs(kind, started_at DESC)` 索引 |
 | `article_revisions` / `article_discoveries` | 20261009000100、20261012000000、20261021100000 | service-only 版本 metadata／hash 與多入口證據，每篇最多保留 10 個版本；只有 `pubDate` 改變的重送不建立版本；`articles` 同時新增 canonical_url、discovered_at、timeline_at、backfill；見 [CONTENT_MODEL.md](CONTENT_MODEL.md) |
 | `article_publications`（view） | 20261009000300 | security_invoker、service-only 的閱讀 projection；見 [PUBLICATION.md](PUBLICATION.md) |
 | `event_objects` / `fact_articles` / `story_facts` / `event_relations` | 20261009000500 | service-only 人工集合、永久排除、關係與別名；見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md) |
@@ -646,6 +651,10 @@ DELETE FROM discovery_targets
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
 | 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
+| 來源入庫觀察視窗 | 最近 24 小時；列出前 `limit`（1–50，預設 10）個來源 | `services/ingest_activity.py::WINDOW_HOURS` |
+| 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇（只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
+| 版本更新標示門檻 | 單一來源 24 小時版本更新 ≥ 200 次，或至少 30 次且每篇平均 ≥ 3 次（只標示，不節流或封存；版本數為下限） | `services/ingest_activity.py::REVISION_ALERT_*` |
+| 每表容量快照範圍 | `driftread` 依總量前 25 大的表，另固定包含 articles、article_revisions、article_discoveries、sync_changes、discovery_targets、background_jobs；與每日容量同樣保存 90 天 | `migrations/20261022020000_storage_observability.sql` |
 | 來源證據 `last_seen_at` 更新頻率 | 同一入口最多每 6 小時一次；觀測 hash 改變時立即更新 | `migrations/20261021100000_ingest_write_amplification.sql` |
 | **主動發現總開關** | **關**（`FEED_DISCOVERY_ENABLED`）| `services/discovery_config.py` |
 | 發現週期間隔 | 900 秒（`FEED_DISCOVERY_TICK_SECONDS`）| `discovery_config.py::tick_seconds()` |
@@ -672,7 +681,7 @@ DELETE FROM discovery_targets
 
 | 層 | 內容 |
 |----|------|
-| Frontend | Angular 21（**僅 `@angular/cdk`**：overlay / a11y；UI 為自建 Offbeat 元件庫，見 `frontend/src/app/ui/` 與 `frontend/src/styles/`）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
+| Frontend | Angular 21（**僅 `@angular/cdk`**：overlay / a11y；UI 為自建 Offbeat 元件庫，見 `frontend/src/app/ui/` 與 `frontend/src/styles/`）、`@angular/service-worker`（PWA app shell）、`@supabase/supabase-js`、nginx 提供靜態檔與 `/api/` 代理 |
 | Backend | FastAPI、pydantic v2、httpx、supabase-py、pyjwt、beautifulsoup4、defusedxml、psycopg2-binary、uvicorn |
 | DB | Supabase Cloud（PostgreSQL + Auth） |
 | 測試 | Backend：pytest + pytest-asyncio，`backend/tests/`（23 個測試檔、474 個測試）。Frontend：Vitest（`@angular/build:unit-test`，jsdom，無需瀏覽器），`*.spec.ts` 與被測檔同目錄；`frontend.yml` 的 Build job 在 `npm run build` 前先跑 `npm test` |

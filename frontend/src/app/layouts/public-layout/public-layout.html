@@ -53,6 +53,7 @@
                 <span class="ob-chip unread-chip">{{ stream.totalUnread() }}</span>
               }
             </a>
+            <a class="ob-menu-item" role="menuitem" routerLink="/me/offline">離線閱讀</a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/digest">每日閱讀</a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/feeds">我的訂閱</a>
             <a class="ob-menu-item" role="menuitem" routerLink="/me/bookmarks">收藏</a>
@@ -129,6 +130,7 @@
             <span class="ob-chip unread-chip">{{ stream.totalUnread() }}</span>
           }
         </a>
+        <a class="ob-menu-item" routerLink="/me/offline" routerLinkActive="is-active">離線閱讀</a>
         <a class="ob-menu-item" routerLink="/me/digest" routerLinkActive="is-active">每日閱讀</a>
         <a class="ob-menu-item" routerLink="/me/feeds" routerLinkActive="is-active">我的訂閱</a>
         <a class="ob-menu-item" routerLink="/me/bookmarks" routerLinkActive="is-active">收藏</a>
@@ -140,6 +142,9 @@
         </button>
       } @else {
         <a class="ob-menu-item" routerLink="/login" routerLinkActive="is-active">登入</a>
+        @if (offline.mode() === 'dormant') {
+          <a class="ob-menu-item" routerLink="/me/offline" routerLinkActive="is-active">離線閱讀</a>
+        }
       }
     </nav>
   </div>
@@ -150,7 +155,18 @@
 </main>
 
 <footer class="status">
-  <span class="ob-dot online">ONLINE</span>
+  <!-- role="status": reaching or losing the network is announced politely. -->
+  <span role="status">
+    @if (offline.online()) {
+      <span class="ob-dot online">ONLINE</span>
+    } @else {
+      <a class="ob-dot offline" routerLink="/me/offline">OFFLINE</a>
+    }
+  </span>
+  @if (offline.pendingCount() > 0) {
+    <span class="sep">|</span>
+    <a class="pending" routerLink="/me/offline">{{ offline.pendingCount() }} 項待同步</a>
+  }
   <span class="sep">|</span>
   <span>漂流閱讀 DRIFTREAD</span>
   <span class="sep">|</span>

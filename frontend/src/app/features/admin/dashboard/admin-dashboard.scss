@@ -7,6 +7,11 @@
   margin-bottom: var(--sp-3);
 }
 
+.sub {
+  display: block;
+  margin: var(--sp-4) 0 var(--sp-2);
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
