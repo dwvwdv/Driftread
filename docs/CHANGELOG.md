@@ -1326,3 +1326,30 @@ PR #81 新增的 `article_revisions` 會在文章的標題、摘要、作者、�
 - 待使用者決定：是否接受純日期更正、每來源每日入庫預算與告警、正文保存天數與是否啟用定時 retention、探索暫停期間未抽取版本是否允許縮減（代價是那些正文的外連永遠不會被探勘）。
 
 驗證：本地 PostgreSQL 16 跑完整 backend **1625 passed**（含真 PostgreSQL 測試）。新增 `tests/test_ingest_write_amplification_postgres.py`：先在移除新 migration 的情況下確認 4 個測試中 3 個失敗（重現根因），套用後全過；涵蓋連續 20 次 restamp 不改文章 ctid／版本數／`sync_changes`、標題／正文／摘要／作者變動仍建立版本並帶入新日期、NULL 日期補一次、provenance hash 立即更新與 `last_seen_at` 6 小時節流。`tests/test_articles_service.py` 新增持久化暫停仍入庫但不碰 frontier、開關讀取失敗不影響入庫、每批讀一次開關三個測試。文件檢查通過。**未驗證**：正式環境部署後的寫入量變化（需部署後 24–72 小時比對每小時新增文章、更新、版本、探索 target 與各表容量），未動 frontend。
+
+## 階段五十六：#114 D／E 的容量與入庫觀測（PR 待定，issue #114，2026-10-22）
+
+PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才能決定政策：營運無法分辨 DB 成長是有效資料還是 VACUUM 已回收、可在表內重用但檔案沒縮小的空間；也看不到哪個來源一天入庫多少、哪個來源反覆產生版本；正式 `worker_runs` 沒有 retention 紀錄，無法確認 worker 容器的 `ARTICLE_RETENTION_ENABLED` 實際值。本 PR 只做唯讀觀測與後台顯示，不改任何產品政策。
+
+**E：每表容量與 MVCC**
+
+- 新 migration `20261022020000_storage_observability.sql` 在既有每日容量採樣的同一列保存 `tables` 快照（同一 advisory lock、UTC 每日去重、90 天保存）：`driftread` 總量前 25 大的表，加上固定的 articles／article_revisions／article_discoveries／sync_changes／discovery_targets／background_jobs，記錄 heap／TOAST／index bytes、live／dead tuples、累積 INSERT／UPDATE／DELETE／HOT、vacuum／autovacuum 時間與次數，以及資料庫 `stats_reset`。只讀 catalog 與統計，不掃表內容；部署當天已採樣的日子會補一次表快照，不重掃文章。
+- `GET /admin/retention/tables` 回傳即時快照與相鄰兩日的區間增量。累積計數遇到 stats reset、單表重設或 crash recovery 而變小時，增量為 null（後台顯示「無法計算」），不顯示負數；容量變化保留負值。dead tuples 是估計值，不安裝 `pgstattuple`。
+
+**D 與 B 的最後一點：來源入庫量與版本異常**
+
+- `source_ingest_activity` 只走新增的 `article_revisions(recorded_at)` 索引的時間範圍，再以主鍵關聯文章，不全表掃描。新文章入庫時一定在同一交易記錄版本，所以新增篇數即使第 1 版被 10 版上限清掉仍是精確值；版本更新數在單篇一天超過 10 次時是下限。另外以前一版比較，區分正文變更與僅中繼資料變更，並列出舊文回填篇數，區分刊登時間與入庫時間。
+- `GET /admin/operations/ingest` 列出最近 24 小時新增最多與版本更新最多的來源。標示門檻：新增 ≥ 500 篇；版本更新 ≥ 200 次；或至少 30 次且每篇平均 ≥ 3 次。只標示，不限額、不節流、不封存。
+
+**retention 實際狀態**
+
+- 每個 worker loop 的 heartbeat 帶上 worker 自己解析的排程設定（refresh／discovery 部署開關、retention 啟用、mode、天數、批次、間隔；只有布林與整數），`/admin/operations` 回傳最新一筆帶設定的 `worker_config` 與各 kind 最近一次 run（新增 `worker_runs(kind, started_at DESC)` 索引）。舊版 worker 不回報時顯示「狀態未知」，不當成已停用。API 容器的環境可能與 worker 不同，所以不從 API 讀。
+- 後台管理首頁新增「來源入庫量與版本更新」「每表容量與 MVCC」面板（寬表在自己的捲動區內，不撐寬 390px 頁面），並在排程器狀態顯示正文縮減排程的實際設定與 retention／storage 最近一次執行。
+
+**沒做的事**
+
+- 沒有每來源每日入庫上限、異常來源節流或封存、retention 啟用或預設值變更，也沒有刪除資料或索引、改 `search_vector`；這些仍待使用者決定。沒有每小時寫入量的時間序列；部署前後 24–72 小時的比對要用這些面板人工觀察。
+- 部署注意：`article_revisions(recorded_at)` 以一般 `CREATE INDEX` 建立，建立期間會短暫擋住文章更新，建議離峰部署（見 RUNBOOK）。
+- 既有文件落差：FEATURES 的索引清單列了 `articles(feed_id, fetched_at DESC)`，repo 實際沒有這個索引；本 PR 未修，新增篇數查詢改從 revisions 推導，不依賴它。
+
+驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1646 passed／0 skipped**（含真 PostgreSQL）。新增 `tests/test_storage_observability_postgres.py` 與 `tests/sql/test_storage_observability.sql`，涵蓋 migration 重跑、快照格式與大小加總、同日補表快照且不重掃文章、CHECK 約束、新增／回填／metadata-only／正文變更計數、limit、24 小時視窗排除、參數驗證、anon／authenticated 無 EXECUTE、SECURITY INVOKER，並以 EXPLAIN 確認兩個新索引可被使用；`test_table_storage.py`、`test_ingest_activity.py`、`test_operations.py` 覆蓋區間增量、reset 處理、門檻判斷、端點認證與上下限、worker 設定回報。frontend 43 files／499 tests 與 production build 通過；initial bundle 既有警告從 512.45 kB 增加到 513.74 kB（新程式碼都在 lazy chunk，增量出現在共用 chunk）。文件檢查與 `git diff --check` 通過。**未驗證**：瀏覽器實機（含 390px）、Docker 與正式 Supabase 部署。
