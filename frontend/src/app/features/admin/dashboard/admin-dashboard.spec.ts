@@ -49,6 +49,7 @@ function dashboard(overrides: Record<string, unknown> = {}) {
             }),
           ingestActivity: () => throwError(() => new Error('not under test')),
           tableStorage: () => throwError(() => new Error('not under test')),
+          globalSettings: () => throwError(() => new Error('not under test')),
           ...overrides,
         },
       },

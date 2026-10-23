@@ -16,6 +16,8 @@ export interface Feed {
   participation_mode?: 'normal' | 'signal_only' | 'private';
   signal_group?: string | null;
   fulltext_policy?: 'rss' | 'summary_only';
+  /** Admin responses only: per-source override of the article.cap setting. */
+  article_cap?: number | null;
   last_fetch_at?: string | null;
   last_ok_at?: string | null;
   admitted_at?: string | null;
@@ -608,6 +610,22 @@ export interface SourceReviewSettings {
   policy_text: string;
   daily_budget_usd: number;
   sample_size: number;
+}
+
+/** Global `article.cap` setting; sources may override max_per_feed. */
+export interface ArticleCapSettings {
+  enabled: boolean;
+  max_per_feed: number;
+}
+
+export interface ArticleCapSummary {
+  dry_run: boolean;
+  feeds_over_cap: number;
+  /** Cached count minus cap, protected articles included: an upper bound. */
+  excess: number;
+  eligible: number;
+  deleted: number;
+  skipped_feeds: number;
 }
 
 export interface SourceReviewResult {

@@ -69,6 +69,19 @@ async def test_source_patch_preserves_omitted_metadata():
     await update_source_metadata(feed_id=UUID(row['id']),body=SourceMetadataUpdate(participation_mode='signal_only'),db=db)
     assert row['first_party'] is True and row['signal_group']=='publisher' and row['participation_mode']=='signal_only'
 @pytest.mark.asyncio
+async def test_source_patch_sets_and_clears_article_cap_override():
+    from routers.admin import update_source_metadata
+    row=source(article_cap=None);db=DB([row])
+    saved=await update_source_metadata(feed_id=UUID(row['id']),body=SourceMetadataUpdate(article_cap=300),db=db)
+    assert row['article_cap']==300 and saved.article_cap==300 and row['participation_mode']=='normal'
+    # Explicit null falls back to the article.cap setting; omission keeps it.
+    await update_source_metadata(feed_id=UUID(row['id']),body=SourceMetadataUpdate(first_party=True),db=db)
+    assert row['article_cap']==300
+    saved=await update_source_metadata(feed_id=UUID(row['id']),body=SourceMetadataUpdate(article_cap=None),db=db)
+    assert row['article_cap'] is None and saved.article_cap is None
+    for invalid in [99,100001,1.5]:
+        with pytest.raises(ValidationError): SourceMetadataUpdate(article_cap=invalid)
+@pytest.mark.asyncio
 async def test_failure_records_attempt_but_not_success():
     from services.feed_refresh import refresh_one
     db=DB();row=source()

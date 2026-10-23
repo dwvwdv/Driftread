@@ -16,6 +16,9 @@ Scheduler loops share one event loop and one stop signal:
 - **retention** compacts a bounded batch of eligible old bodies. It runs only
   when ARTICLE_RETENTION_ENABLED is explicitly true; docker-compose.yml supplies
   true by default (#117), the code default without Compose stays off.
+- **article_cap** deletes the oldest unprotected articles of sources above the
+  per-source cap. Like source_review it always runs and re-reads the
+  hot-reloaded article.cap setting (enabled by default) before each batch.
 - **storage** records daily aggregate history while any scheduler is enabled.
 
 Network waits yield to other loops and a separate heartbeat task. Synchronous
@@ -44,6 +47,9 @@ from services.storage_history import record_storage_snapshot, SAMPLE_CHECK_SECON
 from services.job_queue import JobQueue, POLL_SECONDS, RENEW_SECONDS
 from services.settings import load_source_review_settings
 from services.discovery_control import can_start as discovery_can_start
+from services.article_cap import (
+    TICK_SECONDS as ARTICLE_CAP_TICK_SECONDS, article_cap_enabled, scheduled_enforcement,
+)
 from services.retention import (
     retention_enabled, scheduled_compaction, tick_seconds as retention_tick_seconds,
 )
@@ -160,7 +166,7 @@ async def _run_loop(stop: asyncio.Event, kind: str, interval: int, action, summa
                 elif kind == "source_review":
                     failed = summary.get("failed", 0)
                     errors = summary.get("errors", [])
-                else:  # Retention and storage RPC errors raise; there are no stages.
+                else:  # Retention, cap and storage RPC errors raise; there are no stages.
                     failed = 0
                     errors = []
                 await recorder.finish(run_id, "partial" if failed or errors else "succeeded",
@@ -216,6 +222,15 @@ async def run_retention_forever(stop: asyncio.Event | None = None) -> None:
     )
 
 
+async def run_article_cap_forever(stop: asyncio.Event | None = None) -> None:
+    """Bounded per-source eviction, gated by the article.cap setting."""
+    await _run_loop(
+        stop or asyncio.Event(), "article_cap", ARTICLE_CAP_TICK_SECONDS,
+        scheduled_enforcement, lambda result: result.model_dump() if result else {},
+        can_start=article_cap_enabled,
+    )
+
+
 async def run_storage_forever(stop: asyncio.Event) -> None:
     """Hourly durable checks capture only the first sample of each UTC day."""
     await _run_loop(stop, "storage", SAMPLE_CHECK_SECONDS, record_storage_snapshot, lambda result: result)
@@ -246,9 +261,10 @@ async def main() -> int:
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
-    # Review has a persisted enable flag. Always monitor it so an operator can
-    # enable review without also enabling discovery or restarting the worker.
-    loops = [run_storage_forever(stop), run_source_review_forever(stop)]
+    # Review and the article cap have persisted enable flags. Always monitor
+    # them so an operator can toggle either without restarting the worker.
+    loops = [run_storage_forever(stop), run_source_review_forever(stop),
+             run_article_cap_forever(stop)]
     if refresh_enabled():
         loops.append(run_forever(stop))
     if discovery_enabled():

@@ -33,6 +33,8 @@ describe('AdminFeeds active paging', () => {
   let held: Subject<PaginatedFeeds>[] | null;
   let sourceFailure: boolean;
   let sourceCalls: { id: string; body: unknown }[];
+  let asks = 0;
+  let confirmAnswer = true;
 
   function setup(initial: PaginatedFeeds, pageSize = 50) {
     requests = [];
@@ -40,6 +42,8 @@ describe('AdminFeeds active paging', () => {
     held = null;
     sourceFailure = false;
     sourceCalls = [];
+    asks = 0;
+    confirmAnswer = true;
 
     const admin = {
       listFeeds: (page: number) => {
@@ -71,7 +75,10 @@ describe('AdminFeeds active paging', () => {
           provide: ToastService,
           useValue: { success: () => {}, info: () => {}, warning: () => {}, danger: () => {} },
         },
-        { provide: ConfirmService, useValue: { ask: () => Promise.resolve(true) } },
+        {
+          provide: ConfirmService,
+          useValue: { ask: () => (asks++, Promise.resolve(confirmAnswer)) },
+        },
       ],
     });
 
@@ -83,12 +90,13 @@ describe('AdminFeeds active paging', () => {
       loading: () => boolean;
       archive: (f: Feed) => Promise<void>;
       editSource: (f: Feed) => void;
-      saveSource: () => void;
+      saveSource: () => Promise<void>;
       editing: () => Feed | null;
       savingSource: () => boolean;
       fetchStatus: (feed: Feed) => string;
       sourceRole: string;
       signalGroup: string;
+      articleCap: number | null;
     };
     fixture.detectChanges();
     Object.assign(fixture.componentInstance, { pageSize: () => pageSize });
@@ -119,9 +127,54 @@ describe('AdminFeeds active paging', () => {
     reader.saveSource();
     expect(sourceCalls.at(-1)).toEqual({ id: 'feed-1', body: {
       participation_mode: 'signal_only', fulltext_policy: 'rss', signal_group: 'shared-source', first_party: false,
+      article_cap: null,
     } });
     expect(reader.editing()).toBeNull();
     expect(requests).toEqual([1, 1]);
+  });
+
+  it('sends a per-source article cap and rejects one outside 100–100000', async () => {
+    const { reader } = setup({ items: [feed(1)], total: 1, page: 1, page_size: 50 });
+    reader.editSource({ ...feed(1), article_cap: 500 });
+    expect(reader.articleCap).toBe(500);
+    reader.articleCap = 99;
+    await reader.saveSource();
+    expect(sourceCalls).toEqual([]);
+    expect(reader.editing()?.id).toBe('feed-1');
+    reader.articleCap = 300;
+    await reader.saveSource();
+    expect(asks).toBe(1);
+    expect((sourceCalls.at(-1)?.body as { article_cap: number }).article_cap).toBe(300);
+    reader.editSource({ ...feed(1), article_cap: 300 });
+    reader.articleCap = 5000;
+    await reader.saveSource();
+    expect(asks).toBe(1);
+    expect((sourceCalls.at(-1)?.body as { article_cap: number }).article_cap).toBe(5000);
+  });
+
+  it('confirms before clearing an override, which may fall back to a lower global cap', async () => {
+    const { reader } = setup({ items: [feed(1)], total: 1, page: 1, page_size: 50 });
+    reader.editSource({ ...feed(1), article_cap: 5000 });
+    reader.articleCap = null;
+    confirmAnswer = false;
+    await reader.saveSource();
+    expect(asks).toBe(1);
+    expect(sourceCalls).toEqual([]);
+    confirmAnswer = true;
+    await reader.saveSource();
+    expect(asks).toBe(2);
+    expect((sourceCalls.at(-1)?.body as { article_cap: null }).article_cap).toBeNull();
+  });
+
+  it('does not lower a per-source cap when the confirmation is declined', async () => {
+    const { reader } = setup({ items: [feed(1)], total: 1, page: 1, page_size: 50 });
+    confirmAnswer = false;
+    reader.editSource(feed(1));
+    reader.articleCap = 200;
+    await reader.saveSource();
+    expect(asks).toBe(1);
+    expect(sourceCalls).toEqual([]);
+    expect(reader.editing()?.id).toBe('feed-1');
   });
 
   it('backfills quietly, without swapping the list for the spinner', async () => {

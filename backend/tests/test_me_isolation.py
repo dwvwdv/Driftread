@@ -166,6 +166,8 @@ def test_list_reads_scoped_per_user(client):
 
 def test_mark_all_read_explicit_ids_write_calling_users_id(client):
     c, mock_db = client
+    mock_db.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(
+        data=[{"id": ARTICLE_ID}])
     mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
 
     r1 = c.post(

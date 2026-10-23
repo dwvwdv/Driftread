@@ -111,7 +111,7 @@ category 不命中 / 無 category）各對應一個 `p_mode` 字面值，由後�
 
 ## 2c. 主動發現管道
 
-增量版本抽取、中文種子優先名額、worker 狀態與正文縮減的現行行為及操作方式，見 [CRAWLER_OPERATIONS.md](CRAWLER_OPERATIONS.md)。文章以內容 hash 追蹤抽取，失敗保留待處理工作；正文縮減在 Compose 部署預設開啟（程式碼層未設定時仍關閉），保留文章身份與使用者關聯。
+增量版本抽取、中文種子優先名額、worker 狀態與正文縮減的現行行為及操作方式，見 [CRAWLER_OPERATIONS.md](CRAWLER_OPERATIONS.md)。文章以內容 hash 追蹤抽取，失敗保留待處理工作；正文縮減在 Compose 部署預設開啟（程式碼層未設定時仍關閉），保留文章身份與使用者關聯。另有**每來源文章上限**（全域設定 `article.cap`，預設啟用、每來源 1000 篇，來源可覆寫）：worker 每小時刪除超過上限的最舊文章，收藏、稍後讀與人工事件引用的文章不刪除也不計入，已讀紀錄隨文章刪除，見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)。
 
 > ⚠ **預設關閉。** 這是唯一一個會主動對「沒人要求過的第三方網站」發出請求的迴圈，
 > 啟用前請先讀 [SECURITY.md 的自主發現章節](SECURITY.md)，特別是 DNS rebinding 那一節。
@@ -311,7 +311,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/me/articles/{article_id}/read` | 標記已讀（204） |
 | DELETE | `/me/articles/{article_id}/read` | 標記未讀（204） |
 | GET | `/me/reads` | 已讀的 article id 列表，cursor pagination |
-| POST | `/me/reads/mark-all` | 批次標已讀：帶 `article_ids` 為明確清單（目前頁面），省略則依 `feed_id`／`before` 篩選（明確範圍），三者皆空即整個閱讀流全部標已讀。回傳 `{marked}` |
+| POST | `/me/reads/mark-all` | 批次標已讀：帶 `article_ids` 為明確清單（目前頁面，已被文章上限刪除的 id 會略過，`marked` 只算實際存在的），省略則依 `feed_id`／`before` 篩選（明確範圍），三者皆空即整個閱讀流全部標已讀。回傳 `{marked}` |
 | GET | `/me/stream` | 我的閱讀流：跨所有已訂閱來源的文章時間流，cursor pagination（`cursor`／`limit`，上限 100），可用 `feed_id`／`unread_only` 篩選，每筆帶 `is_read`／`read_at` |
 | GET | `/me/stream/unread-counts` | 總未讀數與各已訂閱來源的未讀數 |
 | GET | `/me/bookmarks` | 收藏 / 稍後讀（依 `bookmark_type`） |
@@ -355,7 +355,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | PATCH | `/admin/feeds/{feed_id}/unarchive` | 解除封存 |
 | GET | `/admin/feeds/unhealthy` | 健康度低於門檻的 feed，差的排前面。`threshold` 預設 50、`limit` 預設 200（上限 1000） |
 | GET | `/admin/feeds/archived` | 已封存的 feed，`limit` 預設 200（上限 1000） |
-| PATCH | `/admin/feeds/{feed_id}/source` | 更新來源角色、signal_group、first_party 與正文政策；見 [SOURCE_MODEL.md](SOURCE_MODEL.md) |
+| PATCH | `/admin/feeds/{feed_id}/source` | 更新來源角色、signal_group、first_party、正文政策與文章上限覆寫 `article_cap`（100–100000，明確 null 改回全域設定）；回傳管理用來源資料；見 [SOURCE_MODEL.md](SOURCE_MODEL.md) |
 | GET | `/admin/feeds/source-health` | 包含沒有近期文章的來源健康快照 |
 
 人工 `/admin/events*`、Story merge 與公開 `/events/{id}` 的契約見 [NON_AI_INTELLIGENCE.md](NON_AI_INTELLIGENCE.md)。`GET /admin/operations` 的佇列、近期工作與失聯／恢復事件見 [BACKGROUND_JOBS.md](BACKGROUND_JOBS.md)。
@@ -397,6 +397,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/admin/retention/history` | 每日容量歷史與實際時間平均成長率；`days` 1–90、預設 30；見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史) |
 | GET | `/admin/retention/tables` | 每表 heap／TOAST／index、live／dead tuples 與 vacuum 的即時快照，以及相鄰每日採樣的 INSERT／UPDATE／DELETE 增量（統計重設時為 null）；`days` 1–90、預設 7；見 [每表容量與 MVCC 觀測](CRAWLER_OPERATIONS.md#每表容量與-mvcc-觀測) |
 | POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
+| POST | `/admin/retention/article-cap/run` | 預設 dry-run 的每來源文章上限；`max_per_feed` 100–100000（預設 `article.cap`，只套用到沒有覆寫的來源）、`limit` 1–1000（預設 500），明確 `dry_run=false` 才刪除；開關只控制排程；見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限) |
 | GET | `/admin/discovery/stats` | 各狀態的計數 |
 
 ## 4. 前端路由
@@ -430,7 +431,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 |------|------|------|
 | `/manage/login` | `admin-unlock` | 管理員 Email／密碼登入後輸入 Telegram OTP；獨立於後台 guard |
 | `/manage` | → `/manage/dashboard` | |
-| `/manage/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示 |
+| `/manage/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示、每來源文章上限設定與預覽 |
 | `/manage/candidates` | `admin-candidates` | 候選審核 |
 | `/manage/feeds` | `admin-feeds` | 使用中 / 已封存 / 健康度偏低 |
 | `/manage/cleanup` | `admin-cleanup` | 相似來源／文章分組與批量暫存、還原、刪除 |
@@ -509,7 +510,7 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | `article_cleanup_tombstones` | 20261018033131 | 私有 feed＋URL 刪除標記，防止文章重新入庫；同 migration 新增 `articles.staged_at` 與 discovery target 的 `removed` 狀態，見 [後台清理](ADMIN_CLEANUP.md) |
 | `manage_login_state` / `manage_sessions` | 20261012020000 | OTP bcrypt hash、嘗試／冷卻與管理 token SHA-256 hash；RLS 無 policy，所有 Data API roles（含 service_role）均撤銷存取，只由 backend 直連 PostgreSQL 使用 |
 | `review_oauth_registration_key` / `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | 持久 DCR 簽名金鑰、管理員同意後保留的 ChatGPT client、待同意請求、窄權限 grant 與 token hash／重放 fencing；grant／refresh 的 null 到期表示管理員明確設定永久，access 仍短效；匿名 DCR 不新增 client 記錄；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
-| `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋） |
+| `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋）＋文章上限覆寫 `article_cap` 與淘汰水位線 `article_cap_evicted_through`（20261022120000） |
 | `articles` | 001 + 005 | 快取文章，`feed_id` 外鍵 cascade delete。唯一鍵在 005 從全域 `UNIQUE(url)` 改為 `UNIQUE(feed_id, url)`。**`content` 存 HTML、`summary` 一律存純文字**（舊資料列由 `backfill.py` 回填，見下）＋`search_vector`（020，generated tsvector，供全文搜尋） |
 | `user_feeds` | 002 + 021 + 022 | 訂閱關係＋`custom_title`（021，該使用者對這個訂閱的自訂顯示名稱，NULL 代表沿用 feed 原本的 title；只在這段 (user, feed) 關係內生效，不寫回 `feeds.title`）＋`muted_at`（022，靜音時間戳，NULL 代表未靜音；`list_reading_stream`／`reading_stream_unread_counts` 排除已靜音的訂閱，`GET /me/feeds` 與取消訂閱不受影響） |
 | `user_article_reads` | 002 | 已讀回報。一列的存在即代表「已讀」，`DELETE` 即「標為未讀」——沒有另外的已讀/未讀狀態欄位或新表。`GET /me/stream` 的 `is_read`／`GET /me/reads` 都直接查這張表 |
@@ -651,6 +652,8 @@ DELETE FROM discovery_targets
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
 | 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
+| 每來源文章上限 | 預設 1000 篇、啟用（`article.cap`，100–100000）；來源覆寫 `feeds.article_cap` 同範圍；受保護文章不計入；探索實際在跑時，未封存來源的未抽取版本保留到 1.5 倍 | `services/settings.py::ArticleCapValue`、`migrations/20261022120000_article_cap.sql` |
+| 文章上限排程 | 每 60 分鐘一批、每批最多刪 500 篇（程式碼常數）| `services/article_cap.py::TICK_SECONDS`、`BATCH_SIZE` |
 | 來源入庫觀察視窗 | 最近 24 小時（預設）或 7 天；列出前 `limit`（1–50，預設 10）個來源 | `services/ingest_activity.py::WINDOW_HOURS`、`WINDOW_CHOICES` |
 | 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇；7 天視窗為 ≥ 3,500 篇（只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
 | 版本更新標示門檻 | 單一來源在視窗內版本更新 ≥ 200 次，或至少 30 次且每篇平均 ≥ 3 次；24 小時與 7 天視窗相同，不隨視窗放大（每篇只保留 10 版，放大會讓 7 天漏掉 24 小時已標示的來源），所以 7 天也會標示較慢但持續的重送（只標示，不節流或封存；版本數為下限） | `services/ingest_activity.py::REVISION_ALERT_*` |

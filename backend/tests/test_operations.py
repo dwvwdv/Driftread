@@ -255,9 +255,11 @@ async def test_retention_runs_when_other_schedulers_disabled(monkeypatch):
         patch.object(worker, "run_retention_forever", side_effect=immediate) as retention,
         patch.object(worker, "run_storage_forever", side_effect=immediate),
         patch.object(worker, "run_source_review_forever", side_effect=immediate),
+        patch.object(worker, "run_article_cap_forever", side_effect=immediate) as cap,
     ):
         assert await worker.main() == 0
     retention.assert_called_once()
+    cap.assert_called_once()
     refresh.assert_not_called()
     discovery.assert_not_called()
 
@@ -280,9 +282,12 @@ async def test_retention_disabled_does_not_run_with_refresh(monkeypatch, discove
         patch.object(worker, "run_retention_forever") as retention,
         patch.object(worker, "run_storage_forever", side_effect=immediate),
         patch.object(worker, "run_source_review_forever", side_effect=immediate) as review,
+        patch.object(worker, "run_article_cap_forever", side_effect=immediate) as cap,
     ):
         assert await worker.main() == 0
     retention.assert_not_called()
+    # The cap is a hot-reloaded setting, independent of the retention env.
+    cap.assert_called_once()
     refresh.assert_called_once()
     review.assert_called_once()
     assert found.call_count == (discovery == "true")

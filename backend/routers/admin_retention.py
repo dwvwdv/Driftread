@@ -7,6 +7,7 @@ from database import get_client
 from routers.admin import require_api_key
 from services.storage_history import StorageHistory, storage_history
 from services.table_storage import TableStorageHistory, table_storage_history
+from services.article_cap import ArticleCapSummary, enforce_article_cap
 from services.retention import (
     ArticleStorageStats,
     RetentionSummary,
@@ -68,3 +69,24 @@ async def run_retention(
     return await compact_content(
         db, days=retention_days, limit=limit, dry_run=dry_run,
     )
+
+
+@router.post(
+    "/article-cap/run",
+    response_model=ArticleCapSummary,
+    dependencies=[Depends(require_api_key)],
+)
+async def run_article_cap(
+    max_per_feed: int | None = Query(None, ge=100, le=100000),
+    limit: int | None = Query(None, ge=1, le=1000),
+    dry_run: bool = Query(True),
+    db: Client = Depends(get_client),
+) -> ArticleCapSummary:
+    """Preview by default; dry_run=false explicitly deletes a bounded batch.
+
+    max_per_feed defaults to the article.cap setting and applies only to
+    sources without their own override. The setting's enabled flag gates the
+    scheduler only, like retention: an operator may still preview or apply.
+    Deleted rows cannot be restored.
+    """
+    return await enforce_article_cap(db, cap=max_per_feed, limit=limit, dry_run=dry_run)
