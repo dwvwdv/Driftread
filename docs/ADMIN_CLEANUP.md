@@ -24,7 +24,7 @@
 正式永久刪除由 REST／MCP 共用 adapter 透過既有 `DATABASE_URL` 呼叫同一 RPC，連線後以 `SET LOCAL ROLE service_role` 維持原權限，避免數千篇文章的 cascade 超過 PostgREST 預設短逾時。連線上限 5 秒、整筆 SQL 上限 45 秒、等鎖上限 3 秒；失敗回傳可重試的 503 並回滾整筆交易，不輸出原始資料庫錯誤。缺少 DATABASE_URL 時明確拒絕；預覽、暫存、還原仍走原 Data API。45 秒上限低於內建 nginx 的 60 秒預設等待時間；外層代理若另有較短上限，需至少容納此操作。
 
 - 來源暫存沿用 `feeds.archived_at`：暫停排程抓取及收割，既有 normal 文章與訂閱關係仍可閱讀。還原清除封存、設 `next_fetch_at=now()`，沿用人工解除收錄檢查封存的語義，不改角色與正文政策。已開始的抓取不保證即時停止。
-- 文章暫存使用 `articles.staged_at`：統一 `article_publications` projection 排除它，來源預覽、全文、時間流、搜尋、收藏、日報、RSS、個人唯讀 MCP 與同步授權清單不再提供它。保留 ID、版本、正文、已讀及收藏，還原後使用原 ID。article_count 仍代表實體文章數，包含暫存文章。
+- 文章暫存使用 `articles.staged_at`：統一 `article_publications` projection 排除它，來源預覽、全文、時間流、搜尋、收藏、日報、RSS、個人唯讀 MCP 與同步授權清單不再提供它。保留 ID、版本、正文、已讀及收藏，還原後使用原 ID；[每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)不會淘汰暫存文章，也不把它計入上限。article_count 仍代表實體文章數，包含暫存文章。
 - 永久刪除前必須先暫存，明確傳 `dry_run=false` 與 `confirm_delete=true`。來源刪除依 FK 一併刪除其文章、版本、使用者訂閱／回饋／收藏／已讀等關聯；文章刪除只影響所選文章及其關聯，不合併或轉移使用者資料。前端先預覽影響筆數再確認；預覽是當時快照，正式寫入仍重查。
 - 私有 `article_cleanup_tombstones(feed_id,url)` 避免文章下次 RSS 更新又被插回；刪除與標記共用交易及來源列鎖，與 ingestion 序列化。來源本身刪除後不再排程；不新增 host 封鎖或阻止管理員未來明確重新匯入的政策。
 

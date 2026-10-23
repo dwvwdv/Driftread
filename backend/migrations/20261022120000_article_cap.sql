@@ -57,7 +57,7 @@ RETURNS uuid[] LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog A
    SELECT a.id,a.timeline_at,
     a.discovery_extracted_at IS NOT NULL AND a.discovery_extracted_hash IS NOT DISTINCT FROM a.content_hash AS extracted,
     row_number() OVER (ORDER BY a.timeline_at DESC,a.id DESC) AS rn
-   FROM driftread.articles a WHERE a.feed_id=p_feed_id
+   FROM driftread.articles a WHERE a.feed_id=p_feed_id AND a.staged_at IS NULL
     AND NOT EXISTS(SELECT 1 FROM driftread.user_bookmarks b WHERE b.article_id=a.id)
     AND NOT EXISTS(SELECT 1 FROM driftread.fact_articles fa WHERE fa.article_id=a.id)
   ) k WHERE k.rn>p_cap AND (NOT p_keep_unextracted OR k.extracted OR k.rn>p_cap+p_cap/2)
@@ -68,8 +68,9 @@ REVOKE ALL ON FUNCTION driftread.article_cap_candidates(uuid,integer,boolean,int
 GRANT EXECUTE ON FUNCTION driftread.article_cap_candidates(uuid,integer,boolean,integer) TO service_role;
 
 -- Keeps the newest cap unprotected rows per source. Bookmarks (favorite and
--- read_later) and manual event links are never deleted and do not count toward
--- the cap; read receipts are not protected and cascade with the row. With
+-- read_later), manual event links and articles staged by an administrator
+-- (restorable by ID, docs/ADMIN_CLEANUP.md) are never deleted and do not count
+-- toward the cap; read receipts are not protected and cascade with the row. With
 -- p_keep_unextracted, rows whose current version has not been mined for links
 -- survive up to 1.5x the cap, except in archived sources, which harvest never
 -- visits. Oldest by timeline_at first, which clamps future
@@ -119,7 +120,7 @@ BEGIN
   SELECT coalesce(array_agg(l.id),'{}') INTO locked FROM (
    SELECT a.id FROM driftread.articles a WHERE a.id=ANY(ids) ORDER BY a.id FOR UPDATE SKIP LOCKED) l;
   WITH gone AS (
-   DELETE FROM driftread.articles a WHERE a.id=ANY(locked)
+   DELETE FROM driftread.articles a WHERE a.id=ANY(locked) AND a.staged_at IS NULL
     AND NOT EXISTS(SELECT 1 FROM driftread.user_bookmarks b WHERE b.article_id=a.id)
     AND NOT EXISTS(SELECT 1 FROM driftread.fact_articles fa WHERE fa.article_id=a.id)
    RETURNING a.timeline_at)

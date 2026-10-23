@@ -115,7 +115,8 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
    WITH ranked AS (
      SELECT a.feed_id, row_number() OVER (PARTITION BY a.feed_id ORDER BY a.timeline_at DESC, a.id DESC) AS rn
      FROM driftread.articles a
-     WHERE NOT EXISTS (SELECT 1 FROM driftread.user_bookmarks b WHERE b.article_id = a.id)
+     WHERE a.staged_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM driftread.user_bookmarks b WHERE b.article_id = a.id)
        AND NOT EXISTS (SELECT 1 FROM driftread.fact_articles f WHERE f.article_id = a.id))
    SELECT count(DISTINCT feed_id) AS feeds, count(*) AS articles FROM ranked WHERE rn > 1000;
    ```

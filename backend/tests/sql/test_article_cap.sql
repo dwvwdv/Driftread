@@ -76,6 +76,13 @@ BEGIN
  -- extraction state, so protection is off for this run).
  report:=driftread.enforce_article_cap(100,500,false,false);
  ASSERT (SELECT count(*) FROM driftread.articles WHERE feed_id=h)=100, 'default cap: '||report;
+ -- Staged articles stay restorable by ID: never evicted, never counted.
+ UPDATE driftread.articles SET staged_at=now() WHERE feed_id=h AND url='https://cap-h.invalid/100';
+ INSERT INTO driftread.articles(feed_id,title,url,published_at) VALUES(h,'H new','https://cap-h.invalid/new',now()+interval '1 minute');
+ PERFORM driftread.reconcile_feed_article_count(h);
+ report:=driftread.enforce_article_cap(100,500,false,false);
+ ASSERT (report->>'deleted')::int=0, 'staged article evicted or counted: '||report;
+ ASSERT EXISTS(SELECT 1 FROM driftread.articles WHERE feed_id=h AND url='https://cap-h.invalid/100');
  -- Harvest never visits archived sources, so their unextracted rows get no buffer.
  INSERT INTO driftread.feeds(title,url,article_cap,archived_at) VALUES('Cap J','https://cap-j.invalid/rss',100,now()) RETURNING id INTO h;
  INSERT INTO driftread.articles(feed_id,title,url,content_hash,published_at)

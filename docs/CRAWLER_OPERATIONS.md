@@ -117,7 +117,7 @@ X-API-Key: <admin key>
 **規則**（全部在 `enforce_article_cap` RPC 內，見 `migrations/20261022120000_article_cap.sql`）：
 
 - 依 `timeline_at`（`least(coalesce(published_at, discovered_at), discovered_at)`）由新到舊排名，保留最新的上限篇數，刪除更舊的。未來日期會被壓回首次抓取時間，不會永遠排在最新。
-- **受保護的文章不刪除，也不計入上限**：任何使用者的收藏或稍後讀（`user_bookmarks`），以及後台人工事件引用（`fact_articles`，含已排除的連結）。若收藏算進上限，收藏夠多時被擠掉的反而會是新文章。
+- **受保護的文章不刪除，也不計入上限**：任何使用者的收藏或稍後讀（`user_bookmarks`），後台人工事件引用（`fact_articles`，含已排除的連結），以及管理員在[後台清理](ADMIN_CLEANUP.md#預覽暫存與刪除)暫存中的文章（`staged_at`，承諾可用原 ID 還原）。若收藏算進上限，收藏夠多時被擠掉的反而會是新文章。
 - **已讀紀錄不受保護**，隨文章一起 cascade 刪除；否則讀得多的使用者會讓整個來源無法淘汰。訂閱的來源同樣套用上限。
 - 探索實際在跑時（`FEED_DISCOVERY_ENABLED=true` 且後台沒有暫停，與探索排程用同一個 `can_start`），尚未完成外連抽取的版本保留到上限的 1.5 倍，超過仍照刪。探索關閉或暫停時沒有東西會完成抽取；封存的來源也不會被採集。這三種情況不啟用這層保護，否則上限會默默變成 1.5 倍。
 - 每來源可在後台「來源設定」覆寫上限（`feeds.article_cap`，100–100000，留空用全域）；全域值與開關在 `article.cap` 設定（見 [GLOBAL_SETTINGS](GLOBAL_SETTINGS.md)）。
