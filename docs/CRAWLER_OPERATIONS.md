@@ -126,7 +126,7 @@ X-API-Key: <admin key>
 
 **排程與鎖**：worker 的 `article_cap` 週期工作每 60 分鐘一批、每批最多刪 500 篇（程式碼常數，非設定），依超出量由大到小處理來源。每輪先以交易 advisory lock 序列化，重疊的第二輪直接回傳 0。逐來源先不加鎖排名，沒有可刪的（超量全是受保護或保留待抽取）就不鎖；有可刪的才 `FOR UPDATE SKIP LOCKED` 鎖住來源列（與 `ingest_article_batch` 同順序）並在鎖內重新排名，正在入庫的來源本輪略過、下輪再處理，不會讓 refresh 等待。文章列同樣先 `SKIP LOCKED` 再以新的語句快照重新檢查保護條件，與正文縮減的作法相同：在途的收藏插入會持有 FK 的 KEY SHARE 鎖，該文章本輪跳過，收藏照常提交。每次刪除會為每篇文章（及其已讀紀錄）寫一筆同步失效紀錄，所以批次刻意維持 500。第一次上線約 18 批（18 小時）清完既有的 8,680 篇；之後每日約千餘篇，每小時一批足夠。
 
-**操作**：後台「總覽」的「每來源文章上限」卡片可切換開關、調整全域上限與預覽下一批（預覽不刪除，以表單上尚未儲存的上限計算）。降低上限或重新啟用時會要求確認；「來源設定」新增或調低單一來源的覆寫時也會確認。`POST /api/admin/retention/article-cap/run` 預設 dry-run，明確 `dry_run=false` 才刪除，`max_per_feed` 只套用到沒有覆寫的來源；開關只控制排程，管理者仍可手動預覽或執行。回傳 `feeds_over_cap`、`excess`（以快取的 `article_count` 計，含受保護文章，是上限估計）、`eligible`、`deleted`、`skipped_feeds`。worker 每輪的結果記在 `worker_runs`，後台總覽的「各排程最近一次執行」列出 `article_cap` 的狀態，刪除數在 `GET /api/admin/operations` 的 `latest_runs.article_cap.summary`。
+**操作**：後台「總覽」的「每來源文章上限」卡片可切換開關、調整全域上限與預覽下一批（預覽不刪除，以表單上尚未儲存的上限計算）。降低上限或重新啟用時會要求確認；「來源設定」新增、調低或清除單一來源的覆寫時也會確認（清除會改用全域上限，可能比原覆寫低）。`POST /api/admin/retention/article-cap/run` 預設 dry-run，明確 `dry_run=false` 才刪除，`max_per_feed` 只套用到沒有覆寫的來源；開關只控制排程，管理者仍可手動預覽或執行。回傳 `feeds_over_cap`、`excess`（以快取的 `article_count` 計，含受保護文章，是上限估計）、`eligible`、`deleted`、`skipped_feeds`。worker 每輪的結果記在 `worker_runs`，後台總覽的「各排程最近一次執行」列出 `article_cap` 的狀態，刪除數在 `GET /api/admin/operations` 的 `latest_runs.article_cap.summary`。
 
 **閱讀端**：高流量來源的舊文章會定期消失。整頁標已讀（`POST /me/reads/mark-all` 帶 `article_ids`）先略過已不存在的文章再寫入，不會因為頁面上一篇已被刪除就整批 409；單篇標已讀或收藏一篇已刪除的文章仍回錯誤，離線重送則回報 `unavailable`。
 

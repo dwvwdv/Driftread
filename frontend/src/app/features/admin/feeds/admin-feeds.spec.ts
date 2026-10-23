@@ -146,9 +146,23 @@ describe('AdminFeeds active paging', () => {
     expect(asks).toBe(1);
     expect((sourceCalls.at(-1)?.body as { article_cap: number }).article_cap).toBe(300);
     reader.editSource({ ...feed(1), article_cap: 300 });
-    reader.articleCap = null;
+    reader.articleCap = 5000;
     await reader.saveSource();
     expect(asks).toBe(1);
+    expect((sourceCalls.at(-1)?.body as { article_cap: number }).article_cap).toBe(5000);
+  });
+
+  it('confirms before clearing an override, which may fall back to a lower global cap', async () => {
+    const { reader } = setup({ items: [feed(1)], total: 1, page: 1, page_size: 50 });
+    reader.editSource({ ...feed(1), article_cap: 5000 });
+    reader.articleCap = null;
+    confirmAnswer = false;
+    await reader.saveSource();
+    expect(asks).toBe(1);
+    expect(sourceCalls).toEqual([]);
+    confirmAnswer = true;
+    await reader.saveSource();
+    expect(asks).toBe(2);
     expect((sourceCalls.at(-1)?.body as { article_cap: null }).article_cap).toBeNull();
   });
 

@@ -73,13 +73,16 @@ export class AdminFeeds implements OnInit {
       this.toast.warning('文章上限須為 100–100000 的整數，或留空使用全域設定');
       return;
     }
-    // Same irreversible deletion as lowering the global cap: confirm a new or
-    // lower override. The global value is not known here, so any new one asks.
+    // Same irreversible deletion as lowering the global cap. The global value
+    // is not known here, so a new override and clearing one (which may fall
+    // back to a lower global cap) both ask; only raising an override does not.
     const previous = feed.article_cap ?? null;
-    if (cap !== null && (previous === null || cap < previous)) {
+    const lowers = cap !== null && (previous === null || cap < previous);
+    const clears = cap === null && previous !== null;
+    if (lowers || clears) {
       const ok = await this.confirm.ask({
-        heading: `「${feed.title}」只保留 ${cap} 篇？`,
-        body: '排程會逐批刪除這個來源超過上限的舊文章與其已讀紀錄，刪除後無法還原。收藏、稍後讀與人工事件引用的文章不受影響。',
+        heading: lowers ? `「${feed.title}」只保留 ${cap} 篇？` : `「${feed.title}」改用全域文章上限？`,
+        body: `${clears ? '全域上限若低於目前的 ' + previous + ' 篇，' : ''}排程會逐批刪除這個來源超過上限的舊文章與其已讀紀錄，刪除後無法還原。收藏、稍後讀與人工事件引用的文章不受影響。`,
         confirmLabel: '儲存',
       });
       if (!ok || this.editing() !== feed || this.savingSource()) return;
