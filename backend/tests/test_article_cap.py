@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock, Mock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -29,13 +30,22 @@ def _db(**overrides):
     return db
 
 
+@pytest.fixture(autouse=True)
+def _discovery_running(monkeypatch):
+    monkeypatch.setattr(article_cap, "discovery_can_start", AsyncMock(return_value=True))
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("discovery,keep", [("true", True), ("false", False)])
-async def test_preview_is_default_and_extraction_guard_follows_discovery(monkeypatch, discovery, keep):
-    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", discovery)
+@pytest.mark.parametrize("running", [True, False])
+async def test_preview_is_default_and_extraction_guard_follows_discovery(monkeypatch, running):
+    # Effective state: deployment switch and the persisted pause.
+    can_start = AsyncMock(return_value=running)
+    monkeypatch.setattr(article_cap, "discovery_can_start", can_start)
     db = _db()
     summary = await enforce_article_cap(db, cap=1000)
     assert summary.deleted == 0
+    can_start.assert_awaited_once_with(db)
+    keep = running
     db.rpc.assert_called_once_with("enforce_article_cap", {
         "p_default_cap": 1000, "p_limit": 500, "p_dry_run": True, "p_keep_unextracted": keep,
     })
@@ -98,10 +108,34 @@ async def test_scheduler_applies_one_batch_with_the_setting_cap():
     assert params["p_dry_run"] is False and params["p_default_cap"] == 2000
 
 
+class _AbsentSetting:
+    """Only the PostgREST builders get_setting uses; a wrong name fails loudly."""
+
+    def __init__(self):
+        self.calls = []
+
+    def table(self, name):
+        self.calls.append(("table", name))
+        return self
+
+    def select(self, columns):
+        return self
+
+    def eq(self, column, value):
+        self.calls.append(("eq", column, value))
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=None)
+
+
 def test_setting_defaults_to_enabled_1000_when_row_is_absent():
-    db = MagicMock()
-    db.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = None
+    db = _AbsentSetting()
     setting = get_setting(db, ARTICLE_CAP_KEY)
+    assert db.calls == [("table", "app_settings"), ("eq", "key", "article.cap")]
     assert setting.version == 0
     assert setting.value == {"enabled": True, "max_per_feed": 1000}
     assert load_article_cap_settings(db) == ArticleCapValue()
@@ -120,7 +154,6 @@ def test_setting_rejects_values_the_rpc_would_refuse(value):
 @pytest.fixture
 def cap_client(monkeypatch):
     monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
-    monkeypatch.setenv("FEED_DISCOVERY_ENABLED", "true")
     app = FastAPI()
     app.include_router(router)
     db = _db()

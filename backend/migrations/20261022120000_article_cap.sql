@@ -18,42 +18,67 @@ DO $$ BEGIN
 END $$;
 
 INSERT INTO driftread.background_job_kinds(kind) VALUES('article_cap') ON CONFLICT DO NOTHING;
+-- The ledger keeps its own kind whitelist; replace it with one that adds article_cap.
 ALTER TABLE driftread.worker_runs DROP CONSTRAINT IF EXISTS worker_runs_kind_check;
-ALTER TABLE driftread.worker_runs ADD CONSTRAINT worker_runs_kind_check
- CHECK(kind IN ('refresh','discovery','retention','source_review','storage','article_cap'));
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint
+  WHERE conrelid='driftread.worker_runs'::regclass AND conname='worker_runs_kind_check') THEN
+  ALTER TABLE driftread.worker_runs ADD CONSTRAINT worker_runs_kind_check
+   CHECK(kind IN ('refresh','discovery','retention','source_review','storage','article_cap'));
+ END IF;
+END $$;
 
 -- Same trigger as administrator deletes. A row that still exists (bookmarked,
 -- curated or kept for extraction) keeps receiving upserts; only a new insert
--- at or below the watermark is dropped. timeline_at is recomputed here the same
--- way prepare_article_revision does, because trigger order is by name.
+-- at or below the watermark is dropped. Triggers of one event fire in name
+-- order, so article_revision_prepare has already set NEW.timeline_at here: the
+-- watermark is compared with the exact value enforce_article_cap ranks by.
 CREATE OR REPLACE FUNCTION driftread.guard_removed_article()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE mark timestamptz; seen timestamptz;
+DECLARE mark timestamptz;
 BEGIN
  IF EXISTS(SELECT 1 FROM driftread.article_cleanup_tombstones WHERE feed_id=NEW.feed_id AND url=NEW.url) THEN RETURN NULL; END IF;
  SELECT f.article_cap_evicted_through INTO mark FROM driftread.feeds f WHERE f.id=NEW.feed_id;
- IF mark IS NOT NULL THEN
-  seen:=coalesce(NEW.discovered_at,NEW.fetched_at,now());
-  IF least(coalesce(NEW.published_at,seen),seen)<=mark
-   AND NOT EXISTS(SELECT 1 FROM driftread.articles a WHERE a.feed_id=NEW.feed_id AND a.url=NEW.url) THEN
-   RETURN NULL;
-  END IF;
+ IF mark IS NOT NULL AND NEW.timeline_at<=mark
+  AND NOT EXISTS(SELECT 1 FROM driftread.articles a WHERE a.feed_id=NEW.feed_id AND a.url=NEW.url) THEN
+  RETURN NULL;
  END IF;
  RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION driftread.guard_removed_article() FROM PUBLIC,anon,authenticated;
 
+-- Oldest-first ids beyond the cap for one source, at most p_budget. Shared by
+-- the unlocked first pass and the re-rank under the feed lock.
+CREATE OR REPLACE FUNCTION driftread.article_cap_candidates(
+ p_feed_id uuid,p_cap integer,p_keep_unextracted boolean,p_budget integer)
+RETURNS uuid[] LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT coalesce(array_agg(r.id ORDER BY r.timeline_at,r.id),'{}') FROM (
+  SELECT k.id,k.timeline_at FROM (
+   SELECT a.id,a.timeline_at,
+    a.discovery_extracted_at IS NOT NULL AND a.discovery_extracted_hash IS NOT DISTINCT FROM a.content_hash AS extracted,
+    row_number() OVER (ORDER BY a.timeline_at DESC,a.id DESC) AS rn
+   FROM driftread.articles a WHERE a.feed_id=p_feed_id
+    AND NOT EXISTS(SELECT 1 FROM driftread.user_bookmarks b WHERE b.article_id=a.id)
+    AND NOT EXISTS(SELECT 1 FROM driftread.fact_articles fa WHERE fa.article_id=a.id)
+  ) k WHERE k.rn>p_cap AND (NOT p_keep_unextracted OR k.extracted OR k.rn>p_cap+p_cap/2)
+  ORDER BY k.timeline_at,k.id LIMIT p_budget
+ ) r
+$$;
+REVOKE ALL ON FUNCTION driftread.article_cap_candidates(uuid,integer,boolean,integer) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION driftread.article_cap_candidates(uuid,integer,boolean,integer) TO service_role;
+
 -- Keeps the newest cap unprotected rows per source. Bookmarks (favorite and
 -- read_later) and manual event links are never deleted and do not count toward
 -- the cap; read receipts are not protected and cascade with the row. With
 -- p_keep_unextracted, rows whose current version has not been mined for links
--- survive up to 1.5x the cap. Oldest by timeline_at first, which clamps future
+-- survive up to 1.5x the cap, except in archived sources, which harvest never
+-- visits. Oldest by timeline_at first, which clamps future
 -- publication dates to the first time the row was seen.
 CREATE OR REPLACE FUNCTION driftread.enforce_article_cap(
  p_default_cap integer DEFAULT 1000,p_limit integer DEFAULT 500,
  p_dry_run boolean DEFAULT true,p_keep_unextracted boolean DEFAULT true)
 RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE source record; budget integer; ids uuid[]; locked uuid[]; mark timestamptz; removed integer;
+DECLARE source record; budget integer; ids uuid[]; locked uuid[]; mark timestamptz; removed integer; keep boolean;
  over_cap integer:=0; excess bigint:=0; eligible integer:=0; deleted integer:=0; skipped integer:=0;
 BEGIN
  IF p_default_cap IS NULL OR p_default_cap NOT BETWEEN 100 AND 100000 OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 1000
@@ -64,7 +89,7 @@ BEGIN
   RETURN jsonb_build_object('dry_run',false,'feeds_over_cap',0,'excess',0,'eligible',0,'deleted',0,'skipped_feeds',0);
  END IF;
  FOR source IN
-  SELECT f.id,coalesce(f.article_cap,p_default_cap) AS cap,f.article_count
+  SELECT f.id,coalesce(f.article_cap,p_default_cap) AS cap,f.article_count,f.archived_at
   FROM driftread.feeds f WHERE f.article_count>coalesce(f.article_cap,p_default_cap)
   ORDER BY f.article_count-coalesce(f.article_cap,p_default_cap) DESC,f.id
  LOOP
@@ -72,24 +97,20 @@ BEGIN
   over_cap:=over_cap+1; excess:=excess+source.article_count-source.cap;
   budget:=p_limit-eligible;
   CONTINUE WHEN budget<=0;
+  keep:=p_keep_unextracted AND source.archived_at IS NULL;
+  -- Rank without locks first: a source whose excess is all protected or kept
+  -- for extraction is never locked, so its refresh does not wait on this run.
+  ids:=driftread.article_cap_candidates(source.id,source.cap,keep,budget);
+  CONTINUE WHEN cardinality(ids)=0;
   IF NOT p_dry_run THEN
    -- ingest_article_batch locks the feed row first too; a source being
    -- refreshed right now is skipped until the next run instead of waited on.
    PERFORM 1 FROM driftread.feeds f WHERE f.id=source.id FOR UPDATE SKIP LOCKED;
    IF NOT FOUND THEN skipped:=skipped+1; CONTINUE; END IF;
+   -- Re-rank under the lock: a refresh may have committed in between.
+   ids:=driftread.article_cap_candidates(source.id,source.cap,keep,budget);
+   CONTINUE WHEN cardinality(ids)=0;
   END IF;
-  SELECT coalesce(array_agg(r.id ORDER BY r.timeline_at,r.id),'{}') INTO ids FROM (
-   SELECT k.id,k.timeline_at FROM (
-    SELECT a.id,a.timeline_at,
-     a.discovery_extracted_at IS NOT NULL AND a.discovery_extracted_hash IS NOT DISTINCT FROM a.content_hash AS extracted,
-     row_number() OVER (ORDER BY a.timeline_at DESC,a.id DESC) AS rn
-    FROM driftread.articles a WHERE a.feed_id=source.id
-     AND NOT EXISTS(SELECT 1 FROM driftread.user_bookmarks b WHERE b.article_id=a.id)
-     AND NOT EXISTS(SELECT 1 FROM driftread.fact_articles fa WHERE fa.article_id=a.id)
-   ) k WHERE k.rn>source.cap AND (NOT p_keep_unextracted OR k.extracted OR k.rn>source.cap+source.cap/2)
-   ORDER BY k.timeline_at,k.id LIMIT budget
-  ) r;
-  CONTINUE WHEN cardinality(ids)=0;
   eligible:=eligible+cardinality(ids);
   CONTINUE WHEN p_dry_run;
   -- FK inserts (bookmark, read, curation) hold KEY SHARE until commit. Lock

@@ -13,7 +13,7 @@ import asyncio
 from pydantic import BaseModel, Field
 from supabase import Client
 
-from services.discovery_config import discovery_enabled
+from services.discovery_control import can_start as discovery_can_start
 from services.settings import load_article_cap_settings
 
 MIN_CAP = 100
@@ -44,8 +44,9 @@ async def enforce_article_cap(
 
     cap is the default for sources without feeds.article_cap. Rows whose
     current version has not been mined for links are kept up to 1.5x the cap
-    only while this deployment runs discovery; otherwise nothing would ever
-    mark them and the cap would silently become 1.5x.
+    only while discovery is effectively running (deployment switch and the
+    persisted pause); otherwise nothing would mark them and the cap would
+    silently become 1.5x. The RPC also drops the buffer for archived sources.
     """
     if cap is None:
         cap = (await asyncio.to_thread(load_article_cap_settings, db)).max_per_feed
@@ -58,7 +59,7 @@ async def enforce_article_cap(
         raise ValueError("dry_run must be a boolean")
 
     params = {"p_default_cap": cap, "p_limit": limit, "p_dry_run": dry_run,
-              "p_keep_unextracted": discovery_enabled()}
+              "p_keep_unextracted": await discovery_can_start(db)}
     result = await asyncio.to_thread(
         lambda: db.rpc("enforce_article_cap", params).execute()
     )

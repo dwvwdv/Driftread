@@ -76,6 +76,13 @@ BEGIN
  -- extraction state, so protection is off for this run).
  report:=driftread.enforce_article_cap(100,500,false,false);
  ASSERT (SELECT count(*) FROM driftread.articles WHERE feed_id=h)=100, 'default cap: '||report;
+ -- Harvest never visits archived sources, so their unextracted rows get no buffer.
+ INSERT INTO driftread.feeds(title,url,article_cap,archived_at) VALUES('Cap J','https://cap-j.invalid/rss',100,now()) RETURNING id INTO h;
+ INSERT INTO driftread.articles(feed_id,title,url,content_hash,published_at)
+ SELECT h,'J '||i,'https://cap-j.invalid/'||i,repeat('f',64),now()-make_interval(hours=>i) FROM generate_series(1,120) i;
+ PERFORM driftread.reconcile_feed_article_count(h);
+ report:=driftread.enforce_article_cap(1000,500,false,true);
+ ASSERT (report->>'deleted')::int=20, 'archived source kept its unextracted buffer: '||report;
 
  -- The watermark stops a still-listed evicted item from coming back, while
  -- protected rows keep updating and newer or undated items still arrive.

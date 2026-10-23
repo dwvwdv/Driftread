@@ -119,14 +119,16 @@ X-API-Key: <admin key>
 - 依 `timeline_at`（`least(coalesce(published_at, discovered_at), discovered_at)`）由新到舊排名，保留最新的上限篇數，刪除更舊的。未來日期會被壓回首次抓取時間，不會永遠排在最新。
 - **受保護的文章不刪除，也不計入上限**：任何使用者的收藏或稍後讀（`user_bookmarks`），以及後台人工事件引用（`fact_articles`，含已排除的連結）。若收藏算進上限，收藏夠多時被擠掉的反而會是新文章。
 - **已讀紀錄不受保護**，隨文章一起 cascade 刪除；否則讀得多的使用者會讓整個來源無法淘汰。訂閱的來源同樣套用上限。
-- 本部署開啟探索（`FEED_DISCOVERY_ENABLED=true`）時，尚未完成外連抽取的版本保留到上限的 1.5 倍，超過仍照刪；探索關閉時沒有東西會完成抽取，這層保護不啟用，否則上限會默默變成 1.5 倍。
+- 探索實際在跑時（`FEED_DISCOVERY_ENABLED=true` 且後台沒有暫停，與探索排程用同一個 `can_start`），尚未完成外連抽取的版本保留到上限的 1.5 倍，超過仍照刪。探索關閉或暫停時沒有東西會完成抽取；封存的來源也不會被採集。這三種情況不啟用這層保護，否則上限會默默變成 1.5 倍。
 - 每來源可在後台「來源設定」覆寫上限（`feeds.article_cap`，100–100000，留空用全域）；全域值與開關在 `article.cap` 設定（見 [GLOBAL_SETTINGS](GLOBAL_SETTINGS.md)）。
 
 **不讓刪掉的文章被抓回來**：文章以 `(feed_id, url)` 判斷重複，刪掉後只要 URL 仍在 feed 裡，下一次 refresh 就會當新文章再寫一次。既有的 `article_cleanup_tombstones` 是一個 URL 一筆，用在自動淘汰會無限成長；改為每個來源一個水位線 `feeds.article_cap_evicted_through`（已刪除文章中最新的 `timeline_at`）。入庫 trigger 對「該來源尚不存在、`timeline_at` 不晚於水位線」的新列直接略過，這些列本來也會在下一輪被刪。已存在的列（受保護或保留待抽取）照常更新。沒有發布日期的項目以抓取時間計，所以若來源反覆列出已刪除的無日期項目，仍會被當新文章收回；正常 feed 只列最近 20–100 項，不會碰到。調高上限不會清除水位線，比水位線舊、從未入庫的項目仍會被略過。
 
-**排程與鎖**：worker 的 `article_cap` 週期工作每 60 分鐘一批、每批最多刪 500 篇（程式碼常數，非設定），依超出量由大到小處理來源。每輪先以交易 advisory lock 序列化，重疊的第二輪直接回傳 0。逐來源 `FOR UPDATE SKIP LOCKED` 鎖住來源列（與 `ingest_article_batch` 同順序），正在 refresh 的來源本輪略過、下輪再處理，不會讓 refresh 等待。文章列同樣先 `SKIP LOCKED` 再以新的語句快照重新檢查保護條件，與正文縮減的作法相同：在途的收藏插入會持有 FK 的 KEY SHARE 鎖，該文章本輪跳過，收藏照常提交。每次刪除會為每篇文章（及其已讀紀錄）寫一筆同步失效紀錄，所以批次刻意維持 500。第一次上線約 18 批（18 小時）清完既有的 8,680 篇；之後每日約千餘篇，每小時一批足夠。
+**排程與鎖**：worker 的 `article_cap` 週期工作每 60 分鐘一批、每批最多刪 500 篇（程式碼常數，非設定），依超出量由大到小處理來源。每輪先以交易 advisory lock 序列化，重疊的第二輪直接回傳 0。逐來源先不加鎖排名，沒有可刪的（超量全是受保護或保留待抽取）就不鎖；有可刪的才 `FOR UPDATE SKIP LOCKED` 鎖住來源列（與 `ingest_article_batch` 同順序）並在鎖內重新排名，正在入庫的來源本輪略過、下輪再處理，不會讓 refresh 等待。文章列同樣先 `SKIP LOCKED` 再以新的語句快照重新檢查保護條件，與正文縮減的作法相同：在途的收藏插入會持有 FK 的 KEY SHARE 鎖，該文章本輪跳過，收藏照常提交。每次刪除會為每篇文章（及其已讀紀錄）寫一筆同步失效紀錄，所以批次刻意維持 500。第一次上線約 18 批（18 小時）清完既有的 8,680 篇；之後每日約千餘篇，每小時一批足夠。
 
-**操作**：後台「總覽」的「每來源文章上限」卡片可切換開關、調整全域上限與預覽下一批（預覽不刪除）。降低上限或重新啟用時會要求確認。`POST /api/admin/retention/article-cap/run` 預設 dry-run，明確 `dry_run=false` 才刪除，`max_per_feed` 只套用到沒有覆寫的來源；開關只控制排程，管理者仍可手動預覽或執行。回傳 `feeds_over_cap`、`excess`（以快取的 `article_count` 計，含受保護文章，是上限估計）、`eligible`、`deleted`、`skipped_feeds`。worker 每輪的結果記在 `worker_runs`，後台總覽的「各排程最近一次執行」列出 `article_cap`。
+**操作**：後台「總覽」的「每來源文章上限」卡片可切換開關、調整全域上限與預覽下一批（預覽不刪除，以表單上尚未儲存的上限計算）。降低上限或重新啟用時會要求確認；「來源設定」新增或調低單一來源的覆寫時也會確認。`POST /api/admin/retention/article-cap/run` 預設 dry-run，明確 `dry_run=false` 才刪除，`max_per_feed` 只套用到沒有覆寫的來源；開關只控制排程，管理者仍可手動預覽或執行。回傳 `feeds_over_cap`、`excess`（以快取的 `article_count` 計，含受保護文章，是上限估計）、`eligible`、`deleted`、`skipped_feeds`。worker 每輪的結果記在 `worker_runs`，後台總覽的「各排程最近一次執行」列出 `article_cap` 的狀態，刪除數在 `GET /api/admin/operations` 的 `latest_runs.article_cap.summary`。
+
+**閱讀端**：高流量來源的舊文章會定期消失。整頁標已讀（`POST /me/reads/mark-all` 帶 `article_ids`）先略過已不存在的文章再寫入，不會因為頁面上一篇已被刪除就整批 409；單篇標已讀或收藏一篇已刪除的文章仍回錯誤，離線重送則回報 `unavailable`。
 
 **刪除不可還原**。刪除會連帶清掉 `article_revisions`、`article_discoveries`、已讀紀錄與同步快取中的那篇文章；PostgreSQL 刪除後檔案不會立刻縮小，空間由之後的新文章重用，所以效果是「容量停止成長」，不是 Dashboard 數字立刻下降。部署前的備份、預覽查詢與回滾見 [RUNBOOK](RUNBOOK.md#每來源文章上限)。
 

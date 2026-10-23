@@ -1435,7 +1435,7 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - 保護：`user_bookmarks`（收藏與稍後讀）、`fact_articles`（人工事件，含已排除的連結）不刪除也不計入。已讀不保護、訂閱的來源同樣套用——讀得多或有人訂閱就整個來源無法淘汰，不是想要的語意。
 - 鎖：交易 advisory lock 序列化整輪；來源列 `FOR UPDATE SKIP LOCKED`（與 `ingest_article_batch` 同順序，正在入庫的來源本輪略過、不讓 refresh 等待）；文章列先 `SKIP LOCKED`，再以新的語句快照重新檢查保護條件後刪除，沿用正文縮減的作法，在途的收藏（持有 FK KEY SHARE）會讓該文章保留。
 - 防止重抓：刪除後只要 URL 還在 feed 中就會被重新 INSERT。沒有沿用 `article_cleanup_tombstones`（一 URL 一筆，正式環境已 1,271 筆，自動淘汰會無限成長），改為每來源一個水位線；既有的 `guard_removed_article()` trigger 對「該來源尚不存在且 `timeline_at` 不晚於水位線」的新列回傳 NULL，已存在的列照常 upsert。
-- 全域設定 `article.cap`（`{enabled, max_per_feed}`，資料庫沒有這一列時為 `true／1000`，所以新部署預設啟用）；worker 新增常駐的 `article_cap` loop，每 60 分鐘、每批 500 篇，每次 claim 前讀設定，停用時不入列。`p_keep_unextracted` 跟隨部署的 `FEED_DISCOVERY_ENABLED`：探索關閉時沒有東西會完成抽取，若照樣保護，上限會默默變成 1.5 倍。
+- 全域設定 `article.cap`（`{enabled, max_per_feed}`，資料庫沒有這一列時為 `true／1000`，所以新部署預設啟用）；worker 新增常駐的 `article_cap` loop，每 60 分鐘、每批 500 篇，每次 claim 前讀設定，停用時不入列。`p_keep_unextracted` 跟隨探索的實際狀態（部署開關＋後台暫停，與探索排程共用 `can_start`），RPC 另對封存來源不給緩衝：這些情況沒有東西會完成抽取，若照樣保護，上限會默默變成 1.5 倍。
 - API：`POST /admin/retention/article-cap/run`（預設 dry-run，`max_per_feed`、`limit` 有界）；`PATCH /admin/feeds/{id}/source` 接受 `article_cap`（明確 null 改回全域），回傳改為 `AdminFeed` 才看得到覆寫值。
 - 後台：「總覽」新增「每來源文章上限」卡片（開關、全域上限、預覽下一批；降低上限或重新啟用時確認；儲存失敗顯示資料庫目前值並保留本地修改）；「來源設定」對話框新增文章上限欄位；「各排程最近一次執行」列出 `article_cap`。UI 只預覽，不提供立即刪除按鈕。
 - 文件：CRAWLER_OPERATIONS 新增「每來源文章上限」並把治理表的「舊文章列到期」指向它；RUNBOOK 新增部署前預覽 SQL、在新 worker 啟動前停用的方法與回滾（含清除水位線）；GLOBAL_SETTINGS、FEATURES（API、路由、資料表、限制）、BACKGROUND_JOBS、CONTENT_MODEL、README 警告區塊、TODO。
@@ -1449,4 +1449,17 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - 刪除不會讓資料庫檔案變小，空間由之後的新文章重用；仍需回收時照 RUNBOOK 手動 `VACUUM FULL`。理論上 300 個來源都長到 1000 篇仍會超過 500 MB，上限不是硬性的容量保證；以目前分佈短期內碰不到。
 - 高位元組來源只存摘要、每日入庫預算、`search_vector` 改寫仍待決定（TODO）。
 
-驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1708 passed**（含真 PostgreSQL；本 PR 前 1669）。新增 `tests/sql/test_article_cap.sql`（預覽不變動、批次預算先刪最舊、受保護文章不刪不計入、已讀 cascade、1.5 倍緩衝與關閉時降到上限、全域預設、水位線擋下已刪項目但允許受保護列更新與新／無日期項目、無水位線來源不受影響、參數與 CHECK 邊界）、`tests/test_article_cap_postgres.py`（migration 重跑、正在入庫的來源被略過、在途收藏讓文章保留、兩輪並行不重複刪、anon／authenticated 無權呼叫）、`tests/test_article_cap.py`（service 參數與契約、探索開關對應保護、設定預設與驗證、API 認證與邊界、worker loop 停用時不 claim）與 `tests/test_source_model.py` 的覆寫設定／清除；既有 worker 啟動測試補上新 loop。frontend **55 files／575 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器、正式 Supabase 套用 migration 與第一輪刪除、瀏覽器實機操作後台卡片。
+**`/code-review` 修正（兩輪合計 18 項，去重後修 12 項）**
+
+- 部署順序：README／RUNBOOK 原本叫維運在新版 worker 啟動前「到後台卡片停用」，但卡片在新版前端，而 RUNBOOK 把前端和 worker 一起啟動；worker 啟動時第一批立即執行，不是「一小時內」。改為先只更新 `api`、用 `PUT /api/admin/settings/article.cap` 停用，明確寫「不要一次 `docker compose up -d`」。
+- 整頁標已讀：`/me/reads/mark-all` 帶 `article_ids` 時，只要頁面上有一篇已被淘汰，整批 upsert 就因外鍵違反回 409、前端回滾，重新整理前一直失敗。高流量來源每小時都會淘汰，這會在正常使用中發生；改為先查出仍存在的 id 再寫入，`marked` 只算實際寫入的。單篇標已讀／收藏已刪除文章仍回錯誤，離線重送原本就回 `unavailable`，未改。
+- 預覽：「預覽下一批」原本用已儲存的上限，管理者在確認刪除前看不到新上限的影響；改以表單上的草稿值呼叫 API 的 `max_per_feed`，並標示預覽用的上限。
+- 來源覆寫：在來源設定新增或調低 `article_cap` 不需確認，和全域卡片不一致；改為同樣確認（全域值在該頁未知，所以新增任何覆寫都確認）。
+- 探索暫停與封存來源：原本只看部署開關，後台暫停探索或封存的來源都不會完成抽取，上限默默變成 1.5 倍；改用 `can_start`，RPC 對封存來源不給緩衝。
+- 鎖：原本先鎖來源列才排名，超量全是受保護或保留待抽取的來源每小時都被鎖到整批 commit，讓它的 refresh 白等；抽出 `article_cap_candidates()`，先不加鎖排名，有可刪的才鎖並在鎖內重新排名。
+- 守門 trigger 原本自己重算 `timeline_at`，理由（觸發順序）寫反了：`article_revision_prepare` 依名稱排在 `articles_cleanup_guard` 之前，`NEW.timeline_at` 已算好；改為直接使用，避免兩份公式漂移。
+- 後台卡片：load 與儲存／預覽共用一個 sequence，儲存 409 後重新載入期間再按預覽或儲存，載入回應被丟掉、`loading` 卡住、版本過期；改為分開計數，並在載入中停用儲存與預覽。
+- `ADD CONSTRAINT worker_runs_kind_check` 改用 `DO` 區塊包住（AGENTS.md 規則）；新增測試的 db mock 改為只提供用到的 builder，不用裸 `MagicMock`；`AdminService.runArticleCap` 補 service spec（`dry_run` 與 `max_per_feed` 參數）；RUNBOOK 原本說在「各排程最近一次執行」看 `deleted`，但那裡不顯示 summary，改指向 `GET /api/admin/operations`。
+- 不修：worker 每輪讀兩次設定（`can_start` 一次、action 再確認一次），只是每小時多一次小查詢，換來「claim 後才停用」也會生效。上下限 100／100000 分散在 SQL CHECK、pydantic、service 與前端：各層各自擋是刻意的，集中成單一常數需要 `models.py` 匯入 service 模組、有循環匯入風險；邊界由 SQL fixture 與各層測試守住。
+
+驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1711 passed**（含真 PostgreSQL；本 PR 前 1669）。新增 `tests/sql/test_article_cap.sql`（預覽不變動、批次預算先刪最舊、受保護文章不刪不計入、已讀 cascade、1.5 倍緩衝與關閉時降到上限、全域預設、水位線擋下已刪項目但允許受保護列更新與新／無日期項目、無水位線來源不受影響、參數與 CHECK 邊界、封存來源不給緩衝）、`tests/test_article_cap_postgres.py`（migration 重跑、正在入庫的來源被略過、只有受保護超量的來源不被鎖、在途收藏讓文章保留、兩輪並行不重複刪、anon／authenticated 無權呼叫）、`tests/test_me.py` 的整頁標已讀略過已刪文章、`tests/test_article_cap.py`（service 參數與契約、探索開關對應保護、設定預設與驗證、API 認證與邊界、worker loop 停用時不 claim）與 `tests/test_source_model.py` 的覆寫設定／清除；既有 worker 啟動測試補上新 loop。frontend **55 files／579 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器、正式 Supabase 套用 migration 與第一輪刪除、瀏覽器實機操作後台卡片。

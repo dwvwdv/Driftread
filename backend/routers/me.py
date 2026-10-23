@@ -226,7 +226,14 @@ async def mark_all_read(
         # second time" (same constraint services/articles.py::upsert_articles
         # already dedupes around for feed ingestion).
         unique_ids = {str(aid) for aid in body.article_ids}
-        rows = [{"user_id": user.id, "article_id": aid} for aid in unique_ids]
+        # The per-source article cap deletes old rows hourly, so a page loaded
+        # a while ago can list ids that no longer exist. Mark the rest instead
+        # of failing the whole page on one foreign-key violation.
+        existing = db.table("articles").select("id").in_("id", sorted(unique_ids)).execute()
+        live = {str(row["id"]) for row in (existing.data or [])} & unique_ids
+        if not live:
+            return MarkAllReadResult(marked=0)
+        rows = [{"user_id": user.id, "article_id": aid} for aid in sorted(live)]
         db.table("user_article_reads").upsert(rows, on_conflict="user_id,article_id").execute()
         return MarkAllReadResult(marked=len(rows))
 

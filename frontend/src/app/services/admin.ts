@@ -330,13 +330,18 @@ export class AdminService {
     return this.get<ArticleStorageStats>('/admin/retention/stats', '讀取儲存統計失敗');
   }
 
-  /** Preview unless dryRun is false; the default cap comes from article.cap. */
-  runArticleCap(dryRun: boolean): Observable<ArticleCapSummary> {
+  /**
+   * Preview unless dryRun is false. maxPerFeed applies to sources without an
+   * override; omitted, the server uses the saved article.cap value.
+   */
+  runArticleCap(dryRun: boolean, maxPerFeed?: number): Observable<ArticleCapSummary> {
+    let params = new HttpParams().set('dry_run', dryRun);
+    if (maxPerFeed !== undefined) params = params.set('max_per_feed', maxPerFeed);
     return this.post<ArticleCapSummary>(
       '/admin/retention/article-cap/run',
       {},
       dryRun ? '預覽文章上限失敗' : '執行文章上限失敗',
-      new HttpParams().set('dry_run', dryRun),
+      params,
     );
   }
 

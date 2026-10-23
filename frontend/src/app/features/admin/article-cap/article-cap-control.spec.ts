@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { ArticleCapControl } from './article-cap-control';
 import { AdminService } from '../../../services/admin';
 import { ConfirmService } from '../../../ui/confirm/confirm';
@@ -10,6 +10,7 @@ type Reader = {
   draft: ArticleCapSettings;
   saved: () => ArticleCapSettings | null;
   busy: () => boolean;
+  loading: () => boolean;
   save: () => Promise<void>;
   preview: () => void;
 };
@@ -22,25 +23,28 @@ function setup(options: {
   stored?: GlobalSetting<ArticleCapSettings>;
   confirm?: boolean;
   save?: () => Observable<GlobalSetting<ArticleCapSettings>>;
+  reload?: () => Observable<{ settings: GlobalSetting[] }>;
 } = {}) {
   const stored = options.stored ?? setting({ enabled: true, max_per_feed: 1000 });
   const saves: { key: string; value: unknown; version: number }[] = [];
   const asks: unknown[] = [];
   const warnings: string[] = [];
+  const previews: { dryRun: boolean; cap?: number }[] = [];
   let loads = 0;
   const admin = {
     globalSettings: () => {
       loads++;
+      if (loads > 1 && options.reload) return options.reload();
       return of({ settings: [{ key: 'source.review', value: {}, version: 1, updated_at: null }, stored] });
     },
     saveGlobalSetting: (key: string, value: ArticleCapSettings, version: number) => {
       saves.push({ key, value, version });
       return options.save ? options.save() : of(setting(value, version + 1));
     },
-    runArticleCap: (dryRun: boolean) =>
-      of<ArticleCapSummary>({
+    runArticleCap: (dryRun: boolean, cap?: number) =>
+      (previews.push({ dryRun, cap }), of<ArticleCapSummary>({
         dry_run: dryRun, feeds_over_cap: 8, excess: 8680, eligible: 500, deleted: 0, skipped_feeds: 0,
-      }),
+      })),
   };
   TestBed.configureTestingModule({
     imports: [ArticleCapControl],
@@ -59,18 +63,48 @@ function setup(options: {
   const fixture = TestBed.createComponent(ArticleCapControl);
   fixture.detectChanges();
   const reader = fixture.componentInstance as unknown as Reader;
-  return { fixture, reader, saves, asks, warnings, loads: () => loads };
+  return { fixture, reader, saves, asks, warnings, previews, loads: () => loads };
 }
 
 describe('ArticleCapControl', () => {
-  it('shows the stored cap and previews without deleting', () => {
-    const { fixture, reader } = setup();
+  it('shows the stored cap and previews the unsaved draft without deleting', () => {
+    const { fixture, reader, previews } = setup();
     expect(fixture.nativeElement.textContent).toContain('每個來源最多保留 1000 篇');
+    reader.draft = { enabled: true, max_per_feed: 200 };
     reader.preview();
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('[data-preview]').textContent).toContain(
-      '8 個來源超過上限',
-    );
+    expect(previews).toEqual([{ dryRun: true, cap: 200 }]);
+    const text = fixture.nativeElement.querySelector('[data-preview]').textContent;
+    expect(text).toContain('以每來源 200 篇預覽');
+    expect(text).toContain('8 個來源超過上限');
+  });
+
+  it('does not preview a cap the API would refuse', () => {
+    const { reader, previews, warnings } = setup();
+    reader.draft = { enabled: true, max_per_feed: 50 };
+    reader.preview();
+    expect(previews).toEqual([]);
+    expect(warnings.length).toBe(1);
+  });
+
+  it('a reload in flight is not discarded by another action and blocks saving', async () => {
+    const pending = new Subject<{ settings: GlobalSetting[] }>();
+    const { reader, saves, previews } = setup({
+      save: () => throwError(() => new Error('409')),
+      reload: () => pending,
+    });
+    reader.draft = { enabled: false, max_per_feed: 1000 };
+    await reader.save();
+    expect(reader.loading()).toBe(true);
+    reader.preview();
+    await reader.save();
+    expect(previews).toEqual([]);
+    expect(saves.length).toBe(1);
+    pending.next({ settings: [setting({ enabled: true, max_per_feed: 800 }, 7)] });
+    expect(reader.loading()).toBe(false);
+    expect(reader.saved()).toEqual({ enabled: true, max_per_feed: 800 });
+    await reader.save();
+    expect(saves.at(-1)?.version).toBe(7);
   });
 
   it('confirms before lowering the cap and saves with the loaded version', async () => {

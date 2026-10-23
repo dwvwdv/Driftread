@@ -72,6 +72,25 @@ describe('AdminService 409 handling', () => {
     apply.flush({ items: [], dry_run: false });
   });
 
+  it('previews the article cap unless dry_run=false and forwards a draft cap', () => {
+    const service = TestBed.inject(AdminService);
+    const summary = {
+      dry_run: true, feeds_over_cap: 0, excess: 0, eligible: 0, deleted: 0, skipped_feeds: 0,
+    };
+    service.runArticleCap(true, 300).subscribe();
+    const preview = httpMock.expectOne((req) => req.url.endsWith('/admin/retention/article-cap/run'));
+    expect(preview.request.method).toBe('POST');
+    expect(preview.request.headers.get('x-manage-session')).toBe('otp-token');
+    expect(preview.request.params.get('dry_run')).toBe('true');
+    expect(preview.request.params.get('max_per_feed')).toBe('300');
+    preview.flush(summary);
+    service.runArticleCap(false).subscribe();
+    const apply = httpMock.expectOne((req) => req.url.endsWith('/admin/retention/article-cap/run'));
+    expect(apply.request.params.get('dry_run')).toBe('false');
+    expect(apply.request.params.has('max_per_feed')).toBe(false);
+    apply.flush({ ...summary, dry_run: false });
+  });
+
   it('uses bounded pagination and structured IDs for exploration management', () => {
     const service = TestBed.inject(AdminService);
     service.pendingTargets(50).subscribe();

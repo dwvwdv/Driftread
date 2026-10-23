@@ -53,6 +53,28 @@ def test_feed_being_refreshed_is_skipped_not_waited_on(pg_database):
         assert scalar(observer, "SELECT count(*) FROM driftread.articles WHERE feed_id=%s", (feed,)) == 100
 
 
+def test_source_with_only_protected_excess_is_never_locked(pg_database):
+    """Nothing to delete means no feed lock, so its refresh never waits."""
+    with connection(pg_database) as setup:
+        feed = _seed(setup, 'cap-protected', 101)
+        owner = scalar(setup, "SELECT id FROM auth.users LIMIT 1")
+        oldest = scalar(setup, "SELECT id FROM driftread.articles WHERE feed_id=%s AND url=%s",
+                        (feed, 'https://cap-protected.invalid/101'))
+        with setup.cursor() as cur:
+            cur.execute("INSERT INTO driftread.user_bookmarks(user_id,article_id,bookmark_type) VALUES(%s,%s,'favorite')",
+                        (owner, oldest))
+        setup.commit()
+    with connection(pg_database, 'service_role') as worker, connection(pg_database) as refresh:
+        report = _enforce(worker)
+        # The worker transaction is still open; the feed row must be free.
+        with refresh.cursor() as cur:
+            cur.execute("SET lock_timeout='200ms'")
+            cur.execute("SELECT 1 FROM driftread.feeds WHERE id=%s FOR UPDATE", (feed,))
+        refresh.rollback()
+        worker.commit()
+    assert report['deleted'] == 0 and report['skipped_feeds'] == 0
+
+
 def test_bookmark_in_flight_keeps_its_article(pg_database):
     """An uncommitted bookmark holds KEY SHARE on its article: eviction skips
     that row, deletes the rest, and the bookmark commits normally."""

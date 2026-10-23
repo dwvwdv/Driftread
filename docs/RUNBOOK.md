@@ -104,7 +104,7 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 ## 每來源文章上限
 
-`20261022120000_article_cap.sql` 新增 `feeds.article_cap`、`feeds.article_cap_evicted_through`、`enforce_article_cap` RPC、`article_cap` 工作種類，並改寫入庫守門 trigger；由 API 啟動時套用。沒有 Dashboard 設定或環境變數。全域設定 `article.cap` 在資料庫沒有這一列時**預設啟用、每來源 1000 篇**，新版 worker 啟動後第一個小時就會開始刪除。規則見 [CRAWLER_OPERATIONS](CRAWLER_OPERATIONS.md#每來源文章上限)。
+`20261022120000_article_cap.sql` 新增 `feeds.article_cap`、`feeds.article_cap_evicted_through`、`enforce_article_cap` RPC、`article_cap` 工作種類，並改寫入庫守門 trigger；由 API 啟動時套用。沒有 Dashboard 設定或環境變數。全域設定 `article.cap` 在資料庫沒有這一列時**預設啟用、每來源 1000 篇**，新版 worker 一啟動就會排入並執行第一批（佇列的下一輪從那時起算每 60 分鐘）。規則見 [CRAWLER_OPERATIONS](CRAWLER_OPERATIONS.md#每來源文章上限)。
 
 **部署前**
 
@@ -123,12 +123,16 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
    2026-10-22 的結果約為 8 個來源、8,680 篇。
 3. 記下基準：管理首頁「容量成長趨勢」「每表容量與 MVCC」與 `articles` 的 heap／TOAST／index。
 
-**部署**：照一般順序 `docker compose up -d api`，確認 healthy 與 ledger 有 `20261022120000_article_cap.sql`。若想先停用或改上限，這時（新版 worker 啟動前）在後台「總覽 → 每來源文章上限」儲存，或 `PUT /api/admin/settings/article.cap` 帶 `{"value":{"enabled":false,"max_per_feed":1000},"expected_version":0}`。舊版 worker 不認得 `article_cap`，不會刪任何東西。接著 `docker compose up -d worker frontend`。
+**部署**：不要直接 `docker compose pull && docker compose up -d`，那會讓新 worker 立刻開始刪除。依序：
+
+1. `docker compose up -d api`，確認 healthy 與 ledger 有 `20261022120000_article_cap.sql`。舊版 worker 不認得 `article_cap`，不會刪任何東西。
+2. 若想先停用或改上限，這時用 API 設定（舊版前端沒有這張卡片）：`PUT /api/admin/settings/article.cap`，body `{"value":{"enabled":false,"max_per_feed":1000},"expected_version":0}`。想用後台卡片的話，先 `docker compose up -d frontend`，在「總覽 → 每來源文章上限」儲存。
+3. `docker compose up -d worker frontend`。
 
 **部署後**
 
 1. 後台卡片按「預覽下一批」，或 `POST /api/admin/retention/article-cap/run`（不帶 `dry_run` 就是預覽）。
-2. 「各排程最近一次執行」的 `article_cap` summary 應有 `deleted`；每批最多 500 篇，約 18 小時清完既有超量。`skipped_feeds` 偶爾大於 0 是正在入庫的來源被略過，下一輪會處理。
+2. 後台「各排程最近一次執行」只顯示 `article_cap` 的狀態與時間；刪除數在 `GET /api/admin/operations` 的 `latest_runs.article_cap.summary.deleted`，或按卡片的「預覽下一批」看剩下多少。每批最多 500 篇，約 18 小時清完既有超量。`skipped_feeds` 偶爾大於 0 是正在入庫的來源被略過，下一輪會處理。
 3. 刪除不會讓資料庫檔案變小；比對 24–72 小時的容量成長應趨緩。仍需回收空間時照下一節手動 `VACUUM FULL`，不要排成例行工作。
 
 **回滾**：在後台關閉開關（或 `PUT` `enabled:false`）即可停止排程，不需重建容器。已刪除的文章不會還原。水位線會繼續擋下比它更舊、尚未入庫的項目；若要讓某來源能重新收回舊文章，執行 `UPDATE driftread.feeds SET article_cap_evicted_through = NULL WHERE id = '<feed id>';`。應用程式回滾到舊版時，migration 是純加法，舊程式碼忽略新欄位；守門 trigger 仍在資料庫中生效。

@@ -363,8 +363,14 @@ def test_mark_unread_deletes_the_read_receipt(client):
     assert args == ("user_id", "user-abc")
 
 
+def _existing(mock_db, *ids):
+    mock_db.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(
+        data=[{"id": i} for i in ids])
+
+
 def test_mark_all_read_with_article_ids_upserts_exactly_those(client):
     c, mock_db = client
+    _existing(mock_db, "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
     mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
 
     resp = c.post(
@@ -395,6 +401,7 @@ def test_mark_all_read_with_duplicate_article_ids_dedupes_before_upsert(client):
     same constraint services/articles.py::upsert_articles already dedupes
     around for feed ingestion. article_ids must be deduped the same way."""
     c, mock_db = client
+    _existing(mock_db, "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
     mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
 
     resp = c.post(
@@ -418,6 +425,40 @@ def test_mark_all_read_with_duplicate_article_ids_dedupes_before_upsert(client):
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
     }
+
+
+def test_mark_all_read_skips_articles_deleted_since_the_page_loaded(client):
+    """The per-source article cap deletes old rows hourly; one stale id must
+    not fail the whole page with a foreign-key 409."""
+    c, mock_db = client
+    _existing(mock_db, "11111111-1111-1111-1111-111111111111")
+    mock_db.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
+
+    resp = c.post(
+        "/api/me/reads/mark-all",
+        json={"article_ids": ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"]},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"marked": 1}
+    mock_db.table.assert_any_call("articles")
+    rows = mock_db.table.return_value.upsert.call_args.args[0]
+    assert rows == [{"user_id": "user-abc", "article_id": "11111111-1111-1111-1111-111111111111"}]
+
+
+def test_mark_all_read_with_only_deleted_articles_writes_nothing(client):
+    c, mock_db = client
+    _existing(mock_db)
+
+    resp = c.post(
+        "/api/me/reads/mark-all",
+        json={"article_ids": ["11111111-1111-1111-1111-111111111111"]},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+
+    assert resp.json() == {"marked": 0}
+    mock_db.table.return_value.upsert.assert_not_called()
 
 
 def test_mark_all_read_with_empty_article_ids_is_a_no_op(client):

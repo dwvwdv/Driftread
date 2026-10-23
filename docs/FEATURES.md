@@ -311,7 +311,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | POST | `/me/articles/{article_id}/read` | 標記已讀（204） |
 | DELETE | `/me/articles/{article_id}/read` | 標記未讀（204） |
 | GET | `/me/reads` | 已讀的 article id 列表，cursor pagination |
-| POST | `/me/reads/mark-all` | 批次標已讀：帶 `article_ids` 為明確清單（目前頁面），省略則依 `feed_id`／`before` 篩選（明確範圍），三者皆空即整個閱讀流全部標已讀。回傳 `{marked}` |
+| POST | `/me/reads/mark-all` | 批次標已讀：帶 `article_ids` 為明確清單（目前頁面，已被文章上限刪除的 id 會略過，`marked` 只算實際存在的），省略則依 `feed_id`／`before` 篩選（明確範圍），三者皆空即整個閱讀流全部標已讀。回傳 `{marked}` |
 | GET | `/me/stream` | 我的閱讀流：跨所有已訂閱來源的文章時間流，cursor pagination（`cursor`／`limit`，上限 100），可用 `feed_id`／`unread_only` 篩選，每筆帶 `is_read`／`read_at` |
 | GET | `/me/stream/unread-counts` | 總未讀數與各已訂閱來源的未讀數 |
 | GET | `/me/bookmarks` | 收藏 / 稍後讀（依 `bookmark_type`） |
@@ -652,7 +652,7 @@ DELETE FROM discovery_targets
 | 偏好清單長度 | 各 50 | `models.py::UserPreferences` |
 | Article upsert 批次 | 200 / 批 | `services/articles.py` |
 | 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
-| 每來源文章上限 | 預設 1000 篇、啟用（`article.cap`，100–100000）；來源覆寫 `feeds.article_cap` 同範圍；受保護文章不計入；開啟探索時未抽取版本保留到 1.5 倍 | `services/settings.py::ArticleCapValue`、`migrations/20261022120000_article_cap.sql` |
+| 每來源文章上限 | 預設 1000 篇、啟用（`article.cap`，100–100000）；來源覆寫 `feeds.article_cap` 同範圍；受保護文章不計入；探索實際在跑時，未封存來源的未抽取版本保留到 1.5 倍 | `services/settings.py::ArticleCapValue`、`migrations/20261022120000_article_cap.sql` |
 | 文章上限排程 | 每 60 分鐘一批、每批最多刪 500 篇（程式碼常數）| `services/article_cap.py::TICK_SECONDS`、`BATCH_SIZE` |
 | 來源入庫觀察視窗 | 最近 24 小時（預設）或 7 天；列出前 `limit`（1–50，預設 10）個來源 | `services/ingest_activity.py::WINDOW_HOURS`、`WINDOW_CHOICES` |
 | 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇；7 天視窗為 ≥ 3,500 篇（只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
