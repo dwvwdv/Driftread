@@ -1469,7 +1469,7 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 
 驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1711 passed**（含真 PostgreSQL；本 PR 前 1669）。新增 `tests/sql/test_article_cap.sql`（預覽不變動、批次預算先刪最舊、受保護文章不刪不計入、已讀 cascade、1.5 倍緩衝與關閉時降到上限、全域預設、水位線擋下已刪項目但允許受保護列更新與新／無日期項目、無水位線來源不受影響、參數與 CHECK 邊界、封存來源不給緩衝）、`tests/test_article_cap_postgres.py`（migration 重跑、正在入庫的來源被略過、只有受保護超量的來源不被鎖、在途收藏讓文章保留、兩輪並行不重複刪、anon／authenticated 無權呼叫）、`tests/test_me.py` 的整頁標已讀略過已刪文章、`tests/test_article_cap.py`（service 參數與契約、探索開關對應保護、設定預設與驗證、API 認證與邊界、worker loop 停用時不 claim）與 `tests/test_source_model.py` 的覆寫設定／清除；既有 worker 啟動測試補上新 loop。frontend **55 files／580 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器、正式 Supabase 套用 migration 與第一輪刪除、瀏覽器實機操作後台卡片。
 
-## 階段五十九：獨立可選的 14 天完整文章 TTL，含預覽與分批排程（PR 待定，issue #120，2026-10-30）
+## 階段五十九：獨立可選的 14 天完整文章 TTL，含預覽與分批排程（PR #121，issue #120，2026-10-30）
 
 原有正文 retention 只縮減 content，每來源 cap 以篇數淘汰；兩者都無法表達「低頻來源也只保留最近 14 天」。本次完成 #120 P0，讓管理員明確選擇到期刪文，升級本身不啟用新刪除政策。
 
