@@ -191,7 +191,8 @@ async def test_main_always_starts_independent_review_monitor(monkeypatch, discov
     with patch.object(worker, 'run_discovery_forever', AsyncMock()) as discovery, \
          patch.object(worker, 'run_source_review_forever', AsyncMock()) as review, \
          patch.object(worker, 'run_storage_forever', AsyncMock()) as storage, \
-         patch.object(worker, 'run_article_cap_forever', AsyncMock()) as cap:
+         patch.object(worker, 'run_article_cap_forever', AsyncMock()) as cap, \
+         patch.object(worker, 'run_article_ttl_forever', AsyncMock()):
         assert await worker.main() == 0
     cap.assert_awaited_once()
     assert discovery.await_count == int(discovery_enabled)

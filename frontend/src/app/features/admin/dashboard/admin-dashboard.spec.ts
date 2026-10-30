@@ -62,6 +62,39 @@ function dashboard(overrides: Record<string, unknown> = {}) {
 }
 
 describe('AdminDashboard operational snapshots', () => {
+  it('shows TTL recent results and the rolling deletion delay', () => {
+    const fixture = dashboard({
+      operations: () =>
+        of({
+          ...operations,
+          latest_runs: {
+            article_ttl: {
+              id: 'ttl-run',
+              worker_id: 'w1',
+              kind: 'article_ttl',
+              status: 'succeeded',
+              started_at: operations.observed_at,
+              finished_at: operations.observed_at,
+              summary: { deleted: 21 },
+              error: null,
+            },
+          },
+          article_ttl_24h: { deleted: 42, average_delay_seconds: 5400 },
+        }),
+    });
+    const element: HTMLElement = fixture.nativeElement;
+    expect(element.querySelector('[data-ttl-daily]')?.textContent).toContain(
+      '最近 24 小時到期排程刪除 42 篇',
+    );
+    expect(element.querySelector('[data-ttl-daily]')?.textContent).toContain(
+      '平均在到期後 1.5 小時刪除',
+    );
+    expect(element.querySelector('[aria-label="各排程最近一次執行"]')?.textContent).toContain(
+      'article_ttl',
+    );
+    expect(element.querySelector('app-article-ttl-control')).not.toBe(null);
+  });
+
   it('shows known empty history and distinguishes insufficient samples', () => {
     const fixture = dashboard();
     expect(fixture.nativeElement.textContent).toContain('尚無每日容量紀錄');

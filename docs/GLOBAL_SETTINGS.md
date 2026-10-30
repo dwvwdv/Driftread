@@ -28,14 +28,16 @@
 
 ## 共用儲存與 API
 
-設定存於 `driftread.app_settings`，以 `key` 對應型別化 JSON `value`，並有 `version` 與 `updated_at`。目前註冊 `discovery.control`（自動探索開關）、`discovery.profiles`（value 為 `{ "profiles": [...] }`）、`source.review`（來源評審引擎、政策、門檻及可選人工覆核，見 [來源評審](SOURCE_REVIEW.md)）與 `article.cap`（`{ "enabled": true, "max_per_feed": 1000 }`，每來源文章上限；資料庫沒有這一列時就是這個預設，所以新部署預設啟用；`max_per_feed` 100–100000，來源可用 `feeds.article_cap` 覆寫，worker 每批前重新讀取，見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)）。`article.cap` 的卡片在後台「總覽」，儲存失敗時顯示資料庫目前的值與版本、保留本地修改。設定頁的兩張設定卡分別保存版本與草稿，衝突不丟棄尚未儲存的修改。加入新設定類型只需擴充 `SETTING_DEFINITIONS` 與對應表單，不必新增儲存表或 CRUD API。
+`article.ttl` 為獨立的文章到期刪除設定：`{ "enabled": false, "days": 14 }`，缺少設定列時仍為停用；`days` 接受 1–3650 的整數。後台「總覽」的到期刪除卡片共用版本化設定 API，儲存失敗或 409 時重新載入資料庫目前值、保留草稿。worker 每批前重新讀取，與 `article.cap`、正文縮減環境變數、Refresh、Discovery、來源評審及 skip 政策互不改寫。每小時 500 篇的批次與間隔目前為程式碼常數，不放入設定 JSON；新增未知欄位會被拒絕。日期、保護與防回填契約見 [文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120)。
+
+設定存於 `driftread.app_settings`，以 `key` 對應型別化 JSON `value`，並有 `version` 與 `updated_at`。目前註冊 `discovery.control`（自動探索開關）、`discovery.profiles`（value 為 `{ "profiles": [...] }`）、`source.review`（來源評審引擎、政策、門檻及可選人工覆核，見 [來源評審](SOURCE_REVIEW.md)）與 `article.cap`（`{ "enabled": true, "max_per_feed": 1000 }`，每來源文章上限；資料庫沒有這一列時就是這個預設，所以新部署預設啟用；`max_per_feed` 100–100000，來源可用 `feeds.article_cap` 覆寫，worker 每批前重新讀取，見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)），以及上述 `article.ttl`。`article.cap` 的卡片在後台「總覽」，儲存失敗時顯示資料庫目前的值與版本、保留本地修改。設定頁的兩張設定卡分別保存版本與草稿，衝突不丟棄尚未儲存的修改。加入新設定類型只需擴充 `SETTING_DEFINITIONS` 與對應表單，不必新增儲存表或 CRUD API。
 
 | API | 用途 |
 |---|---|
 | `GET /api/admin/settings` | 讀取已註冊設定、預設值、版本與更新時間 |
 | `PUT /api/admin/settings/{key}` | 送出 `{value, expected_version}` 儲存設定 |
 
-兩者都需要 `X-API-Key`。表和 RPC 只授權 `service_role`，不提供瀏覽器直接存取。API 不列出任意未知 key，避免未來敏感設定意外曝光。Supabase key、連線字串與其他密鑰仍放部署環境變數，不放這張表。
+兩者都需要管理 session 或機器 `X-API-Key`。表和 RPC 只授權 `service_role`，不提供瀏覽器直接存取。API 不列出任意未知 key，避免未來敏感設定意外曝光。Supabase key、連線字串與其他密鑰仍放部署環境變數，不放這張表。
 
 更新使用版本比對；其他管理員先存檔時回 409，管理頁保留尚未儲存的修改，需重新載入最新版再編輯。直接 SQL 更新也會由 trigger 增加版本。設定損壞或資料庫失敗不會默默恢復預設並重新啟動已停用的探測。
 

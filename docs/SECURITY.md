@@ -388,6 +388,8 @@ public origin 只能來自環境設定，不能信任 Host／forwarded headers�
 
 ## 目前的防線總覽
 
+文章 TTL 由預設停用的版本化 `article.ttl` 設定控制；預覽／刪除 API 沿用管理 session 或機器 key，不授權來源評審 MCP。SQL RPC 使用 `SECURITY INVOKER`，撤銷 PUBLIC／anon／authenticated EXECUTE，只允許 service_role；私有防回填 hash 快取開 RLS、零公開 policy、每來源最多 1000 個值。刪除前以來源／文章鎖與新快照重查任何人的收藏、人工引用及暫存保護，不以應用層先查後刪代替交易保護。停用後不開始新批次，已送入同步 DB 的一批仍可能完成；完整契約見 [文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120)。
+
 自動探索增加版本化 runtime 開關，與部署主開關同時成立才可執行；設定損壞／讀取失敗不繼續採集。引用證據自動收錄 RPC 用設定列鎖與暫停序列化；來源評審由獨立且預設關閉的 source.review 控制，AI 准入不受探索暫停影響，不跨外連持鎖。管理 MCP 只可控制此單一設定，OAuth 初始 challenge／DCR 預設明確要求管理 scope 並由同意頁列權限；舊 grant 不自動升權。
 
 後台清理使用 service_role-only／INVOKER RPC，選取 ID 有界且預設 dry-run；永久刪除需暫存及明確確認。管理 MCP 另驗 `catalog:manage`，既有評審憑證不擴權。取消探索及刪文防重新入庫的交易／鎖、OAuth 同意與部署契約見 [後台清理](ADMIN_CLEANUP.md)。

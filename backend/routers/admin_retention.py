@@ -8,6 +8,7 @@ from routers.admin import require_api_key
 from services.storage_history import StorageHistory, storage_history
 from services.table_storage import TableStorageHistory, table_storage_history
 from services.article_cap import ArticleCapSummary, enforce_article_cap
+from services.article_ttl import ArticleTtlSummary, enforce_article_ttl
 from services.retention import (
     ArticleStorageStats,
     RetentionSummary,
@@ -90,3 +91,24 @@ async def run_article_cap(
     Deleted rows cannot be restored.
     """
     return await enforce_article_cap(db, cap=max_per_feed, limit=limit, dry_run=dry_run)
+
+
+@router.post(
+    "/article-ttl/run",
+    response_model=ArticleTtlSummary,
+    dependencies=[Depends(require_api_key)],
+)
+async def run_article_ttl(
+    days: int | None = Query(None, ge=1, le=3650),
+    limit: int | None = Query(None, ge=1, le=1000),
+    dry_run: bool = Query(True),
+    db: Client = Depends(get_client),
+) -> ArticleTtlSummary:
+    """Preview by default; explicitly apply an irreversible bounded delete.
+
+    The persisted setting gates automatic expiry and TTL admission filtering;
+    manual preview/apply remain available while disabled. Bookmarks, manual
+    event references and staged articles survive; read receipts cascade. Preview
+    reports the number of read receipts in the candidate batch.
+    """
+    return await enforce_article_ttl(db, days=days, limit=limit, dry_run=dry_run)

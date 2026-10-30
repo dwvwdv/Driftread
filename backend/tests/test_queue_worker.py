@@ -117,7 +117,8 @@ async def test_sigterm_drains_then_cancels_within_bound(monkeypatch):
     with patch.object(worker,'_install_signal_handlers',install), patch.object(worker,'run_forever',stuck), \
          patch.object(worker,'run_storage_forever',AsyncMock()), \
          patch.object(worker,'run_source_review_forever',AsyncMock()), \
-         patch.object(worker,'run_article_cap_forever',AsyncMock()):
+         patch.object(worker,'run_article_cap_forever',AsyncMock()), \
+         patch.object(worker,'run_article_ttl_forever',AsyncMock()):
         assert await asyncio.wait_for(worker.main(),1) == 0
     assert stopped == [True]
 
@@ -149,7 +150,8 @@ async def test_main_starts_storage_with_refresh_and_shares_stop_signal(monkeypat
     with patch.object(worker, 'run_forever', AsyncMock()) as refresh, \
          patch.object(worker, 'run_storage_forever', AsyncMock()) as storage, \
          patch.object(worker, 'run_source_review_forever', AsyncMock()), \
-         patch.object(worker, 'run_article_cap_forever', AsyncMock()):
+         patch.object(worker, 'run_article_cap_forever', AsyncMock()), \
+         patch.object(worker, 'run_article_ttl_forever', AsyncMock()):
         assert await worker.main() == 0
     assert refresh.call_args.args[0] is storage.call_args.args[0]
 

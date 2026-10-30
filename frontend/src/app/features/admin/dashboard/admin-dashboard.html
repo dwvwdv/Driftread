@@ -141,6 +141,14 @@
           }
         </ul>
       }
+      @if (ops.article_ttl_24h; as ttl) {
+        <p class="hint" data-ttl-daily>
+          最近 24 小時到期排程刪除 {{ ttl.deleted }} 篇。
+          @if (ttl.average_delay_seconds !== null) {
+            平均在到期後 {{ ttl.average_delay_seconds / 3600 | number: '1.0-1' }} 小時刪除。
+          }
+        </p>
+      }
       <p class="hint">
         最近 {{ ops.recent_runs.length }} 輪：{{
           ops.recent_failures
@@ -288,6 +296,7 @@
 <app-storage-insights />
 
 <app-article-cap-control />
+<app-article-ttl-control />
 
 <section class="block">
   <ob-card heading="手動觸發" meta="ON DEMAND">

@@ -442,6 +442,8 @@ export interface OperationsStatus {
   recent_failures: number;
   /** Absent on an older API; null per kind when no run is on record. */
   latest_runs?: Record<string, WorkerRun | null>;
+  /** Scheduled TTL batches completed during the rolling last 24 hours. */
+  article_ttl_24h?: { deleted: number; average_delay_seconds: number | null };
   /** null when no heartbeat carries a config (older worker image). */
   worker_config?: ReportedWorkerConfig | null;
   queue?: {
@@ -626,6 +628,24 @@ export interface ArticleCapSummary {
   eligible: number;
   deleted: number;
   skipped_feeds: number;
+}
+
+/** Independent whole-article expiry policy. Disabled for existing deployments. */
+export interface ArticleTtlSettings {
+  enabled: boolean;
+  days: number;
+}
+
+export interface ArticleTtlSummary {
+  dry_run: boolean;
+  expired: number;
+  protected: number;
+  /** Next bounded batch, excluding protected articles. */
+  eligible: number;
+  deleted: number;
+  reads_affected: number;
+  skipped_feeds: number;
+  deletion_delay_seconds: number;
 }
 
 export interface SourceReviewResult {

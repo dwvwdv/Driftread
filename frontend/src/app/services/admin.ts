@@ -9,6 +9,7 @@ import {
   GlobalSetting,
   GlobalSettingsResponse,
   ArticleCapSummary,
+  ArticleTtlSummary,
   ArticleStorageStats,
   StorageHistory,
   OperationsStatus,
@@ -341,6 +342,19 @@ export class AdminService {
       '/admin/retention/article-cap/run',
       {},
       dryRun ? '預覽文章上限失敗' : '執行文章上限失敗',
+      params,
+    );
+  }
+
+  /** Preview by default; applying a batch requires explicit dryRun=false. */
+  runArticleTtl(dryRun = true, days?: number, limit?: number): Observable<ArticleTtlSummary> {
+    let params = new HttpParams().set('dry_run', dryRun);
+    if (days !== undefined) params = params.set('days', days);
+    if (limit !== undefined) params = params.set('limit', limit);
+    return this.post<ArticleTtlSummary>(
+      '/admin/retention/article-ttl/run',
+      {},
+      dryRun ? '預覽到期文章失敗' : '刪除到期文章失敗',
       params,
     );
   }

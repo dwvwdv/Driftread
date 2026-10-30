@@ -26,6 +26,7 @@ import { ToastService } from '../../../ui/toast/toast';
 import { DiscoveryControlPanel } from '../discovery-control/discovery-control';
 import { StorageInsights } from '../storage-insights/storage-insights';
 import { ArticleCapControl } from '../article-cap/article-cap-control';
+import { ArticleTtlControl } from '../article-ttl/article-ttl-control';
 
 /**
  * Console overview: the ten discovery counters, the two on-demand pipeline
@@ -53,6 +54,7 @@ import { ArticleCapControl } from '../article-cap/article-cap-control';
     DiscoveryControlPanel,
     StorageInsights,
     ArticleCapControl,
+    ArticleTtlControl,
   ],
   templateUrl: './admin-dashboard.html',
   styleUrl: './admin-dashboard.scss',
@@ -76,7 +78,7 @@ export class AdminDashboard implements OnInit {
   private snapshotRequest = 0;
   private insights = viewChild(StorageInsights);
   /** Kinds whose latest run stays visible even when refresh fills the recent list. */
-  protected readonly latestKinds = ['retention', 'article_cap', 'storage'];
+  protected readonly latestKinds = ['retention', 'article_cap', 'article_ttl', 'storage'];
 
   protected bytes(value: number): string {
     return formatMiB(value);

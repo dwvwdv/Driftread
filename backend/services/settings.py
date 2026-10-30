@@ -21,6 +21,7 @@ DISCOVERY_PROFILES_KEY = "discovery.profiles"
 DISCOVERY_CONTROL_KEY = "discovery.control"
 SOURCE_REVIEW_KEY = "source.review"
 ARTICLE_CAP_KEY = "article.cap"
+ARTICLE_TTL_KEY = "article.ttl"
 DEFAULT_SOURCE_REVIEW_POLICY = (
     "Assess source quality using the supplied article samples. Prefer substantive, "
     "original and useful information with traceable authorship or citations. Reject "
@@ -154,6 +155,15 @@ class ArticleCapValue(BaseModel):
     max_per_feed: int = Field(default=1000, ge=100, le=100000)
 
 
+class ArticleTtlValue(BaseModel):
+    """Opt-in expiry of complete article rows, independently of cap/compaction."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    enabled: bool = False
+    days: int = Field(default=14, ge=1, le=3650)
+
+
 def default_discovery_profiles() -> DiscoveryProfilesValue:
     entries = [
         ("tech", "科技", "technology", ["https://technews.tw/", "https://www.inside.com.tw/"]),
@@ -222,6 +232,7 @@ SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
     ),
     SOURCE_REVIEW_KEY: SettingDefinition(SourceReviewValue, SourceReviewValue),
     ARTICLE_CAP_KEY: SettingDefinition(ArticleCapValue, ArticleCapValue),
+    ARTICLE_TTL_KEY: SettingDefinition(ArticleTtlValue, ArticleTtlValue),
 }
 
 
@@ -264,6 +275,11 @@ def load_source_review_settings(db) -> SourceReviewValue:
 def load_article_cap_settings(db) -> ArticleCapValue:
     """Read on each run so disabling the cap takes effect without restart."""
     return ArticleCapValue.model_validate(get_setting(db, ARTICLE_CAP_KEY).value)
+
+
+def load_article_ttl_settings(db) -> ArticleTtlValue:
+    """Read for every batch; missing settings remain safely disabled."""
+    return ArticleTtlValue.model_validate(get_setting(db, ARTICLE_TTL_KEY).value)
 
 
 async def save_setting(db, key: str, value: Any, expected_version: int) -> AppSetting | None:

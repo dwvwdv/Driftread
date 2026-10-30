@@ -36,7 +36,7 @@ class JobQueue:
             "p_kind": kind, "p_singleton_key": "scheduler", "p_repeat_seconds": interval,
             "p_timeout_seconds": {"refresh": 900, "discovery": 1800,
                                   "retention": 900, "source_review": 900, "storage": 300,
-                                  "article_cap": 900}[kind],
+                                  "article_cap": 900, "article_ttl": 900}[kind],
         })
 
     async def claim(self, kind: str, worker_id: str) -> Job | None:

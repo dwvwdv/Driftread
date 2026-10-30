@@ -32,6 +32,7 @@
 | 功能 | 入口與文件 |
 |---|---|
 | PostgreSQL 工作佇列、租約重試、停機與 API watchdog | 管理首頁觀測；[BACKGROUND_JOBS.md](BACKGROUND_JOBS.md) |
+| 獨立可選的文章到期刪除（TTL） | 後台總覽設定、預覽／確認執行，預設停用、14 天；[文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120) |
 | 文章版本、來源證據、發佈／發現／backfill | [CONTENT_MODEL.md](CONTENT_MODEL.md) |
 | normal／signal_only／private 來源與正文政策 | 管理來源表單；[SOURCE_MODEL.md](SOURCE_MODEL.md) |
 | 全出口共用 publication 與 query-bound cursor | [PUBLICATION.md](PUBLICATION.md) |
@@ -376,9 +377,9 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | PATCH | `/admin/discovery/sources/{id}` | 調整 `enabled` / `interval_hours` |
 | POST | `/admin/discovery/sources/reload-defaults` | 從 `backend/seeds/discovery_sources.json` 重新載入預設清單（冪等，不會重設既有列的開關與間隔）|
 | POST | `/admin/discovery/run` | 手動跑一輪。`harvest_limit` 1–100、`probe_limit` 1–200、`max_concurrency` 1–10、`directory_limit` 1–20，未指定時吃 env 預設。**`FEED_DISCOVERY_ENABLED=false` 時回 503** |
-| GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20；另含各 kind 最近一次 run（`latest_runs`）與 worker 實際解析的排程設定（`worker_config`，含 `ARTICLE_RETENTION_ENABLED`）；見 [Worker 監控](CRAWLER_OPERATIONS.md#worker-監控) |
+| GET | `/admin/operations` | 私有 worker heartbeat 與近期執行；`limit` 1–100，預設 20；另含各 kind 最近一次 run（`latest_runs`）與 worker 實際解析的排程設定（`worker_config`，含 `ARTICLE_RETENTION_ENABLED`），及 `article_ttl_24h` 最近 24 小時成功排程刪除／平均到期延遲；見 [Worker 監控](CRAWLER_OPERATIONS.md#worker-監控) |
 | GET | `/admin/operations/ingest` | 最近 24 小時或 7 天新增文章最多與版本更新最多的來源，以及對全部來源計算的超標總數與清單，只供觀察；`limit` 1–50、預設 10；`hours` 24 或 168、預設 24；見 [來源入庫量與版本異常](CRAWLER_OPERATIONS.md#來源入庫量與版本異常) |
-| GET | `/admin/settings` | 共用全域設定與版本，包含探測方向與來源評審政策 |
+| GET | `/admin/settings` | 共用全域設定與版本，包含探測方向、來源評審、article cap 與 TTL 政策 |
 | PUT | `/admin/settings/{key}` | 型別驗證與版本比對的設定儲存，衝突回 409 |
 | GET | `/admin/source-reviews` | 有界評審列表，可依 `candidate_id` 過濾 |
 | POST | `/admin/source-reviews/latest` | 批次讀取 1–50 個 `candidate_ids` 各自最新的評審摘要，沒有評審者省略；沿用管理認證 |
@@ -398,6 +399,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 | GET | `/admin/retention/tables` | 每表 heap／TOAST／index、live／dead tuples 與 vacuum 的即時快照，以及相鄰每日採樣的 INSERT／UPDATE／DELETE 增量（統計重設時為 null）；`days` 1–90、預設 7；見 [每表容量與 MVCC 觀測](CRAWLER_OPERATIONS.md#每表容量與-mvcc-觀測) |
 | POST | `/admin/retention/run` | 預設 dry-run 的正文縮減；`retention_days` 7–3650、`limit` 1–1000，明確 `dry_run=false` 才套用 |
 | POST | `/admin/retention/article-cap/run` | 預設 dry-run 的每來源文章上限；`max_per_feed` 100–100000（預設 `article.cap`，只套用到沒有覆寫的來源）、`limit` 1–1000（預設 500），明確 `dry_run=false` 才刪除；開關只控制排程；見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限) |
+| POST | `/admin/retention/article-ttl/run` | 預設 dry-run 的完整文章 TTL；`days` 1–3650（預設 `article.ttl`，14 天）、`limit` 1–1000（預設 500），明確 `dry_run=false` 才永久刪除；開關控制自動排程與 TTL 入庫政策，停用時仍可手動執行；回傳到期／保護／本批候選與已讀影響，見 [文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120) |
 | GET | `/admin/discovery/stats` | 各狀態的計數 |
 
 ## 4. 前端路由
@@ -431,7 +433,7 @@ pending 候選的 `referring_feed_count`，所以這個門檻對「事後累積�
 |------|------|------|
 | `/manage/login` | `admin-unlock` | 管理員 Email／密碼登入後輸入 Telegram OTP；獨立於後台 guard |
 | `/manage` | → `/manage/dashboard` | |
-| `/manage/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示、每來源文章上限設定與預覽 |
+| `/manage/dashboard` | `admin-dashboard` | 十個發現統計、手動觸發一輪、健康度警示、每來源文章上限設定與預覽、TTL 開關／天數／預覽與確認刪除、最近 24 小時 TTL 刪除與平均延遲 |
 | `/manage/candidates` | `admin-candidates` | 候選審核 |
 | `/manage/feeds` | `admin-feeds` | 使用中 / 已封存 / 健康度偏低 |
 | `/manage/cleanup` | `admin-cleanup` | 相似來源／文章分組與批量暫存、還原、刪除 |
@@ -508,6 +510,8 @@ key，不是 service_role**），repo 內留空，只作為本地 `ng serve` 未
 | 表 | 來源 migration | 內容 |
 |----|----------------|------|
 | `article_cleanup_tombstones` | 20261018033131 | 私有 feed＋URL 刪除標記，防止文章重新入庫；同 migration 新增 `articles.staged_at` 與 discovery target 的 `removed` 狀態，見 [後台清理](ADMIN_CLEANUP.md) |
+| `article_ttl_reingest_guard` | 20261030010000 | 每來源一列、最多 1000 個無日期／未來日期 TTL 刪文 URL hash；RLS 零 policy、service-only，TTL 停用時忽略，來源刪除時 cascade；見 [文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120) |
+| `app_settings` | 20261008034852 | service-only 的型別化版本設定；`discovery.control`、`discovery.profiles`、`source.review`、`article.cap`、`article.ttl`，見 [全域設定](GLOBAL_SETTINGS.md) |
 | `manage_login_state` / `manage_sessions` | 20261012020000 | OTP bcrypt hash、嘗試／冷卻與管理 token SHA-256 hash；RLS 無 policy，所有 Data API roles（含 service_role）均撤銷存取，只由 backend 直連 PostgreSQL 使用 |
 | `review_oauth_registration_key` / `review_oauth_clients` / `review_oauth_requests` / `review_oauth_grants` / `review_oauth_codes` / `review_oauth_tokens` | 20261014010000 | 持久 DCR 簽名金鑰、管理員同意後保留的 ChatGPT client、待同意請求、窄權限 grant 與 token hash／重放 fencing；grant／refresh 的 null 到期表示管理員明確設定永久，access 仍短效；匿名 DCR 不新增 client 記錄；RLS 零 policy，撤銷所有 Data API roles，僅 privileged DATABASE_URL 使用 |
 | `feeds` | 001 + 003 + 005 + 006 | RSS 源本體（title / url / category / tags / language / archived_at…）＋健康度欄位 `consecutive_failures`、`last_failure_at`、`last_failure_reason`、`health_score`＋排程欄位 `next_fetch_at`、`fetch_interval_minutes`、`etag`、`last_modified`＋收割游標 `last_harvested_at`、`next_harvest_at`＋`search_vector`（020，generated tsvector，供全文搜尋）＋文章上限覆寫 `article_cap` 與淘汰水位線 `article_cap_evicted_through`（20261022120000） |
@@ -654,6 +658,8 @@ DELETE FROM discovery_targets
 | 每篇文章保留的版本數 | 10（含 current，寫入新版本時同交易清掉更舊的）| `migrations/20261012000000_article_revision_retention.sql` |
 | 每來源文章上限 | 預設 1000 篇、啟用（`article.cap`，100–100000）；來源覆寫 `feeds.article_cap` 同範圍；受保護文章不計入；探索實際在跑時，未封存來源的未抽取版本保留到 1.5 倍 | `services/settings.py::ArticleCapValue`、`migrations/20261022120000_article_cap.sql` |
 | 文章上限排程 | 每 60 分鐘一批、每批最多刪 500 篇（程式碼常數）| `services/article_cap.py::TICK_SECONDS`、`BATCH_SIZE` |
+| 文章 TTL | 預設停用、14 天（`article.ttl`，1–3650 天）；嚴格早於截止時間才刪，收藏／稍後讀、人工引用、暫存受保護；訂閱與已讀不保護 | `services/settings.py::ArticleTtlValue`、`migrations/20261030010000_article_ttl.sql` |
+| TTL 排程／防回填快取 | 每 60 分鐘最多刪 500 篇、timeout 900 秒；每來源最多 1000 個無日期／未來日期 URL hash；手動批次上限 1000 | `services/article_ttl.py`、`migrations/20261030010000_article_ttl.sql` |
 | 來源入庫觀察視窗 | 最近 24 小時（預設）或 7 天；列出前 `limit`（1–50，預設 10）個來源 | `services/ingest_activity.py::WINDOW_HOURS`、`WINDOW_CHOICES` |
 | 新增量標示門檻 | 單一來源 24 小時新增 ≥ 500 篇；7 天視窗為 ≥ 3,500 篇（只標示，不限額） | `services/ingest_activity.py::INGEST_ALERT_NEW_ARTICLES` |
 | 版本更新標示門檻 | 單一來源在視窗內版本更新 ≥ 200 次，或至少 30 次且每篇平均 ≥ 3 次；24 小時與 7 天視窗相同，不隨視窗放大（每篇只保留 10 版，放大會讓 7 天漏掉 24 小時已標示的來源），所以 7 天也會標示較慢但持續的重送（只標示，不節流或封存；版本數為下限） | `services/ingest_activity.py::REVISION_ALERT_*` |

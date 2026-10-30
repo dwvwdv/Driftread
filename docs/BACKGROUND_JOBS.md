@@ -8,7 +8,7 @@ Discovery 另遵守持久化探索暫停開關，暫停保留 queued 工作與 h
 
 `source_review` 新增獨立週期（預設每 60 秒、單輪最多 10 個候選、900 秒 timeout、並發上限 1），永遠監看後台 `source.review`，獨立於 discovery 的部署／暫停開關。評審停用時不 enqueue／claim、不抓取或付費；重新啟用不需重啟。來源評審另有資料包／模型租約與版本 fencing，不以背景 queue ack 代替業務交易保護；詳見 [來源評審](SOURCE_REVIEW.md)。
 
-`background_jobs` 保存 payload、到期時間、attempt、worker ID、lease token 與結果；`background_job_kinds` 保存每種工作的全域並發上限，六種 cycle 預設各一。部分唯一索引確保相同 kind／singleton key 最多一個 queued 或 running 工作。每輪以 `scheduler` singleton enqueue；重啟會沿用既有待辦與排程時間。成功或耗盡重試時，終態與下一輪入列在同一個交易提交。未捕捉例外重試最多三次，以 15、30 秒退避；通用 RPC 的最大重試次數為 20，退避上限一小時。已回傳 partial 的 cycle 沿用其 feed／target 退避，不再次重跑整輪增加失敗計數。
+`background_jobs` 保存 payload、到期時間、attempt、worker ID、lease token 與結果；`background_job_kinds` 保存每種工作的全域並發上限，七種 cycle 預設各一。部分唯一索引確保相同 kind／singleton key 最多一個 queued 或 running 工作。每輪以 `scheduler` singleton enqueue；重啟會沿用既有待辦與排程時間。成功或耗盡重試時，終態與下一輪入列在同一個交易提交。未捕捉例外重試最多三次，以 15、30 秒退避；通用 RPC 的最大重試次數為 20，退避上限一小時。已回傳 partial 的 cycle 沿用其 feed／target 退避，不再次重跑整輪增加失敗計數。
 
 需要在業務寫入時建立工作，應在同一個 SQL transaction 內呼叫 `enqueue_background_job`。兩次 HTTP 呼叫不具有交易原子性。目前這些週期不修改業務資料後再入列，週期結果與下一輪則由單一 `finish_background_job` RPC 處理。
 
@@ -25,6 +25,8 @@ claim 在交易內序列化該 kind 的容量判斷，再以 `FOR UPDATE SKIP LO
 `storage` 是第五種週期工作（全域並發上限 1、timeout 300 秒、每小時檢查），隨常駐的來源評審監看啟動。沿用相同 singleton、租約、重试、heartbeat 與停機規則；每日去重和 90 天保存期見 [容量歷史](CRAWLER_OPERATIONS.md#每日容量歷史)。沒有新增開關，也不改變 refresh／discovery／retention 的 enable flag。
 
 `article_cap` 是第六種週期工作（全域並發上限 1、timeout 900 秒、每 60 分鐘），與來源評審監看一樣常駐，每次 claim 前讀取 `article.cap` 設定；停用時不入列也不 claim，既有工作保留。規則見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)。
+
+`article_ttl` 是第七種週期工作（全域並發上限 1、timeout 900 秒、每 60 分鐘最多 500 篇），由 `article.ttl` 獨立控制，預設停用。worker 常駐監看、claim 與執行前重新讀設定，停用或讀取失敗不啟動新批次，保留 queued 工作；已送入資料庫的同步批次仍可能完成。TTL、篇數上限與入庫沿用先鎖來源、再鎖文章的順序，忙碌來源略過、後續追趕；每輪記錄 summary 與正常 heartbeat。日期、保護條件、回填限制及最近 24 小時刪除／延遲統計見 [文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120)。本版 migration `20261030010000_article_ttl.sql` 只初始化停用的設定、登記種類、RPC 與私有快取，不會啟用 TTL 或刪除正式文章。
 
 SIGTERM／SIGINT 立即停止新 enqueue／claim；若 signal 與已提交 claim 競跑，亦不啟動新 action。正在執行的 cycle 最多排空 20 秒，之後取消 coroutine；最終 heartbeat 最多等五秒。未完成工作不立即釋放，讓租約到期後回收，避免仍在執行的資料庫 thread 與新 attempt 過早重疊。Compose `stop_grace_period: 30s` 為容器程序提供停止期限；同步執行緒／無法即時取消的既有同步 I/O 仍可能需要容器最終終止。沒有新增環境變數。
 

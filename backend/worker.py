@@ -19,6 +19,8 @@ Scheduler loops share one event loop and one stop signal:
 - **article_cap** deletes the oldest unprotected articles of sources above the
   per-source cap. Like source_review it always runs and re-reads the
   hot-reloaded article.cap setting (enabled by default) before each batch.
+- **article_ttl** expires old unprotected article rows independently, re-reading
+  the opt-in article.ttl setting (disabled by default) before each batch.
 - **storage** records daily aggregate history while any scheduler is enabled.
 
 Network waits yield to other loops and a separate heartbeat task. Synchronous
@@ -49,6 +51,9 @@ from services.settings import load_source_review_settings
 from services.discovery_control import can_start as discovery_can_start
 from services.article_cap import (
     TICK_SECONDS as ARTICLE_CAP_TICK_SECONDS, article_cap_enabled, scheduled_enforcement,
+)
+from services.article_ttl import (
+    TICK_SECONDS as ARTICLE_TTL_TICK_SECONDS, article_ttl_enabled, scheduled_expiry,
 )
 from services.retention import (
     retention_enabled, scheduled_compaction, tick_seconds as retention_tick_seconds,
@@ -231,6 +236,15 @@ async def run_article_cap_forever(stop: asyncio.Event | None = None) -> None:
     )
 
 
+async def run_article_ttl_forever(stop: asyncio.Event | None = None) -> None:
+    """Independent opt-in expiry, gated by the current article.ttl setting."""
+    await _run_loop(
+        stop or asyncio.Event(), "article_ttl", ARTICLE_TTL_TICK_SECONDS,
+        scheduled_expiry, lambda result: result.model_dump() if result else {},
+        can_start=article_ttl_enabled,
+    )
+
+
 async def run_storage_forever(stop: asyncio.Event) -> None:
     """Hourly durable checks capture only the first sample of each UTC day."""
     await _run_loop(stop, "storage", SAMPLE_CHECK_SECONDS, record_storage_snapshot, lambda result: result)
@@ -261,10 +275,10 @@ async def main() -> int:
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
-    # Review and the article cap have persisted enable flags. Always monitor
-    # them so an operator can toggle either without restarting the worker.
+    # Persisted enable flags are always monitored so operators can toggle
+    # review, article cap and article TTL without restarting the worker.
     loops = [run_storage_forever(stop), run_source_review_forever(stop),
-             run_article_cap_forever(stop)]
+             run_article_cap_forever(stop), run_article_ttl_forever(stop)]
     if refresh_enabled():
         loops.append(run_forever(stop))
     if discovery_enabled():

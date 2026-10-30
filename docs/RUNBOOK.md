@@ -138,20 +138,50 @@ PostgREST 的每一次查詢都會是空的 exposed-schema 錯誤，而不是慢
 
 **回滾**：在後台關閉開關（或 `PUT` `enabled:false`）即可停止排程，不需重建容器。已刪除的文章不會還原。水位線會繼續擋下比它更舊、尚未入庫的項目；若要讓某來源能重新收回舊文章，執行 `UPDATE driftread.feeds SET article_cap_evicted_through = NULL WHERE id = '<feed id>';`。應用程式回滾到舊版時，migration 是純加法，舊程式碼忽略新欄位；守門 trigger 仍在資料庫中生效。
 
+## 文章到期刪除（TTL，#120）
+
+`20261030010000_article_ttl.sql` 由 API 的 migration runner 套用，新增 `article_ttl` 工作種類、service-only RPC 與私有 `article_ttl_reingest_guard`，更新文章入庫守門。沒有 Dashboard／環境變數變更；**缺少 `article.ttl` 設定時預設停用、14 天，不會因升級自行刪除**。完整日期與保護規則見 [文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120)。
+
+**部署與第一次啟用**
+
+1. 確認備份可還原並記錄基準：存活文章數、到期量、每表 heap／TOAST／index、estimated dead tuples、last_autovacuum 與 DB 總量。完整文章、版本、來源證據與已讀紀錄的刪除無法自行還原。
+2. 停止舊 worker，先更新 API，確認 healthy 與 ledger 有上述 migration，再更新 frontend。新版後台應顯示 TTL 停用；如果已有設定列，以 `GET /api/admin/settings` 回傳值與版本為準，migration 不覆寫管理員設定。
+3. 在「總覽 → 文章到期刪除」填保存天數、按預覽，或呼叫 `POST /api/admin/retention/article-ttl/run?days=14&limit=500`。不帶 `dry_run` 就是唯讀預覽；先核對 `expired`／`protected`、本批 `eligible` 及 `reads_affected`。**訂閱與已讀不保護文章**，收藏／稍後讀、人工引用及後台暫存才保護。今天才收到的舊日期文章也可能已到期。
+4. 更新並啟動 worker，仍維持 TTL 關閉。確定保存政策後在後台開啟、確認並儲存；或 `PUT /api/admin/settings/article.ttl`，body 為 `{"value":{"enabled":true,"days":14},"expected_version":<目前版本>}`。不存在設定列的版本為 0。第一個 queued 批次到期時即可執行，之後每小時一批、每批最多 500 篇；不要假定儲存後還有一小時緩衝。
+5. 若要排程外執行，後台先預覽再確認「確認並刪除這一批」，或明確呼叫 `POST /api/admin/retention/article-ttl/run?days=14&limit=500&dry_run=false`。手動執行不受排程開關限制，但仍有相同保護與批次限制。預覽不凍結候選，執行時會重查並行收藏等條件。
+
+**部署後觀測與配額逼近**
+
+- `GET /api/admin/operations` 的 `latest_runs.article_ttl` 應有狀態與 summary；後台也列出最近一輪。失敗沿用 queue 的有界重試，只有錯誤類別，不回傳原始連線錯誤。`skipped_feeds` 表示來源正忙，後續批次再處理。
+- `article_ttl_24h.deleted` 是最近 24 小時成功排程的刪除總數；`average_delay_seconds` 是文章超過期限到被刪除的平均延遲，沒有刪除時為 null，不包含手動執行。吞吐上限約 12,000 篇／天，需與實際到期量比對；若 backlog 持續上升，先確認 worker、開關、失敗／鎖競爭與受保護比例，必要時以有界手動批次追趕，不直接放大交易或新增 FULL 排程。
+- 連續 7–14 天觀察存活資料、dead tuples、每表容量／Autovacuum 次數、I/O 與入庫延遲。一般 VACUUM 回收的是表內可重用空間，`pg_database_size()` 沒立刻下降不代表失敗；接近配額時先暫停不必要寫入並評估活資料窗口與方案容量。#120 P1 的 per-table Autovacuum 調參與前後實測仍待正式環境量測，本版不直接改全 DB 或其他 schema。
+
+**停用與回滾**：在後台儲存關閉，或以上述版本化 API 寫 `enabled:false`，worker 不再開始新批次；已送入資料庫的那一批仍可能完成。其他排程不受影響，已刪資料只能從備份還原。停用後 TTL 不再拒絕舊日期的新項目，也忽略無日期 URL hash 快取；cap 水位線及人工刪文 tombstone 仍各自生效。重新啟用 TTL 會繼續使用私有快取，延長保存天數也不清除它。
+
+若明確要讓某來源的無日期項目重新入庫，先停用 TTL，再以維運連線重設該來源快取；不需要清掉整張表：
+
+```sql
+DELETE FROM driftread.article_ttl_reingest_guard WHERE feed_id = '<feed id>'::uuid;
+```
+
+此操作不還原已刪文章，也不清除 `feeds.article_cap_evicted_through` 或人工刪文標記。每來源快取只保存最近 1000 個無日期／未來日期 URL hash；超過此數量且持續重送的特殊來源，擠出的舊項目仍可能被重新收回。若應用程式回滾到沒有 TTL 的版本，**先關閉持久化 `article.ttl`**，再停止新 worker／回退程式；資料庫 guard 仍存在，單回退 image 不會取消已儲存的入庫期限。
+
 ## 收錄前來源身分檢查
 
 `20261015040607_source_mirror_gate.sql` 新增 `feeds.admitted_at`（已抓取過的既有來源回填為已收錄）與 service-only RPC `find_mirror_sources`，由 API 啟動時的 runner 套用；沒有 Dashboard 設定或環境變數。照一般順序先更新 API、確認 ledger 後再更新 worker。worker 先於 migration 啟動時，讀到的來源沒有 `admitted_at` 欄位，排程維持原本行為、不做檢查，也不會寫入不存在的欄位。行為見 [SOURCE_MODEL.md](SOURCE_MODEL.md#收錄前的來源身分檢查)。
 
 ## 資料庫接近 Supabase 容量上限
 
-Free plan 的資料庫上限是 500 MB，超過會被切成唯讀。`DELETE` 和正文縮減都只把列標成可重用，**資料庫大小不會變小**；要把空間還回去，得對該表跑 `VACUUM (FULL, ANALYZE)`，執行期間整張表被鎖住（2026-10-13 對 472 MB 的 `articles` 約一分多鐘），API 讀寫該表會等待。
+Free plan 的資料庫上限是 500 MB，超額可能進入唯讀。先區分存活資料增加與 MVCC 舊版本；`DELETE` 和正文縮減後，一般 VACUUM／Autovacuum 主要把空間回收為表內可重用，不保證檔案立即變小。先觀察容量、dead tuples、VACUUM 頻率及實際寫入延遲；TTL／cap 控制存活窗口，不等於物理縮檔。
 
 1. 用 `pg_total_relation_size` 找出最大的表，並逐來源加總 `pg_column_size(articles.*)`；先處理重複或非文章來源（別名 feed、留言 feed、套件發版通知等）。
 2. 刪除前確認該來源沒有訂閱、已讀與收藏。保留 feed 列並設 `archived_at`，只刪文章：feed 列是之後同 URL 再匯入的墓碑；刪除 feed 會讓 `discovery_candidates.feed_id` 變成 NULL。文章刪除會 cascade 清掉 revisions、discoveries、已讀與收藏。
-3. 在離峰時段依序對 `articles`、`article_revisions`、`article_discoveries` 跑 `VACUUM (FULL, ANALYZE)`。透過 Supabase MCP 執行時，客戶端 60 秒逾時不會取消伺服器上的 VACUUM，以 `pg_stat_activity`／`pg_stat_progress_cluster` 確認完成。
+3. 大量清理後優先讓 Autovacuum 處理；必要時以可執行交易外 SQL 的獨立維運連線執行一般 `VACUUM (ANALYZE)`，不能放進 PL/pgSQL／PostgREST RPC 交易。量測後才評估 Driftread 個別高 churn 表的 Autovacuum 參數，不改其他 schema 或全資料庫預設。
 4. 已進入唯讀模式時，Supabase 會設定 `default_transaction_read_only`；清理用的連線先執行 `SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE`。
 
-2026-10-13 的紀錄：資料庫 551 MB，刪除 10 個重複／留言／套件來源的 18,435 篇文章後跑 VACUUM FULL，降到 195 MB。實際刪除的資料約 60 MB，其餘約 290 MB 是更新造成的 bloat，所以空間仍會慢慢長回去；用管理首頁的容量歷史觀察，接近 400 MB 就重複步驟 3。
+只有確認可回收 bloat 顯著、一般回收與存活資料治理仍不足、且有備份、額外磁碟空間與離峰維護窗口時，才人工評估 `VACUUM (FULL, ANALYZE)`。它會重寫表並持有 `ACCESS EXCLUSIVE` 鎖；2026-10-13 對 472 MB 的 `articles` 約一分多鐘，期間該表 API 讀寫等待。不要以接近固定容量數字為唯一觸發，也不新增每日／每週排程。`pg_repack` 同樣需要額外空間、權限與獨立工具，接近配額時不能假定安全。客戶端逾時不代表伺服器維護已停止，須以 `pg_stat_activity`／`pg_stat_progress_cluster` 確認。
+
+歷史紀錄：2026-10-13 DB 551 MB，刪除 18,435 篇後 FULL 降至 195 MB；2026-10-29 的另一次 FULL 只回收 0.09 MiB（#120）。前者不是固定重整必然有收益的證據。#120 的正式量測、調參與有條件維護仍分別由 P1／P2 追蹤。
 
 ## issue #63 非 AI 功能升級
 
