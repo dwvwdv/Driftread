@@ -13,7 +13,7 @@ HEARTBEAT_SECONDS = 30
 STALE_SECONDS = 90
 RETENTION_DAYS = 30
 PRUNE_SECONDS = 3600
-RUN_KINDS = ("refresh", "discovery", "retention", "source_review", "storage", "article_cap")
+RUN_KINDS = ("refresh", "discovery", "retention", "source_review", "storage", "article_cap", "article_ttl")
 
 
 def scheduler_config() -> dict:
@@ -161,6 +161,9 @@ def operations_status(db, limit: int = 20) -> dict:
         "created_at", desc=True
     ).limit(limit).execute().data or []
     queue = db.rpc("background_queue_status", {}).execute().data
+    ttl_activity = db.rpc("article_ttl_activity", {
+        "p_since": (now - timedelta(hours=24)).isoformat(),
+    }).execute().data
     jobs = db.table("background_jobs").select(
         "id,kind,status,attempts,max_attempts,priority,timeout_seconds,available_at,lease_expires_at,created_at,finished_at,error"
     ).order("created_at", desc=True).limit(limit).execute().data or []
@@ -168,5 +171,6 @@ def operations_status(db, limit: int = 20) -> dict:
             "observed_at": now.isoformat(), "stale_after_seconds": STALE_SECONDS,
             "retention_days": RETENTION_DAYS, "workers": workers, "recent_runs": runs,
             "latest_runs": latest_runs, "worker_config": worker_config,
+            "article_ttl_24h": ttl_activity,
             "recent_failures": sum(r["status"] in {"failed", "partial", "interrupted"}
                                    for r in runs)}

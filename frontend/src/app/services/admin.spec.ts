@@ -75,10 +75,17 @@ describe('AdminService 409 handling', () => {
   it('previews the article cap unless dry_run=false and forwards a draft cap', () => {
     const service = TestBed.inject(AdminService);
     const summary = {
-      dry_run: true, feeds_over_cap: 0, excess: 0, eligible: 0, deleted: 0, skipped_feeds: 0,
+      dry_run: true,
+      feeds_over_cap: 0,
+      excess: 0,
+      eligible: 0,
+      deleted: 0,
+      skipped_feeds: 0,
     };
     service.runArticleCap(true, 300).subscribe();
-    const preview = httpMock.expectOne((req) => req.url.endsWith('/admin/retention/article-cap/run'));
+    const preview = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/retention/article-cap/run'),
+    );
     expect(preview.request.method).toBe('POST');
     expect(preview.request.headers.get('x-manage-session')).toBe('otp-token');
     expect(preview.request.params.get('dry_run')).toBe('true');
@@ -89,6 +96,36 @@ describe('AdminService 409 handling', () => {
     expect(apply.request.params.get('dry_run')).toBe('false');
     expect(apply.request.params.has('max_per_feed')).toBe(false);
     apply.flush({ ...summary, dry_run: false });
+  });
+
+  it('previews article expiry by default and explicitly forwards apply and draft days', () => {
+    const service = TestBed.inject(AdminService);
+    const summary = {
+      dry_run: true,
+      expired: 10,
+      protected: 2,
+      eligible: 8,
+      deleted: 0,
+      reads_affected: 3,
+      skipped_feeds: 0,
+      deletion_delay_seconds: 0,
+    };
+    service.runArticleTtl().subscribe();
+    const preview = httpMock.expectOne((req) =>
+      req.url.endsWith('/admin/retention/article-ttl/run'),
+    );
+    expect(preview.request.method).toBe('POST');
+    expect(preview.request.headers.get('x-manage-session')).toBe('otp-token');
+    expect(preview.request.params.get('dry_run')).toBe('true');
+    expect(preview.request.params.has('days')).toBe(false);
+    expect(preview.request.params.has('limit')).toBe(false);
+    preview.flush(summary);
+    service.runArticleTtl(false, 14, 3).subscribe();
+    const apply = httpMock.expectOne((req) => req.url.endsWith('/admin/retention/article-ttl/run'));
+    expect(apply.request.params.get('dry_run')).toBe('false');
+    expect(apply.request.params.get('days')).toBe('14');
+    expect(apply.request.params.get('limit')).toBe('3');
+    apply.flush({ ...summary, dry_run: false, eligible: 3, deleted: 3 });
   });
 
   it('uses bounded pagination and structured IDs for exploration management', () => {

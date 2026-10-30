@@ -1468,3 +1468,25 @@ PR #115 修好 A、B、C 後，#114 剩下的 D、E 需要先能「看見」才�
 - 不修：worker 每輪讀兩次設定（`can_start` 一次、action 再確認一次），只是每小時多一次小查詢，換來「claim 後才停用」也會生效。上下限 100／100000 分散在 SQL CHECK、pydantic、service 與前端：各層各自擋是刻意的，集中成單一常數需要 `models.py` 匯入 service 模組、有循環匯入風險；邊界由 SQL fixture 與各層測試守住。
 
 驗證：本地 PostgreSQL 16、Python 3.12 完整 backend **1711 passed**（含真 PostgreSQL；本 PR 前 1669）。新增 `tests/sql/test_article_cap.sql`（預覽不變動、批次預算先刪最舊、受保護文章不刪不計入、已讀 cascade、1.5 倍緩衝與關閉時降到上限、全域預設、水位線擋下已刪項目但允許受保護列更新與新／無日期項目、無水位線來源不受影響、參數與 CHECK 邊界、封存來源不給緩衝）、`tests/test_article_cap_postgres.py`（migration 重跑、正在入庫的來源被略過、只有受保護超量的來源不被鎖、在途收藏讓文章保留、兩輪並行不重複刪、anon／authenticated 無權呼叫）、`tests/test_me.py` 的整頁標已讀略過已刪文章、`tests/test_article_cap.py`（service 參數與契約、探索開關對應保護、設定預設與驗證、API 認證與邊界、worker loop 停用時不 claim）與 `tests/test_source_model.py` 的覆寫設定／清除；既有 worker 啟動測試補上新 loop。frontend **55 files／580 tests** 通過、production build 成功，initial bundle 514.41 kB（與前一版相同；既有 500 kB 預算警告延續）。**未驗證**：實際 Docker 容器、正式 Supabase 套用 migration 與第一輪刪除、瀏覽器實機操作後台卡片。
+
+## 階段五十九：獨立可選的 14 天完整文章 TTL，含預覽與分批排程（PR 待定，issue #120，2026-10-30）
+
+原有正文 retention 只縮減 content，每來源 cap 以篇數淘汰；兩者都無法表達「低頻來源也只保留最近 14 天」。本次完成 #120 P0，讓管理員明確選擇到期刪文，升級本身不啟用新刪除政策。
+
+**做了什麼**
+
+- `article.ttl` 持久化設定，預設 `{enabled:false,days:14}`，天數 1–3650；與 cap、正文縮減、Refresh、Discovery、來源評審及 skip 獨立，缺少設定仍停用、讀取失敗不啟動批次。
+- migration `20261030010000_article_ttl.sql`：`enforce_article_ttl` 依嚴格早於截止時間的 `timeline_at` 選取到期文章，保護任何收藏／稍後讀、人工事件引用與後台暫存；訂閱與已讀不保護，已讀／版本／來源證據 cascade 並由既有 sync ledger 失效。先候選、後來源 SKIP LOCKED、鎖內重查與文章鎖後二次保護，TTL 交易 advisory lock 防重入。
+- 新 `article_ttl` durable 工作種類，每 60 分鐘最多 500 篇、900 秒 timeout，停用保留 queued 工作、不開始新批次；已送入同步 DB 的批次可能完成。理論 12,000 篇／日高於既有約 4,000 篇／日入庫觀察，但仍需持續監測失敗、競爭與實際到期量。
+- 防重新匯入不沿用一篇一筆的永久 tombstone。TTL 啟用時，入庫守門拒絕已過期日期的新文章，既有受保護文章仍可更新；私有 `article_ttl_reingest_guard` 每來源最多 1000 個無日期／未來日期 URL hash，避免首次發現時間重設後立即重建。停用忽略 TTL 日期與快取、重啟繼續使用；沒有永久 TTL 日期水位線，cap 與人工刪文仍各自生效。
+- `POST /admin/retention/article-ttl/run` 預設 dry-run，提供全站到期／保護量、本批候選、已讀影響、實際刪除、忙碌來源與到期延遲秒數。後台總覽新增開關、天數、草稿預覽及確認後手動執行；啟用／縮短已啟用的保存期另行確認，儲存失敗保留草稿並重讀版本。
+- worker heartbeat／最近一輪納入 TTL，管理 operations 提供最近 24 小時成功排程刪除數與加權平均到期延遲。同步更新功能、設定、內容模型、維運、安全與 README；維運指引改為先評估一般回收與活資料，不再以碰到固定容量即反覆 FULL 為操作規則。
+
+**沒做的事／已知限制**
+
+- #120 P1 的正式每表 Autovacuum 量測／調參、7–14 天容量與 I/O／延遲驗證仍待執行；P2 的有條件縮檔也未實作。不修改正式 DB、啟用開關、刪正式資料或新增 VACUUM FULL 排程。
+- batch／interval 維持程式碼常數；未開放 per-source TTL 或新增入庫預算／摘要策略。收藏與引用永久受保護，所以 TTL 不保證 500 MB 配額一定足夠。
+- TTL 啟用時也拒絕從未入庫但已過期的舊日期歷史，這是避免刪完重抓的期限契約；無日期快取超過 1000 個時，擠出的舊項目可能再入庫。延長天數不自動忘記無日期身份，RUNBOOK 提供停用後人工重設方法。
+- 一般 VACUUM 回收的是可重用空間，刪除不承諾 DB 物理檔案立即下降；預覽是即時快照，不凍結執行結果。
+
+驗證：文件一致性 `scripts/check_docs.py` 與 `git diff --check` 通過；backend／frontend 自動化結果於完成全套檢查後補入。**未驗證**：正式 Supabase 套用與刪除、Docker 容器部署、實機瀏覽器及 7–14 天容量趨勢。

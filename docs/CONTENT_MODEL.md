@@ -6,6 +6,8 @@
 
 文章暫存保留 ID／版本／使用者資料，永久刪除則 cascade 清除，並以 feed＋URL 標記阻止自動重建；操作見 [後台清理](ADMIN_CLEANUP.md#預覽暫存與刪除)。每來源文章上限也會永久刪除超量的舊文章（cascade 同上），改以每來源一個 `timeline_at` 水位線阻止重建，見 [每來源文章上限](CRAWLER_OPERATIONS.md#每來源文章上限)。
 
+獨立可選的 `article.ttl`（預設停用、14 天）依 `timeline_at` 永久淘汰到期文章，保護任何人的收藏／稍後讀、人工引用與暫存，已讀不保護、隨文章 cascade。相同 hash 持續重抓不會延長期限。TTL 啟用時，新插入的已過期歷史會被守門 trigger 略過，受保護的既有列仍可更新；無日期／未來日期刪文另用每來源最多 1000 個 URL hash 的私有快取阻止立即重建，詳見 [文章到期刪除](CRAWLER_OPERATIONS.md#文章到期刪除ttl120)。
+
 `articles.id`、`UNIQUE(feed_id,url)` 與所有使用者關聯保持原樣。不同 feed 對同一 URL 的描述／HTML 仍有各自的文章列，互不覆寫。`canonical_url` 僅移除 URL fragment，以精確 URL 分組 provenance；不猜測同站其他路徑、追蹤 query、syndication 或語意相同文章，也不合併已收藏的舊 ID。
 
 每次建立文章，或正文 hash、標題、摘要、作者、發布日期改變，資料庫 trigger 在同一 transaction 新增一筆私有 `article_revisions`（只有發布日期改變的來源重送不會寫入文章，見下方「發布時間與寫入放大」），並更新 `revision_number` 與 `current_revision_id`。版本編號對單篇文章單調遞增。重抓相同內容、抽取進度更新、正文縮減均不建立假版本。即使 concurrent ingestion，唯一鍵和文章 row lock 仍保護版本序列。
@@ -31,7 +33,7 @@
 
 新來源首次成功 fetch 的文章標記 `initial_fetch`；登入 discover/import 的同步文章標記 `discover_import`；明確歷史匯入可指定 reason。普通 refresh 首次看到發布超過七天的文章，標記 `old_publication`。既有資料採首次 `fetched_at` 回填 discovery，保守標記 `legacy_import`，不以部署時間製造新訊號。無日期的普通新文章以 discovery 排序。
 
-歷史文章仍可閱讀、訂閱流顯示與搜尋。`backfill` 是[個人熱度](NON_AI_INTELLIGENCE.md)與[日報](CONSUMPTION_SURFACES.md)的排除依據，不把文章隱藏或刪除。目前沒有即時通知功能；來源 fetch／角色規則見[來源模型](SOURCE_MODEL.md)。
+尚未被文章上限或已啟用 TTL 淘汰的歷史文章仍可閱讀、訂閱流顯示與搜尋。`backfill` 本身只是[個人熱度](NON_AI_INTELLIGENCE.md)與[日報](CONSUMPTION_SURFACES.md)的排除依據，不把文章隱藏或刪除。目前沒有即時通知功能；來源 fetch／角色規則見[來源模型](SOURCE_MODEL.md)。
 
 ## 驗證
 
